@@ -53,7 +53,7 @@ void LivingActivityCoordinator::RunIsolatedCombatFixture() {
             ai->HasStrategy("stealthed", BotState::BOT_STATE_COMBAT) ||
             state->authority.Read(binding.first).lease.actor ||
             sPlayerbotRendezvousManager.GetPartyActivityOwner(binding.first) !=
-                PlayerbotRendezvousManager::PartyActivityOwner::none) continue;
+                PlayerbotRendezvousManager::PartyActivityOwner::combat) continue;
         auto* context = ai->GetAiObjectContext();
         auto* target = context->GetValue<ai::TravelTarget*>("travel target")->Get();
         auto* loot = context->GetValue<ai::LootObjectStack*>("available loot")->Get();
