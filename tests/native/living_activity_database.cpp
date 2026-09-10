@@ -3,6 +3,7 @@
 #include "LivingActivity.h"
 #include "LivingActivityCodec.h"
 #include "LivingActivityResources.h"
+#include "LivingActivityClaimConsumption.h"
 #include "LivingActivityClaimCodec.h"
 #include "LivingActivityReceipts.h"
 #include <mysql.h>
@@ -356,5 +357,37 @@ int main() {
     assert(saves == 1 && batch.size() == 1 && batch.front().afterState == "retained_uncertain_native_result");
     assert(PrepareReceiptBatch(batch,32,5999) == 0 && PrepareReceiptBatch(batch,32,6000) == 1);
     assert(!db.Write(bad) && db.ReceiptPresent(good));
-    std::cout << "PASS: real MariaDB atomic task/outbox, intent/outcome and reservation journals, duplicate/stale requests, rollback, uncertain evidence, stock/money exclusion, release conservation and independent receipt settlement (fixture metadata, NOT native gameplay proof)\n";
+    // Consumption is journal metadata proof, not a fabricated native purchase.
+    // Only claims already named in the saved intent may settle with its result.
+    Task consuming=independent; consuming.id=consuming.root="637bd562-36d2-5b01-bc01-e2d831c49f60";
+    consuming.actor=consuming.context.actor=700; consuming.sourceKey="claimed_consumption";
+    assert(db.Write(TaskWrite(consuming,0,"ff2efbdf-f0ec-4539-b840-299847970e10","fixture_created")));
+    ResourceClaim spend=cash; spend.id="ff2efbdf-f0ec-4539-b840-299847970e01";
+    spend.actor=700; spend.task=consuming.id; spend.copper=30;
+    consuming.phase=Phase::Preparing; ++consuming.revision;
+    assert(db.Write(ResourceReservationWrite(consuming,1,"ff2efbdf-f0ec-4539-b840-299847970e11",
+        {{spend,0}},{{700,0,0,0,1000,"money"}})));
+    consuming.phase=Phase::Executing; ++consuming.revision;
+    const std::string consumeId="ff2efbdf-f0ec-4539-b840-299847970e12";
+    const auto declared=ClaimedNativeState("{\"money\":1000}",{{spend,30}});
+    assert(db.Write(OperationIntentWrite(consuming,2,consumeId,"fixture_spend","{\"effects\":8,\"native\":"+declared+'}')));
+    OperationResult consumed; consumed.id=consumeId; consumed.task=consuming.id; consumed.taskRevision=3;
+    consumed.kind="fixture_spend"; consumed.state=OperationState::Verified;
+    consumed.nativeReference="fixture_metadata:spend"; consumed.evidence="fixture_only_result";
+    consuming.phase=Phase::Verifying; ++consuming.revision;
+    const std::string consumeReceipt="ff2efbdf-f0ec-4539-b840-299847970e13";
+    const auto settled=ConsumedOperationWrite(consuming,3,consumed,consumeReceipt,"{\"money\":970}",{{spend,30}});
+    const auto changedUse=ConsumedOperationWrite(consuming,3,consumed,consumeReceipt,"{\"money\":980}",{{spend,20}});
+    assert(!db.Write(changedUse.journal)); // Does not match saved intent.
+    assert(!db.Write(settled.journal,true)); // Inject rollback after the writes.
+    assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(spend.id)) == "held");
+    assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+SqlValue(consumeId)) == "intent");
+    assert(db.Write(settled.journal)); assert(db.Write(settled.journal));
+    assert(!db.Write(changedUse.journal)); // Cannot rewrite an acknowledged result either.
+    assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(spend.id)) == "consumed");
+    assert(db.Scalar("SELECT revision FROM living_activity_claim WHERE claim_id="+SqlValue(spend.id)) == "2");
+    assert(db.Scalar("SELECT JSON_EXTRACT(after_state,'$.native.money') FROM living_activity_operation WHERE operation_id="+SqlValue(consumeId)) == "970");
+    consuming.phase=Phase::Completed; ++consuming.revision;
+    assert(db.Write(TaskWrite(consuming,4,"ff2efbdf-f0ec-4539-b840-299847970e14","fixture_completed")));
+    std::cout << "PASS: real MariaDB task/outbox, intent/outcome, reservations and intent-bound consumed claims; atomic rollback, stale/changed retry rejection, conservation and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }
