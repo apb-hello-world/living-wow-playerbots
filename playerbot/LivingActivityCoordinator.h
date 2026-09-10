@@ -39,6 +39,7 @@ public:
     bool CompatibilityContext(uint32_t guid, const std::string& source,
         const std::string& key, LivingActivity::ActivityLease& identity) const;
     bool OnWorldThread() const;
+    bool EffectEnforcementEnabled() const;
     // Trusted domain producers only, on the native world thread. No native
     // operation or lease is started by submission or persistence callbacks.
     LivingActivity::AdmissionResult SubmitTask(const LivingActivity::TaskRequest& request);

@@ -798,6 +798,10 @@ bool LivingActivityCoordinator::OnWorldThread() const {
 
 ResourceReader LivingActivityCoordinator::ResourceReservations() const { return state->resources.Reader(); }
 
+bool LivingActivityCoordinator::EffectEnforcementEnabled() const {
+    return state->enforceEffects.load(std::memory_order_acquire);
+}
+
 AdmissionResult LivingActivityCoordinator::SubmitResourceReservation(const ReservationRequest& original,
     NativeReservationAdapter& adapter) {
     if (original.changes.empty() || original.changes.size() > 16) {

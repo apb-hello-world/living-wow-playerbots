@@ -85,7 +85,7 @@ bool RpgAction::SetNextRpgAction()
 
                     Action* action = ai->GetAiObjectContext()->GetAction(nextAction->getName());
 
-                    if (!dynamic_cast<RpgEnabled*>(action) || !action->isPossible() || !action->isUseful())
+                    if (!dynamic_cast<RpgEnabled*>(action) || !action->EvaluatePossibility() || !action->EvaluateUsefulness())
                         continue;
 
                     actions.push_back(action);

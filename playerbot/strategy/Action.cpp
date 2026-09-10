@@ -4,8 +4,31 @@
 #include "AiObjectContext.h"
 #include "Action.h"
 #include "Entities/Unit.h"
+#include "playerbot/LivingActivityCoordinator.h"
+#include "playerbot/LivingActivityScope.h"
 
 using namespace ai;
+
+bool Action::EvaluatePossibility()
+{
+    LivingActivity::EvaluationScope evaluation(sLivingActivityCoordinator.EffectEnforcementEnabled());
+    const bool result=isPossible();
+    return result && !evaluation.Rejected();
+}
+
+bool Action::EvaluateUsefulness()
+{
+    LivingActivity::EvaluationScope evaluation(sLivingActivityCoordinator.EffectEnforcementEnabled());
+    const bool result=isUseful();
+    return result && !evaluation.Rejected();
+}
+
+bool Action::EvaluateWhileStunned()
+{
+    LivingActivity::EvaluationScope evaluation(sLivingActivityCoordinator.EffectEnforcementEnabled());
+    const bool result=isUsefulWhenStunned();
+    return result && !evaluation.Rejected();
+}
 
 int NextAction::size(NextAction** actions)
 {

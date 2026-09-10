@@ -4149,8 +4149,8 @@ bool DebugAction::HandleNC(Event& event, Player* requester, const std::string& t
                         out << "a:  ";
                         out << nextAction->getName();
                         out << triggerNode->getName();
-                        out << (action->isUseful() ? " [usefull]" : "");
-                        out << (action->isPossible() ? " [possible]" : "");
+                        out << (action->EvaluateUsefulness() ? " [usefull]" : "");
+                        out << (action->EvaluatePossibility() ? " [possible]" : "");
                         out << "(";
                         out << std::setprecision(3);
                         out << nextAction->getRelevance();

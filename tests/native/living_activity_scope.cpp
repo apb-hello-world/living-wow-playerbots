@@ -22,6 +22,33 @@ int main() {
         ExecutionScope scope(task, action);
         assert(check() == AuthorityCode::Allowed);
         assert(ExecutionScope::Origin(task.actor) == "service_adapter");
+        {
+            EvaluationScope evaluation(true);
+            assert(ExecutionScope::Origin(task.actor) == "eligibility_evaluation");
+            assert(ExecutionScope::Check(reader,{0,Lane::Inspection,true},task.context,200) == AuthorityCode::Allowed);
+            assert(!evaluation.Rejected());
+            assert(check() == AuthorityCode::EffectsDenied);
+            assert(evaluation.Rejected());
+            EvaluationScope nested(true);
+            ExecutionScope nestedExecution(task,action);
+            assert(check() == AuthorityCode::EffectsDenied && nested.Rejected());
+            std::thread independent([&] {
+                ExecutionScope explicitExecution(task,action);
+                assert(check() == AuthorityCode::Allowed);
+            });
+            independent.join();
+        }
+        assert(check() == AuthorityCode::Allowed);
+        {
+            EvaluationScope observation(false);
+            assert(check() == AuthorityCode::EffectsDenied);
+            assert(!observation.Rejected()); // Observation cannot change selection.
+        }
+        {
+            EvaluationScope unknown(true);
+            assert(ExecutionScope::Check(reader,{},task.context,200) == AuthorityCode::EffectsDenied);
+            assert(unknown.Rejected());
+        }
         std::thread unscopedWorker([&] { assert(check() == AuthorityCode::StaleLease); });
         unscopedWorker.join();
         {

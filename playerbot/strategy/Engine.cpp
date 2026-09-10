@@ -190,10 +190,10 @@ bool Engine::DoNextAction(Unit* unit, int depth, bool minimal, bool isStunned)
             else
             {
                 bool isUseful = false;
-                if (!isStunned || action->isUsefulWhenStunned())
+                if (!isStunned || action->EvaluateWhileStunned())
                 {
                     auto pmo2 = sPerformanceMonitor.start(PERF_MON_ACTION, "isUseful", ai);
-                    isUseful = action->isUseful();
+                    isUseful = action->EvaluateUsefulness();
                     pmo2.reset();
                 }
 
@@ -234,7 +234,7 @@ bool Engine::DoNextAction(Unit* unit, int depth, bool minimal, bool isStunned)
                     }
 
                     auto pmo3 = sPerformanceMonitor.start(PERF_MON_ACTION, "isPossible", ai);
-                    bool isPossible = action->isPossible();
+                    bool isPossible = action->EvaluatePossibility();
                     pmo3.reset();
 
                     if (isPossible && relevance)
@@ -428,13 +428,13 @@ ActionResult Engine::ExecuteAction(const std::string& name, Event& event)
         if (action)
         {
             auto pmo2 = sPerformanceMonitor.start(PERF_MON_ACTION, "isUseful", ai);
-            bool isUseful = action->isUseful();
+            bool isUseful = action->EvaluateUsefulness();
             pmo2.reset();
             
             if (isUseful)
             {
                 auto pmo3 = sPerformanceMonitor.start(PERF_MON_ACTION, "isPossible", ai);
-                bool isPossible = action->isPossible();
+                bool isPossible = action->EvaluatePossibility();
                 pmo3.reset();
 
                 if (isPossible)
@@ -474,12 +474,12 @@ bool Engine::CanExecuteAction(const std::string& name, bool isUseful, bool isPos
         {
             if (isUseful)
             {
-                result &= action->isUseful();
+                result &= action->EvaluateUsefulness();
             }
 
             if (isPossible)
             {
-                result &= action->isPossible();
+                result &= action->EvaluatePossibility();
             }
         }
 

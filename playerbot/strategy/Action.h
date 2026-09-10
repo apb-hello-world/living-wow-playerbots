@@ -75,6 +75,11 @@ namespace ai
         virtual bool isPossible() { return true; }
         virtual bool isUseful() { return true; }
         virtual bool isUsefulWhenStunned() { return false; }
+        // Engine, trigger and RPG callers use these read-only evaluation
+        // boundaries. Implementations retain their existing virtual methods.
+        bool EvaluatePossibility();
+        bool EvaluateUsefulness();
+        bool EvaluateWhileStunned();
         virtual NextAction** getPrerequisites() { return NULL; }
         virtual NextAction** getAlternatives() { return NULL; }
         virtual NextAction** getContinuers() { return NULL; }

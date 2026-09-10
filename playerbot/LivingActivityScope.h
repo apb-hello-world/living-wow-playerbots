@@ -4,6 +4,23 @@
 #include <optional>
 
 namespace LivingActivity {
+    // Eligibility may inspect/cache values, but it is not an execution step.
+    // This remains in force beneath nested native permits or managed scopes.
+    // Observe mode reports attempted effects without changing legacy behavior.
+    class EvaluationScope {
+    public:
+        explicit EvaluationScope(bool enforce) : previous(head), enforce(enforce) { head=this; }
+        ~EvaluationScope();
+        EvaluationScope(const EvaluationScope&) = delete;
+        EvaluationScope& operator=(const EvaluationScope&) = delete;
+        bool Rejected() const { return enforce && mutationAttempted; }
+        static bool RejectMutation(const Effects& effects);
+        static bool Active() { return head != nullptr; }
+    private:
+        static thread_local EvaluationScope* head;
+        EvaluationScope* previous;
+        bool enforce, mutationAttempted=false;
+    };
     // Synchronous, explicitly supplied executor attribution. This is NOT a
     // grant: every boundary checks the world's latest immutable permission view.
     // Never infer this scope from the current owner or from an action name.

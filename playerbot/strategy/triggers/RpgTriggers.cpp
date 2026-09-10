@@ -532,7 +532,7 @@ bool RpgQueueBGTrigger::IsActive()
 
     Action* action = context->GetAction("free bg join");
 
-    if (!action->isUseful())
+    if (!action->EvaluateUsefulness())
         return false;
 
     return true;

@@ -74,7 +74,7 @@ bool ReactionEngine::FindReaction(bool isStunned)
                         reaction->setRelevance(reactionRelevance);
 
                         // Check if the reaction is useful
-                        if (reaction->isUseful() && (!isStunned || reaction->isUsefulWhenStunned()))
+                        if (reaction->EvaluateUsefulness() && (!isStunned || reaction->EvaluateWhileStunned()))
                         {
                             // Process the multipliers
                             for (std::list<Multiplier*>::iterator i = multipliers.begin(); i != multipliers.end(); i++)
@@ -101,7 +101,7 @@ bool ReactionEngine::FindReaction(bool isStunned)
                             }
 
                             // Check if the reaction is possible
-                            if ((reactionRelevance > 0.0f) && reaction->isPossible())
+                            if ((reactionRelevance > 0.0f) && reaction->EvaluatePossibility())
                             {
                                 // Reaction found
                                 incomingReaction.SetAction(reaction);

@@ -12,7 +12,7 @@ bool ActionPossibleValue::Calculate()
     if (!action)
         return false;
 
-    return action->isPossible();
+    return action->EvaluatePossibility();
 }
 
 bool ActionUsefulValue::Calculate()
@@ -22,7 +22,7 @@ bool ActionUsefulValue::Calculate()
     if (!action)
         return false;
 
-    return action->isUseful();
+    return action->EvaluateUsefulness();
 }
 
 bool TriggerActiveValue::Calculate()

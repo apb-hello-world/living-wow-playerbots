@@ -11,6 +11,16 @@
 #include <stdexcept>
 
 namespace {
+    class TargetMutatingEligibility final : public ai::Action {
+    public:
+        TargetMutatingEligibility(PlayerbotAI* ai,ai::TravelTarget* target,uint32_t replacement)
+            : Action(ai,"isolated_eligibility_probe"),target(target),replacement(replacement) {}
+        bool isUseful() override { target->SetRelevance(replacement); return true; }
+        bool isPossible() override { target->SetRelevance(replacement); return true; }
+    private:
+        ai::TravelTarget* target;
+        uint32_t replacement;
+    };
     void RequireIsolatedNativeFixtureEnvironment() {
         const char* environment = std::getenv("LIVING_WOW_TEST_ENVIRONMENT");
         std::ifstream marker("/isolated/ENVIRONMENT");
@@ -124,6 +134,20 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
                 "unscoped_rpg_values_rejected");
             {
                 ExecutionScope scope(task, action);
+                TargetMutatingEligibility evaluationAction(ai,target,originalRelevance ^ 0x100);
+                require(!evaluationAction.EvaluateUsefulness() && target->GetRelevance() == originalRelevance,
+                    "native_action_usefulness_rejects_route_side_effect");
+                require(!evaluationAction.EvaluatePossibility() && target->GetRelevance() == originalRelevance,
+                    "native_action_possibility_rejects_route_side_effect");
+                {
+                    EvaluationScope evaluation(true);
+                    ExecutionScope nestedNativeScope(task, action);
+                    target->SetForced(!originalForced); target->SetRelevance(originalRelevance ^ 0x100);
+                    rpg->Set(otherRpg); next->Set("isolated_pending_action");
+                    require(evaluation.Rejected() && target->IsForced() == originalForced &&
+                        target->GetRelevance() == originalRelevance && rpg->Get().GetRawValue() == originalRpg.GetRawValue() &&
+                        next->Get() == originalNext, "eligibility_cannot_mutate_owned_native_targets");
+                }
                 target->SetForced(!originalForced); target->SetRelevance(originalRelevance ^ 0x100);
                 rpg->Set(otherRpg); next->Set("isolated_pending_action");
                 require(target->IsForced() != originalForced && target->GetRelevance() == (originalRelevance ^ 0x100) &&
