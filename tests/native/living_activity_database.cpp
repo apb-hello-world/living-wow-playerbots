@@ -116,10 +116,26 @@ int main() {
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_operation") == "0");
     assert(db.Write(intent)); assert(db.Write(intent));
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_operation") == "1");
+    assert(db.Execute("UPDATE living_activity_operation SET kind='mismatched_fixture'"));
+    assert(!db.ReceiptPresent(intent)); // A task receipt without its exact operation is insufficient.
+    assert(db.Execute("UPDATE living_activity_operation SET kind='vendor_purchase'"));
+    assert(db.ReceiptPresent(intent));
+    auto bypass = executing; ++bypass.revision; bypass.phase = Phase::Preparing;
+    assert(!db.Write(TaskWrite(bypass, executing.revision, "ff2efbdf-f0ec-4539-b840-299847970c11", "task_admitted")));
+    assert(db.Scalar("SELECT phase FROM living_activity_task") == "executing");
+    // A finite sibling cannot acquire a new route around an unresolved paid step.
+    auto sibling = prepared; sibling.id = "637bd562-36d2-5b01-bc01-e2d831c49f40";
+    sibling.parent = sibling.root = task.id; sibling.sourceKey = "42:bank_child";
+    sibling.phase = Phase::Queued; sibling.revision = 1;
+    assert(db.Write(TaskWrite(sibling, 0, "ff2efbdf-f0ec-4539-b840-299847970c12", "fixture_child")));
+    auto blockedChild = sibling; ++blockedChild.revision; blockedChild.phase = Phase::Preparing;
+    assert(!db.Write(TaskWrite(blockedChild, 1, "ff2efbdf-f0ec-4539-b840-299847970c13", "task_admitted")));
     assert(!db.Write(OperationIntentWrite(executing, prepared.revision, operation, "vendor_purchase", "{\"copper\":999}")));
     auto restartedTask = AfterRestart(executing, 700000);
     assert(db.Write(TaskWrite(restartedTask, executing.revision, "ff2efbdf-f0ec-4539-b840-299847970c05", "restart_revalidation")));
     assert(db.Scalar("SELECT state FROM living_activity_operation") == "reconciling");
+    bypass = restartedTask; ++bypass.revision; bypass.phase = Phase::Preparing;
+    assert(!db.Write(TaskWrite(bypass, restartedTask.revision, "ff2efbdf-f0ec-4539-b840-299847970c14", "task_admitted")));
     assert(db.Write(intent)); // Original receipt exists, but it is NOT permission to execute again.
     assert(db.Scalar("SELECT state FROM living_activity_operation") == "reconciling");
     auto finished = restartedTask; finished.phase = Phase::Verifying; ++finished.revision;
@@ -131,8 +147,11 @@ int main() {
     assert(!db.Write(outcome, true)); assert(db.Write(outcome)); assert(db.Write(outcome));
     assert(db.Scalar("SELECT state FROM living_activity_operation") == "verified");
     auto completed = finished; completed.phase = Phase::Completed; ++completed.revision;
+    assert(!db.Write(TaskWrite(completed, finished.revision, "ff2efbdf-f0ec-4539-b840-299847970c07", "fixture_completed")));
+    sibling.phase = Phase::Cancelled; ++sibling.revision;
+    assert(db.Write(TaskWrite(sibling, 1, "ff2efbdf-f0ec-4539-b840-299847970c15", "fixture_child_cancelled")));
     assert(db.Write(TaskWrite(completed, finished.revision, "ff2efbdf-f0ec-4539-b840-299847970c07", "fixture_completed")));
-    assert(db.Scalar("SELECT phase FROM living_activity_task") == "completed");
+    assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id=" + SqlValue(Id)) == "completed");
     auto mistaken = task;
     mistaken.id = mistaken.root = "637bd562-36d2-5b01-bc01-e2d831c49f39";
     mistaken.sourceKey = "99"; mistaken.kind = Kind::Profession;

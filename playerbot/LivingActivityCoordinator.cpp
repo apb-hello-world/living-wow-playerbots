@@ -594,6 +594,8 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
     if (!state->enforceEffects.load(std::memory_order_acquire)) return reject(AdmissionCode::Disabled);
     if (!state->schemaReady || !state->loaded || !state->incoming.empty()) return reject(AdmissionCode::NotReady);
     const Task& task = request.task;
+    if (task.phase == Phase::Executing || task.phase == Phase::Verifying)
+        return reject(AdmissionCode::ReconciliationRequired, "native_operation_journal_required");
     if (task.id != SourceId(task.source, task.sourceKey))
         return reject(AdmissionCode::InvalidRequest, "source_identity_mismatch");
     if (!task.parent.empty() && ParentRevision(task) != request.rootRevision)

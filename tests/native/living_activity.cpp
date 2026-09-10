@@ -115,6 +115,13 @@ int main() {
     bool rejected = false;
     try { TaskWrite(task, 1, Receipt, "stale"); } catch (const std::invalid_argument&) { rejected = true; }
     assert(rejected);
+    for (Phase nativePhase : {Phase::Executing, Phase::Verifying}) {
+        auto unjournalled = Sample(); unjournalled.mode = Mode::Active; unjournalled.phase = nativePhase;
+        ++unjournalled.revision; rejected = false;
+        try { TaskWrite(unjournalled, 1, Receipt, "task_admitted"); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        assert(rejected);
+    }
     task.checkpoint.data.resize(8193, 'x'); assert(!Validate(task, error));
     task = Sample(); task.phase = Phase::Completed; assert(!Validate(task, error));
     task = Sample(); task.ownerGeneration = std::numeric_limits<uint64_t>::max();
