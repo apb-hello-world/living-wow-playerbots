@@ -13,6 +13,58 @@ static ResourceClaim ItemClaim(const std::string& suffix, uint32_t guid, uint64_
     return claim;
 }
 int main() {
+    {
+        ResourceClaimBook pendingBook(4); assert(pendingBook.FinishRestore());
+        auto reserved = ItemClaim("71",81,6);
+        const auto receipt = ItemClaim("72",82,1).id;
+        const auto receipt2 = ItemClaim("73",82,1).id;
+        const auto receipt3 = ItemClaim("74",82,1).id;
+        const NativeResourceBalance native{497,81,2934,10,0,"bags"};
+        assert(pendingBook.ReservePending(receipt,{{reserved,0}},{native}) == ClaimInstall::Installed);
+        assert(pendingBook.ReservePending(receipt,{{reserved,0}},{native}) == ClaimInstall::Duplicate);
+        assert(pendingBook.PendingCount() == 1 && pendingBook.Size() == 0);
+        assert(!pendingBook.Inspect(reserved.id)); // Pending hold is not a saved claim.
+        assert(pendingBook.Protection().UnreservedItem(497,81,2934,10) == 4);
+        auto altered=reserved; altered.quantity=7;
+        assert(pendingBook.ReservePending(receipt,{{altered,0}},{native}) == ClaimInstall::Invalid);
+        auto competing=reserved; competing.id=ItemClaim("75",81,5).id; competing.quantity=5;
+        assert(pendingBook.ReservePending(receipt2,{{competing,0}},{native}) == ClaimInstall::Invalid);
+        competing.quantity=4;
+        assert(pendingBook.ReservePending(receipt2,{{competing,0}},{native}) == ClaimInstall::Installed);
+        assert(pendingBook.Protection().UnreservedItem(497,81,2934,10) == 0);
+        assert(pendingBook.InstallReceipt({{reserved,0}}) == ClaimInstall::Stale); // Must settle its exact pending batch.
+        assert(pendingBook.CommitReservation(receipt) == ClaimInstall::Installed);
+        assert(pendingBook.CommitReservation(receipt) == ClaimInstall::Invalid); // No implicit replay.
+        assert(pendingBook.PendingCount() == 1 && pendingBook.Size() == 1);
+        assert(pendingBook.Protection().UnreservedItem(497,81,2934,10) == 0); // No double protection after acknowledgement.
+        auto release=reserved; release.state="released"; ++release.revision;
+        assert(pendingBook.ReservePending(receipt3,{{release,1}},{}) == ClaimInstall::Installed);
+        assert(pendingBook.Protection().UnreservedItem(497,81,2934,10) == 0); // A queued release releases nothing.
+        auto otherRelease=release;
+        assert(pendingBook.ReservePending(ItemClaim("76",81,1).id,{{otherRelease,1}},{}) == ClaimInstall::Stale);
+        assert(pendingBook.CommitReservation(receipt3) == ClaimInstall::Installed);
+        assert(pendingBook.Protection().UnreservedItem(497,81,2934,10) == 6);
+        assert(pendingBook.CommitReservation(receipt2) == ClaimInstall::Installed);
+        assert(pendingBook.Protection().UnreservedItem(497,81,2934,10) == 6);
+        auto increase=competing; ++increase.revision; increase.quantity=7;
+        assert(pendingBook.ReservePending(receipt,{{increase,1}},{native}) == ClaimInstall::Installed);
+        assert(pendingBook.Protection().UnreservedItem(497,81,2934,10) == 3); // Increment only, not old+new.
+        assert(pendingBook.CommitReservation(receipt) == ClaimInstall::Installed);
+        assert(pendingBook.Protection().UnreservedItem(497,81,2934,10) == 3);
+        auto coin=ItemClaim("77",0,0); coin.itemEntry=0; coin.copper=600; coin.location="money";
+        assert(pendingBook.ReservePending(receipt2,{{coin,0}},{{497,0,0,0,1000,"money"}}) == ClaimInstall::Installed);
+        assert(pendingBook.Protection().UnreservedMoney(497,1000) == 400);
+        auto tooMuch=coin; tooMuch.id=ItemClaim("78",0,0).id; tooMuch.copper=500;
+        assert(pendingBook.ReservePending(receipt3,{{tooMuch,0}},{{497,0,0,0,1000,"money"}}) == ClaimInstall::Invalid);
+        tooMuch.copper=400;
+        assert(pendingBook.ReservePending(receipt3,{{tooMuch,0}},{{497,0,0,0,1000,"money"}}) == ClaimInstall::Installed);
+        assert(pendingBook.Protection().UnreservedMoney(497,1000) == 0);
+        auto extra=ItemClaim("79",83,1);
+        assert(pendingBook.ReservePending(ItemClaim("80",0,0).id,{{extra,0}},{{497,83,2934,1,0,"bags"}}) == ClaimInstall::Capacity);
+        assert(pendingBook.CommitReservation(receipt2) == ClaimInstall::Installed);
+        assert(pendingBook.CommitReservation(receipt3) == ClaimInstall::Installed);
+        assert(pendingBook.PendingCount() == 0 && pendingBook.Protection().UnreservedMoney(497,1000) == 0);
+    }
     ResourceClaimBook book;
     auto leather = ItemClaim("01", 81, 6);
     assert(ValidResourceClaim(leather));

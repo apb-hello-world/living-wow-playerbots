@@ -55,11 +55,27 @@ namespace LivingActivity {
         ClaimInstall RestoreBatch(const std::vector<ResourceClaim>& rows);
         bool FinishRestore();
         ClaimInstall InstallReceipt(const std::vector<ClaimReceiptChange>& changes);
+        // Protect additional quantities BEFORE asynchronous reservation SQL.
+        // No timeout releases these holds. A negative/uncertain SQL result must
+        // be reconciled; only the exact committed receipt may settle the batch.
+        ClaimInstall ReservePending(const std::string& receipt, const std::vector<ClaimReceiptChange>& changes,
+            const std::vector<NativeResourceBalance>& nativeBalances);
+        ClaimInstall CommitReservation(const std::string& receipt);
+        bool HasPending(const std::string& receipt) const { return pending.count(receipt) != 0; }
+        size_t PendingCount() const { return pending.size(); }
         const ResourceProtection& Protection() const { return protection; }
         const ResourceClaim* Inspect(const std::string& id) const;
         size_t Size() const { return records.size(); }
     private:
         void Index(const ResourceClaim& claim, bool add);
+        size_t PendingSlots(const std::string& excluding = "") const;
+        struct PendingReservation {
+            std::vector<ClaimReceiptChange> changes;
+            std::vector<NativeResourceBalance> balances;
+            std::vector<ResourceClaim> additional;
+        };
+        std::map<std::string,PendingReservation> pending;
+        std::string committing;
         size_t capacity;
         bool restoreFailed = false;
         std::map<std::string, ResourceClaim> records;
