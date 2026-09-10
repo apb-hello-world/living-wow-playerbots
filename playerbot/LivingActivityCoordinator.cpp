@@ -813,7 +813,8 @@ AdmissionResult LivingActivityCoordinator::SubmitResourceReservation(const Reser
     std::string blocker;
     auto valid=ValidateTaskRequest(request.transition,saved == state->cache.end() ? nullptr : &saved->second,current,blocker,
         root == state->cache.end() ? nullptr : &root->second);
-    if (valid != AdmissionCode::Pending || saved == state->cache.end()) return reject(valid,blocker);
+    if (valid != AdmissionCode::Pending) return reject(valid,blocker);
+    if (saved == state->cache.end()) return reject(AdmissionCode::NotReady,"saved_predecessor_required");
     if (state->pending.size() >= state->batch || state->transitionCount+state->pending.size() >= 200000)
         return reject(AdmissionCode::Backpressure);
     for (const auto& operation : state->operations) if (operation.second.request.transition.task.actor == next.actor)
@@ -829,6 +830,7 @@ AdmissionResult LivingActivityCoordinator::SubmitResourceReservation(const Reser
         return reject(AdmissionCode::StaleContext,"current_predecessor_lease_required");
     if (bot->GetTradeData()) return reject(AdmissionCode::InvalidRequest,"native_trade_in_progress");
     std::vector<NativeResourceBalance> balances;
+    bool reservationStarted=false;
     try {
         if (!adapter.ValidatePurpose(*bot,request,blocker)) return reject(AdmissionCode::InvalidRequest,
             IsToken(blocker) ? blocker : "native_reservation_purpose_rejected");
@@ -857,12 +859,15 @@ AdmissionResult LivingActivityCoordinator::SubmitResourceReservation(const Reser
         auto plan=ResourceReservationWrite(next,request.transition.expectedRevision,request.transition.receipt,request.changes,balances);
         State::Pending write{next,std::move(plan),request.transition.receipt};
         write.reservation=request.transition.receipt; write.claims=request.changes;
+        reservationStarted=true;
         const auto reserved=state->resources.ReservePending(request.transition.receipt,request.changes,balances);
         if (reserved != ClaimInstall::Installed) return reject(reserved == ClaimInstall::Capacity ? AdmissionCode::Backpressure :
             AdmissionCode::InvalidRequest,"resources_unavailable_or_reserved");
         state->pending.push_back(std::move(write));
     } catch (const std::exception&) {
-        if (state->resources.HasPending(request.transition.receipt)) {
+        // An allocation failure may interrupt indexing before the pending map
+        // insertion. Never expose that partially updated projection as ready.
+        if (reservationStarted) {
             state->resources.BlockProjection(); state->claimRestoreFailed=true;
             state->claimBlocker="reservation_admission_requires_reconciliation";
             return reject(AdmissionCode::ReconciliationRequired,state->claimBlocker);
