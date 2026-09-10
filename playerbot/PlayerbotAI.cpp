@@ -1,4 +1,7 @@
 #include "playerbot/LivingActivityRotation.h"
+#include "playerbot/LivingActivityCoordinator.h"
+#include "playerbot/LivingActivityGameplay.h"
+#include "playerbot/LivingActivityScope.h"
 #include "PlayerbotMgr.h"
 #include "playerbot/playerbot.h"
 #include <stdarg.h>
@@ -4921,6 +4924,16 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget, bool
     if (!target)
         target = bot;
 
+    // Authorize before selection/facing, movement-reset or native cast work.
+    // Direct callers and engine-dispatched actions share this same boundary.
+    const auto nativePermit = LivingActivity::NativeSpellPermit(*this, spellId, target);
+    std::unique_ptr<LivingActivity::ExecutionScope> nativeSpellScope;
+    if (nativePermit.validated) nativeSpellScope.reset(new LivingActivity::ExecutionScope(nativePermit));
+    const LivingActivity::Effects effects{LivingActivity::Mask(LivingActivity::Effect::Spell) |
+        LivingActivity::Mask(LivingActivity::Effect::Inventory),
+        nativePermit.validated ? nativePermit.lane : LivingActivity::Lane::Managed, true};
+    if (!sLivingActivityCoordinator.PermitEffects(*this, effects, "native unit spell")) return false;
+
     Pet* pet = bot->GetPet();
     if (pet && pet->HasSpell(spellId))
     {
@@ -5157,6 +5170,10 @@ bool PlayerbotAI::CastSpell(uint32 spellId, GameObject* goTarget, Item* itemTarg
     if (!spellId)
         return false;
 
+    if (!sLivingActivityCoordinator.PermitEffects(*this,
+        {LivingActivity::Mask(LivingActivity::Effect::Spell) | LivingActivity::Mask(LivingActivity::Effect::Inventory),
+            LivingActivity::Lane::Managed, true}, "native object spell")) return false;
+
     aiObjectContext->GetValue<LastMovement&>("last movement")->Get().Set(NULL);
     aiObjectContext->GetValue<time_t>("stay time")->Set(0);
 
@@ -5303,6 +5320,10 @@ bool PlayerbotAI::CastSpell(uint32 spellId, float x, float y, float z, Item* ite
 {
     if (!spellId)
         return false;
+
+    if (!sLivingActivityCoordinator.PermitEffects(*this,
+        {LivingActivity::Mask(LivingActivity::Effect::Spell) | LivingActivity::Mask(LivingActivity::Effect::Inventory),
+            LivingActivity::Lane::Managed, true}, "native ground spell")) return false;
 
     Pet* pet = bot->GetPet();
     if (pet && pet->HasSpell(spellId))

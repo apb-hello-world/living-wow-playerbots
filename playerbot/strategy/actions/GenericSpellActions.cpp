@@ -2,8 +2,13 @@
 #include "playerbot/playerbot.h"
 #include "GenericActions.h"
 #include "UseItemAction.h"
+#include "playerbot/LivingActivityGameplay.h"
 
 using namespace ai;
+
+LivingActivity::NativePermit CastSpellAction::GetNativeActivityPermit(Event&) {
+    return LivingActivity::NativeSpellPermit(*ai, GetSpellID(), GetTarget());
+}
 
 CastSpellAction::CastSpellAction(PlayerbotAI* ai, std::string spell)
 : Action(ai, spell)

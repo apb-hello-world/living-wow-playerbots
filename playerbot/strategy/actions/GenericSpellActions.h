@@ -9,6 +9,7 @@ namespace ai
     {
     public:
         CastSpellAction(PlayerbotAI* ai, std::string spell);
+        LivingActivity::NativePermit GetNativeActivityPermit(Event& event) override;
         LivingActivity::Effects GetActivityEffects() const override {
             // The native spell validator decides whether this is combat,
             // healing or a profession operation; a spell name is not permission.

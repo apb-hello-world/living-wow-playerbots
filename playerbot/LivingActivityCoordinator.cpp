@@ -547,6 +547,7 @@ void LivingActivityCoordinator::ObserveAction(PlayerbotAI& ai, const Effects& ef
 NativePermit LivingActivityCoordinator::NativeActionContext(PlayerbotAI& ai, Lane lane,
     uint32_t effects, uint32_t allowedSafety) const {
     NativePermit result;
+    if (!state->enforceEffects.load(std::memory_order_acquire) && !state->observeEffects.load(std::memory_order_acquire)) return result;
     Player* bot = ai.GetBot();
     const auto view = ai.activityPermissions.Inspect();
     if (!bot || !view || !effects || (effects & ~AllEffects) || lane == Lane::Managed || lane == Lane::Inspection) return result;

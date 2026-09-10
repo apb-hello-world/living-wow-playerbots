@@ -5,6 +5,7 @@
 #include "playerbot/strategy/values/TargetValue.h"
 #include "playerbot/strategy/values/RpgValues.h"
 #include "playerbot/strategy/actions/LootRollAction.h"
+#include "playerbot/LivingActivityGameplay.h"
 #include <cstdlib>
 #include <functional>
 #include <stdexcept>
@@ -100,6 +101,8 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
             ai::AutoLootRollAction roll(ai); ai::Event rollEvent;
             require(roll.GetActivityEffects().lane == Lane::Roll && !roll.GetNativeActivityPermit(rollEvent).validated,
                 "ungrouped_native_actor_has_no_roll_exception");
+            require(!NativeSpellPermit(*ai, 0, bot).validated,
+                "unknown_native_spell_has_no_gameplay_exception");
             target->SetForced(!originalForced); target->SetRelevance(originalRelevance ^ 0x100);
             require(target->IsForced() == originalForced && target->GetRelevance() == originalRelevance,
                 "unscoped_installed_route_rejected");
