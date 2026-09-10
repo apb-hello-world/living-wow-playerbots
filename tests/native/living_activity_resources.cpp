@@ -1,4 +1,5 @@
 #include "LivingActivityResources.h"
+#include "LivingActivityClaimCodec.h"
 #include <cassert>
 #include <limits>
 #include <stdexcept>
@@ -127,4 +128,19 @@ int main() {
     assert(rejects({{transferred,0}},{}));
     task.phase = Phase::Executing;
     assert(rejects({{leather,0}},{balance}));
+    const std::string payload = "{\"id\":\"ff2efbdf-f0ec-4539-b840-299847970c01\","
+        "\"task\":\"637bd562-36d2-5b01-bc01-e2d831c49f38\",\"actor\":497,\"item_guid\":81,"
+        "\"item_entry\":2934,\"quantity\":6,\"copper\":0,\"location\":\"bags\",\"reference\":0,"
+        "\"state\":\"held\",\"revision\":1}";
+    ResourceClaim decoded; std::string error;
+    assert(DecodeClaimProjection(payload,decoded,error));
+    assert(SameResourceClaim(decoded,leather));
+    for (const auto& invalid : {std::string("{}"),std::string(2049,'x'),payload.substr(0,payload.size()-1)+",\"actor\":497}"}) {
+        assert(!DecodeClaimProjection(invalid,decoded,error));
+        assert(SameResourceClaim(decoded,leather));
+    }
+    auto badNumber = payload; badNumber.replace(badNumber.find("497"),3,"-1");
+    assert(!DecodeClaimProjection(badNumber,decoded,error));
+    badNumber = payload; badNumber.replace(badNumber.find("497"),3,"4294967296");
+    assert(!DecodeClaimProjection(badNumber,decoded,error));
 }

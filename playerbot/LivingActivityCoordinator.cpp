@@ -4,6 +4,7 @@
 #include "LivingActivity.h"
 #include "LivingActivityAdmission.h"
 #include "LivingActivityCodec.h"
+#include "LivingActivityClaimCodec.h"
 #include "LivingActivityMailbox.h"
 #include "LivingActivityAuthority.h"
 #include "LivingActivityPermissions.h"
@@ -167,6 +168,12 @@ struct LivingActivityCoordinator::State {
     std::deque<Pending> pending;
     std::deque<Incoming> incoming;
     std::map<std::string, Task> cache;
+    ResourceClaimBook resources;
+    struct IncomingClaim { std::string id, payload; uint32_t taskActor; std::string taskPhase; };
+    std::deque<IncomingClaim> incomingClaims;
+    std::string claimCursor, claimBlocker = "claim_restore_pending";
+    bool claimsEnumerated = false, claimRestoreFailed = false;
+    uint64_t invalidClaims = 0;
     // Compact last-receipt identity, bounded by the same task cache. Request
     // content is compared with the cached task, not retained as duplicate SQL.
     std::map<std::string, std::string> admissionReceipts;
@@ -302,11 +309,12 @@ struct LivingActivityCoordinator::State {
             "('task_id','source','source_key','revision','owner_generation','checkpoint','last_receipt_id')) OR "
             "(table_name='living_activity_transition' AND column_name IN ('sequence_id','transition_id','request_hash')) OR "
             "(table_name='living_activity_operation' AND column_name IN ('operation_id','state')) OR "
-            "(table_name='living_activity_claim' AND column_name IN ('claim_id','task_id')))),"
+            "(table_name='living_activity_claim' AND column_name IN ('claim_id','task_id','actor_guid','item_guid','item_entry',"
+            "'quantity','copper','location','native_reference','state','revision')))),"
             "(SELECT COUNT(*) FROM living_activity_transition) FROM living_activity_schema WHERE version=1";
         if (!CharacterDatabase.AsyncQuery([this](QueryResult* result) {
             ioPending = false;
-            schemaReady = result && result->Fetch()[0].GetUInt32() == 1 && result->Fetch()[1].GetUInt32() == 14;
+            schemaReady = result && result->Fetch()[0].GetUInt32() == 1 && result->Fetch()[1].GetUInt32() == 23;
             if (schemaReady) transitionCount = result->Fetch()[2].GetUInt64();
             blocker = schemaReady ? "startup_reconciliation" : "activity_schema_unavailable";
             nextWork = NowMs() + (schemaReady ? 1000 : 60000);
@@ -328,6 +336,54 @@ struct LivingActivityCoordinator::State {
             } while (result->NextRow());
             if (count < loadBatch) loaded = true;
         }, sql.c_str())) { ioPending = false; nextWork = NowMs() + 5000; }
+    }
+    void LoadClaims() {
+        const auto sql = "SELECT * FROM (SELECT c.claim_id," + PersistedClaimProjection() +
+            " payload,t.actor_guid task_actor,t.phase task_phase FROM living_activity_claim c "
+            "JOIN living_activity_task t ON t.task_id=c.task_id "
+            "WHERE c.state NOT IN ('released','consumed') AND c.claim_id>" + SqlValue(claimCursor) +
+            " ORDER BY c.claim_id LIMIT " + std::to_string(loadBatch) +
+            ") records UNION ALL SELECT '','{}',0,''";
+        ioPending = true;
+        if (!CharacterDatabase.AsyncQuery([this](QueryResult* result) {
+            ioPending = false;
+            if (!result) { claimBlocker = "claim_load_query_failed"; nextWork = NowMs()+5000; return; }
+            unsigned count = 0;
+            do {
+                auto* f = result->Fetch(); const auto id = f[0].GetCppString();
+                if (id.empty()) continue;
+                incomingClaims.push_back({id,f[1].GetCppString(),f[2].GetUInt32(),f[3].GetCppString()}); ++count;
+            } while (result->NextRow());
+            claimsEnumerated = count < loadBatch;
+            if (!count && !claimRestoreFailed) { resources.FinishRestore(); claimBlocker.clear(); }
+        },sql.c_str())) { ioPending = false; claimBlocker = "claim_load_queue_failed"; nextWork = NowMs()+5000; }
+    }
+    void DecodeClaims(std::chrono::steady_clock::time_point deadline) {
+        do {
+            const auto& row = incomingClaims.front(); ResourceClaim claim; std::string reason;
+            Phase ownerPhase = Phase::Reconciling;
+            bool valid = DecodeClaimProjection(row.payload,claim,reason);
+            if (valid && (claim.id != row.id || claim.actor != row.taskActor ||
+                !ParsePhase(row.taskPhase,ownerPhase) || Terminal(ownerPhase))) {
+                valid = false; reason = "claim_owner_requires_reconciliation";
+            }
+            if (valid) {
+                const auto installed = resources.RestoreBatch({claim});
+                if (installed != ClaimInstall::Installed && installed != ClaimInstall::Duplicate) {
+                    valid = false; reason = installed == ClaimInstall::Capacity ? "claim_cache_capacity" : "claim_cache_restore_failed";
+                }
+            }
+            if (!valid) {
+                ++invalidClaims; claimRestoreFailed = true; claimBlocker = reason;
+                // Retain the native row. Observation/gameplay can continue, but
+                // this incomplete projection cannot authorize resource work.
+                sLog.outError("Living activity claim restore blocked: claim=%s reason=%s",row.id.c_str(),reason.c_str());
+            }
+            claimCursor = row.id; incomingClaims.pop_front();
+        } while (!incomingClaims.empty() && std::chrono::steady_clock::now() < deadline);
+        if (incomingClaims.empty() && claimsEnumerated && !claimRestoreFailed) {
+            resources.FinishRestore(); claimBlocker.clear();
+        }
     }
     void Import() {
         const unsigned family = importFamily;
@@ -459,6 +515,9 @@ void LivingActivityCoordinator::Update() {
     RunIsolatedBoundaryFixture();
 #endif
     if (std::chrono::steady_clock::now() >= deadline) return;
+    if (state->effective != Mode::Off && !state->ioPending && !state->incomingClaims.empty()) {
+        state->DecodeClaims(deadline); return;
+    }
     ObservationQueue queues;
     queues.enabled = state->effective != Mode::Off; queues.ioPending = state->ioPending;
     queues.due = now >= state->nextWork; queues.schemaReady = state->schemaReady; queues.loaded = state->loaded;
@@ -476,7 +535,10 @@ void LivingActivityCoordinator::Update() {
         case ObservationWork::Probe: state->Probe(); break;
         case ObservationWork::Flush: state->Flush(deadline); break;
         case ObservationWork::Load: state->Load(); break;
-        case ObservationWork::Import: state->Import(); break;
+        case ObservationWork::Import:
+            if (!state->claimsEnumerated) state->LoadClaims();
+            else state->Import();
+            break;
         case ObservationWork::HistoryPressure: state->blocker = "transition_outbox_backpressure"; break;
         case ObservationWork::CachePressure: state->blocker = "task_cache_backpressure"; break;
         default: break;
@@ -495,6 +557,11 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("native_dispatches", state->nativeDispatches); p.put("native_result_receipts", state->nativeOutcomes);
     p.put("verified_native_results", state->nativeVerifiedResults);
     p.put("pending_native_operations", state->operations.size());
+    p.put("cached_resource_claims", state->resources.Size());
+    p.put("resource_claims_ready", state->resources.Protection().ready);
+    p.put("pending_claim_decode", state->incomingClaims.size());
+    p.put("invalid_resource_claims", state->invalidClaims);
+    p.put("resource_claim_blocker", state->claimBlocker);
     p.put("observed_actions", state->observedActions); p.put("unknown_effect_actions", state->unknownActions);
     p.put("optional_action_observations_rejected", state->actionInbox.Rejected());
     p.put("action_cardinality_rejected", state->actionCardinalityRejected);

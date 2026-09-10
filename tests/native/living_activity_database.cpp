@@ -3,6 +3,7 @@
 #include "LivingActivity.h"
 #include "LivingActivityCodec.h"
 #include "LivingActivityResources.h"
+#include "LivingActivityClaimCodec.h"
 #include <mysql.h>
 #include <cassert>
 #include <cstdlib>
@@ -247,6 +248,14 @@ int main() {
     assert(!db.Write(reservation,true));
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim") == "0");
     assert(db.Write(reservation)); assert(db.Write(reservation));
+    ResourceClaim loadedClaim; std::string claimError;
+    assert(DecodeClaimProjection(db.Scalar("SELECT " + PersistedClaimProjection() + " FROM living_activity_claim c WHERE c.claim_id=" +
+        SqlValue(claim.id)),loadedClaim,claimError));
+    assert(SameResourceClaim(loadedClaim,claim));
+    ResourceClaimBook restoredClaims;
+    assert(restoredClaims.RestoreBatch({loadedClaim}) == ClaimInstall::Installed);
+    assert(restoredClaims.FinishRestore());
+    assert(restoredClaims.Protection().UnreservedItem(610,900,2934,10) == 4);
     assert(db.Scalar("SELECT quantity FROM living_activity_claim WHERE claim_id=" + SqlValue(claim.id)) == "6");
     auto tamperedClaim = claim; tamperedClaim.quantity = 8;
     assert(!db.Write(ResourceReservationWrite(reserve,1,"ff2efbdf-f0ec-4539-b840-299847970d03",{{tamperedClaim,0}},{stock})));
