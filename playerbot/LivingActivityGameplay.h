@@ -36,6 +36,12 @@ namespace LivingActivity {
     bool ReadyForNativeEngagedAttack(NativePlayer& actor, NativeUnit& target, bool hostile, bool engaged, bool inSight) {
         return inSight && ReadyForNativeCombatMovement(actor, target, hostile, false, engaged);
     }
+    template<class NativePlayer, class NativePet>
+    bool ReadyForNativePetCaster(NativePlayer& actor, NativePet& pet, bool known, bool owned, bool ready) {
+        return known && owned && ready && actor.IsInWorld() && actor.IsAlive() && !actor.IsBeingTeleported() &&
+            pet.IsInWorld() && pet.IsAlive() && actor.GetMapId() == pet.GetMapId() &&
+            actor.GetInstanceId() == pet.GetInstanceId();
+    }
     // Inspects the actual native spell, known-spell record, target and CheckCast.
     // No talent change, role inference, synthetic spell or rotation selection.
     constexpr uint32_t SpellEffectMask(bool inventoryFreeDirectHeal) {
@@ -58,6 +64,9 @@ namespace LivingActivity {
     // shed the inventory effect; unclassified spells retain it.
     Effects NativeSpellEffects(PlayerbotAI& ai, uint32_t spell, bool itemCast = false);
     NativePermit NativeSpellPermit(PlayerbotAI& ai, uint32_t spell, Unit* target, Item* item = nullptr);
+    // The owner's spellbook is not a pet spellbook. This validates the actual
+    // owned native pet and its native cast requirements before pet commands.
+    NativePermit NativePetSpellPermit(PlayerbotAI& ai, uint32_t spell, Unit* target);
     // Explicit combat-positioning callers only. Native victim/attacker/threat
     // relations establish engagement; a combat flag or a nearby NPC does not.
     NativePermit NativeCombatMovementPermit(PlayerbotAI& ai, Unit* target);

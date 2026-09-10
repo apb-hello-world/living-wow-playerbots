@@ -62,7 +62,9 @@ namespace LivingActivity {
     }
     Effects NativeSpellEffects(PlayerbotAI& ai, uint32_t spell, bool itemCast) {
         const auto* info = spell ? sServerFacade.LookupSpellInfo(spell) : nullptr;
-        const bool freeHeal = info && ai.GetBot() && InventoryFreeDirectHeal(*info, ai.GetBot()->HasSpell(spell),
+        auto* actor = ai.GetBot();
+        const bool known = actor && (actor->HasSpell(spell) || (actor->GetPet() && actor->GetPet()->HasSpell(spell)));
+        const bool freeHeal = info && actor && InventoryFreeDirectHeal(*info, known,
             itemCast, SPELL_EFFECT_HEAL, SPELL_EFFECT_HEAL_MAX_HEALTH);
         return {SpellEffectMask(freeHeal), Lane::Managed, true};
     }
@@ -79,6 +81,8 @@ namespace LivingActivity {
         return permit.validated ? permit : NativePermit{};
     }
     NativePermit NativeSpellPermit(PlayerbotAI& ai, uint32_t spell, Unit* target, Item* item) {
+        if (!item && ai.GetBot() && ai.GetBot()->GetPet() && ai.GetBot()->GetPet()->HasSpell(spell))
+            return NativePetSpellPermit(ai, spell, target);
         const auto effects = NativeSpellEffects(ai, spell, item != nullptr);
         auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Healing,
             effects.mask, uint32_t(Safety::Combat));
@@ -114,6 +118,53 @@ namespace LivingActivity {
         // Ordinary native cast checks retain reagent, mana, range, cooldown,
         // stance and target requirements. They do not execute the spell.
         if (!ai.CanCastSpell(spell, target, uint8((1u << MAX_EFFECT_INDEX) - 1), true, item)) return {};
+        permit.lane = healing ? Lane::Healing : Lane::Combat;
+        permit.validated = permit.world.actor == actor->GetGUIDLow();
+        return permit;
+    }
+    NativePermit NativePetSpellPermit(PlayerbotAI& ai, uint32_t spell, Unit* target) {
+        auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Combat,
+            NativeSpellEffects(ai, spell).mask, uint32_t(Safety::Combat));
+        if (!permit.world.actor) return {};
+        auto* actor = ai.GetBot();
+        auto* pet = actor ? actor->GetPet() : nullptr;
+        const auto* info = spell ? sServerFacade.LookupSpellInfo(spell) : nullptr;
+        if (!actor || !pet || !info || IsPassiveSpell(info) ||
+            !ReadyForNativePetCaster(*actor, *pet, pet->HasSpell(spell),
+                pet->GetOwnerGuid() == actor->GetObjectGuid(), pet->IsSpellReady(*info))) return {};
+        if (!target && IsPositiveSpell(info)) target = pet;
+        if (!target || (target->GetTypeId() == TYPEID_PLAYER &&
+            static_cast<Player*>(target)->IsBeingTeleported())) return {};
+        const bool healing = ReadyForNativeHealing(*actor, *target, true,
+            PlayerbotAI::IsHealSpell(info), sServerFacade.IsFriendlyTo(pet, target));
+        const bool offense = ReadyForNativeOffense(*actor, *target, true, IsPositiveSpell(info),
+            sServerFacade.IsHostileTo(pet, target), NativePartyEngaged(*actor, *target));
+        if (!healing && !offense) return {};
+        if (sServerFacade.GetDistance2d(actor, target) > sPlayerbotAIConfig.sightDistance) return {};
+        // No owner-stock exception for a pet ability. Such a native requirement
+        // needs an explicit resource adapter, not the owner's spellbook check.
+        for (const auto reagent : info->Reagent) if (reagent > 0) return {};
+        // PlayerbotAI::CanCastSpell has a pet shortcut which checks only known
+        // spell/cooldown. Inspect an actual PET cast instead. CheckCast performs
+        // no execution; native HandlePetAction remains the only command path.
+        Spell nativeCast(pet, info, TRIGGERED_NORMAL_COMBAT_CAST | TRIGGERED_PET_CAST);
+        nativeCast.m_targets.setUnitTarget(IsSpellRequireTarget(info) ? target : nullptr);
+        const auto result = nativeCast.CheckCast(true);
+        switch (result) {
+            case SPELL_CAST_OK:
+            case SPELL_FAILED_NOT_INFRONT:
+            case SPELL_FAILED_UNIT_NOT_INFRONT:
+            case SPELL_FAILED_NOT_STANDING:
+            case SPELL_FAILED_MOVING:
+                break;
+            case SPELL_FAILED_OUT_OF_RANGE:
+            case SPELL_FAILED_LINE_OF_SIGHT:
+                // The native pet handler may path to an existing enemy before
+                // casting. This cannot grant permission to pull a new target.
+                if (!offense || !pet->CanAttackNow(target)) return {};
+                break;
+            default: return {};
+        }
         permit.lane = healing ? Lane::Healing : Lane::Combat;
         permit.validated = permit.world.actor == actor->GetGUIDLow();
         return permit;

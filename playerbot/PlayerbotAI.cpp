@@ -5479,6 +5479,12 @@ bool PlayerbotAI::CastSpell(uint32 spellId, float x, float y, float z, Item* ite
 
 bool PlayerbotAI::CastPetSpell(uint32 spellId, Unit* target)
 {
+    const auto permit = LivingActivity::NativePetSpellPermit(*this, spellId, target);
+    std::unique_ptr<LivingActivity::ExecutionScope> nativePetScope;
+    if (permit.validated) nativePetScope.reset(new LivingActivity::ExecutionScope(permit));
+    auto effects = LivingActivity::NativeSpellEffects(*this, spellId);
+    if (permit.validated) effects.lane = permit.lane;
+    if (!sLivingActivityCoordinator.PermitEffects(*this, effects, "native pet spell")) return false;
     Pet* pet = bot->GetPet();
     if (pet && spellId && pet->HasSpell(spellId))
     {

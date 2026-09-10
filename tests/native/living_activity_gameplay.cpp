@@ -46,6 +46,15 @@ int main() {
     player.transferring = true; assert(!ReadyForNativeLootVote(player, &roll, 7, false)); player.transferring = false;
     player.inWorld = false; assert(!ReadyForNativeLootVote(player, &roll, 7, false)); player.inWorld = true;
     NativePlayer target;
+    NativePlayer pet;
+    assert(ReadyForNativePetCaster(player, pet, true, true, true));
+    assert(!ReadyForNativePetCaster(player, pet, false, true, true));
+    assert(!ReadyForNativePetCaster(player, pet, true, false, true));
+    assert(!ReadyForNativePetCaster(player, pet, true, true, false));
+    pet.alive = false; assert(!ReadyForNativePetCaster(player, pet, true, true, true)); pet.alive = true;
+    ++pet.map; assert(!ReadyForNativePetCaster(player, pet, true, true, true)); --pet.map;
+    ++pet.instance; assert(!ReadyForNativePetCaster(player, pet, true, true, true)); --pet.instance;
+    player.transferring = true; assert(!ReadyForNativePetCaster(player, pet, true, true, true)); player.transferring = false;
     assert(ReadyForNativeEngagedAttack(player, target, true, true, true));
     assert(!ReadyForNativeEngagedAttack(player, target, true, false, true));
     assert(!ReadyForNativeEngagedAttack(player, target, false, true, true));
