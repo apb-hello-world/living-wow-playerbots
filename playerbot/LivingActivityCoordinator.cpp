@@ -116,7 +116,7 @@ struct LivingActivityCoordinator::State {
     uint64_t fixtureNext = 0;
     unsigned admissionFixtureStep = 0;
     uint64_t admissionFixtureDeadline = 0;
-    TaskRequest admissionFixtureRequest;
+    TaskRequest admissionFixtureRequest, admissionFixtureChild;
     boost::property_tree::ptree admissionFixtureChecks;
 #endif
     Mode effective = Mode::Off;

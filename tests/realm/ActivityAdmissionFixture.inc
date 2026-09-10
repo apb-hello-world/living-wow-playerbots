@@ -11,6 +11,7 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
         boost::property_tree::ptree report;
         report.put("suite", "activity-admission-v1"); report.put("test_only", true);
         report.put("boot", state->boot); report.put("task", state->admissionFixtureRequest.task.id);
+        report.put("child_task", state->admissionFixtureChild.task.id);
         report.put("actor", state->admissionFixtureRequest.task.actor);
         report.put("outcome", passed ? "passed" : "failed"); report.put("failure", failure);
         report.put("fixture_step", state->admissionFixtureStep);
@@ -48,7 +49,7 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
                 request.task.mode = Mode::Active; request.task.phase = Phase::Queued;
                 request.task.checkpoint.step = "native_admission_fixture";
                 request.task.createdAtMs = request.task.updatedAtMs = NowMs();
-                state->admissionFixtureDeadline = NowMs() + 120000;
+                state->admissionFixtureDeadline = NowMs() + 180000;
                 break;
             }
             if (!state->admissionFixtureRequest.task.actor) return;
@@ -90,6 +91,91 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
             state->admissionFixtureStep = 2; return;
         }
         if (state->admissionFixtureStep == 2) {
+            auto& child = state->admissionFixtureChild;
+            child.task = request.task; child.task.sourceKey += ":prepare";
+            child.task.id = SourceId(child.task.source, child.task.sourceKey);
+            child.task.parent = child.task.root = request.task.id;
+            child.task.revision = 1; child.task.phase = Phase::Queued;
+            child.task.createdAtMs = child.task.updatedAtMs = NowMs();
+            child.task.checkpoint.step = "native_child_fixture";
+            child.rootRevision = request.task.revision;
+            child.task.checkpoint.data = "{\"_root_revision\":" + std::to_string(child.rootRevision) + "}";
+            child.receipt = NewId();
+            require(SubmitTask(child).code == AdmissionCode::Pending, "child_admitted_under_saved_parent_revision");
+            require(!AcquireSavedTask(request.task.id, request.task.revision, Mask(Effect::TravelTarget), 60000,
+                "isolated_fixture").Permitted(), "parent_waits_for_pending_preparation_receipt");
+            state->admissionFixtureStep = 20; return;
+        }
+        if (state->admissionFixtureStep >= 20 && state->admissionFixtureStep <= 23) {
+            auto& child = state->admissionFixtureChild;
+            const auto childSaved = state->cache.find(child.task.id);
+            require(childSaved != state->cache.end() && childSaved->second.revision == child.task.revision,
+                "exact_child_native_receipt_acknowledged");
+            if (state->admissionFixtureStep == 20) {
+                child.expectedRevision = child.task.revision++; child.receipt = NewId();
+                child.task.phase = Phase::Preparing; child.task.updatedAtMs = NowMs();
+                require(SubmitTask(child).code == AdmissionCode::Pending, "child_preparation_transition_queued");
+                state->admissionFixtureStep = 21; return;
+            }
+            if (state->admissionFixtureStep == 21) {
+                const auto rootGrant = AcquireSavedTask(request.task.id, request.task.revision,
+                    Mask(Effect::TravelTarget), 60000, "isolated_fixture");
+                require(rootGrant.Permitted(), "saved_parent_retains_preparation_authority");
+                auto* target = ai->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get();
+                const auto relevance = target->GetRelevance();
+                struct RestoreChild { std::function<void()> fn; ~RestoreChild() { fn(); } }
+                    restore{[&] {
+                        state->enforceEffects.store(false, std::memory_order_release);
+                        target->SetRelevance(relevance); ReleaseTaskLease(rootGrant.authority.lease);
+                    }};
+                const auto childGrant = SelectSavedStep(rootGrant.authority.lease, child.task.id,
+                    child.task.revision, Mask(Effect::TravelTarget), "isolated_fixture");
+                require(childGrant.Permitted() && SameLease(rootGrant.authority.lease, childGrant.authority.lease),
+                    "saved_child_inherits_exact_parent_lease");
+                {
+                    ExecutionScope parentScope(rootGrant.task, rootGrant.action);
+                    target->SetRelevance(relevance ^ 0x100);
+                    require(target->GetRelevance() == relevance, "saved_parent_cannot_replace_child_target");
+                }
+                {
+                    ExecutionScope childScope(childGrant.task, childGrant.action);
+                    target->SetRelevance(relevance ^ 0x100);
+                    require(target->GetRelevance() == (relevance ^ 0x100), "saved_child_scope_performs_native_mutation");
+                }
+                const auto resumed = SelectSavedStep(rootGrant.authority.lease, "", request.task.revision,
+                    Mask(Effect::TravelTarget), "isolated_fixture");
+                require(resumed.Permitted() && SameLease(resumed.authority.lease, childGrant.authority.lease),
+                    "saved_parent_resumes_without_second_owner");
+                {
+                    ExecutionScope childScope(childGrant.task, childGrant.action);
+                    target->SetRelevance(relevance);
+                    require(target->GetRelevance() == (relevance ^ 0x100), "returned_child_scope_is_stale");
+                }
+                {
+                    ExecutionScope parentScope(resumed.task, resumed.action);
+                    target->SetRelevance(relevance);
+                    require(target->GetRelevance() == relevance, "resumed_saved_parent_has_native_authority");
+                }
+                require(ReleaseTaskLease(resumed.authority.lease).code == AuthorityCode::Released,
+                    "saved_child_bundle_releases_once");
+                child.expectedRevision = child.task.revision++; child.receipt = NewId();
+                child.task.phase = Phase::Paused; child.task.checkpoint.blocker = "isolated_fixture_finished";
+                child.task.updatedAtMs = NowMs();
+                require(SubmitTask(child).code == AdmissionCode::Pending, "child_pause_retains_root_identity");
+                state->admissionFixtureStep = 22; return;
+            }
+            if (state->admissionFixtureStep == 22) {
+                require(childSaved->second.phase == Phase::Paused, "paused_child_retained_after_receipt");
+                child.expectedRevision = child.task.revision++; child.task.phase = Phase::Cancelled;
+                child.task.updatedAtMs = NowMs();
+                // Fixture-only cleanup; native cancellation still guards pending claims/intents.
+                state->Queue(child.task, child.expectedRevision, "isolated_fixture_cleanup");
+                state->nextWork = 0; state->admissionFixtureStep = 23; return;
+            }
+            require(childSaved->second.phase == Phase::Cancelled, "test_only_child_cancelled_with_native_receipt");
+            state->admissionFixtureStep = 24;
+        }
+        if (state->admissionFixtureStep == 24) {
             auto grant = AcquireSavedTask(request.task.id, request.task.revision, Mask(Effect::TravelTarget), 60000, "isolated_fixture");
             require(grant.authority.Granted(), "acknowledged_preparation_receives_exact_grant");
             auto* target = ai->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get();
