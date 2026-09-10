@@ -30,6 +30,11 @@ namespace LivingActivity {
         std::string operation;
         bool operationDispatched = false, operationExecuting = false;
         bool invalidated = false;
+        // Transitional movement ownership shares THIS lease book. Its native
+        // work is still owned by a legacy executor and cannot impersonate an
+        // acknowledged durable task or enter a journalled operation.
+        bool compatibility = false;
+        std::string compatibilityPhase, compatibilityReason;
     };
 
     // A world-thread-owned lease book, NOT a second scheduler or task store.
@@ -41,6 +46,8 @@ namespace LivingActivity {
         explicit ExecutionAuthority(size_t actorLimit = 20000) : limit(actorLimit) {}
         AuthorityResult Observe(const WorldContext& current, uint32_t safety);
         AuthorityResult Acquire(const Task& root, uint32_t effects, uint64_t now, uint64_t duration);
+        AuthorityResult AcquireCompatibility(const Task& root, uint64_t now, uint64_t duration);
+        bool DescribeCompatibility(const ActivityLease& lease,const std::string& phase,const std::string& reason);
         AuthorityResult Release(const ActivityLease& lease);
         AuthorityCode SelectStep(const ActivityLease& lease, const Task* step);
         AuthorityResult Forget(uint32_t actor);
@@ -67,6 +74,7 @@ namespace LivingActivity {
         static bool SameDefinition(const Task& left, const Task& right);
         static uint32_t LaneEffects(Lane lane);
         static AuthorityResult Drop(Actor& actor, AuthorityCode code);
+        AuthorityResult AcquireImpl(const Task& root,uint32_t effects,uint64_t now,uint64_t duration,bool compatibility);
         std::map<uint32_t, Actor> actors;
         size_t limit;
         uint64_t generation = 0;

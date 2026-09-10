@@ -9,6 +9,7 @@
 #include "LivingActivityAcquisition.h"
 #include <deque>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -251,6 +252,12 @@ private:
         std::string reason;
         std::chrono::steady_clock::time_point expires;
     };
+    // Read-only legacy-format projections; the coordinator owns the only lease
+    // book. Keeping this shape avoids changing addon/chat fields mid-migration.
+    std::optional<ExternalLease> ReadExternalLease(uint32 actor) const;
+    std::map<uint32,ExternalLease> ReadExternalLeases() const;
+    static bool ParseExternalLease(const std::string& owner,const std::string& phase,
+        const std::string& reason,uint64 expiresMs,const LivingActivity::ActivityLease& handle,ExternalLease& result);
 
     struct GroupLifecycle
     {
@@ -317,8 +324,6 @@ private:
 
     std::map<uint32, Session> sessions;
     std::map<uint32, PartySession> partySessions;
-    std::map<uint32, ExternalLease> externalLeases;
-    uint64 externalLeaseGeneration = 0;
     std::map<std::string, SuppressedActivityAggregate> suppressedActivityAggregates;
     std::chrono::steady_clock::time_point nextSuppressionTelemetryFlush;
     std::deque<std::string> activityTelemetry;

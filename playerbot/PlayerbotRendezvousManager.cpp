@@ -865,10 +865,10 @@ std::string PlayerbotRendezvousManager::GetPartyActivityStateJson(uint32 botGuid
                 std::chrono::duration_cast<std::chrono::seconds>(
                     now - rendezvous->second.stateSince).count());
     }
-    auto external = externalLeases.find(botGuid);
-    if (external != externalLeases.end() && external->second.expires > now)
+    auto external = ReadExternalLease(botGuid);
+    if (external && external->expires > now)
         leaseExpiresAt = time(nullptr) + std::chrono::duration_cast<std::chrono::seconds>(
-            external->second.expires - now).count();
+            external->expires - now).count();
     auto taskIdFor = [&party, this](uint32 errand) -> std::string
     {
         if (party == partySessions.end()) return "";
@@ -953,10 +953,10 @@ PlayerbotRendezvousManager::GetPartyActivityOwner(uint32 botGuid) const
             return PartyActivityOwner::rendezvous;
         if (state == "hearth_sync") return PartyActivityOwner::transport;
     }
-    auto lease = externalLeases.find(botGuid);
-    if (lease != externalLeases.end() && lease->second.expires > std::chrono::steady_clock::now() &&
-        lease->second.owner == PartyActivityOwner::player_command)
-        return lease->second.owner;
+    auto lease = ReadExternalLease(botGuid);
+    if (lease && lease->expires > std::chrono::steady_clock::now() &&
+        lease->owner == PartyActivityOwner::player_command)
+        return lease->owner;
     auto rendezvous = sessions.find(botGuid);
     bool rendezvousActive = rendezvous != sessions.end() &&
         (rendezvous->second.state == "pending_relocation" || rendezvous->second.state == "relocating" ||
@@ -969,8 +969,8 @@ PlayerbotRendezvousManager::GetPartyActivityOwner(uint32 botGuid) const
     if (party == partySessions.end())
         return guildRendezvous || IsGuildEventAssemblyOrganizer(botGuid) || sGuildEventExecutor.OwnsMovement(botGuid) ?
             PartyActivityOwner::guild_event :
-            (lease != externalLeases.end() && lease->second.expires > std::chrono::steady_clock::now() ?
-                lease->second.owner : PartyActivityOwner::none);
+            (lease && lease->expires > std::chrono::steady_clock::now() ?
+                lease->owner : PartyActivityOwner::none);
     const std::string& state = party->second.state;
     if (state == "free_time") return PartyActivityOwner::party_errand;
     if (state == "active") return PartyActivityOwner::party_follow;
@@ -998,10 +998,9 @@ PlayerbotRendezvousManager::GetPartyActivityPhase(uint32 botGuid) const
     }
     if (party != partySessions.end() && owner == PartyActivityOwner::transport)
         return PartyActivityPhase::traveling;
-    auto lease = externalLeases.find(botGuid);
-    if (lease != externalLeases.end() && lease->second.expires > std::chrono::steady_clock::now() &&
-        owner == lease->second.owner)
-        return lease->second.phase;
+    auto lease = ReadExternalLease(botGuid);
+    if (lease && lease->expires > std::chrono::steady_clock::now() && owner == lease->owner)
+        return lease->phase;
     auto rendezvous = sessions.find(botGuid);
     if (rendezvous != sessions.end() &&
         (owner == PartyActivityOwner::rendezvous || owner == PartyActivityOwner::guild_event))
@@ -1109,6 +1108,43 @@ bool PlayerbotRendezvousManager::AllowsOwnedMovement(uint32 botGuid, const std::
     return false;
 }
 
+bool PlayerbotRendezvousManager::ParseExternalLease(const std::string& owner,const std::string& phase,
+    const std::string& reason,uint64 expiresMs,const LivingActivity::ActivityLease& handle,ExternalLease& result)
+{
+    bool validOwner=false,validPhase=false;
+    for(auto candidate:{PartyActivityOwner::player_command,PartyActivityOwner::guild_supply,PartyActivityOwner::economy_service})
+        if(owner==PartyActivityOwnerName(candidate)) {result.owner=candidate;validOwner=true;break;}
+    for(auto candidate:{PartyActivityPhase::idle,PartyActivityPhase::preparing,PartyActivityPhase::departing,
+        PartyActivityPhase::traveling,PartyActivityPhase::performing,PartyActivityPhase::returning,
+        PartyActivityPhase::verifying,PartyActivityPhase::deferred,PartyActivityPhase::blocked,
+        PartyActivityPhase::completed,PartyActivityPhase::failed})
+        if(phase==PartyActivityPhaseName(candidate)) {result.phase=candidate;validPhase=true;break;}
+    if(!validOwner || !validPhase) return false;
+    result.handle=handle;result.reason=reason;
+    result.expires=std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::milliseconds(expiresMs)));
+    return true;
+}
+
+std::optional<PlayerbotRendezvousManager::ExternalLease> PlayerbotRendezvousManager::ReadExternalLease(uint32 actor) const
+{
+    const auto view=sLivingActivityCoordinator.ReadCompatibilityLease(actor);
+    ExternalLease result;
+    if(!view || !ParseExternalLease(view->owner,view->phase,view->reason,view->expiresMs,view->handle,result)) return {};
+    return result;
+}
+
+std::map<uint32,PlayerbotRendezvousManager::ExternalLease> PlayerbotRendezvousManager::ReadExternalLeases() const
+{
+    std::map<uint32,ExternalLease> result;
+    for(const auto& view:sLivingActivityCoordinator.CompatibilityLeases()) {
+        ExternalLease lease;
+        if(ParseExternalLease(view.owner,view.phase,view.reason,view.expiresMs,view.handle,lease))
+            result.emplace(view.handle.actor,std::move(lease));
+    }
+    return result;
+}
+
 LivingActivity::Acquisition PlayerbotRendezvousManager::AcquirePartyActivityLease(uint32 botGuid, PartyActivityOwner owner,
     PartyActivityPhase phase, uint32 ttlSeconds, const std::string& reason,
     const std::string& jobKey, LivingActivity::ActivityLease& handle)
@@ -1121,12 +1157,12 @@ LivingActivity::Acquisition PlayerbotRendezvousManager::AcquirePartyActivityLeas
     if (!sLivingActivityCoordinator.CompatibilityContext(botGuid, PartyActivityOwnerName(owner),
         jobKey, identity)) return {AcquisitionState::Invalidated, "native_context_unavailable"};
     auto now = std::chrono::steady_clock::now();
-    auto found = externalLeases.find(botGuid);
-    if (found != externalLeases.end() && found->second.expires > now &&
-        (found->second.owner != owner ||
-         !LivingActivity::MayAcquireCompatibilityLease(found->second.handle, handle, identity, true)))
+    auto found = ReadExternalLease(botGuid);
+    if (found && found->expires > now &&
+        (found->owner != owner ||
+         !LivingActivity::MayAcquireCompatibilityLease(found->handle, handle, identity, true)))
     {
-        QueueActivityTelemetry(botGuid, 0, 0, found->second.owner, found->second.phase,
+        QueueActivityTelemetry(botGuid, 0, 0, found->owner, found->phase,
             "conflict_prevented", reason);
         return {AcquisitionState::Waiting, "another_committed_activity"};
     }
@@ -1171,27 +1207,23 @@ LivingActivity::Acquisition PlayerbotRendezvousManager::AcquirePartyActivityLeas
             "conflict_prevented", reason);
         return {AcquisitionState::Waiting, "higher_priority_activity"};
     }
-    if (found != externalLeases.end() && LivingActivity::SameLease(found->second.handle, handle) &&
-        found->second.handle.context == identity.context && found->second.expires > now)
+    if (found && LivingActivity::SameLease(found->handle, handle) &&
+        found->handle.context == identity.context && found->expires > now)
         return UpdatePartyActivityLease(handle, phase, ttlSeconds, reason) ?
             LivingActivity::Acquisition{AcquisitionState::Granted, ""} :
             LivingActivity::Acquisition{AcquisitionState::Invalidated, "lease_context_changed"};
-    if (externalLeaseGeneration == UINT64_MAX)
-        return {AcquisitionState::Invalidated, "lease_generation_exhausted"};
-    ExternalLease& lease = externalLeases[botGuid];
-    identity.generation = ++externalLeaseGeneration;
-    lease.handle = handle = identity;
-    lease.owner = owner; lease.phase = phase; lease.reason = reason;
-    lease.expires = now + std::chrono::seconds(std::max<uint32>(1, ttlSeconds));
+    const auto acquired=sLivingActivityCoordinator.AcquireCompatibilityLease(botGuid,PartyActivityOwnerName(owner),
+        PartyActivityPhaseName(phase),ttlSeconds,reason,jobKey,handle);
+    if(!acquired.Permitted()) return acquired;
     QueueActivityTelemetry(botGuid, 0, 0, owner, phase, "lease_acquired", reason);
     return {AcquisitionState::Granted, ""};
 }
 
 bool PlayerbotRendezvousManager::HasPartyActivityLease(const LivingActivity::ActivityLease& handle) const
 {
-    const auto found = externalLeases.find(handle.actor);
-    return found != externalLeases.end() && LivingActivity::SameLease(found->second.handle, handle) &&
-        found->second.expires > std::chrono::steady_clock::now();
+    const auto found = ReadExternalLease(handle.actor);
+    return found && LivingActivity::SameLease(found->handle, handle) &&
+        found->expires > std::chrono::steady_clock::now();
 }
 
 bool PlayerbotRendezvousManager::UpdatePartyActivityLease(const LivingActivity::ActivityLease& handle,
@@ -1199,16 +1231,14 @@ bool PlayerbotRendezvousManager::UpdatePartyActivityLease(const LivingActivity::
 {
     const uint32 botGuid = handle.actor;
     sLivingActivityCoordinator.ObserveLeaseBoundary(botGuid, LivingActivityCoordinator::LeaseBoundary::Renew);
-    auto found = externalLeases.find(botGuid);
+    auto found = ReadExternalLease(botGuid);
     if (!sPlayerbotAIConfig.chatDirectorPartyActivityOwnership) return true;
     if (!HasPartyActivityLease(handle)) return false;
     LivingActivity::ActivityLease current;
     if (!sLivingActivityCoordinator.CompatibilityContext(botGuid, "lease_check", "native", current) ||
         !(current.context == handle.context)) return false;
-    found->second.phase = phase; found->second.reason = reason;
-    found->second.expires = std::chrono::steady_clock::now() +
-        std::chrono::seconds(std::max<uint32>(1, ttlSeconds));
-    QueueActivityTelemetry(botGuid, 0, 0, found->second.owner, phase, "lease_updated", reason);
+    if(!sLivingActivityCoordinator.RenewCompatibilityLease(handle,PartyActivityPhaseName(phase),ttlSeconds,reason)) return false;
+    QueueActivityTelemetry(botGuid, 0, 0, found->owner, phase, "lease_updated", reason);
     return true;
 }
 
@@ -1218,9 +1248,10 @@ void PlayerbotRendezvousManager::ReleasePartyActivityLease(const LivingActivity:
     const uint32 botGuid = handle.actor;
     sLivingActivityCoordinator.ObserveLeaseBoundary(botGuid, LivingActivityCoordinator::LeaseBoundary::Release);
     if (!sLivingActivityCoordinator.OnWorldThread()) return;
-    auto found = externalLeases.find(botGuid);
-    if (found == externalLeases.end() || !LivingActivity::SameLease(found->second.handle, handle)) return;
-    const PartyActivityOwner owner = found->second.owner;
+    auto found = ReadExternalLease(botGuid);
+    if (!found || !LivingActivity::SameLease(found->handle, handle) ||
+        !sLivingActivityCoordinator.ReleaseCompatibilityLease(handle)) return;
+    const PartyActivityOwner owner = found->owner;
     auto party = partySessions.find(botGuid);
     if (owner == PartyActivityOwner::player_command && party != partySessions.end() &&
         party->second.state == "active" &&
@@ -1241,7 +1272,6 @@ void PlayerbotRendezvousManager::ReleasePartyActivityLease(const LivingActivity:
         PersistPartySession(session);
     }
     QueueActivityTelemetry(botGuid, 0, 0, owner, terminalPhase, "lease_released", reason);
-    externalLeases.erase(found);
 }
 
 bool PlayerbotRendezvousManager::RegisterPartyAssist(Player* bot, Player* inviter, bool recovered)
@@ -1311,13 +1341,12 @@ bool PlayerbotRendezvousManager::RegisterPartyAssist(Player* bot, Player* invite
         QueueActivityTelemetry(bot->GetGUIDLow(), existingParty->second.playerGuid,
             existingParty->second.groupId, PartyActivityOwner::rendezvous,
             PartyActivityPhase::failed, "party_session_replaced", "roster_changed");
-        auto oldLease = externalLeases.find(bot->GetGUIDLow());
-        if (oldLease != externalLeases.end())
+        auto oldLease = ReadExternalLease(bot->GetGUIDLow());
+        if (oldLease && sLivingActivityCoordinator.ReleaseCompatibilityLease(oldLease->handle))
         {
             QueueActivityTelemetry(bot->GetGUIDLow(), existingParty->second.playerGuid,
-                existingParty->second.groupId, oldLease->second.owner,
+                existingParty->second.groupId, oldLease->owner,
                 PartyActivityPhase::deferred, "lease_released", "party_rejoined");
-            externalLeases.erase(oldLease);
         }
         partySessions.erase(existingParty);
         replacedPartySession = true;
@@ -1921,12 +1950,11 @@ void PlayerbotRendezvousManager::Update()
     const auto now = std::chrono::steady_clock::now();
     PrunePersistedPartySessions();
     relocationAvailableThisUpdate = true;
-    for (auto lease = externalLeases.begin(); lease != externalLeases.end(); )
+    for (const auto& lease : ReadExternalLeases())
     {
-        if (lease->second.expires > now) { ++lease; continue; }
-        QueueActivityTelemetry(lease->first, 0, 0, lease->second.owner,
+        if (lease.second.expires > now || !sLivingActivityCoordinator.ReleaseCompatibilityLease(lease.second.handle)) continue;
+        QueueActivityTelemetry(lease.first, 0, 0, lease.second.owner,
             PartyActivityPhase::failed, "lease_expired", "deadline_expired");
-        lease = externalLeases.erase(lease);
     }
     if (nextPartyDiscovery.time_since_epoch().count() == 0 || now >= nextPartyDiscovery)
     {
@@ -3130,11 +3158,10 @@ bool PlayerbotRendezvousManager::ReturnPartyToActivity(PartySession& session, Pl
     if (!bot || !bot->IsInWorld()) return false;
     auto releaseExternalState = [&](PartyActivityPhase phase, const std::string& reason)
     {
-        auto lease = externalLeases.find(session.botGuid);
-        if (lease == externalLeases.end()) return;
+        auto lease = ReadExternalLease(session.botGuid);
+        if (!lease || !sLivingActivityCoordinator.ReleaseCompatibilityLease(lease->handle)) return;
         QueueActivityTelemetry(session.botGuid, session.playerGuid, session.groupId,
-            lease->second.owner, phase, "lease_released", reason);
-        externalLeases.erase(lease);
+            lease->owner, phase, "lease_released", reason);
     };
     auto restoreAutonomousState = [bot]()
     {
@@ -3358,13 +3385,12 @@ void PlayerbotRendezvousManager::UpdatePartyAssists()
                 QueueActivityTelemetry(session.botGuid, session.playerGuid, session.groupId,
                     PartyActivityOwner::rendezvous, PartyActivityPhase::failed,
                     "activity_restore_failed", session.reason);
-                auto lease = externalLeases.find(session.botGuid);
-                if (lease != externalLeases.end())
+                auto lease = ReadExternalLease(session.botGuid);
+                if (lease && sLivingActivityCoordinator.ReleaseCompatibilityLease(lease->handle))
                 {
                     QueueActivityTelemetry(session.botGuid, session.playerGuid, session.groupId,
-                        lease->second.owner, PartyActivityPhase::failed,
+                        lease->owner, PartyActivityPhase::failed,
                         "lease_released", session.reason);
-                    externalLeases.erase(lease);
                 }
                 ClearPersistedPartySession(session.botGuid);
                 LogPartyEvent(session, "activity_restore_failed");
@@ -3728,14 +3754,13 @@ void PlayerbotRendezvousManager::UpdatePartyAssists()
                         packet << uint32(PARTY_OP_LEAVE) << bot->GetName() << uint32(0);
                         bot->GetSession()->HandleGroupDisbandOpcode(packet);
                     }
-                    auto activeLease = externalLeases.find(session.botGuid);
-                    if (activeLease != externalLeases.end())
+                    auto activeLease = ReadExternalLease(session.botGuid);
+                    if (activeLease && sLivingActivityCoordinator.ReleaseCompatibilityLease(activeLease->handle))
                     {
                         QueueActivityTelemetry(session.botGuid, session.playerGuid,
-                            session.groupId, activeLease->second.owner,
+                            session.groupId, activeLease->owner,
                             PartyActivityPhase::deferred, "lease_released",
                             "party_session_ended");
-                        externalLeases.erase(activeLease);
                     }
                     bool inDungeon = bot->GetMap()->IsDungeon();
                     bool originIsCurrentInstance = session.originMapId == bot->GetMapId() &&
@@ -4424,9 +4449,10 @@ std::vector<std::string> PlayerbotRendezvousManager::DrainPartyActivityTelemetry
         nextSuppressionTelemetryFlush = now + std::chrono::minutes(1);
     }
 
+    const auto externalSnapshots=includeSnapshots ? ReadExternalLeases() : std::map<uint32,ExternalLease>{};
     std::vector<std::string> result;
     result.reserve(activityTelemetry.size() + (includeSnapshots ?
-        partySessions.size() + externalLeases.size() + sessions.size() : 0));
+        partySessions.size() + externalSnapshots.size() + sessions.size() : 0));
     // Transition delivery always wins. Snapshot generation never enters the
     // bounded transition deque, so a large active party set cannot evict the
     // event that explains how a lease changed.
@@ -4463,14 +4489,14 @@ std::vector<std::string> PlayerbotRendezvousManager::DrainPartyActivityTelemetry
                 GetPartyActivityOwner(session.botGuid), GetPartyActivityPhase(session.botGuid),
                 "lease_snapshot", session.reason, session.currentErrand));
         }
-        for (const auto& pair : externalLeases)
+        for (const auto& pair : externalSnapshots)
             if (partySessions.find(pair.first) == partySessions.end() &&
                 pair.second.expires > std::chrono::steady_clock::now())
                 result.push_back(BuildActivityTelemetry(pair.first, 0, 0,
                     pair.second.owner, pair.second.phase, "lease_snapshot", pair.second.reason));
         for (const auto& pair : sessions)
             if (partySessions.find(pair.first) == partySessions.end() &&
-                externalLeases.find(pair.first) == externalLeases.end())
+                externalSnapshots.find(pair.first) == externalSnapshots.end())
             {
                 const Session& session = pair.second;
                 result.push_back(BuildActivityTelemetry(session.botGuid, session.playerGuid, 0,

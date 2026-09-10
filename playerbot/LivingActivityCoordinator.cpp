@@ -122,6 +122,7 @@ namespace {
 
 struct LivingActivityCoordinator::State {
     ExecutionAuthority authority; // Only world-thread methods may access this book.
+    std::set<uint32_t> compatibilityActors; // Enumeration index only; no second lease/owner state.
     const std::string boot = NewId();
     struct Binding { uint64_t actorEpoch = 0; PermissionPublisher publisher; };
     std::map<uint32_t, Binding> bindings;
@@ -631,6 +632,7 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("stale_actor_observations", state->staleActorObservations);
     p.put("task_admission_writes", state->taskAdmissions); p.put("saved_task_grants", state->savedGrants);
     p.put("execution_enforcement", state->enforceEffects.load(std::memory_order_acquire));
+    p.put("compatibility_lease_index",state->compatibilityActors.size());
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     p.put("isolated_fixture_build", true);
     p.put("isolated_fixture_attempted", state->fixtureFinished);
@@ -660,6 +662,20 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
     p.put("actor_guid", guid); p.put("effective_mode", Name(state->effective));
     p.put("execution_owner", PlayerbotRendezvousManager::PartyActivityOwnerName(
         PlayerbotRendezvousManager::instance().GetPartyActivityOwner(guid)));
+    const auto lease=state->authority.Read(guid);
+    if(lease.lease.actor) {
+        const uint64_t now=std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        p.put("execution_lease.source",lease.compatibility?"legacy_compatibility":"managed_task");
+        p.put("execution_lease.root_task_id",lease.lease.rootTask);
+        p.put("execution_lease.owner_generation",lease.lease.generation);
+        p.put("execution_lease.domain",lease.root.source);
+        p.put("execution_lease.phase",lease.compatibility?lease.compatibilityPhase:Name(lease.root.phase));
+        p.put("execution_lease.reason",lease.compatibility?lease.compatibilityReason:lease.root.checkpoint.blocker);
+        p.put("execution_lease.state",Name(state->authority.Inspect(guid,now).code));
+        p.put("execution_lease.remaining_ms",lease.expires>now?lease.expires-now:0);
+        p.put("execution_lease.operation",lease.operation);
+    }
     for (const auto& write : state->pending) if (write.task.actor == guid && write.retry.failures) {
         p.put("journal.task",write.task.id); p.put("journal.revision",write.task.revision);
         p.put("journal.blocker","exact_receipt_not_verified"); p.put("journal.attempts",write.retry.failures);
@@ -751,12 +767,13 @@ void LivingActivityCoordinator::RefreshPermission(uint32_t guid, uint64_t actorE
         entry.actorEpoch = actorEpoch;
         ai->activityPermissions = entry.publisher.Reader();
     }
-    const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
+    const auto current = ReadNativeContext(*bot, std::max<uint64_t>(1,state->policyRevision), state->boot);
     if (!current.mapGeneration) { entry.publisher.Revoke(); state->authority.Forget(guid); return; }
     const uint32_t safety = NativeSafety(bot);
     const auto prior = ai->activityPermissions.Inspect();
     if (prior && prior->current == current && prior->safety == safety) return;
     const auto observed = state->authority.Observe(current, safety);
+    if(!state->authority.Read(guid).compatibility) state->compatibilityActors.erase(guid);
     if (observed.code == AuthorityCode::InvalidRequest || observed.code == AuthorityCode::Capacity) {
         entry.publisher.Revoke(); return;
     }
@@ -782,7 +799,7 @@ bool LivingActivityCoordinator::CompatibilityContext(uint32_t guid, const std::s
     if (!OnWorldThread() || !guid || !IsToken(source) || !IsSourceKey(key)) return false;
     Player* bot = sRandomPlayerbotMgr.GetPlayerBot(guid);
     if (!bot || !bot->GetPlayerbotAI()) return false;
-    const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
+    const auto current = ReadNativeContext(*bot, std::max<uint64_t>(1,state->policyRevision), state->boot);
     if (!current.actorGeneration || !current.mapGeneration) return false;
     identity = {};
     identity.actor = guid;
@@ -800,6 +817,88 @@ ResourceReader LivingActivityCoordinator::ResourceReservations() const { return 
 
 bool LivingActivityCoordinator::EffectEnforcementEnabled() const {
     return state->enforceEffects.load(std::memory_order_acquire);
+}
+
+Acquisition LivingActivityCoordinator::AcquireCompatibilityLease(uint32_t actor,const std::string& owner,
+    const std::string& phase,uint32_t ttlSeconds,const std::string& reason,const std::string& jobKey,ActivityLease& handle) {
+    if(!OnWorldThread()) return {AcquisitionState::Invalidated,"world_thread_required"};
+    if(!IsSourceKey(jobKey) || !IsToken(phase) || !IsToken(reason,128,true) || !ttlSeconds || ttlSeconds>600)
+        return {AcquisitionState::Invalidated,"invalid_compatibility_request"};
+    Kind kind;Priority priority;
+    if(owner=="player_command") {kind=Kind::HumanRequest;priority=Priority::Human;}
+    else if(owner=="guild_supply") {kind=Kind::GuildDelivery;priority=Priority::Delivery;}
+    else if(owner=="economy_service") {kind=Kind::Maintenance;priority=Priority::Delivery;}
+    else return {AcquisitionState::Invalidated,"unsupported_compatibility_owner"};
+    Player* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->GetPlayerbotAI()) return {AcquisitionState::Invalidated,"native_context_unavailable"};
+    RefreshPermission(actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    const auto before=state->authority.Read(actor);
+    const uint64_t monotonic=std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    Task task;
+    task.id=task.root=SourceId(owner,jobKey);task.source=owner;task.sourceKey=jobKey;
+    task.actor=actor;task.context=before.current;task.kind=kind;task.priority=priority;
+    task.mode=Mode::Active;task.phase=Phase::Traveling;task.checkpoint.step="legacy_movement";
+    task.createdAtMs=task.updatedAtMs=NowMs();
+    ActivityLease identity{actor,task.id,0,task.context};
+    if(before.lease.actor && before.expires>monotonic && before.compatibility &&
+        !MayAcquireCompatibilityLease(before.lease,handle,identity,true))
+        return {AcquisitionState::Waiting,"another_committed_activity"};
+    if(before.compatibility && before.root.id==task.id && before.root.context==task.context)
+        task=before.root; // Renewal does not recreate the accepted legacy identity.
+    const auto result=state->authority.AcquireCompatibility(task,monotonic,uint64_t(ttlSeconds)*1000);
+    if(!result.Granted()) return AcquisitionFrom(result.code);
+    state->authority.DescribeCompatibility(result.lease,phase,reason);
+    handle=result.lease;state->compatibilityActors.insert(actor);
+    state->bindings.at(actor).publisher.Publish(state->authority.Read(actor));
+    return AcquisitionFrom(result.code);
+}
+
+bool LivingActivityCoordinator::RenewCompatibilityLease(const ActivityLease& handle,const std::string& phase,
+    uint32_t ttlSeconds,const std::string& reason) {
+    if(!OnWorldThread()) return false;
+    Player* bot=sRandomPlayerbotMgr.GetPlayerBot(handle.actor);
+    if(!bot || !bot->GetPlayerbotAI()) return false;
+    RefreshPermission(handle.actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    const auto before=state->authority.Read(handle.actor);
+    const uint64_t now=std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    if(!before.compatibility || !SameLease(before.lease,handle) || before.expires<=now) return false;
+    auto renewed=handle;
+    const auto result=AcquireCompatibilityLease(handle.actor,before.root.source,phase,ttlSeconds,reason,before.root.sourceKey,renewed);
+    // Expired/new-context callbacks may never replace a caller's immutable handle.
+    if(result.Permitted() && !SameLease(renewed,handle)) {ReleaseCompatibilityLease(renewed);return false;}
+    return result.Permitted();
+}
+
+bool LivingActivityCoordinator::ReleaseCompatibilityLease(const ActivityLease& handle) {
+    if(!OnWorldThread()) return false;
+    const auto before=state->authority.Read(handle.actor);
+    if(!before.compatibility || !SameLease(before.lease,handle)) return false;
+    return ReleaseTaskLease(handle).code==AuthorityCode::Released;
+}
+
+std::optional<LivingActivityCoordinator::CompatibilityLease> LivingActivityCoordinator::ReadCompatibilityLease(uint32_t actor) const {
+    // Native callers already hold the actor lifecycle. Read only its published
+    // immutable view here; no map worker reads the world's mutable lease book.
+    Player* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->GetPlayerbotAI()) return {};
+    const auto view=bot->GetPlayerbotAI()->activityPermissions.Inspect();
+    if(!view || !view->compatibility || !view->lease.actor ||
+        view->current.actorGeneration!=bot->GetPlayerbotAI()->GetActivityActorEpoch() ||
+        view->current.mapGeneration!=bot->GetPlayerbotAI()->GetActivityMapEpoch()) return {};
+    return CompatibilityLease{view->lease,view->root.source,view->compatibilityPhase,view->compatibilityReason,view->expires};
+}
+
+std::vector<LivingActivityCoordinator::CompatibilityLease> LivingActivityCoordinator::CompatibilityLeases() const {
+    std::vector<CompatibilityLease> result;
+    if(!OnWorldThread()) return result;
+    for(uint32_t actor:state->compatibilityActors) {
+        const auto view=state->authority.Read(actor);
+        if(view.compatibility && view.lease.actor)
+            result.push_back({view.lease,view.root.source,view.compatibilityPhase,view.compatibilityReason,view.expires});
+    }
+    return result;
 }
 
 AdmissionResult LivingActivityCoordinator::SubmitResourceReservation(const ReservationRequest& original,
@@ -996,6 +1095,7 @@ LivingActivityCoordinator::TaskGrant LivingActivityCoordinator::AcquireSavedTask
         std::chrono::steady_clock::now().time_since_epoch()).count();
     result.authority = state->authority.Acquire(saved->second, effects, monotonic, durationMs);
     if (!result.authority.Granted()) { result.blocker = Name(result.authority.code); return result; }
+    state->compatibilityActors.erase(saved->second.actor);
     result.task = saved->second; result.task.ownerGeneration = result.authority.lease.generation;
     result.action.task = result.task.id; result.action.rootTask = result.task.root;
     result.action.revision = result.task.revision; result.action.ownerGeneration = result.task.ownerGeneration;
@@ -1045,6 +1145,7 @@ LivingActivityCoordinator::TaskGrant LivingActivityCoordinator::SelectSavedStep(
 AuthorityResult LivingActivityCoordinator::ReleaseTaskLease(const ActivityLease& lease) {
     if (!OnWorldThread()) return {AuthorityCode::InvalidRequest, {}, {}};
     auto result = state->authority.Release(lease); // Pending native operations cannot be discarded.
+    if(!state->authority.Read(lease.actor).compatibility) state->compatibilityActors.erase(lease.actor);
     const auto binding = state->bindings.find(lease.actor);
     if (binding != state->bindings.end()) binding->second.publisher.Publish(state->authority.Read(lease.actor));
     return result;

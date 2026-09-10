@@ -69,6 +69,7 @@ namespace LivingActivity {
         AuthorityResult result; result.code = code; result.displaced = a.lease;
         a.lease = {}; a.root = {}; a.step = {}; a.expires = 0; a.effects = 0; a.operation.clear(); a.invalidated = false;
         a.operationDispatched = a.operationExecuting = false;
+        a.compatibility=false;a.compatibilityPhase.clear();a.compatibilityReason.clear();
         return result;
     }
     AuthorityResult ExecutionAuthority::Observe(const WorldContext& current, uint32_t safety) {
@@ -93,6 +94,19 @@ namespace LivingActivity {
         return {safety ? AuthorityCode::SafetyPaused : AuthorityCode::Allowed, a.lease, {}};
     }
     AuthorityResult ExecutionAuthority::Acquire(const Task& root, uint32_t effects, uint64_t now, uint64_t duration) {
+        return AcquireImpl(root,effects,now,duration,false);
+    }
+    AuthorityResult ExecutionAuthority::AcquireCompatibility(const Task& root,uint64_t now,uint64_t duration) {
+        return AcquireImpl(root,Mask(Effect::Movement)|Mask(Effect::TravelTarget),now,duration,true);
+    }
+    bool ExecutionAuthority::DescribeCompatibility(const ActivityLease& lease,const std::string& phase,const std::string& reason) {
+        const auto found=actors.find(lease.actor);
+        if(found==actors.end() || !Matches(found->second.lease,lease) || !found->second.compatibility ||
+            !IsToken(phase,64) || !IsToken(reason,128,true)) return false;
+        found->second.compatibilityPhase=phase;found->second.compatibilityReason=reason;
+        return true;
+    }
+    AuthorityResult ExecutionAuthority::AcquireImpl(const Task& root,uint32_t effects,uint64_t now,uint64_t duration,bool compatibility) {
         std::string error;
         if (!Validate(root, error) || !Executable(root) || !root.parent.empty() || root.root != root.id ||
             !effects || (effects & ~AllEffects) || !duration || duration > 600000 ||
@@ -109,7 +123,7 @@ namespace LivingActivity {
             return {AuthorityCode::StaleRevision, a.lease, {}};
         if (held && root.id == a.root.id && root.revision == a.root.revision) {
             // An existing revision cannot silently change its authority/priority.
-            if (effects != a.effects || !SameDefinition(root, a.root))
+            if (effects != a.effects || compatibility != a.compatibility || !SameDefinition(root, a.root))
                 return {AuthorityCode::StaleRevision, a.lease, {}};
             if (now < a.expires) {
                 a.expires = now + duration;
@@ -124,6 +138,7 @@ namespace LivingActivity {
             return {AuthorityCode::GenerationExhausted, a.lease, {}};
         AuthorityResult result; result.displaced = a.lease;
         a.root = root; a.step = {}; a.effects = effects; a.expires = now + duration;
+        a.compatibility=compatibility;a.compatibilityPhase.clear();a.compatibilityReason.clear();
         a.lease = {root.actor, root.id, ++generation, root.context};
         result.lease = a.lease; result.code = held ? AuthorityCode::Preempted : AuthorityCode::Granted;
         return result;
@@ -139,6 +154,7 @@ namespace LivingActivity {
         const auto found = actors.find(lease.actor);
         if (found == actors.end() || !Matches(found->second.lease, lease)) return AuthorityCode::StaleLease;
         auto& actor = found->second;
+        if(actor.compatibility) return AuthorityCode::ReconciliationRequired;
         if (actor.invalidated || !(actor.current == lease.context)) return AuthorityCode::StaleContext;
         if (!actor.operation.empty()) return AuthorityCode::AtomicPending;
         if (step) {
@@ -178,6 +194,7 @@ namespace LivingActivity {
         if (!IsUuid(operation) || found == actors.end() || !Matches(found->second.lease, lease))
             return {AuthorityCode::StaleLease, {}, {}};
         auto& a = found->second;
+        if(a.compatibility) return {AuthorityCode::ReconciliationRequired,a.lease,{}};
         if (a.invalidated || !(a.current == lease.context)) return {AuthorityCode::StaleContext, a.lease, {}};
         if (a.safety) return {AuthorityCode::SafetyPaused, a.lease, {}};
         if (now >= a.expires) return {AuthorityCode::StaleLease, a.lease, {}};
@@ -272,6 +289,7 @@ namespace LivingActivity {
             return AuthorityCode::Allowed;
         }
         if (a.invalidated) return AuthorityCode::ReconciliationRequired;
+        if (a.compatibility) return AuthorityCode::ReconciliationRequired;
         if (safety) return AuthorityCode::SafetyPaused;
         if (!a.operation.empty() && (!a.operationExecuting || !action || action->operation != a.operation))
             return AuthorityCode::AtomicPending;

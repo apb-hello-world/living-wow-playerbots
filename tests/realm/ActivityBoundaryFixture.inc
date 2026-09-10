@@ -55,7 +55,8 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
         Player* bot = sRandomPlayerbotMgr.GetPlayerBot(binding.first);
         auto* ai = bot ? bot->GetPlayerbotAI() : nullptr;
         if (!ai || ai->GetActivityActorEpoch() != binding.second.actorEpoch ||
-            !bot->IsInWorld() || bot->GetGroup() || NativeSafety(bot)) continue;
+            !bot->IsInWorld() || bot->GetGroup() || NativeSafety(bot) ||
+            sPlayerbotRendezvousManager.GetPartyActivityOwner(binding.first)!=PlayerbotRendezvousManager::PartyActivityOwner::none) continue;
         const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
         if (!current.actorGeneration || !current.mapGeneration ||
             state->authority.Read(binding.first).lease.actor) continue;
@@ -80,6 +81,7 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
             target->SetForced(originalForced); target->SetRelevance(originalRelevance);
             rpg->Set(originalRpg); next->Set(originalNext);
             state->authority.Forget(binding.first);
+            state->compatibilityActors.erase(binding.first);
             state->authority.Observe(current, NativeSafety(bot));
             publisher.Publish(state->authority.Read(binding.first));
             state->enforceEffects.store(originalEnforcement, std::memory_order_release);
@@ -206,6 +208,31 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
             }
             require(PermitEffects(*ai, {0, Lane::Inspection, true}, "isolated read only"), "inspection_remains_allowed");
             require(!PermitEffects(*ai, {0, Lane::Managed, false}, "isolated unknown effect"), "unclassified_mutation_rejected");
+            require(state->authority.Release(second.lease).code==AuthorityCode::Released,"fixture_owner_released_before_legacy_replay");
+            publisher.Publish(state->authority.Read(binding.first));
+            state->enforceEffects.store(false,std::memory_order_release);
+            ActivityLease legacy;
+            const auto legacyResult=sPlayerbotRendezvousManager.AcquirePartyActivityLease(binding.first,
+                PlayerbotRendezvousManager::PartyActivityOwner::economy_service,
+                PlayerbotRendezvousManager::PartyActivityPhase::traveling,45,"isolated_legacy_replay",state->boot,legacy);
+            require(legacyResult.Permitted() && state->authority.Read(binding.first).compatibility &&
+                SameLease(state->authority.Read(binding.first).lease,legacy),"native_legacy_owner_uses_coordinator_book");
+            require(state->authority.BeginAtomic(legacy,NewId(),monotonic).code==AuthorityCode::ReconciliationRequired,
+                "legacy_handle_cannot_start_verified_operation");
+            human.ownerGeneration=0;
+            const auto replacement=state->authority.Acquire(human,Mask(Effect::TravelTarget),monotonic,60000);
+            require(replacement.Granted() && SameLease(replacement.displaced,legacy),"new_task_preempts_legacy_exactly_once");
+            publisher.Publish(state->authority.Read(binding.first));
+            require(!sPlayerbotRendezvousManager.HasPartyActivityLease(legacy),"legacy_projection_observes_managed_preemption");
+            sPlayerbotRendezvousManager.ReleasePartyActivityLease(legacy,
+                PlayerbotRendezvousManager::PartyActivityPhase::deferred,"isolated_stale_release");
+            require(SameLease(state->authority.Read(binding.first).lease,replacement.lease),"stale_legacy_release_preserves_managed_owner");
+            ActivityLease competitor;
+            const auto waiting=sPlayerbotRendezvousManager.AcquirePartyActivityLease(binding.first,
+                PlayerbotRendezvousManager::PartyActivityOwner::guild_supply,
+                PlayerbotRendezvousManager::PartyActivityPhase::traveling,45,"isolated_competitor",state->boot,competitor);
+            require(waiting.Waiting() && !competitor.actor && SameLease(state->authority.Read(binding.first).lease,replacement.lease),
+                "legacy_competitor_waits_behind_managed_owner");
         } catch (const std::exception& error) { passed = false; report.put("failure", error.what()); }
         restore.fn(); restore.fn = [] {};
         const bool restored = target->IsForced() == originalForced && target->GetRelevance() == originalRelevance &&

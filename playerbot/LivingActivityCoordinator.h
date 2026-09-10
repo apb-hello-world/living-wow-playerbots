@@ -9,6 +9,8 @@
 #include "LivingActivityAuthority.h"
 #include "LivingActivityOperations.h"
 #include "LivingActivityReservations.h"
+#include "LivingActivityAcquisition.h"
+#include <optional>
 class PlayerbotAI;
 class WorldPacket;
 
@@ -40,6 +42,21 @@ public:
         const std::string& key, LivingActivity::ActivityLease& identity) const;
     bool OnWorldThread() const;
     bool EffectEnforcementEnabled() const;
+    struct CompatibilityLease {
+        LivingActivity::ActivityLease handle;
+        std::string owner,phase,reason;
+        uint64_t expiresMs=0;
+    };
+    // The old manager keeps only domain intent. These methods use the SAME
+    // ExecutionAuthority as saved tasks; a legacy handle is never a task grant.
+    LivingActivity::Acquisition AcquireCompatibilityLease(uint32_t actor,const std::string& owner,
+        const std::string& phase,uint32_t ttlSeconds,const std::string& reason,
+        const std::string& jobKey,LivingActivity::ActivityLease& handle);
+    bool RenewCompatibilityLease(const LivingActivity::ActivityLease& handle,const std::string& phase,
+        uint32_t ttlSeconds,const std::string& reason);
+    bool ReleaseCompatibilityLease(const LivingActivity::ActivityLease& handle);
+    std::optional<CompatibilityLease> ReadCompatibilityLease(uint32_t actor) const;
+    std::vector<CompatibilityLease> CompatibilityLeases() const;
     // Trusted domain producers only, on the native world thread. No native
     // operation or lease is started by submission or persistence callbacks.
     LivingActivity::AdmissionResult SubmitTask(const LivingActivity::TaskRequest& request);
