@@ -122,6 +122,7 @@ struct LivingActivityCoordinator::State {
     boost::property_tree::ptree admissionFixtureChecks;
     std::atomic<uint32_t> gameplayFixtureActor{0}, gameplayFixtureSpell{0};
     std::atomic<uint32_t> gameplayHealPackets{0}, gameplayHealAmount{0};
+    std::atomic<uint32_t> gameplayCastFailure{0}, gameplayCastResult{0};
     uint32_t gameplayOriginalHealth = 0, gameplayOriginalMana = 0, gameplaySetupHealth = 0;
     uint32_t gameplayOriginalDelay = 0;
     uint64_t gameplayOriginalMoney = 0, gameplayDeadline = 0;
@@ -129,6 +130,9 @@ struct LivingActivityCoordinator::State {
     WorldContext gameplayContext;
     ActivityLease gameplayLease;
     std::string gameplayAtomicFixture;
+    uint32_t gameplayMinimumMana = 0;
+    uint64_t gameplayNextSample = 0;
+    boost::property_tree::ptree gameplayTrace;
 #endif
     Mode effective = Mode::Off;
     std::string desired = "off", blocker = "not_enabled", loadCursor;

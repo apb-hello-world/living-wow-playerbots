@@ -32,7 +32,7 @@ namespace LivingActivity {
         const auto* info = spell ? sServerFacade.LookupSpellInfo(spell) : nullptr;
         const bool freeHeal = info && ai.GetBot() && InventoryFreeDirectHeal(*info, ai.GetBot()->HasSpell(spell),
             itemCast, SPELL_EFFECT_HEAL, SPELL_EFFECT_HEAL_MAX_HEALTH);
-        return {SpellEffects(freeHeal), Lane::Managed, true};
+        return {SpellEffectMask(freeHeal), Lane::Managed, true};
     }
     NativePermit NativeSpellPermit(PlayerbotAI& ai, uint32_t spell, Unit* target, Item* item) {
         const auto effects = NativeSpellEffects(ai, spell, item != nullptr);

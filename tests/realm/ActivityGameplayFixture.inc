@@ -7,12 +7,28 @@ bool LivingActivityCoordinator::IsolatedGameplayActor(uint32_t actor) const {
 }
 
 void LivingActivityCoordinator::ObserveIsolatedGameplayPacket(PlayerbotAI& ai, const WorldPacket& packet) {
-    if (packet.GetOpcode() != SMSG_SPELLHEALLOG || !IsolatedGameplayActor(ai.GetBot()->GetGUIDLow())) return;
+    if (!IsolatedGameplayActor(ai.GetBot()->GetGUIDLow())) return;
+    if (packet.GetOpcode() != SMSG_SPELLHEALLOG && packet.GetOpcode() != SMSG_SPELL_FAILURE &&
+        packet.GetOpcode() != SMSG_CAST_RESULT) return;
     // Pinned TBC Unit::SendHealSpellLog writes packed victim, packed caster,
     // spell, amount, critical, unused, AFTER DealHeal modifies native health.
     // Observe only; never synthesize or submit a packet.
     try {
         WorldPacket copy(packet); copy.rpos(0);
+        if (packet.GetOpcode() == SMSG_CAST_RESULT) {
+            uint32 spell; uint8 result;
+            copy >> spell >> result;
+            if (spell == state->gameplayFixtureSpell.load(std::memory_order_acquire))
+                state->gameplayCastResult.store(uint32(result) + 1, std::memory_order_release);
+            return;
+        }
+        if (packet.GetOpcode() == SMSG_SPELL_FAILURE) {
+            ObjectGuid caster; uint32 spell; uint8 result;
+            copy >> caster.ReadAsPacked() >> spell >> result;
+            if (caster == ai.GetBot()->GetObjectGuid() && spell == state->gameplayFixtureSpell.load(std::memory_order_acquire))
+                state->gameplayCastFailure.store(uint32(result) + 1, std::memory_order_release);
+            return;
+        }
         ObjectGuid victim, caster; uint32 spell, amount; uint8 critical, unused;
         copy >> victim.ReadAsPacked() >> caster.ReadAsPacked() >> spell >> amount >> critical >> unused;
         if (copy.rpos() != copy.size() || victim != ai.GetBot()->GetObjectGuid() || caster != victim || !amount ||
@@ -43,6 +59,10 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         report.put("health_after", bot ? bot->GetHealth() : 0);
         report.put("mana_before", state->gameplayOriginalMana);
         report.put("mana_after", bot ? bot->GetPower(POWER_MANA) : 0);
+        report.put("minimum_mana_observed", state->gameplayMinimumMana);
+        report.put("native_failure_code_plus_one", state->gameplayCastFailure.load(std::memory_order_acquire));
+        report.put("native_cast_result_plus_one", state->gameplayCastResult.load(std::memory_order_acquire));
+        report.add_child("native_cast_trace", state->gameplayTrace);
         bool restored = selected == 0;
         if (bot && ai && ai->GetActivityActorEpoch() == state->gameplayContext.actorGeneration) {
             if (const auto* cast = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
@@ -79,9 +99,23 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
             !(ReadNativeContext(*bot, state->policyRevision, state->boot) == state->gameplayContext) || NativeSafety(bot)) {
             finish(false, "fixture_native_context_or_safety_changed"); return;
         }
+        state->gameplayMinimumMana = std::min<uint32>(state->gameplayMinimumMana, bot->GetPower(POWER_MANA));
+        if (NowMs() >= state->gameplayNextSample && state->gameplayTrace.size() < 20) {
+            state->gameplayNextSample = NowMs() + 250;
+            boost::property_tree::ptree sample;
+            sample.put("elapsed_ms", NowMs() + 15000 - state->gameplayDeadline);
+            sample.put("health", bot->GetHealth()); sample.put("mana", bot->GetPower(POWER_MANA));
+            sample.put("stopped", bot->IsStopped());
+            sample.put("movement_type", bot->GetMotionMaster()->GetCurrentMovementGeneratorType());
+            if (const auto* cast = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL)) {
+                sample.put("spell", cast->m_spellInfo->Id); sample.put("state", cast->getState());
+                sample.put("casted_ms", cast->GetCastedTime());
+            } else sample.put("spell", 0);
+            state->gameplayTrace.push_back({"", sample});
+        }
         if (state->gameplayHealPackets.load(std::memory_order_acquire) == 1 &&
             !bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) && bot->GetHealth() > state->gameplaySetupHealth &&
-            bot->GetPower(POWER_MANA) < state->gameplayOriginalMana) {
+            state->gameplayMinimumMana < state->gameplayOriginalMana) {
             finish(true, ""); return;
         }
         if (NowMs() > state->gameplayDeadline) finish(false, "native_healing_result_not_observed");
@@ -113,7 +147,7 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
             }
             for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i) reagent = reagent || spell->Reagent[i] > 0;
             if (directHeal && !other && !reagent && spell->powerType == POWER_MANA &&
-                (spell->manaCost || spell->ManaCostPercentage) && NativeSpellEffects(*ai, known.first).mask == SpellEffects(true) &&
+                (spell->manaCost || spell->ManaCostPercentage) && NativeSpellEffects(*ai, known.first).mask == SpellEffectMask(true) &&
                 NativeSpellPermit(*ai, known.first, bot).validated) {
                 spellId = known.first; break;
             }
@@ -134,6 +168,7 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         state->gameplayContext = current; state->gameplayLease = grant.lease;
         state->gameplayOriginalHealth = bot->GetHealth(); state->gameplaySetupHealth = bot->GetHealth() / 2;
         state->gameplayOriginalMana = bot->GetPower(POWER_MANA); state->gameplayOriginalMoney = bot->GetMoney();
+        state->gameplayMinimumMana = state->gameplayOriginalMana;
         state->gameplayOriginalSelection = bot->GetSelectionGuid(); state->gameplayOriginalDelay = ai->aiInternalUpdateDelay;
         state->gameplayDeadline = NowMs() + 15000;
         state->gameplayFixtureSpell.store(spellId, std::memory_order_release);
