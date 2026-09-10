@@ -4,6 +4,7 @@
 #include "LivingActivityCodec.h"
 #include "LivingActivityResources.h"
 #include "LivingActivityClaimCodec.h"
+#include "LivingActivityReceipts.h"
 #include <mysql.h>
 #include <cassert>
 #include <cstdlib>
@@ -333,5 +334,27 @@ int main() {
     go.store(true); first.join(); second.join();
     assert(wins.load() == 1);
     assert(db.Scalar("SELECT SUM(quantity) FROM living_activity_claim WHERE item_guid=901 AND state='held'") == "6");
-    std::cout << "PASS: real MariaDB atomic task/outbox, intent/outcome and reservation journals, duplicate/stale requests, rollback, uncertain evidence, stock/money exclusion and release conservation (fixture metadata, NOT native gameplay proof)\n";
+    // A stale CAS in a COMMITTED batch does not invalidate another actor's
+    // exact receipt. Exercise the same settlement helper used by the realm.
+    auto bad = TaskWrite(changed,0,Receipt,"legacy_observed");
+    Task independent = raceA; independent.actor = independent.context.actor = 612;
+    independent.id = independent.root = "637bd562-36d2-5b01-bc01-e2d831c49f47";
+    independent.sourceKey = "receipt_isolation"; independent.phase = Phase::Queued; independent.revision = 1;
+    auto good = TaskWrite(independent,0,"ff2efbdf-f0ec-4539-b840-299847970d26","fixture_created");
+    assert(db.Execute("START TRANSACTION"));
+    for (const auto& write : {bad,good}) for (const auto& sql : write.statements) assert(db.Execute(sql));
+    assert(db.Execute("COMMIT"));
+    assert(!db.ReceiptPresent(bad) && db.ReceiptPresent(good));
+    struct PendingWrite { WritePlan plan; ReceiptRetry retry; std::string afterState; };
+    std::deque<PendingWrite> batch{{bad,{},"retained_uncertain_native_result"},{good,{},"{}"}};
+    ReceiptSet receipts;
+    for (const auto& write : batch) if (db.ReceiptPresent(write.plan)) receipts.emplace(write.plan.task,write.plan.revision);
+    unsigned saves = 0;
+    assert(SettleReceiptBatch(batch,2,true,receipts,1000,[&](const PendingWrite& write){
+        assert(write.plan.task == independent.id); ++saves;
+    }) == 1);
+    assert(saves == 1 && batch.size() == 1 && batch.front().afterState == "retained_uncertain_native_result");
+    assert(PrepareReceiptBatch(batch,32,5999) == 0 && PrepareReceiptBatch(batch,32,6000) == 1);
+    assert(!db.Write(bad) && db.ReceiptPresent(good));
+    std::cout << "PASS: real MariaDB atomic task/outbox, intent/outcome and reservation journals, duplicate/stale requests, rollback, uncertain evidence, stock/money exclusion, release conservation and independent receipt settlement (fixture metadata, NOT native gameplay proof)\n";
 }

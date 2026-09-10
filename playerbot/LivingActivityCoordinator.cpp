@@ -5,6 +5,7 @@
 #include "LivingActivityAdmission.h"
 #include "LivingActivityCodec.h"
 #include "LivingActivityClaimCodec.h"
+#include "LivingActivityReceipts.h"
 #include "LivingActivityMailbox.h"
 #include "LivingActivityAuthority.h"
 #include "LivingActivityPermissions.h"
@@ -147,6 +148,7 @@ struct LivingActivityCoordinator::State {
         Task task; WritePlan plan; std::string admissionReceipt;
         std::string operation;
         bool operationOutcome = false;
+        ReceiptRetry retry{};
     };
     struct PendingOperation {
         OperationRequest request;
@@ -166,6 +168,7 @@ struct LivingActivityCoordinator::State {
         std::string id, source, key, payload;
     };
     std::deque<Pending> pending;
+    bool preferReceiptRetry = false;
     std::deque<Incoming> incoming;
     std::map<std::string, Task> cache;
     ResourceClaimBook resources;
@@ -237,13 +240,15 @@ struct LivingActivityCoordinator::State {
         if (existing == preferred.end() || Before(task, cache.at(existing->second))) preferred[task.actor] = task.id;
     }
     void Queue(Task task, uint64_t expected, const std::string& code) {
+        for (const auto& write : pending) if (write.task.id == task.id) return; // Preserve the original failed write.
         if (cache.size() + quarantined.size() + pending.size() >= maxCache) { blocker = "task_cache_backpressure"; return; }
         auto plan = TaskWrite(task, expected, NewId(), code);
         pending.push_back({std::move(task), std::move(plan), ""});
     }
     void Flush(std::chrono::steady_clock::time_point deadline) {
-        const unsigned maximum = std::min<unsigned>(batch, pending.size());
+        const unsigned maximum = PrepareReceiptBatch(pending,batch,NowMs(),preferReceiptRetry);
         if (!maximum || !CharacterDatabase.BeginTransaction()) return;
+        preferReceiptRetry = !pending.front().retry.failures; // Alternate fresh batches and due failed writes.
         unsigned count = 0;
         std::string query;
         for (; count < maximum;) {
@@ -256,23 +261,17 @@ struct LivingActivityCoordinator::State {
         // One ordered native DB transaction followed by its receipt query. No
         // synchronous DB query or extra worker on the world thread.
         if (!CharacterDatabase.CommitTransaction()) { CharacterDatabase.RollbackTransaction(); return; }
+        query += " UNION ALL SELECT '',0"; // Healthy empty acknowledgement differs from query failure.
         ioPending = true;
         const auto token = epoch;
         if (!CharacterDatabase.AsyncQuery([this, count, token](QueryResult* result) {
             if (token != epoch) return;
             ioPending = false;
-            std::set<std::pair<std::string, uint64_t>> receipts;
+            ReceiptSet receipts;
             if (result) do { auto* f = result->Fetch(); receipts.emplace(f[0].GetCppString(), f[1].GetUInt64()); }
                 while (result->NextRow());
-            unsigned accepted = 0;
-            // Whole batch is atomic; require every receipt before acknowledging.
-            for (unsigned i = 0; i < count; ++i)
-                accepted += receipts.count({pending[i].plan.task, pending[i].plan.revision}) != 0;
-            if (accepted != count) {
-                ++persistenceFailures; blocker = "journal_receipt_not_verified"; nextWork = NowMs() + 5000; return;
-            }
-            for (unsigned i = 0; i < count; ++i) {
-                const auto& acknowledgedWrite = pending.front();
+            const bool healthy = receipts.count({"",0}) != 0;
+            const auto accepted = SettleReceiptBatch(pending,count,healthy,receipts,NowMs(),[this](const Pending& acknowledgedWrite) {
                 Remember(acknowledgedWrite.task);
                 if (!acknowledgedWrite.admissionReceipt.empty())
                     admissionReceipts[acknowledgedWrite.task.id] = acknowledgedWrite.admissionReceipt;
@@ -295,9 +294,12 @@ struct LivingActivityCoordinator::State {
                         else operations.erase(operation);
                     }
                 }
-                pending.pop_front(); ++acknowledged; ++transitionCount;
-            }
-            blocker.clear();
+                ++acknowledged; ++transitionCount;
+            });
+            if (accepted != count) {
+                ++persistenceFailures;
+                blocker = healthy ? "actor_journal_receipt_pending" : "journal_ack_query_failed";
+            } else blocker.clear();
         }, query.c_str())) { ioPending = false; blocker = "journal_ack_queue_unavailable"; nextWork = NowMs() + 5000; }
     }
     void Probe() {
@@ -521,7 +523,9 @@ void LivingActivityCoordinator::Update() {
     ObservationQueue queues;
     queues.enabled = state->effective != Mode::Off; queues.ioPending = state->ioPending;
     queues.due = now >= state->nextWork; queues.schemaReady = state->schemaReady; queues.loaded = state->loaded;
-    queues.cached = state->cache.size() + state->quarantined.size(); queues.pending = state->pending.size(); queues.incoming = state->incoming.size();
+    queues.cached = state->cache.size() + state->quarantined.size() + state->pending.size();
+    queues.pending = std::count_if(state->pending.begin(),state->pending.end(),[now](const State::Pending& p){return p.retry.dueAtMs <= now;});
+    queues.incoming = state->incoming.size();
     queues.cacheLimit = state->maxCache; queues.retained = state->transitionCount;
     const auto work = NextObservationWork(queues);
     if (work == ObservationWork::Wait) return;
@@ -557,6 +561,8 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("native_dispatches", state->nativeDispatches); p.put("native_result_receipts", state->nativeOutcomes);
     p.put("verified_native_results", state->nativeVerifiedResults);
     p.put("pending_native_operations", state->operations.size());
+    p.put("unacknowledged_writes",std::count_if(state->pending.begin(),state->pending.end(),
+        [](const State::Pending& write){return write.retry.failures != 0;}));
     p.put("cached_resource_claims", state->resources.Size());
     p.put("resource_claims_ready", state->resources.Protection().ready);
     p.put("pending_claim_decode", state->incomingClaims.size());
@@ -598,6 +604,12 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
     p.put("actor_guid", guid); p.put("effective_mode", Name(state->effective));
     p.put("execution_owner", PlayerbotRendezvousManager::PartyActivityOwnerName(
         PlayerbotRendezvousManager::instance().GetPartyActivityOwner(guid)));
+    for (const auto& write : state->pending) if (write.task.actor == guid && write.retry.failures) {
+        p.put("journal.task",write.task.id); p.put("journal.revision",write.task.revision);
+        p.put("journal.blocker","exact_receipt_not_verified"); p.put("journal.attempts",write.retry.failures);
+        p.put("journal.retry_at_ms",write.retry.dueAtMs); p.put("journal.native_outcome_retained",write.operationOutcome);
+        break;
+    }
     auto selected = state->preferred.find(guid);
     if (selected != state->preferred.end()) {
         const Task& task = state->cache.at(selected->second);
@@ -944,8 +956,11 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     if (!pending.ready) return reject(AdmissionCode::Pending, "intent_receipt_pending");
     // Reserve the existing result queue before any nonrepeatable effect. The
     // world dispatch is synchronous and rejects reentrant task admissions.
-    if (state->operationDispatching || state->ioPending || !state->pending.empty() || !state->incoming.empty() ||
-        state->transitionCount >= 200000) return reject(AdmissionCode::Backpressure, "native_result_capacity_unavailable");
+    if (state->operationDispatching || state->ioPending || state->pending.size() >= state->batch || !state->incoming.empty() ||
+        state->transitionCount + state->pending.size() >= 200000)
+        return reject(AdmissionCode::Backpressure, "native_result_capacity_unavailable");
+    for (const auto& write : state->pending) if (write.task.actor == intended.actor)
+        return reject(AdmissionCode::ReconciliationRequired,"actor_journal_write_pending");
     if (request.kind != adapter.OperationKind() || request.effects != adapter.OperationEffects())
         return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
     const auto saved = state->cache.find(intended.id);

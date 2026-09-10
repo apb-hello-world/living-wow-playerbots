@@ -1,4 +1,5 @@
 #include "LivingActivity.h"
+#include "LivingActivityReceipts.h"
 #include "LivingActivityAdmission.h"
 #include <cassert>
 #include <limits>
@@ -122,6 +123,36 @@ int main() {
         catch (const std::invalid_argument&) { rejected = true; }
         assert(rejected);
     }
+    // Receipt acknowledgements are per write, not all-or-nothing CAS success.
+    struct PendingWrite { WritePlan plan; ReceiptRetry retry; std::string nativeEvidence; };
+    WritePlan second = plan; second.task = Receipt;
+    std::deque<PendingWrite> pending{{plan,{},"original_native_result"},{second,{},"second"}};
+    assert(PrepareReceiptBatch(pending,32,1000) == 2);
+    unsigned acknowledged = 0;
+    auto countReceipt = [&](const PendingWrite& write) { assert(write.plan.task == Receipt); ++acknowledged; };
+    assert(SettleReceiptBatch(pending,2,true,{{Receipt,1}},1000,countReceipt) == 1);
+    assert(acknowledged == 1 && pending.size() == 1 && pending[0].plan.task == Id);
+    assert(pending[0].retry.failures == 1 && pending[0].retry.dueAtMs == 6000);
+    assert(pending[0].nativeEvidence == "original_native_result");
+    assert(PrepareReceiptBatch(pending,32,5999) == 0);
+    pending.push_back({second,{},"new"});
+    assert(PrepareReceiptBatch(pending,32,2000,true) == 1 && pending[0].plan.task == Receipt);
+    assert(SettleReceiptBatch(pending,1,true,{{Receipt,1}},2000,countReceipt) == 1);
+    pending.push_back({second,{},"fresh"});
+    assert(PrepareReceiptBatch(pending,32,6000,true) == 1 && pending[0].plan.task == Id);
+    assert(SettleReceiptBatch(pending,1,true,{},6000,countReceipt) == 0);
+    assert(pending.back().retry.failures == 2 && pending.back().retry.dueAtMs == 16000);
+    assert(PrepareReceiptBatch(pending,32,6000) == 1 && pending[0].plan.task == Receipt);
+    // Missing healthy sentinel (query failure) never grants even a supplied row.
+    assert(SettleReceiptBatch(pending,1,false,{{Receipt,1}},6000,countReceipt) == 0);
+    assert(pending.size() == 2 && acknowledged == 2);
+    // After a transaction-wide failure, retry one write, never the poisoned batch.
+    assert(PrepareReceiptBatch(pending,32,20000) == 1);
+    assert(SettleReceiptBatch(pending,3,true,{},20000,countReceipt) == 0 && pending.size() == 2);
+    ReceiptRetry retry; retry.Missed(std::numeric_limits<uint64_t>::max()-1);
+    assert(retry.dueAtMs == std::numeric_limits<uint64_t>::max());
+    for (unsigned i=0;i<100;++i) retry.Missed(1);
+    assert(retry.dueAtMs == 60001);
     task.checkpoint.data.resize(8193, 'x'); assert(!Validate(task, error));
     task = Sample(); task.phase = Phase::Completed; assert(!Validate(task, error));
     task = Sample(); task.ownerGeneration = std::numeric_limits<uint64_t>::max();
