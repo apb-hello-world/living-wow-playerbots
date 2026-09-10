@@ -159,6 +159,13 @@ endif()
 
 add_library(${LIBRARY_NAME} STATIC ${LIBRARY_SRCS})
 
+# Explicitly separate fixture binary. Release/default builds contain no native
+# test controls; a runtime marker alone can never enable them.
+option(LIVING_ISOLATED_NATIVE_TESTS "Compile isolated-only Living native fixtures" OFF)
+if(LIVING_ISOLATED_NATIVE_TESTS)
+  target_compile_definitions(${LIBRARY_NAME} PRIVATE LIVING_ISOLATED_NATIVE_TESTS=1)
+endif()
+
 target_link_libraries(${LIBRARY_NAME}
   PRIVATE shared
   PRIVATE Detour

@@ -35,6 +35,7 @@ private:
     struct State;
     std::unique_ptr<State> state;
     void RefreshPermission(uint32_t guid, uint64_t actorEpoch);
+    void RunIsolatedBoundaryFixture();
 };
 #define sLivingActivityCoordinator LivingActivityCoordinator::instance()
 #endif

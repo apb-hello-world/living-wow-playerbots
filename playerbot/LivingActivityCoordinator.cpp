@@ -111,6 +111,10 @@ struct LivingActivityCoordinator::State {
     std::map<std::string, ActionCount> actionCounts;
     uint64_t observedActions = 0, unknownActions = 0, actionCardinalityRejected = 0;
     uint64_t nativeViewsPublished = 0, staleActorObservations = 0;
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    bool fixtureFinished = false;
+    uint64_t fixtureNext = 0;
+#endif
     Mode effective = Mode::Off;
     std::string desired = "off", blocker = "not_enabled", loadCursor;
     uint64_t policyRevision = 0, epoch = 0, nextPolicy = 0, nextWork = 0, nextLog = 0;
@@ -339,7 +343,15 @@ struct LivingActivityCoordinator::State {
 LivingActivityCoordinator& LivingActivityCoordinator::instance() {
     static LivingActivityCoordinator singleton; return singleton;
 }
-LivingActivityCoordinator::LivingActivityCoordinator() : state(new State) {}
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+#include "../tests/realm/ActivityBoundaryFixture.inc"
+#endif
+
+LivingActivityCoordinator::LivingActivityCoordinator() : state(new State) {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    RequireIsolatedNativeFixtureEnvironment();
+#endif
+}
 LivingActivityCoordinator::~LivingActivityCoordinator() = default;
 void LivingActivityCoordinator::Update() {
     if (!state->worldThreadReady.load(std::memory_order_acquire)) {
@@ -378,6 +390,9 @@ void LivingActivityCoordinator::Update() {
         sLog.outString("Living activity shadow: %s", StatusJson().c_str());
     }
     const auto deadline = started + std::chrono::milliseconds(2);
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    RunIsolatedBoundaryFixture();
+#endif
     if (std::chrono::steady_clock::now() >= deadline) return;
     ObservationQueue queues;
     queues.enabled = state->effective != Mode::Off; queues.ioPending = state->ioPending;
