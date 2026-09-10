@@ -140,4 +140,27 @@ int main() {
     assert(authority.Acquire(accepted, Movement, 7000, 1000).code == AuthorityCode::GenerationExhausted);
     accepted = Root(); accepted.context = current; accepted.mode = Mode::Observe;
     assert(authority.Acquire(accepted, Movement, 7000, 1000).code == AuthorityCode::InvalidRequest);
+    // Even an incorrectly broad native adapter cannot waive unrelated safety.
+    ExecutionAuthority exceptions; current = Context(); exceptions.Observe(current, 0);
+    for (auto lane : {Lane::Combat, Lane::Healing, Lane::Loot, Lane::Roll, Lane::LocalQuest, Lane::Social}) {
+        const auto mask = lane == Lane::Social || lane == Lane::Roll ? Mask(Effect::Social) :
+            lane == Lane::LocalQuest || lane == Lane::Loot ? Mask(Effect::Inventory) : Mask(Effect::Spell);
+        NativePermit permit{current, lane, mask, uint32_t(Safety::Combat), true};
+        const Effects native{mask, lane, true};
+        exceptions.Observe(current, uint32_t(Safety::Combat));
+        assert(exceptions.Authorize(native, current, 1, nullptr, nullptr, &permit) == AuthorityCode::Allowed);
+        for (auto unsafe : {Safety::Death, Safety::Transfer, Safety::Taxi, Safety::Transport, Safety::Falling, Safety::UnsafeOperation}) {
+            exceptions.Observe(current, uint32_t(unsafe));
+            assert(exceptions.Authorize(native, current, 1, nullptr, nullptr, &permit) == AuthorityCode::SafetyPaused);
+            auto broad = permit; broad.allowedSafety |= uint32_t(unsafe);
+            assert(exceptions.Authorize(native, current, 1, nullptr, nullptr, &broad) == AuthorityCode::EffectsDenied);
+        }
+        exceptions.Observe(current, 0); permit.effects = AllEffects;
+        assert(exceptions.Authorize(native, current, 1, nullptr, nullptr, &permit) == AuthorityCode::EffectsDenied);
+    }
+    NativePermit transport{current, Lane::Safety, Mask(Effect::Movement), uint32_t(Safety::Transport), true};
+    exceptions.Observe(current, uint32_t(Safety::Transport));
+    assert(exceptions.Authorize({Mask(Effect::Movement), Lane::Safety, true}, current, 1, nullptr, nullptr, &transport) == AuthorityCode::Allowed);
+    transport.allowedSafety |= uint32_t(Safety::Combat);
+    assert(exceptions.Authorize({Mask(Effect::Movement), Lane::Safety, true}, current, 1, nullptr, nullptr, &transport) == AuthorityCode::EffectsDenied);
 }

@@ -3,6 +3,22 @@
 #include <limits>
 
 namespace LivingActivity {
+    namespace {
+        uint32_t NativeLaneSafety(Lane lane) {
+            // A native adapter may narrow these exceptions, never expand them.
+            // Combat/healing status is not authority to act during a transfer,
+            // transport, death, falling, or another unfinished atomic operation.
+            switch (lane) {
+            case Lane::Combat: case Lane::Healing: case Lane::Loot: case Lane::Roll:
+            case Lane::LocalQuest: case Lane::Social:
+                return uint32_t(Safety::Combat);
+            case Lane::Safety:
+                return uint32_t(Safety::Death) | uint32_t(Safety::Transfer) | uint32_t(Safety::Taxi) |
+                    uint32_t(Safety::Transport) | uint32_t(Safety::Falling);
+            default: return 0;
+            }
+        }
+    }
     const char* Name(AuthorityCode code) {
         switch (code) {
 #define CASE(value, text) case AuthorityCode::value: return text
@@ -208,7 +224,8 @@ namespace LivingActivity {
             // The native adapter must validate the actual target and operation.
             // A combat/reaction flag or a model-supplied action name is no proof.
             if (!permit || !permit->validated || permit->lane != effects.lane || !(permit->world == current) ||
-                (effects.mask & ~permit->effects) || (effects.mask & ~LaneEffects(effects.lane)))
+                (effects.mask & ~permit->effects) || (permit->effects & ~LaneEffects(effects.lane)) ||
+                (permit->allowedSafety & ~NativeLaneSafety(effects.lane)))
                 return AuthorityCode::EffectsDenied;
             if (safety & ~permit->allowedSafety) return AuthorityCode::SafetyPaused;
             if (!a.operation.empty() && (effects.mask & (Mask(Effect::Inventory) | Mask(Effect::Money))))
