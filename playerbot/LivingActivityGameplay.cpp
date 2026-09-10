@@ -13,9 +13,9 @@ namespace LivingActivity {
             // Same native victim/attacker/threat evidence as party positioning.
             // Merely being 'in combat' does not authorize pulling a new enemy.
             auto engaged = [&](Unit* member) {
-                return member && member->IsInWorld() && member->GetMapId() == enemy.GetMapId() &&
+                return member && member->IsInWorld() && member->IsAlive() && member->GetMapId() == enemy.GetMapId() &&
                     member->GetInstanceId() == enemy.GetInstanceId() &&
-                    (enemy.GetVictim() == member || member->getAttackers().count(&enemy) ||
+                    (enemy.GetVictim() == member || member->GetVictim() == &enemy || member->getAttackers().count(&enemy) ||
                         enemy.getThreatManager().HasThreat(member, true));
             };
             if (engaged(&actor) || engaged(actor.GetPet())) return true;
@@ -27,6 +27,35 @@ namespace LivingActivity {
             }
             return false;
         }
+        bool NativeMemberEngaged(Player& actor, Unit& member) {
+            auto validEnemy = [&](Unit* enemy) {
+                return enemy && enemy->IsInWorld() && enemy->IsAlive() &&
+                    sServerFacade.IsHostileTo(&actor, enemy) && NativePartyEngaged(actor, *enemy);
+            };
+            if (validEnemy(member.GetVictim())) return true;
+            unsigned inspected = 0;
+            for (auto* enemy : member.getAttackers()) {
+                if (inspected++ >= 32) break;
+                if (validEnemy(enemy)) return true;
+            }
+            return false;
+        }
+    }
+    NativePermit NativeCombatMovementPermit(PlayerbotAI& ai, Unit* target) {
+        auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Combat,
+            Mask(Effect::Movement), uint32_t(Safety::Combat));
+        if (!permit.world.actor) return {};
+        auto* actor = ai.GetBot();
+        if (!actor || !target || !actor->IsInWorld() || !target->IsInWorld() ||
+            actor->GetMapId() != target->GetMapId() || actor->GetInstanceId() != target->GetInstanceId()) return {};
+        if (target->GetTypeId() == TYPEID_PLAYER && static_cast<Player*>(target)->IsBeingTeleported()) return {};
+        const bool hostile = sServerFacade.IsHostileTo(actor, target);
+        const bool ally = target != actor && target->GetTypeId() == TYPEID_PLAYER && actor->GetGroup() &&
+            static_cast<Player*>(target)->GetGroup() == actor->GetGroup() && sServerFacade.IsFriendlyTo(actor, target);
+        const bool engaged = hostile ? NativePartyEngaged(*actor, *target) :
+            (ally && (NativeMemberEngaged(*actor, *actor) || NativeMemberEngaged(*actor, *target)));
+        permit.validated = ReadyForNativeCombatMovement(*actor, *target, hostile, ally, engaged);
+        return permit.validated ? permit : NativePermit{};
     }
     Effects NativeSpellEffects(PlayerbotAI& ai, uint32_t spell, bool itemCast) {
         const auto* info = spell ? sServerFacade.LookupSpellInfo(spell) : nullptr;

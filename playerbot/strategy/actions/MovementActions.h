@@ -94,10 +94,23 @@ namespace ai
         bool GeneratePathAvoidingHazards(std::vector<WorldPosition>& movePath);
     };
 
-    class FleeAction : public MovementAction
+    // Only concrete combat-positioning actions opt in. A generic move/vendor/
+    // follow action must not borrow this lane merely because combat exists.
+    class CombatMovementAction : public MovementAction
     {
     public:
-        FleeAction(PlayerbotAI* ai, float distance = sPlayerbotAIConfig.spellDistance) : MovementAction(ai, "flee"), distance(distance) {}
+        CombatMovementAction(PlayerbotAI* ai, std::string name) : MovementAction(ai, name) {}
+        LivingActivity::Effects GetActivityEffects() const override {
+            return {LivingActivity::Mask(LivingActivity::Effect::Movement), LivingActivity::Lane::Combat, true};
+        }
+        LivingActivity::NativePermit GetNativeActivityPermit(Event&) override;
+        std::string GetTargetName() override { return "current target"; }
+    };
+
+    class FleeAction : public CombatMovementAction
+    {
+    public:
+        FleeAction(PlayerbotAI* ai, float distance = sPlayerbotAIConfig.spellDistance) : CombatMovementAction(ai, "flee"), distance(distance) {}
         virtual bool Execute(Event& event) override;
 
     private:
@@ -125,10 +138,10 @@ namespace ai
         virtual bool Execute(Event& event) override;
     };
 
-    class MoveOutOfEnemyContactAction : public MovementAction
+    class MoveOutOfEnemyContactAction : public CombatMovementAction
     {
     public:
-        MoveOutOfEnemyContactAction(PlayerbotAI* ai) : MovementAction(ai, "move out of enemy contact") {}
+        MoveOutOfEnemyContactAction(PlayerbotAI* ai) : CombatMovementAction(ai, "move out of enemy contact") {}
         virtual bool Execute(Event& event) override;
         virtual bool isUseful() override;
     };
@@ -142,10 +155,10 @@ namespace ai
         virtual bool isPossible() override;
     };
 
-    class SetBehindTargetAction : public MovementAction
+    class SetBehindTargetAction : public CombatMovementAction
     {
     public:
-        SetBehindTargetAction(PlayerbotAI* ai) : MovementAction(ai, "set behind") {}
+        SetBehindTargetAction(PlayerbotAI* ai) : CombatMovementAction(ai, "set behind") {}
         virtual bool Execute(Event& event) override;
         virtual bool isUseful() override;
         virtual bool isPossible() override;

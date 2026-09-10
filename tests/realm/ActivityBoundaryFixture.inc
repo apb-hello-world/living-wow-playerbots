@@ -106,6 +106,10 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
                 "ungrouped_native_actor_has_no_roll_exception");
             require(!NativeSpellPermit(*ai, 0, bot).validated,
                 "unknown_native_spell_has_no_gameplay_exception");
+            require(!NativeCombatMovementPermit(*ai, nullptr).validated,
+                "missing_native_focus_has_no_combat_movement_exception");
+            require(!NativeCombatMovementPermit(*ai, bot).validated,
+                "self_focus_does_not_establish_native_combat");
             target->SetForced(!originalForced); target->SetRelevance(originalRelevance ^ 0x100);
             require(target->IsForced() == originalForced && target->GetRelevance() == originalRelevance,
                 "unscoped_installed_route_rejected");

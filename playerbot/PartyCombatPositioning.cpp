@@ -1,6 +1,9 @@
 #include "playerbot/playerbot.h"
 #include "PartyCombatPositioning.h"
 #include "PartyPositioningPolicy.h"
+#include "LivingActivityCoordinator.h"
+#include "LivingActivityGameplay.h"
+#include "LivingActivityScope.h"
 #include "ServerFacade.h"
 #include "Groups/Group.h"
 #include "Entities/Pet.h"
@@ -118,8 +121,10 @@ bool RatePath(Player* bot, const std::vector<Point>& path,
 
 bool PartyCombatPositioning::Enabled(PlayerbotAI* ai)
 {
+    if (!ai) return false;
     Player* bot = ai->GetBot();
-    return ai->HasRealPlayerMaster() && bot->GetGroup() && bot->IsAlive() &&
+    return bot && bot->IsInWorld() && !bot->IsBeingTeleported() &&
+        ai->HasRealPlayerMaster() && bot->GetGroup() && bot->IsAlive() &&
         (bot->IsInCombat() || ai->IsStateActive(BotState::BOT_STATE_COMBAT)) &&
         !bot->InBattleGround() && !bot->GetTransport() && !bot->IsTaxiFlying() &&
         !bot->IsInWater() && !bot->IsFreeFlying();
@@ -157,9 +162,19 @@ bool PartyCombatPositioning::SpellRanges(PlayerbotAI* ai, Unit* target,
 bool PartyCombatPositioning::Move(PlayerbotAI* ai, Unit* target,
     float minRange, float maxRange, bool retreat)
 {
+    if (!ai) return false;
     Player* bot = ai->GetBot();
-    if (!target || target->GetMap() != bot->GetMap() || !ai->CanMove())
+    if (!bot || !bot->IsInWorld() || !bot->GetGroup() || bot->IsBeingTeleported() ||
+        !target || !target->IsInWorld() || target->GetMapId() != bot->GetMapId() ||
+        target->GetInstanceId() != bot->GetInstanceId() || !ai->CanMove())
         return false;
+    const auto nativePermit = LivingActivity::NativeCombatMovementPermit(*ai, target);
+    std::unique_ptr<LivingActivity::ExecutionScope> nativeScope;
+    if (nativePermit.validated) nativeScope.reset(new LivingActivity::ExecutionScope(nativePermit));
+    const LivingActivity::Effects effects{LivingActivity::Mask(LivingActivity::Effect::Movement),
+        nativePermit.validated ? LivingActivity::Lane::Combat : LivingActivity::Lane::Managed, true};
+    auto permitted = [&] { return sLivingActivityCoordinator.PermitEffects(*ai, effects, "native party combat positioning"); };
+    if (!permitted()) return false;
     AiObjectContext* context = ai->GetAiObjectContext();
     const Point start = CombatPoint(bot), focus = CombatPoint(target);
     const float currentRange = std::sqrt(DistanceSquared(start, focus));
@@ -360,6 +375,7 @@ bool PartyCombatPositioning::Move(PlayerbotAI* ai, Unit* target,
     }
     if (step.size() < 2)
         return false;
+    if (!permitted()) return false; // Recheck current authority after path evaluation.
     ai->StopMoving();
     bot->GetMotionMaster()->Clear(false, true);
 #ifndef MANGOSBOT_TWO

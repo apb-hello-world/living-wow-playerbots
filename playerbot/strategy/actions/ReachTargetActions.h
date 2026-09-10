@@ -10,6 +10,7 @@
 #include "GenericSpellActions.h"
 #include "playerbot/PlayerbotFactory.h"
 #include "playerbot/PartyCombatPositioning.h"
+#include "playerbot/LivingActivityGameplay.h"
 
 namespace ai
 {
@@ -174,16 +175,28 @@ namespace ai
         float distance;
     };
 
-    class ReachMeleeAction : public ReachTargetAction
-	{
+    class ReachCombatTargetAction : public ReachTargetAction
+    {
     public:
-        ReachMeleeAction(PlayerbotAI* ai) : ReachTargetAction(ai, "reach melee") {}
+        ReachCombatTargetAction(PlayerbotAI* ai, std::string name, float range = 0.0f) : ReachTargetAction(ai, name, range) {}
+        LivingActivity::Effects GetActivityEffects() const override {
+            return {LivingActivity::Mask(LivingActivity::Effect::Movement), LivingActivity::Lane::Combat, true};
+        }
+        LivingActivity::NativePermit GetNativeActivityPermit(Event&) override {
+            return LivingActivity::NativeCombatMovementPermit(*ai, GetTarget());
+        }
     };
 
-    class ReachSpellAction : public ReachTargetAction
+    class ReachMeleeAction : public ReachCombatTargetAction
 	{
     public:
-        ReachSpellAction(PlayerbotAI* ai) : ReachTargetAction(ai, "reach spell", ai->GetRange("spell")) {}
+        ReachMeleeAction(PlayerbotAI* ai) : ReachCombatTargetAction(ai, "reach melee") {}
+    };
+
+    class ReachSpellAction : public ReachCombatTargetAction
+	{
+    public:
+        ReachSpellAction(PlayerbotAI* ai) : ReachCombatTargetAction(ai, "reach spell", ai->GetRange("spell")) {}
     };
 
     class ReachPullAction : public ReachTargetAction

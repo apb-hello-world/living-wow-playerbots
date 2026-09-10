@@ -9,6 +9,7 @@
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/PlayerbotRendezvousManager.h"
 #include "playerbot/LivingActivityCoordinator.h"
+#include "playerbot/LivingActivityGameplay.h"
 #include "playerbot/ServerFacade.h"
 #include "playerbot/strategy/values/PositionValue.h"
 #include "playerbot/strategy/values/Stances.h"
@@ -21,6 +22,10 @@
 #include "playerbot/strategy/generic/CombatStrategy.h"
 
 using namespace ai;
+
+LivingActivity::NativePermit CombatMovementAction::GetNativeActivityPermit(Event&) {
+    return LivingActivity::NativeCombatMovementPermit(*ai, GetTarget());
+}
 
 void MovementAction::CreateWp(Player* wpOwner, float x, float y, float z, float o, uint32 entry, bool important)
 {

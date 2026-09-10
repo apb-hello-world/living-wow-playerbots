@@ -45,6 +45,17 @@ int main() {
     player.transferring = true; assert(!ReadyForNativeLootVote(player, &roll, 7, false)); player.transferring = false;
     player.inWorld = false; assert(!ReadyForNativeLootVote(player, &roll, 7, false)); player.inWorld = true;
     NativePlayer target;
+    assert(ReadyForNativeCombatMovement(player, target, true, false, true));
+    assert(ReadyForNativeCombatMovement(player, target, false, true, true));
+    assert(!ReadyForNativeCombatMovement(player, target, true, false, false));
+    assert(!ReadyForNativeCombatMovement(player, target, false, true, false));
+    assert(!ReadyForNativeCombatMovement(player, target, false, false, true));
+    target.alive = false; assert(!ReadyForNativeCombatMovement(player, target, true, false, true)); target.alive = true;
+    target.inWorld = false; assert(!ReadyForNativeCombatMovement(player, target, true, false, true)); target.inWorld = true;
+    ++target.map; assert(!ReadyForNativeCombatMovement(player, target, true, false, true)); --target.map;
+    ++target.instance; assert(!ReadyForNativeCombatMovement(player, target, true, false, true)); --target.instance;
+    player.transferring = true; assert(!ReadyForNativeCombatMovement(player, target, true, false, true)); player.transferring = false;
+    player.alive = false; assert(!ReadyForNativeCombatMovement(player, target, true, false, true)); player.alive = true;
     assert(ReadyForNativeHealing(player, target, true, true, true));
     assert(!ReadyForNativeHealing(player, target, false, true, true));
     assert(!ReadyForNativeHealing(player, target, true, false, true));
@@ -91,6 +102,24 @@ int main() {
         authority.FinishAtomic(lease.lease, op); publisher.Publish(authority.Read(497));
     }
     assert(ExecutionScope::Check(reader, vote, task.context, 200) == AuthorityCode::EffectsDenied);
+    const Effects combatMove{Mask(Effect::Movement), Lane::Combat, true};
+    {
+        const NativePermit movement{task.context, Lane::Combat, combatMove.mask, uint32_t(Safety::Combat), true};
+        ExecutionScope scope(movement);
+        assert(ExecutionScope::Check(reader, combatMove, task.context, 200) == AuthorityCode::Allowed);
+        assert(ExecutionScope::Check(reader, combatMove, task.context, 200, uint32_t(Safety::Combat)) == AuthorityCode::Allowed);
+        // A concrete combat mover is authorized; another generic movement
+        // action still cannot borrow its native exception or change a journey.
+        assert(ExecutionScope::Check(reader, {Mask(Effect::Movement), Lane::Managed, true}, task.context, 200) != AuthorityCode::Allowed);
+        assert(ExecutionScope::Check(reader, {Mask(Effect::TravelTarget), Lane::Combat, true}, task.context, 200) == AuthorityCode::EffectsDenied);
+        assert(ExecutionScope::Check(reader, {Mask(Effect::Inventory), Lane::Combat, true}, task.context, 200) == AuthorityCode::EffectsDenied);
+        assert(ExecutionScope::Check(reader, {Mask(Effect::Spell), Lane::Combat, true}, task.context, 200) == AuthorityCode::EffectsDenied);
+        for (const auto safety : {Safety::Death, Safety::Transfer, Safety::Taxi, Safety::Transport, Safety::Falling})
+            assert(ExecutionScope::Check(reader, combatMove, task.context, 200, uint32_t(safety)) != AuthorityCode::Allowed);
+        auto stale = task.context; ++stale.mapGeneration;
+        assert(ExecutionScope::Check(reader, combatMove, stale, 200) != AuthorityCode::Allowed);
+    }
+    assert(ExecutionScope::Check(reader, combatMove, task.context, 200) == AuthorityCode::EffectsDenied);
     const Effects spell{Mask(Effect::Spell) | Mask(Effect::Inventory), Lane::Healing, true};
     for (const auto lane : {Lane::Healing, Lane::Combat}) {
         NativePermit nativeSpell{task.context, lane, spell.mask, uint32_t(Safety::Combat), true};

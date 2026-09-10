@@ -20,6 +20,12 @@ namespace LivingActivity {
             actor.GetInstanceId() == target.GetInstanceId();
     }
     template<class NativePlayer, class NativeUnit>
+    bool ReadyForNativeCombatMovement(NativePlayer& actor, NativeUnit& target, bool hostile, bool partyAlly, bool engaged) {
+        return (hostile || partyAlly) && engaged && actor.IsInWorld() && actor.IsAlive() && !actor.IsBeingTeleported() &&
+            target.IsInWorld() && target.IsAlive() && actor.GetMapId() == target.GetMapId() &&
+            actor.GetInstanceId() == target.GetInstanceId();
+    }
+    template<class NativePlayer, class NativeUnit>
     bool ReadyForNativeOffense(NativePlayer& actor, NativeUnit& target, bool known, bool positive, bool hostile, bool engaged) {
         return known && !positive && hostile && engaged && actor.IsInWorld() && actor.IsAlive() && !actor.IsBeingTeleported() &&
             target.IsInWorld() && target.IsAlive() && actor.GetMapId() == target.GetMapId() &&
@@ -46,5 +52,8 @@ namespace LivingActivity {
     // shed the inventory effect; unclassified spells retain it.
     Effects NativeSpellEffects(PlayerbotAI& ai, uint32_t spell, bool itemCast = false);
     NativePermit NativeSpellPermit(PlayerbotAI& ai, uint32_t spell, Unit* target, Item* item = nullptr);
+    // Explicit combat-positioning callers only. Native victim/attacker/threat
+    // relations establish engagement; a combat flag or a nearby NPC does not.
+    NativePermit NativeCombatMovementPermit(PlayerbotAI& ai, Unit* target);
 }
 #endif
