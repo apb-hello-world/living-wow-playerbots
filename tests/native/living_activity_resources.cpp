@@ -1,6 +1,7 @@
 #include "LivingActivityResources.h"
 #include <cassert>
 #include <limits>
+#include <stdexcept>
 using namespace LivingActivity;
 static ResourceClaim ItemClaim(const std::string& suffix, uint32_t guid, uint64_t quantity) {
     ResourceClaim claim;
@@ -97,4 +98,33 @@ int main() {
     assert(liveBounded.InstallReceipt({{leather,0}}) == ClaimInstall::Installed);
     assert(liveBounded.InstallReceipt({{second,0}}) == ClaimInstall::Capacity);
     assert(liveBounded.Protection().UnreservedItem(497,81,2934,10) == 4);
+    Task task; task.id = task.root = leather.task; task.actor = task.context.actor = leather.actor;
+    task.source = "fixture"; task.sourceKey = "native_stock"; task.revision = 2;
+    task.createdAtMs = task.updatedAtMs = 1; task.mode = Mode::Active; task.phase = Phase::Preparing;
+    NativeResourceBalance balance{497,81,2934,10,0,"bags"};
+    const auto receipt = "ff2efbdf-f0ec-4539-b840-299847970c20";
+    auto plan = ResourceReservationWrite(task,1,receipt,{{leather,0}},{balance});
+    assert(plan.statements.size() == 4);
+    assert(plan.statements.front().find("SET actor_guid=actor_guid") != std::string::npos);
+    assert(plan.statements.at(1).find("SUM(c.quantity)") != std::string::npos);
+    assert(plan.statements.back().find("request_hash=SHA2(") != std::string::npos);
+    assert(plan.receiptQuery.find("living_activity_claim") != std::string::npos);
+    auto lowerBalance = balance; --lowerBalance.quantity;
+    assert(plan.receiptQuery != ResourceReservationWrite(task,1,receipt,{{leather,0}},{lowerBalance}).receiptQuery);
+    auto rejects = [&](const std::vector<ClaimReceiptChange>& changes,const std::vector<NativeResourceBalance>& balances) {
+        try { ResourceReservationWrite(task,1,receipt,changes,balances); }
+        catch (const std::invalid_argument&) { return true; }
+        return false;
+    };
+    assert(rejects({},{}));
+    assert(rejects({{leather,0}},{}));
+    assert(rejects({{leather,0},{leather,0}},{balance}));
+    assert(rejects({{leather,0}},{balance,balance}));
+    auto otherActor = balance; ++otherActor.actor;
+    assert(rejects({{leather,0}},{otherActor}));
+    auto consumption = leather; consumption.state = "consumed";
+    assert(rejects({{consumption,0}},{balance}));
+    assert(rejects({{transferred,0}},{}));
+    task.phase = Phase::Executing;
+    assert(rejects({{leather,0}},{balance}));
 }
