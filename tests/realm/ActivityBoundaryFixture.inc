@@ -123,6 +123,10 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
                 SameLease(state->authority.Read(binding.first).lease, second.lease), "stale_release_preserves_new_owner");
             human.ownerGeneration = second.lease.generation;
             action.task = action.rootTask = human.id; action.ownerGeneration = second.lease.generation;
+            {
+                ExecutionScope scope(human, action); target->SetForced(originalForced);
+                require(target->IsForced() == originalForced, "replacement_owner_can_mutate");
+            }
             Task child = human; child.id = NewId(); child.root = child.parent = human.id;
             child.checkpoint.step = "fixture_dependent_service";
             ActionContext childAction = action; childAction.task = child.id;
@@ -146,8 +150,7 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
                 require(target->IsForced() == originalForced, "finished_child_cannot_mutate_parent_route");
             }
             {
-                ExecutionScope scope(human, action); target->SetForced(originalForced);
-                require(target->IsForced() == originalForced, "replacement_owner_can_mutate");
+                ExecutionScope scope(human, action);
                 state->publishedPolicyRevision.store(originalPolicy + 1, std::memory_order_release);
                 target->SetForced(!originalForced);
                 require(target->IsForced() == originalForced, "fresh_policy_revocation_rejects_cached_grant");
