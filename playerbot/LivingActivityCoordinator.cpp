@@ -128,6 +128,7 @@ struct LivingActivityCoordinator::State {
     ObjectGuid gameplayOriginalSelection;
     WorldContext gameplayContext;
     ActivityLease gameplayLease;
+    std::string gameplayAtomicFixture;
 #endif
     Mode effective = Mode::Off;
     std::string desired = "off", blocker = "not_enabled", loadCursor;

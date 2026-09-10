@@ -18,8 +18,24 @@ namespace {
         int vote = 7;
         int GetPlayerVote(unsigned guid) const { assert(guid == 497); return vote; }
     };
+    struct NativeSpell {
+        uint32_t Effect[3]{}, EffectTriggerSpell[3]{};
+        int32_t Reagent[8]{};
+    };
 }
 int main() {
+    assert(SpellEffects(true) == Mask(Effect::Spell));
+    assert(SpellEffects(false) == (Mask(Effect::Spell) | Mask(Effect::Inventory)));
+    NativeSpell direct;
+    assert(!InventoryFreeDirectHeal(direct, true, false, 10, 67));
+    direct.Effect[0] = 10;
+    assert(InventoryFreeDirectHeal(direct, true, false, 10, 67));
+    assert(!InventoryFreeDirectHeal(direct, false, false, 10, 67));
+    assert(!InventoryFreeDirectHeal(direct, true, true, 10, 67));
+    direct.Reagent[7] = 1; assert(!InventoryFreeDirectHeal(direct, true, false, 10, 67)); direct.Reagent[7] = 0;
+    direct.Effect[2] = 24; assert(!InventoryFreeDirectHeal(direct, true, false, 10, 67)); direct.Effect[2] = 0;
+    direct.EffectTriggerSpell[1] = 1; assert(!InventoryFreeDirectHeal(direct, true, false, 10, 67)); direct.EffectTriggerSpell[1] = 0;
+    direct.Effect[0] = 67; assert(InventoryFreeDirectHeal(direct, true, false, 10, 67));
     NativePlayer player; NativeRoll roll;
     assert(ReadyForNativeLootVote(player, &roll, 7, false));
     assert(!ReadyForNativeLootVote(player, &roll, 7, true));
@@ -90,6 +106,14 @@ int main() {
         assert(authority.BeginAtomic(lease.lease, op, 200).code == AuthorityCode::Allowed);
         publisher.Publish(authority.Read(497));
         assert(ExecutionScope::Check(reader, effect, task.context, 200) == AuthorityCode::AtomicPending);
+        const NativePermit freeHeal{task.context, Lane::Healing, SpellEffects(true), uint32_t(Safety::Combat), true};
+        {
+            ExecutionScope heal(freeHeal);
+            // A database receipt for an unrelated purchase cannot stop a
+            // reagent-free heal. Its scope still cannot consume any inventory.
+            assert(ExecutionScope::Check(reader, {SpellEffects(true), Lane::Healing, true}, task.context, 200) == AuthorityCode::Allowed);
+            assert(ExecutionScope::Check(reader, {SpellEffects(false), Lane::Healing, true}, task.context, 200) == AuthorityCode::EffectsDenied);
+        }
         authority.FinishAtomic(lease.lease, op); publisher.Publish(authority.Read(497));
     }
     permit.validated = false;

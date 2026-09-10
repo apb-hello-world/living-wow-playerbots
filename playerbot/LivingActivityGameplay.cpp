@@ -28,9 +28,16 @@ namespace LivingActivity {
             return false;
         }
     }
-    NativePermit NativeSpellPermit(PlayerbotAI& ai, uint32_t spell, Unit* target) {
+    Effects NativeSpellEffects(PlayerbotAI& ai, uint32_t spell, bool itemCast) {
+        const auto* info = spell ? sServerFacade.LookupSpellInfo(spell) : nullptr;
+        const bool freeHeal = info && ai.GetBot() && InventoryFreeDirectHeal(*info, ai.GetBot()->HasSpell(spell),
+            itemCast, SPELL_EFFECT_HEAL, SPELL_EFFECT_HEAL_MAX_HEALTH);
+        return {SpellEffects(freeHeal), Lane::Managed, true};
+    }
+    NativePermit NativeSpellPermit(PlayerbotAI& ai, uint32_t spell, Unit* target, Item* item) {
+        const auto effects = NativeSpellEffects(ai, spell, item != nullptr);
         auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Healing,
-            Mask(Effect::Spell) | Mask(Effect::Inventory), uint32_t(Safety::Combat));
+            effects.mask, uint32_t(Safety::Combat));
         if (!permit.world.actor) return {};
         Player* actor = ai.GetBot();
         const auto* info = spell ? sServerFacade.LookupSpellInfo(spell) : nullptr;
@@ -42,7 +49,7 @@ namespace LivingActivity {
             sServerFacade.IsHostileTo(actor, target), NativePartyEngaged(*actor, *target))) return {};
         // Ordinary native cast checks retain reagent, mana, range, cooldown,
         // stance and target requirements. They do not execute the spell.
-        if (!ai.CanCastSpell(spell, target, uint8((1u << MAX_EFFECT_INDEX) - 1))) return {};
+        if (!ai.CanCastSpell(spell, target, uint8((1u << MAX_EFFECT_INDEX) - 1), true, item)) return {};
         permit.lane = healing ? Lane::Healing : Lane::Combat;
         permit.validated = permit.world.actor == actor->GetGUIDLow();
         return permit;

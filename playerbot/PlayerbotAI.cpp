@@ -4932,12 +4932,11 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget, bool
 
     // Authorize before selection/facing, movement-reset or native cast work.
     // Direct callers and engine-dispatched actions share this same boundary.
-    const auto nativePermit = LivingActivity::NativeSpellPermit(*this, spellId, target);
+    const auto nativePermit = LivingActivity::NativeSpellPermit(*this, spellId, target, itemTarget);
     std::unique_ptr<LivingActivity::ExecutionScope> nativeSpellScope;
     if (nativePermit.validated) nativeSpellScope.reset(new LivingActivity::ExecutionScope(nativePermit));
-    const LivingActivity::Effects effects{LivingActivity::Mask(LivingActivity::Effect::Spell) |
-        LivingActivity::Mask(LivingActivity::Effect::Inventory),
-        nativePermit.validated ? nativePermit.lane : LivingActivity::Lane::Managed, true};
+    auto effects = LivingActivity::NativeSpellEffects(*this, spellId, itemTarget != nullptr);
+    if (nativePermit.validated) effects.lane = nativePermit.lane;
     if (!sLivingActivityCoordinator.PermitEffects(*this, effects, "native unit spell")) return false;
 
     Pet* pet = bot->GetPet();

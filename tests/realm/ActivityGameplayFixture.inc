@@ -38,6 +38,7 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         report.put("actor", selected); report.put("known_healing_spell", spell);
         report.put("native_heal_packets", state->gameplayHealPackets.load(std::memory_order_acquire));
         report.put("native_heal_amount", state->gameplayHealAmount.load(std::memory_order_acquire));
+        report.put("simulated_pending_atomic_receipt", !state->gameplayAtomicFixture.empty());
         report.put("health_before", state->gameplaySetupHealth);
         report.put("health_after", bot ? bot->GetHealth() : 0);
         report.put("mana_before", state->gameplayOriginalMana);
@@ -55,6 +56,8 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
                 bot->GetMoney() == state->gameplayOriginalMoney;
         }
         if (state->gameplayLease.actor) {
+            if (!state->gameplayAtomicFixture.empty())
+                restored = state->authority.FinishAtomic(state->gameplayLease, state->gameplayAtomicFixture).code == AuthorityCode::Allowed && restored;
             restored = state->authority.Release(state->gameplayLease).code == AuthorityCode::Released && restored;
             const auto binding = state->bindings.find(selected);
             if (binding != state->bindings.end()) binding->second.publisher.Publish(state->authority.Read(selected));
@@ -110,7 +113,8 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
             }
             for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i) reagent = reagent || spell->Reagent[i] > 0;
             if (directHeal && !other && !reagent && spell->powerType == POWER_MANA &&
-                (spell->manaCost || spell->ManaCostPercentage) && NativeSpellPermit(*ai, known.first, bot).validated) {
+                (spell->manaCost || spell->ManaCostPercentage) && NativeSpellEffects(*ai, known.first).mask == SpellEffects(true) &&
+                NativeSpellPermit(*ai, known.first, bot).validated) {
                 spellId = known.first; break;
             }
         }
@@ -135,6 +139,13 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         state->gameplayFixtureSpell.store(spellId, std::memory_order_release);
         state->gameplayFixtureActor.store(binding.first, std::memory_order_release);
         bot->SetHealth(state->gameplaySetupHealth);
+        // Test-only fault injection: a held native operation receipt, not an
+        // actual purchase or a fabricated operation journal completion.
+        state->gameplayAtomicFixture = NewId();
+        if (state->authority.BeginAtomic(grant.lease, state->gameplayAtomicFixture, monotonic).code != AuthorityCode::Allowed) {
+            finish(false, "simulated_atomic_hold_rejected"); return;
+        }
+        binding.second.publisher.Publish(state->authority.Read(binding.first));
         const bool original = state->enforceEffects.load(std::memory_order_acquire);
         bool started = false;
         {

@@ -2,6 +2,7 @@
 #include "playerbot/strategy/Action.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/PlayerbotAI.h"
+#include "playerbot/LivingActivityGameplay.h"
 
 namespace ai
 {
@@ -13,8 +14,7 @@ namespace ai
         LivingActivity::Effects GetActivityEffects() const override {
             // The native spell validator decides whether this is combat,
             // healing or a profession operation; a spell name is not permission.
-            return {LivingActivity::Mask(LivingActivity::Effect::Spell) |
-                LivingActivity::Mask(LivingActivity::Effect::Inventory), LivingActivity::Lane::Managed, true};
+            return LivingActivity::NativeSpellEffects(*ai, GetSpellID());
         }
         virtual ActionThreatType getThreatType() override { return ActionThreatType::ACTION_THREAT_SINGLE; }
         virtual bool Execute(Event& event) override;
