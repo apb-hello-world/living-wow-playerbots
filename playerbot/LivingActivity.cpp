@@ -266,7 +266,7 @@ namespace LivingActivity
                 "UPDATE living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id "
                 "SET o.state='reconciling',o.updated_at_ms=" + Number(task.updatedAtMs) +
                 " WHERE t.task_id=" + SqlValue(task.id) + " AND t.last_receipt_id=" + SqlValue(receipt) +
-                " AND o.state='intent'");
+                " AND o.state='intent' AND EXISTS (" + plan.receiptQuery + ")");
         }
         return plan;
     }
@@ -284,7 +284,8 @@ namespace LivingActivity
             SqlValue(before) + ",'{}',''," + Number(task.updatedAtMs) + ',' + Number(task.updatedAtMs) +
             " FROM living_activity_task t JOIN living_activity_transition r ON r.transition_id=t.last_receipt_id "
             "WHERE t.task_id=" + SqlValue(task.id) + " AND t.last_receipt_id=" + SqlValue(op) +
-            " AND t.revision=" + Number(task.revision) + " ON DUPLICATE KEY UPDATE operation_id=operation_id");
+            " AND t.revision=" + Number(task.revision) + " AND EXISTS (" + plan.receiptQuery +
+            ") ON DUPLICATE KEY UPDATE operation_id=operation_id");
         // Acknowledgement confirms persistence only. The executor must also
         // revalidate native context and inspect operation state before execution.
         plan.receiptQuery += " AND EXISTS (SELECT 1 FROM living_activity_operation o WHERE o.operation_id=" +
@@ -312,12 +313,17 @@ namespace LivingActivity
             SqlValue(outcome.nativeReference) + ':' + SqlValue(outcome.evidence) + ':' + SqlValue(after));
         plan.statements.front() += " AND mode='active' AND phase IN ('executing','reconciling') "
             "AND EXISTS (SELECT 1 FROM living_activity_operation o WHERE " + operationWhere + ')';
+        // Guard the dependent mutation with the SAME request fingerprint as
+        // the task transition. A reused receipt may still be its last receipt
+        // after a CAS rejection; checking only that ID would let changed retry
+        // contents rewrite uncertain evidence even though acknowledgement fails.
         plan.statements.push_back("UPDATE living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id "
             "SET o.state=" + SqlValue(state) + ",o.native_reference=" +
             SqlValue(outcome.nativeReference) + ",o.after_state=" + SqlValue(after) + ",o.evidence_code=" +
             SqlValue(outcome.evidence) + ",o.updated_at_ms=" + Number(task.updatedAtMs) +
             " WHERE o.operation_id=" + SqlValue(outcome.id) + " AND t.last_receipt_id=" + SqlValue(receipt) +
-            " AND t.revision=" + Number(task.revision) + " AND o.state IN ('intent','reconciling')");
+            " AND t.revision=" + Number(task.revision) + " AND o.state IN ('intent','reconciling') "
+            "AND EXISTS (" + plan.receiptQuery + ")");
         plan.receiptQuery += " AND EXISTS (SELECT 1 FROM living_activity_operation o WHERE o.operation_id=" +
             SqlValue(outcome.id) + " AND o.task_id=" + SqlValue(task.id) + " AND o.task_revision=" +
             Number(outcome.taskRevision) + " AND o.kind=" + SqlValue(outcome.kind) + " AND o.state=" +

@@ -142,6 +142,25 @@ int main() {
     assert(!db.Write(uncertainty, true)); assert(db.Write(uncertainty)); assert(db.Write(uncertainty));
     assert(db.Scalar("SELECT native_reference FROM living_activity_operation") == "fixture-mail:81");
     assert(db.Scalar("SELECT after_state FROM living_activity_operation") == uncertainState);
+    // A reused receipt with changed contents must not edit an uncertain row,
+    // even if the final acknowledgement correctly rejects the changed hash.
+    auto rewritten = uncertain;
+    rewritten.nativeReference = "fixture-mail:999";
+    rewritten.evidence = "fixture_changed_receipt";
+    assert(!db.Write(OperationOutcomeWrite(uncertainTask, executing.revision, rewritten,
+        "ff2efbdf-f0ec-4539-b840-299847970c16", "{\"mail\":999}")));
+    assert(db.Scalar("SELECT native_reference FROM living_activity_operation") == "fixture-mail:81");
+    assert(db.Scalar("SELECT after_state FROM living_activity_operation") == uncertainState);
+    assert(db.Scalar("SELECT evidence_code FROM living_activity_operation") == uncertain.evidence);
+    assert(db.ReceiptPresent(uncertainty));
+    auto forged = uncertainTask; forged.phase = Phase::Verifying;
+    rewritten.state = OperationState::Verified;
+    assert(!db.Write(OperationOutcomeWrite(forged, executing.revision, rewritten,
+        "ff2efbdf-f0ec-4539-b840-299847970c16", "{\"mail\":999}")));
+    assert(db.Scalar("SELECT state FROM living_activity_operation") == "reconciling");
+    assert(db.Scalar("SELECT native_reference FROM living_activity_operation") == "fixture-mail:81");
+    assert(db.Scalar("SELECT after_state FROM living_activity_operation") == uncertainState);
+    assert(db.ReceiptPresent(uncertainty));
     // The acknowledgement covers the observed evidence, not just its label.
     assert(db.Execute("UPDATE living_activity_operation SET after_state='{}'"));
     assert(!db.ReceiptPresent(uncertainty));
