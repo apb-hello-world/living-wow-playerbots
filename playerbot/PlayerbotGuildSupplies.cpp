@@ -124,6 +124,7 @@ struct PlayerbotGuildSupplies::State {
     std::map<uint64,Delivery> deliveries;
     std::map<uint32,uint64> moving;
     std::set<uint32> protectedItems;
+    LivingActivity::LegacyResourcePublisher protection;
     std::vector<Service> services;
     std::map<uint32,bool> enabled;
     std::set<uint32> moneyEnabled;
@@ -159,6 +160,17 @@ struct PlayerbotGuildSupplies::State {
         Release(d);d.phase=phase;d.blocker=reason;
         CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET phase='%s',blocker='%s',updated_at=%u WHERE delivery_id=%llu",phase,reason,now,(unsigned long long)d.id);
         InvalidateItems(Online(d.carrier));
+        PublishProtection();
+    }
+    void PublishProtection() {
+        LivingActivity::LegacyResourceView view;
+        view.items=protectedItems;
+        view.items.erase(0);
+        for (const auto& pair:deliveries) {
+            const auto& d=pair.second;
+            if (!SupplyTerminal(d.phase) && d.carrier && d.entry) view.entries.emplace(d.carrier,d.entry);
+        }
+        protection.Replace(std::move(view));
     }
     void Reload(uint32 now) {
         load=now+15;enabled.clear();
@@ -191,6 +203,7 @@ struct PlayerbotGuildSupplies::State {
             if(d.phase=="carried"&&d.mail&&Bot(carrier)&&carrier->IsInWorld())
                 for(auto* item:Inventory(carrier)) if(item&&item->GetEntry()==d.entry) protectedItems.insert(item->GetGUIDLow());
         }
+        PublishProtection();
     }
     bool Busy(uint32 guid) const {for(const auto& d:deliveries) if(!SupplyTerminal(d.second.phase)&&(d.second.carrier==guid||d.second.donor==guid)) return true;return false;}
     const Service* Destination(Player* p,bool mail,uint32 npcFlag=0) const {
@@ -271,12 +284,13 @@ PlayerbotGuildSupplies::PlayerbotGuildSupplies():state_(new State) {}
 PlayerbotGuildSupplies::~PlayerbotGuildSupplies()=default;
 PlayerbotGuildSupplies& PlayerbotGuildSupplies::instance(){static PlayerbotGuildSupplies value;return value;}
 bool PlayerbotGuildSupplies::ReservedEntry(uint32 player,uint32 entry) const {
-    for(const auto& pair:state_->deliveries) {const auto& d=pair.second;
-        if(!SupplyTerminal(d.phase)&&d.carrier==player&&d.entry==entry) return true;}
-    return false;
+    return ReservedItemsView()->Entry(player,entry);
 }
 bool PlayerbotGuildSupplies::Reserved(uint32 item) const {
-    return state_->protectedItems.count(item)!=0;
+    return ReservedItemsView()->Item(item);
+}
+std::shared_ptr<const LivingActivity::LegacyResourceView> PlayerbotGuildSupplies::ReservedItemsView() const {
+    return state_->protection.Inspect();
 }
 bool PlayerbotGuildSupplies::OwnsMovement(uint32 guid) const {
     auto moving=state_->moving.find(guid);
@@ -344,6 +358,7 @@ void PlayerbotGuildSupplies::RecordMailed(uint32 sender,uint32 receiver,Item* it
     CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET carrier_guid=%u,mail_id=%u,phase='mailed',blocker='mail_delivery_delay',updated_at=%u WHERE delivery_id=%llu AND phase='carried'",receiver,mail,uint32(time(nullptr)),(unsigned long long)d.id);
     state_->mailRecorded=true;
     d.carrier=receiver;d.mail=mail;d.phase="mailed";d.operations=0;d.service=0;
+    state_->PublishProtection();
     InvalidateItems(source);InvalidateItems(Online(receiver));
 }
 void PlayerbotGuildSupplies::RecordCollected(uint32 receiver,uint32 mail,uint32 item,uint32 count) {
@@ -353,6 +368,7 @@ void PlayerbotGuildSupplies::RecordCollected(uint32 receiver,uint32 mail,uint32 
         Player* carrier=Online(receiver);InvalidateItems(carrier);
         if(Bot(carrier)) for(auto* held:Inventory(carrier))
             if(held&&held->GetEntry()==d.entry) state_->protectedItems.insert(held->GetGUIDLow());
+        state_->PublishProtection();
         state_->load=0;break;
     }
 }

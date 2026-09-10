@@ -449,7 +449,7 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
     transaction.preparingSince = std::chrono::steady_clock::now();
     transaction.expires = std::chrono::steady_clock::now() + std::chrono::seconds(proposal.delivery == "mail" ? 1800 : (proposal.delivery == "meeting" ? 300 : 60));
     transactions[transaction.transactionId] = transaction;
-    if (itemGuid) reservedItems[itemGuid] = transaction.transactionId;
+    if (itemGuid) ReserveItem(itemGuid, transaction.transactionId);
     if (buying) reservedMoney[bot->GetGUIDLow()] += price;
     if (quote) quote->state = "accepted";
     if (crafting)
@@ -517,7 +517,20 @@ uint32 PlayerbotActionBroker::ReservedCopper(uint32 botGuid) const
 
 bool PlayerbotActionBroker::IsItemReserved(uint32 itemGuid) const
 {
-    return reservedItems.find(itemGuid) != reservedItems.end() || sGuildSupplies.Reserved(itemGuid);
+    return ReservedItemsView()->Item(itemGuid) || sGuildSupplies.Reserved(itemGuid);
+}
+
+void PlayerbotActionBroker::ReserveItem(uint32 guid,const std::string& transaction)
+{
+    if (!guid) return;
+    itemProtection.SetItem(guid,true);
+    reservedItems[guid]=transaction;
+}
+
+void PlayerbotActionBroker::ReleaseItem(uint32 guid)
+{
+    reservedItems.erase(guid);
+    itemProtection.SetItem(guid,false);
 }
 
 bool PlayerbotActionBroker::PopulateTrade(Player* bot, Player* trader)
@@ -557,10 +570,10 @@ bool PlayerbotActionBroker::PopulateTrade(Player* bot, Player* trader)
                 !sGuildSupplies.Reserved(candidate->GetGUIDLow()) &&
                 (reservation == reservedItems.end() || reservation->second == transaction->transactionId))
             {
-                reservedItems.erase(transaction->itemGuid);
+                ReleaseItem(transaction->itemGuid);
                 item = candidate;
                 transaction->itemGuid = candidate->GetGUIDLow();
-                reservedItems[transaction->itemGuid] = transaction->transactionId;
+                ReserveItem(transaction->itemGuid, transaction->transactionId);
                 break;
             }
         }
@@ -578,10 +591,10 @@ bool PlayerbotActionBroker::PopulateTrade(Player* bot, Player* trader)
             CancelTrade(bot, trader, "could not prepare the promised quantity");
             return false;
         }
-        reservedItems.erase(transaction->itemGuid);
+        ReleaseItem(transaction->itemGuid);
         item = split;
         transaction->itemGuid = split->GetGUIDLow();
-        reservedItems[transaction->itemGuid] = transaction->transactionId;
+        ReserveItem(transaction->itemGuid, transaction->transactionId);
     }
 
     // Bot-initiated trades create TradeData before the human has opened the window.
@@ -682,7 +695,7 @@ void PlayerbotActionBroker::CompleteTrade(Player* bot, Player* trader)
     Transaction* transaction = bot && trader ? Find(bot->GetGUIDLow(), trader->GetGUIDLow()) : nullptr;
     if (!transaction) return;
     transaction->state = "completed";
-    reservedItems.erase(transaction->itemGuid);
+    ReleaseItem(transaction->itemGuid);
     if (transaction->type == "buy_item" || transaction->type == "accept_player_gift") reservedMoney[transaction->botGuid] -= std::min(reservedMoney[transaction->botGuid], transaction->priceCopper);
     Report(*transaction);
     sPlayerbotRendezvousManager.BeginDeparture(transaction->botGuid, transaction->playerGuid, "trade_completed");
@@ -694,7 +707,7 @@ void PlayerbotActionBroker::CancelTrade(Player* bot, Player* trader, const std::
     if (!transaction) return;
     transaction->state = "cancelled";
     transaction->failureReason = reason;
-    reservedItems.erase(transaction->itemGuid);
+    ReleaseItem(transaction->itemGuid);
     if (transaction->type == "buy_item" || transaction->type == "accept_player_gift") reservedMoney[transaction->botGuid] -= std::min(reservedMoney[transaction->botGuid], transaction->priceCopper);
     Report(*transaction);
     sPlayerbotRendezvousManager.BeginDeparture(transaction->botGuid, transaction->playerGuid, reason);
@@ -714,7 +727,7 @@ void PlayerbotActionBroker::CancelTrade(Player* bot, const std::string& reason)
     if (!transaction) return;
     transaction->state = "cancelled";
     transaction->failureReason = reason;
-    reservedItems.erase(transaction->itemGuid);
+    ReleaseItem(transaction->itemGuid);
     if (transaction->type == "buy_item" || transaction->type == "accept_player_gift") reservedMoney[transaction->botGuid] -= std::min(reservedMoney[transaction->botGuid], transaction->priceCopper);
     Report(*transaction);
     sPlayerbotRendezvousManager.BeginDeparture(transaction->botGuid, transaction->playerGuid, reason);
@@ -745,10 +758,10 @@ void PlayerbotActionBroker::Update()
                     !sGuildSupplies.Reserved(candidate->GetGUIDLow()) &&
                     (reservation == reservedItems.end() || reservation->second == transaction.transactionId))
                 {
-                    reservedItems.erase(transaction.itemGuid);
+                    ReleaseItem(transaction.itemGuid);
                     item = candidate;
                     transaction.itemGuid = candidate->GetGUIDLow();
-                    reservedItems[transaction.itemGuid] = transaction.transactionId;
+                    ReserveItem(transaction.itemGuid, transaction.transactionId);
                     break;
                 }
             }
@@ -780,7 +793,7 @@ void PlayerbotActionBroker::Update()
                 transaction.failureReason = "reserved item is no longer tradeable";
             else
                 transaction.failureReason = "requested trade resources became unavailable";
-            reservedItems.erase(transaction.itemGuid);
+            ReleaseItem(transaction.itemGuid);
             if (buying) reservedMoney[transaction.botGuid] -= std::min(reservedMoney[transaction.botGuid], transaction.priceCopper);
             Report(transaction);
             sPlayerbotRendezvousManager.BeginDeparture(transaction.botGuid, transaction.playerGuid, transaction.failureReason);
@@ -793,7 +806,7 @@ void PlayerbotActionBroker::Update()
             if (created)
             {
                 transaction.itemGuid = created->GetGUIDLow();
-                reservedItems[transaction.itemGuid] = transaction.transactionId;
+                ReserveItem(transaction.itemGuid, transaction.transactionId);
                 if (transaction.delivery == "direct" && bot->IsWithinDistInMap(player, INTERACTION_DISTANCE))
                 {
                     transaction.state = "offered";
@@ -864,13 +877,13 @@ void PlayerbotActionBroker::Update()
                 if (!FindBrokerItem(bot, transaction.itemEntry, transaction.itemGuid))
                 {
                     transaction.state = "completed";
-                    reservedItems.erase(transaction.itemGuid);
+                    ReleaseItem(transaction.itemGuid);
                 }
                 else
                 {
                     transaction.state = "failed";
                     transaction.failureReason = "mail draft was rejected";
-                    reservedItems.erase(transaction.itemGuid);
+                    ReleaseItem(transaction.itemGuid);
                 }
                 Report(transaction);
                 continue;
@@ -936,7 +949,7 @@ void PlayerbotActionBroker::Update()
         {
             transaction.state = "expired";
             transaction.failureReason = "transaction expired";
-            reservedItems.erase(transaction.itemGuid);
+            ReleaseItem(transaction.itemGuid);
             if (buying) reservedMoney[transaction.botGuid] -= std::min(reservedMoney[transaction.botGuid], transaction.priceCopper);
             Report(transaction);
             sPlayerbotRendezvousManager.BeginDeparture(transaction.botGuid, transaction.playerGuid, "transaction_expired");

@@ -1,8 +1,37 @@
 #include "LivingActivitySpellResources.h"
 #include "LivingActivityResources.h"
+#include "LivingLegacyResourceView.h"
 #include <cassert>
+#include <thread>
 using namespace LivingActivity;
 int main() {
+    LegacyResourcePublisher legacyIndex;
+    const auto oldLegacy=legacyIndex.Inspect();
+    legacyIndex.SetItem(20,true);
+    assert(!oldLegacy->Item(20) && legacyIndex.Inspect()->Item(20));
+    LegacyResourceView source;
+    source.items.insert(21); source.entries.emplace(2,17030);
+    legacyIndex.Replace(source);
+    assert(!legacyIndex.Inspect()->Item(20) && legacyIndex.Inspect()->Item(21));
+    assert(legacyIndex.Inspect()->Entry(2,17030) && !legacyIndex.Inspect()->Entry(3,17030));
+    std::atomic<bool> finished{false};
+    std::thread observer([&] {
+        while (!finished.load()) {
+            auto snapshot=legacyIndex.Inspect();
+            assert(snapshot->Item(21) && snapshot->Entry(2,17030));
+            // A writer cannot mutate an already returned view.
+            const auto copy=snapshot->items;
+            std::this_thread::yield();
+            assert(copy==snapshot->items);
+        }
+    });
+    std::thread one([&] {for(uint32_t i=100;i<200;++i) legacyIndex.SetItem(i,true);});
+    std::thread two([&] {for(uint32_t i=200;i<300;++i) legacyIndex.SetItem(i,true);});
+    one.join(); two.join(); finished.store(true); observer.join();
+    for(uint32_t i=100;i<300;++i) assert(legacyIndex.Inspect()->Item(i));
+    const auto heldLegacy=legacyIndex.Inspect();
+    legacyIndex.SetItem(20,false); legacyIndex.SetItem(21,false);
+    assert(heldLegacy->Item(21) && !legacyIndex.Inspect()->Item(21));
     assert(CheckUnclaimedReagents(2,{}, {},nullptr) == ReagentReadiness::Ready);
     const std::vector<ReagentNeed> needs={{17030,1}};
     const std::vector<ReagentStack> bags={{20,17030,5},{21,17030,10},{22,2770,4}};

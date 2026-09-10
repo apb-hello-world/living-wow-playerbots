@@ -89,10 +89,12 @@ namespace LivingActivity {
                     reagents.push_back({uint32_t(info->Reagent[i]),uint32_t(info->ReagentCount[i])});
         if (!reagents.empty()) {
             std::vector<ReagentStack> bags;
+            const auto trade=sPlayerbotActionBroker.ReservedItemsView();
+            const auto supply=sGuildSupplies.ReservedItemsView();
             for (auto* stack : ai.InventoryParseItems("inventory",IterateItemsMask::ITERATE_ITEMS_IN_BAGS))
                 if (stack) bags.push_back({stack->GetGUIDLow(),stack->GetEntry(),stack->GetCount(),
-                    sPlayerbotActionBroker.IsItemReserved(stack->GetGUIDLow()) ||
-                    sGuildSupplies.ReservedEntry(actor->GetGUIDLow(),stack->GetEntry())});
+                    trade->Item(stack->GetGUIDLow()) || supply->Item(stack->GetGUIDLow()) ||
+                    supply->Entry(actor->GetGUIDLow(),stack->GetEntry())});
             const auto protection=sLivingActivityCoordinator.ResourceReservations().Inspect();
             if (CheckUnclaimedReagents(actor->GetGUIDLow(),reagents,bags,protection.get()) != ReagentReadiness::Ready)
                 return {};

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include "LivingLegacyResourceView.h"
 class Item;
 class Player;
 // Single world-thread executor. Native transaction hooks persist delivery proof.
@@ -12,6 +13,7 @@ public:
     void Update();
     bool Reserved(uint32_t item) const;
     bool ReservedEntry(uint32_t player,uint32_t entry) const;
+    std::shared_ptr<const LivingActivity::LegacyResourceView> ReservedItemsView() const;
     bool OwnsMovement(uint32_t player) const;
     bool AllowsMovement(uint32_t player,const std::string& action) const;
     uint32_t InTransit(uint32_t guild,const std::string& goal,std::string& status) const;

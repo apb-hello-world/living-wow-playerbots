@@ -6,6 +6,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "LivingLegacyResourceView.h"
 
 class Player;
 
@@ -44,6 +45,7 @@ public:
     PlayerbotActionResult Create(const ChatDirectorActionProposal& proposal, const ChatDirectorEvent& event);
     bool Authorizes(Player* bot, Player* trader) const;
     bool IsItemReserved(uint32 itemGuid) const;
+    std::shared_ptr<const LivingActivity::LegacyResourceView> ReservedItemsView() const { return itemProtection.Inspect(); }
     uint32 ReservedCopper(uint32 botGuid) const;
     bool PopulateTrade(Player* bot, Player* trader);
     bool ValidateTrade(Player* bot, Player* trader);
@@ -93,6 +95,9 @@ private:
     Transaction* Find(uint32 botGuid, uint32 playerGuid);
     const Transaction* Find(uint32 botGuid, uint32 playerGuid) const;
     void Report(const Transaction& transaction) const;
+    void ReserveItem(uint32 guid,const std::string& transaction);
+    void ReleaseItem(uint32 guid);
+    LivingActivity::LegacyResourcePublisher itemProtection;
     std::map<std::string, Transaction> transactions;
     std::map<uint32, std::string> reservedItems;
     std::map<uint32, uint32> reservedMoney;
