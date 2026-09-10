@@ -63,7 +63,7 @@ int main() {
     const auto uncertainty = OperationOutcomeWrite(reconciling, request.transition.task.revision, proof,
         "ff2efbdf-f0ec-4539-b840-299847970c02", outcome.afterState);
     assert(uncertainty.receiptQuery.find("after_state=") != std::string::npos);
-    assert(uncertainty.statements.back().find("native_mail:81") != std::string::npos);
+    assert(uncertainty.statements.back().find(SqlValue("native_mail:81")) != std::string::npos);
     auto observed = proof; observed.evidence = "different_uncertainty";
     assert(!SameRequest(uncertainty, OperationOutcomeWrite(reconciling, request.transition.task.revision, observed,
         "ff2efbdf-f0ec-4539-b840-299847970c02", outcome.afterState)));
