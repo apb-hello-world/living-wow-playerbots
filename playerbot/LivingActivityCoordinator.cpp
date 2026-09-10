@@ -544,6 +544,20 @@ void LivingActivityCoordinator::ObserveAction(PlayerbotAI& ai, const Effects& ef
     PermitEffects(ai, effects, action);
 }
 
+NativePermit LivingActivityCoordinator::NativeActionContext(PlayerbotAI& ai, Lane lane,
+    uint32_t effects, uint32_t allowedSafety) const {
+    NativePermit result;
+    Player* bot = ai.GetBot();
+    const auto view = ai.activityPermissions.Inspect();
+    if (!bot || !view || !effects || (effects & ~AllEffects) || lane == Lane::Managed || lane == Lane::Inspection) return result;
+    const auto current = ReadNativeContext(*bot, state->publishedPolicyRevision.load(std::memory_order_acquire), state->boot);
+    if (!(current == view->current) || !current.actorGeneration || !current.mapGeneration) return result;
+    result.world = current; result.lane = lane; result.effects = effects; result.allowedSafety = allowedSafety;
+    // Eligibility is deliberately NOT asserted here. The caller's native
+    // operation validator must set validated only after inspecting its target.
+    return result;
+}
+
 bool LivingActivityCoordinator::PermitEffects(PlayerbotAI& ai, const Effects& effects, const std::string& action) {
     const bool enforce = state->enforceEffects.load(std::memory_order_acquire);
     if (!enforce && !state->observeEffects.load(std::memory_order_acquire)) return true;

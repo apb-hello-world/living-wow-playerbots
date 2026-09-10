@@ -4,6 +4,7 @@
 // items, gold, talents, quests or persistent task outcomes are manufactured.
 #include "playerbot/strategy/values/TargetValue.h"
 #include "playerbot/strategy/values/RpgValues.h"
+#include "playerbot/strategy/actions/LootRollAction.h"
 #include <cstdlib>
 #include <functional>
 #include <stdexcept>
@@ -83,7 +84,7 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
             Task task; task.id = task.root = NewId(); task.source = "isolated_fixture";
             task.sourceKey = state->boot; task.actor = binding.first; task.context = current;
             task.createdAtMs = task.updatedAtMs = NowMs(); task.mode = Mode::Active;
-            task.phase = Phase::Executing; task.kind = Kind::Maintenance; task.priority = Priority::Optional;
+            task.phase = Phase::Traveling; task.kind = Kind::Maintenance; task.priority = Priority::Optional;
             task.checkpoint.step = "native_boundary_fixture";
             state->authority.Observe(current, 0);
             const auto first = state->authority.Acquire(task, Mask(Effect::TravelTarget), monotonic, 60000);
@@ -93,6 +94,12 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
             action.revision = task.revision; action.ownerGeneration = first.lease.generation;
             action.origin = "isolated_boundary_fixture"; action.permittedEffects = Mask(Effect::TravelTarget);
             state->enforceEffects.store(true, std::memory_order_release);
+            const auto unvalidated = NativeActionContext(*ai, Lane::Roll, Mask(Effect::Inventory), uint32_t(Safety::Combat));
+            require(unvalidated.world.actor == binding.first && !unvalidated.validated,
+                "native_context_alone_is_not_permission");
+            ai::AutoLootRollAction roll(ai); ai::Event rollEvent;
+            require(roll.GetActivityEffects().lane == Lane::Roll && !roll.GetNativeActivityPermit(rollEvent).validated,
+                "ungrouped_native_actor_has_no_roll_exception");
             target->SetForced(!originalForced); target->SetRelevance(originalRelevance ^ 0x100);
             require(target->IsForced() == originalForced && target->GetRelevance() == originalRelevance,
                 "unscoped_installed_route_rejected");

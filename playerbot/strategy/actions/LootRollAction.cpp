@@ -4,6 +4,9 @@
 #include "playerbot/strategy/values/ItemUsageValue.h"
 #include "playerbot/strategy/values/LootValues.h"
 #include "playerbot/PlayerbotBuildProfile.h"
+#include "playerbot/LivingActivityCoordinator.h"
+#include "playerbot/LivingActivityScope.h"
+#include "playerbot/LivingActivityGameplay.h"
 
 using namespace ai;
 
@@ -72,6 +75,22 @@ namespace
         ai->SayToParty((offspecNeed ? "" : "I'll need on " + ChatHelper::formatItem(itemQualifier) + " ") + reason, true,
             PlayerbotAI::ChatMessageClass::social);
     }
+}
+
+LivingActivity::NativePermit RollAction::GetNativeActivityPermit(Event&) {
+    using namespace LivingActivity;
+    auto permit = sLivingActivityCoordinator.NativeActionContext(*ai, Lane::Roll,
+        Mask(Effect::Inventory) | Mask(Effect::Social), uint32_t(Safety::Combat));
+    if (!permit.world.actor || !bot->GetGroup()) return {};
+    const LootRollMap rolls = AI_VALUE(LootRollMap, "active rolls");
+    for (const auto& entry : rolls) {
+        auto* roll = GetGroupLootRoll(bot, entry.first, entry.second);
+        if (ReadyForNativeLootVote(*bot, roll, ROLL_NOT_EMITED_YET,
+            roll && sPlayerbotPartyCombatCoordinator.ShouldDeferLootRoll(bot, roll))) {
+            permit.validated = true; return permit;
+        }
+    }
+    return {};
 }
 
 bool LootStartRollAction::Execute(Event& event)
@@ -312,14 +331,22 @@ bool RollAction::RollOnItemInSlot(RollVote vote, ObjectGuid lootGuid, uint32 slo
         return false;
 
     LootItem* item = loot->GetLootItemInSlot(slot);
+    if (!item) return false;
     ItemPrototype const* proto = sItemStorage.LookupEntry<ItemPrototype>(item->itemId);
     if (!proto)
         return false;
 
     GroupLootRoll* lootRoll = loot->GetRollForSlot(slot);
-    if (!lootRoll)
+    if (!LivingActivity::ReadyForNativeLootVote(*bot, lootRoll, ROLL_NOT_EMITED_YET,
+        lootRoll && sPlayerbotPartyCombatCoordinator.ShouldDeferLootRoll(bot, lootRoll)))
         return false;
 
+    using namespace LivingActivity;
+    auto permit = sLivingActivityCoordinator.NativeActionContext(*ai, Lane::Roll,
+        Mask(Effect::Inventory) | Mask(Effect::Social), uint32_t(Safety::Combat));
+    permit.validated = permit.world.actor && bot->GetGroup(); // Exact native roll and pending voter checked above.
+    ExecutionScope nativeRoll(permit);
+    if (!sLivingActivityCoordinator.PermitEffects(*ai, GetActivityEffects(), "native loot vote")) return false;
     bool didRoll = lootRoll->PlayerVote(bot, vote);
 
     if (didRoll)

@@ -11,6 +11,7 @@
 #include "playerbot/PlayerbotOrganicEconomy.h"
 #include "playerbot/PlayerbotRendezvousManager.h"
 #include "playerbot/LivingActivityCoordinator.h"
+#include "playerbot/LivingActivityScope.h"
 
 #ifdef BUILD_ELUNA
 #include "LuaEngine/LuaEngine.h"
@@ -694,7 +695,14 @@ Action* Engine::InitializeAction(ActionNode* actionNode)
 
 bool Engine::ListenAndExecute(Action* action, Event& event)
 {
-    if (!sLivingActivityCoordinator.PermitEffects(*ai, action->GetActivityEffects(), action->getName())) return false;
+    auto effects = action->GetActivityEffects();
+    const auto nativePermit = action->GetNativeActivityPermit(event);
+    std::unique_ptr<LivingActivity::ExecutionScope> nativeScope;
+    if (nativePermit.validated) {
+        nativeScope.reset(new LivingActivity::ExecutionScope(nativePermit));
+        effects.lane = nativePermit.lane;
+    }
+    if (!sLivingActivityCoordinator.PermitEffects(*ai, effects, action->getName())) return false;
     if(state==BotState::BOT_STATE_NON_COMBAT &&
         !sPlayerbotOrganicEconomy.AllowsServiceAction(ai->GetBot()->GetGUIDLow(),action->getName())) return false;
     if(state==BotState::BOT_STATE_NON_COMBAT &&

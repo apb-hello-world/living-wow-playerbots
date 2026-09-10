@@ -69,6 +69,9 @@ namespace ai
         // Unknown is explicit, not an implicit claim to be read-only. Concrete
         // actions and shared native bases declare effects without name deny lists.
         virtual LivingActivity::Effects GetActivityEffects() const { return {}; }
+        // Concrete native validators may grant a narrow combat/loot/safety
+        // exception. Engine state or an action name is never that validation.
+        virtual LivingActivity::NativePermit GetNativeActivityPermit(Event&) { return {}; }
         virtual bool isPossible() { return true; }
         virtual bool isUseful() { return true; }
         virtual bool isUsefulWhenStunned() { return false; }

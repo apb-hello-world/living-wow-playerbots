@@ -3,6 +3,7 @@
 
 #include "ReactionEngine.h"
 #include "playerbot/LivingActivityCoordinator.h"
+#include "playerbot/LivingActivityScope.h"
 #include <iomanip>
 
 using namespace ai;
@@ -213,7 +214,14 @@ bool ReactionEngine::Update(uint32 elapsed, bool minimal, bool isStunned, bool& 
 
 bool ReactionEngine::ListenAndExecute(Action* action, Event& event)
 {
-    if (!sLivingActivityCoordinator.PermitEffects(*ai, action->GetActivityEffects(), action->getName())) return false;
+    auto effects = action->GetActivityEffects();
+    const auto nativePermit = action->GetNativeActivityPermit(event);
+    std::unique_ptr<LivingActivity::ExecutionScope> nativeScope;
+    if (nativePermit.validated) {
+        nativeScope.reset(new LivingActivity::ExecutionScope(nativePermit));
+        effects.lane = nativePermit.lane;
+    }
+    if (!sLivingActivityCoordinator.PermitEffects(*ai, effects, action->getName())) return false;
     PlayerbotAI::ScopedChatAction chatActionScope(ai, action->getName(), event);
     bool actionExecuted = false;
     if (actionExecutionListeners.Before(action, event))

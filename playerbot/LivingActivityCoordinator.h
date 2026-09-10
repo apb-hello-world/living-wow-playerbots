@@ -24,6 +24,11 @@ public:
     // The same boundary serves engine calls and direct native mutations. Until
     // the cutover gate is accepted it records decisions without rejecting work.
     bool PermitEffects(PlayerbotAI& ai, const LivingActivity::Effects& effects, const std::string& origin);
+    // Value-only current context for a compiled native validator. This alone
+    // grants nothing; the validator must establish native eligibility and the
+    // common effect boundary rechecks scope, safety and pending operations.
+    LivingActivity::NativePermit NativeActionContext(PlayerbotAI& ai, LivingActivity::Lane lane,
+        uint32_t effects, uint32_t allowedSafety) const;
     enum class LeaseBoundary { Acquire, Renew, Release };
     void ObserveLeaseBoundary(uint32_t guid, LeaseBoundary boundary);
     // Transitional callers keep exact job handles while their executors are

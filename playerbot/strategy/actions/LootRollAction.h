@@ -9,6 +9,7 @@ namespace ai
     {
     public:
         LootStartRollAction(PlayerbotAI* ai, std::string name = "loot start roll") : ChatCommandAction(ai, name) {}
+        LivingActivity::Effects GetActivityEffects() const override { return {0, LivingActivity::Lane::Inspection, true}; }
         virtual bool Execute(Event& event) override;
         virtual bool isUsefulWhenStunned() override { return true; }
 
@@ -27,6 +28,11 @@ namespace ai
     {
     public:
         RollAction(PlayerbotAI* ai, std::string name = "roll") : QueryItemUsageAction(ai, name) {}
+        LivingActivity::Effects GetActivityEffects() const override {
+            return {LivingActivity::Mask(LivingActivity::Effect::Inventory) | LivingActivity::Mask(LivingActivity::Effect::Social),
+                LivingActivity::Lane::Roll, true};
+        }
+        LivingActivity::NativePermit GetNativeActivityPermit(Event& event) override;
         virtual bool Execute(Event& event) override;
 
 #ifdef GenerateBotHelp
