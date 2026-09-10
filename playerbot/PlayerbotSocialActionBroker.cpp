@@ -212,7 +212,7 @@ bool PlayerbotSocialActionBroker::HasActiveVendorTrip(uint32 botGuid) const
 {
     for (const auto& pair : actions)
         if (pair.second.botGuid == botGuid && pair.second.type == "vendor_bags" &&
-            (pair.second.state == "vendor_travel" || pair.second.state == "vendor_relocating" ||
+            (pair.second.state == "vendor_admission_wait" || pair.second.state == "vendor_travel" || pair.second.state == "vendor_relocating" ||
              pair.second.state == "return_pending" ||
              pair.second.state == "returning"))
             return true;
@@ -222,17 +222,37 @@ bool PlayerbotSocialActionBroker::HasActiveVendorTrip(uint32 botGuid) const
 bool PlayerbotSocialActionBroker::StartVendorTrip(Player* bot, Player* player, const std::string& actionId,
     const std::string& eventId, const std::string& proposalId, bool announce)
 {
+    auto existing=actions.find(actionId);
+    const bool resuming=existing!=actions.end() && existing->second.state=="vendor_admission_wait" &&
+        bot && player && existing->second.botGuid==bot->GetGUIDLow() && existing->second.playerGuid==player->GetGUIDLow();
     if (!ValidateCommon(bot, player) || !bot->GetGroup() || bot->GetGroup() != player->GetGroup() ||
-        bot->IsInCombat() || HasActiveVendorTrip(bot->GetGUIDLow()))
+        bot->IsInCombat() || (HasActiveVendorTrip(bot->GetGUIDLow()) && !resuming))
         return false;
     uint8 bagUsage = bot->GetPlayerbotAI()->GetAiObjectContext()->GetValue<uint8>("bag space")->Get();
     if (bagUsage < 80)
         return false;
     LivingActivity::ActivityLease lease;
-    if (!sPlayerbotRendezvousManager.AcquirePartyActivityLease(bot->GetGUIDLow(),
+    const auto acquisition = sPlayerbotRendezvousManager.AcquirePartyActivityLease(bot->GetGUIDLow(),
         PlayerbotRendezvousManager::PartyActivityOwner::player_command,
-        PlayerbotRendezvousManager::PartyActivityPhase::traveling, 300, "vendor_bags", actionId, lease))
+        PlayerbotRendezvousManager::PartyActivityPhase::traveling, 300, "vendor_bags", actionId, lease);
+    if (!acquisition.Permitted()) {
+        if(acquisition.Waiting()) {
+            Action waiting=resuming?existing->second:Action{};
+            waiting.actionId=actionId;waiting.eventId=eventId;waiting.proposalId=proposalId;
+            waiting.type="vendor_bags";waiting.botGuid=bot->GetGUIDLow();waiting.playerGuid=player->GetGUIDLow();
+            waiting.groupId=bot->GetGroup()->GetId();
+            waiting.capabilityRef="vendor:"+std::to_string(waiting.botGuid)+':'+std::to_string(waiting.playerGuid);
+            waiting.state="vendor_admission_wait";waiting.announceDeparture=announce;
+            const bool changed=!resuming || waiting.failureReason!=acquisition.blocker;
+            waiting.failureReason=acquisition.blocker;
+            if(!resuming) waiting.stateSince=std::chrono::steady_clock::now();
+            waiting.lastActionAttempt=std::chrono::steady_clock::now();
+            actions[actionId]=waiting;
+            if(changed) Report(waiting);
+            return true; // Accepted and queued, NOT a departure or completion.
+        }
         return false;
+    }
 
     LivingWowInventoryPressureSummary pressure = sPlayerbotInventoryPressure.Analyze(bot);
     std::string maintenanceType;
@@ -1412,7 +1432,30 @@ void PlayerbotSocialActionBroker::Update()
     for (auto& pair : actions)
     {
         Action& action = pair.second;
-        if (action.state == "traveling_for_charter" || action.state == "waiting_for_charter")
+        if(action.state=="vendor_admission_wait")
+        {
+            if(now-action.lastActionAttempt<std::chrono::seconds(5)) continue;
+            action.lastActionAttempt=now;
+            Player* bot=sRandomPlayerbotMgr.GetPlayerBot(action.botGuid);
+            Player* player=sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER,action.playerGuid));
+            // Offline or unsafe is a pause, not evidence of party departure.
+            if(!bot || !player || !bot->IsInWorld() || !player->IsInWorld()) continue;
+            if(!bot->GetGroup() || bot->GetGroup()!=player->GetGroup() || bot->GetGroup()->GetId()!=action.groupId) {
+                action.state="cancelled";action.failureReason="party_changed_before_vendor_admission";
+                action.completedAt=now;Report(action);continue;
+            }
+            if(!bot->IsAlive() || !player->IsAlive() || bot->IsInCombat() || bot->IsBeingTeleported() ||
+                bot->IsTaxiFlying() || bot->GetTransport() || bot->InBattleGround()) continue;
+            if(bot->GetPlayerbotAI()->GetAiObjectContext()->GetValue<uint8>("bag space")->Get()<80) {
+                action.state="cancelled";action.failureReason="vendor_capacity_need_no_longer_present";
+                action.completedAt=now;Report(action);continue;
+            }
+            if(!StartVendorTrip(bot,player,action.actionId,action.eventId,action.proposalId,action.announceDeparture)) {
+                action.state="failed";action.failureReason="vendor_preparation_unavailable_after_admission_wait";
+                action.completedAt=now;Report(action);
+            }
+        }
+        else if (action.state == "traveling_for_charter" || action.state == "waiting_for_charter")
         {
             Player* bot = sRandomPlayerbotMgr.GetPlayerBot(action.botGuid);
             Player* owner = sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER, action.subjectGuid));
@@ -1899,6 +1942,9 @@ void PlayerbotSocialActionBroker::Report(const Action& action) const
     Player* player = sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER, action.playerGuid));
     std::string partySessionId = bot ? sPlayerbotRendezvousManager.GetPartySessionId(bot) :
         (player ? sPlayerbotRendezvousManager.GetPartySessionId(player) : "");
+    // Preserve the old gateway contract; the optional detail distinguishes
+    // accepted waiting from actual travel without pretending work started.
+    const std::string reportedState=action.state=="vendor_admission_wait"?"preparing":action.state;
     std::ostringstream body;
     body << "{\"transaction_id\":\"" << PlayerbotLLMInterface::SanitizeForJson(action.actionId)
          << "\",\"event_id\":\"" << PlayerbotLLMInterface::SanitizeForJson(action.eventId)
@@ -1910,7 +1956,8 @@ void PlayerbotSocialActionBroker::Report(const Action& action) const
          << "\",\"type\":\"" << action.type << "\",\"capability_ref\":\""
          << PlayerbotLLMInterface::SanitizeForJson(action.capabilityRef)
          << "\",\"item_name\":\"\",\"quantity\":0,\"price_copper\":0,\"delivery\":\"immediate\",\"state\":\""
-         << action.state << "\",\"rendezvous_state\":\"" << sPlayerbotRendezvousManager.State(action.botGuid, action.playerGuid)
+         << reportedState << "\",\"activity_phase\":\"" << action.state
+         << "\",\"rendezvous_state\":\"" << sPlayerbotRendezvousManager.State(action.botGuid, action.playerGuid)
          << "\",\"catchup_relocated\":" << (sPlayerbotRendezvousManager.WasRelocated(action.botGuid, action.playerGuid) ? "true" : "false")
          << ",\"failure_reason\":\"" << PlayerbotLLMInterface::SanitizeForJson(action.failureReason)
          << "\",\"group_id\":" << action.groupId << ",\"quest_id\":" << action.questId << ",\"expires_at\":\"world-clock\"}";

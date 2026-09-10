@@ -3,6 +3,7 @@
 
 #include "Common.h"
 #include "LivingActivity.h"
+#include "LivingActivityWorkClock.h"
 
 #include <chrono>
 #include <future>
@@ -59,6 +60,7 @@ private:
     struct ServiceTrip
     {
         LivingActivity::ActivityLease lease;
+        LivingActivity::WorkClock work;
         std::string goal;
         uint32 purpose=0, started=0, progress=0, nextMove=0, attempts=0;
         float distance=1e30f;
@@ -70,6 +72,7 @@ private:
     bool PrepareRecipeMail(Player* bot, uint32 entry, const std::string& goal, std::string& blocker);
     void ReachRecipeService(Player* bot, uint32 purpose, const std::string& goal, std::string& blocker);
     void ReleaseRecipeService(uint32 guid, const std::string& reason);
+    void PauseRecipeService(uint32 guid, const std::string& reason);
     std::map<uint32, std::string> lastBlockers;
 
     PlayerbotOrganicEconomy() = default;

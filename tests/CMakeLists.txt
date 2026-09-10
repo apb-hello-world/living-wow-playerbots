@@ -3,7 +3,7 @@ project(LivingPlayerbotsNativeTests LANGUAGES CXX)
 enable_testing()
 option(LIVING_SANITIZERS "Run native contracts with ASan and UBSan" ON)
 find_package(Threads REQUIRED)
-foreach(test_name party_catchup_math party_positioning living_activity living_activity_authority living_activity_epoch living_activity_mailbox living_activity_permissions living_activity_scope living_activity_native_context living_activity_requests living_activity_operations living_activity_gameplay living_activity_resources living_activity_claim_consumption living_activity_spell_resources)
+foreach(test_name party_catchup_math party_positioning living_activity living_activity_authority living_activity_epoch living_activity_mailbox living_activity_permissions living_activity_scope living_activity_native_context living_activity_requests living_activity_operations living_activity_gameplay living_activity_resources living_activity_claim_consumption living_activity_spell_resources living_activity_acquisition)
     add_executable(${test_name} native/${test_name}.cpp)
     target_include_directories(${test_name} PRIVATE ../playerbot)
     target_compile_features(${test_name} PRIVATE cxx_std_17)
@@ -41,6 +41,8 @@ target_link_libraries(living_activity_claim_consumption PRIVATE Threads::Threads
 
 target_sources(living_activity_spell_resources PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityResourceView.cpp ../playerbot/LivingActivitySpellResources.cpp)
 target_link_libraries(living_activity_spell_resources PRIVATE Threads::Threads)
+
+target_sources(living_activity_acquisition PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityAuthority.cpp ../playerbot/LivingActivityRequests.cpp)
 
 option(LIVING_DATABASE_TESTS "Build isolated MariaDB journal integration tests" OFF)
 if(LIVING_DATABASE_TESTS)

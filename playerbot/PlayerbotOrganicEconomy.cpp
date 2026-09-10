@@ -482,13 +482,27 @@ void PlayerbotOrganicEconomy::ReleaseRecipeService(uint32 guid, const std::strin
     sPlayerbotRendezvousManager.ReleasePartyActivityLease(lease,Phase::deferred,reason);
 }
 
+void PlayerbotOrganicEconomy::PauseRecipeService(uint32 guid,const std::string& reason)
+{
+    auto found=serviceTrips.find(guid);if(found==serviceTrips.end()) return;
+    const uint64 stamp=std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    found->second.work.Observe(stamp,false);
+    // Never clear movement on a safety pause or a newer owner's route. The
+    // exact old handle may release authority, but not erase the accepted job.
+    sPlayerbotRendezvousManager.ReleasePartyActivityLease(found->second.lease,
+        PlayerbotRendezvousManager::PartyActivityPhase::deferred,reason);
+    found->second.lease={};
+    found->second.nextMove=0;
+}
+
 void PlayerbotOrganicEconomy::ReachRecipeService(Player* bot,uint32 purpose,const std::string& goal,std::string& blocker)
 {
     using Owner=PlayerbotRendezvousManager::PartyActivityOwner;
     using Phase=PlayerbotRendezvousManager::PartyActivityPhase;
     const uint32 guid=bot->GetGUIDLow(), now=uint32(time(nullptr));
-    if(!SafeForEconomy(bot)) {ReleaseRecipeService(guid,"recipe_service_safety_pause");return;}
-    if(!LivingServiceExecution::Prepare(bot)) {blocker=LivingServiceExecution::Blocker(bot);return;}
+    if(!SafeForEconomy(bot)) {PauseRecipeService(guid,"recipe_service_safety_pause");blocker="recipe_service_safety_pause";return;}
+    if(!LivingServiceExecution::Prepare(bot)) {PauseRecipeService(guid,"recipe_service_preparation_wait");blocker=LivingServiceExecution::Blocker(bot);return;}
     if(serviceRetry[guid]>now) {blocker="recipe_service_retry_wait";return;}
     auto* ai=bot->GetPlayerbotAI();auto* context=ai->GetAiObjectContext();
     auto* target=context->GetValue<ai::TravelTarget*>("travel target")->Get();
@@ -496,19 +510,31 @@ void PlayerbotOrganicEconomy::ReachRecipeService(Player* bot,uint32 purpose,cons
     if(old!=serviceTrips.end() && (old->second.goal!=goal || old->second.purpose!=purpose))
         ReleaseRecipeService(guid,"recipe_service_step_changed");
     if(!serviceTrips.count(guid)) {
-        if(serviceTrips.size()>=4) {blocker="recipe_service_queue_wait";return;}
         if(target && (target->IsForced() || target->IsGroupCopy())) {blocker="recipe_waiting_for_committed_route";return;}
         ServiceTrip trip;trip.goal=goal;trip.purpose=purpose;trip.started=trip.progress=now;
         serviceTrips.emplace(guid,trip);
     }
     auto& trip=serviceTrips.at(guid);
-    if(now-trip.started>=600) {
+    const uint64 stamp=std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    size_t running=0;for(const auto& entry:serviceTrips) if(entry.second.work.Running()) ++running;
+    if(!trip.work.Running() && running>=4) {
+        trip.work.Observe(stamp,false);blocker="recipe_service_queue_wait";return;
+    }
+    const auto acquisition=sPlayerbotRendezvousManager.AcquirePartyActivityLease(guid,Owner::economy_service,Phase::traveling,45,
+        "recipe_service_trip",goal+":"+std::to_string(purpose),trip.lease);
+    if(!acquisition.Permitted()) {
+        trip.work.Observe(stamp,false);
+        if(acquisition.Waiting()) {
+            blocker=acquisition.blocker;
+            return; // Admission waiting is not route failure or cancellation.
+        }
+        ReleaseRecipeService(guid,"recipe_service_preempted");blocker="recipe_service_preempted";return;
+    }
+    trip.work.Observe(stamp,true);
+    if(trip.work.ActiveMs()>=600000) {
         ReleaseRecipeService(guid,"recipe_service_deadline");serviceRetry[guid]=now+300;
         blocker="recipe_service_deadline";return;
-    }
-    if(!sPlayerbotRendezvousManager.AcquirePartyActivityLease(guid,Owner::economy_service,Phase::traveling,45,
-        "recipe_service_trip",goal+":"+std::to_string(purpose),trip.lease)) {
-        ReleaseRecipeService(guid,"recipe_service_preempted");blocker="recipe_service_preempted";return;
     }
     // Generic RPG destinations consider the neighbourhood an arrival. Finish
     // the last metres against an actual service, not the RPG work/idle loop.
@@ -528,7 +554,7 @@ void PlayerbotOrganicEconomy::ReachRecipeService(Player* bot,uint32 purpose,cons
     }
     trip.local=focus||service!=nullptr;
     if(service) {
-        if(distance+1<trip.distance) {trip.distance=distance;trip.progress=now;}
+        if(distance+1<trip.distance) {trip.distance=distance;trip.progress=now;trip.work.Progress();}
         if(now>=trip.nextMove) {
             trip.nextMove=now+5;
             float x=service->GetPositionX(),y=service->GetPositionY(),z=service->GetPositionZ();
@@ -544,14 +570,14 @@ void PlayerbotOrganicEconomy::ReachRecipeService(Player* bot,uint32 purpose,cons
             if(remaining<=600 && remaining<distance) {closest=&point;distance=remaining;}
         }
         if(!closest) {ReleaseRecipeService(guid,"recipe_station_unavailable_locally");serviceRetry[guid]=now+300;blocker="recipe_station_unavailable_locally";return;}
-        if(distance+1<trip.distance) {trip.distance=distance;trip.progress=now;}
+        if(distance+1<trip.distance) {trip.distance=distance;trip.progress=now;trip.work.Progress();}
         if(now>=trip.nextMove) {trip.nextMove=now+5;RecipeServiceMovement movement(ai);movement.To(*closest);}
         blocker="recipe_traveling_to_crafting_station";
     } else {
         bool same=target && target->GetDestination() && uint32(target->GetDestination()->GetPurpose())==purpose && target->IsActive();
         if(same && target->GetPosition() && target->GetPosition()->getMapId()==bot->GetMapId()) {
             const float remaining=target->Distance(bot);
-            if(remaining+2<trip.distance) {trip.distance=remaining;trip.progress=now;}
+            if(remaining+2<trip.distance) {trip.distance=remaining;trip.progress=now;trip.work.Progress();}
         }
         if(!same && target && target->GetStatus()!=ai::TravelStatus::TRAVEL_STATUS_PREPARE && now>=trip.nextMove) {
             trip.nextMove=now+15;
@@ -573,12 +599,12 @@ void PlayerbotOrganicEconomy::ReachRecipeService(Player* bot,uint32 purpose,cons
             }
         }
     }
-    if(now-trip.progress>=90) {
+    if(trip.work.NoProgressMs()>=90000) {
         if(++trip.attempts>=2) {
             ReleaseRecipeService(guid,"recipe_service_no_progress");serviceRetry[guid]=now+300;
             blocker="recipe_service_no_progress";return;
         }
-        trip.progress=now;trip.distance=1e30f;trip.nextMove=0;
+        trip.progress=now;trip.work.Progress();trip.distance=1e30f;trip.nextMove=0;
         if(target && !target->IsForced()) target->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
     }
 }
@@ -1082,7 +1108,7 @@ void PlayerbotOrganicEconomy::ProcessActiveGoals(const Policy& currentPolicy,
         // Result inspection doesn't move, respec, buy or cast. A human joining
         // after the cast must not prevent us observing its real outcome.
         if (!bot || !bot->IsInWorld() || (!verifying.count(guid) && !SafeForEconomy(bot)))
-        { ReleaseRecipeService(guid,"recipe_service_safety_pause");retryCooldowns[guid] = now + std::chrono::seconds(30); continue; }
+        { PauseRecipeService(guid,"recipe_service_safety_pause");retryCooldowns[guid] = now + std::chrono::seconds(30); continue; }
         std::string failureReason;
         bool completed = ExecuteGoal(bot, profile, currentPolicy, failureReason);
         if(!completed && failureReason=="recipe_materials_received") {
@@ -1179,16 +1205,17 @@ void PlayerbotOrganicEconomy::Update()
         ApplyPlans(pendingPlans.get(), policy);
     if (!nextExecutionSweep.time_since_epoch().count() || now >= nextExecutionSweep)
     {
-        // Cancel ownership before the ordinary AI can resume after a safety
-        // interruption. Never let a paused/off policy retain a service lease.
-        std::vector<uint32> release;
+        // Release execution on interruption; keep the accepted service step.
+        // Actual domain invalidation still uses its explicit terminal path.
+        std::vector<uint32> release,pause;
         for(const auto& trip:serviceTrips) {
             Player* bot=sRandomPlayerbotMgr.GetPlayerBot(trip.first);
             auto profile=profiles.find(trip.first);
-            if(policy.mode!="active" || !policy.careers || !SafeForEconomy(bot) ||
-                profile==profiles.end() || profile->second.currentGoalId!=trip.second.goal ||
+            if(profile==profiles.end() || profile->second.currentGoalId!=trip.second.goal ||
                 profile->second.currentGoalState!="active") release.push_back(trip.first);
+            else if(policy.mode!="active" || !policy.careers || !SafeForEconomy(bot)) pause.push_back(trip.first);
         }
+        for(uint32 guid:pause) PauseRecipeService(guid,"recipe_service_safety_pause");
         for(uint32 guid:release) ReleaseRecipeService(guid,"recipe_service_invalidated");
         ProcessActiveGoals(policy, now);
         nextExecutionSweep = now + std::chrono::seconds(5);

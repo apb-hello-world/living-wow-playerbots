@@ -231,8 +231,12 @@ struct PlayerbotGuildSupplies::State {
         for(const auto& s:services) if(s.guid==d.service&&s.type==type) {service=&s;break;}
         if(!service) {service=Destination(p,mail,npcFlag);if(service) {d.service=service->guid;d.distance=1e30f;d.progress=now;d.attempts=0;}}
         if(!service) {Block(d,"no_accessible_service",now,true);return nullptr;}
-        if(!sPlayerbotRendezvousManager.AcquirePartyActivityLease(p->GetGUIDLow(),Owner::guild_supply,Phase::traveling,90,
-            "guild_supply_delivery",std::to_string(d.id),d.lease)) return nullptr;
+        const auto acquisition=sPlayerbotRendezvousManager.AcquirePartyActivityLease(p->GetGUIDLow(),Owner::guild_supply,Phase::traveling,90,
+            "guild_supply_delivery",std::to_string(d.id),d.lease);
+        if(!acquisition.Permitted()) {
+            Block(d,acquisition.blocker,now);
+            return nullptr; // Keep native possessions and the accepted delivery.
+        }
         working();
         moving[p->GetGUIDLow()]=d.id;
         const float distance=p->GetMapId()==service->map?p->GetDistance(service->x,service->y,service->z):1e20f;

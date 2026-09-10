@@ -6,6 +6,7 @@
 #include "PlayerbotErrandTravel.h"
 #include "PlayerbotServiceCatchup.h"
 #include "LivingActivity.h"
+#include "LivingActivityAcquisition.h"
 #include <deque>
 #include <map>
 #include <set>
@@ -85,7 +86,7 @@ public:
         float destinationX, float destinationY, float destinationZ) const;
     bool FindSafeStagingPoint(Player* bot, Player* player,
         float& x, float& y, float& z) const;
-    bool AcquirePartyActivityLease(uint32 botGuid, PartyActivityOwner owner,
+    LivingActivity::Acquisition AcquirePartyActivityLease(uint32 botGuid, PartyActivityOwner owner,
         PartyActivityPhase phase, uint32 ttlSeconds, const std::string& reason,
         const std::string& jobKey, LivingActivity::ActivityLease& handle);
     bool UpdatePartyActivityLease(const LivingActivity::ActivityLease& handle,

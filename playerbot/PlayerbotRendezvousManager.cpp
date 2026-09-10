@@ -1109,15 +1109,17 @@ bool PlayerbotRendezvousManager::AllowsOwnedMovement(uint32 botGuid, const std::
     return false;
 }
 
-bool PlayerbotRendezvousManager::AcquirePartyActivityLease(uint32 botGuid, PartyActivityOwner owner,
+LivingActivity::Acquisition PlayerbotRendezvousManager::AcquirePartyActivityLease(uint32 botGuid, PartyActivityOwner owner,
     PartyActivityPhase phase, uint32 ttlSeconds, const std::string& reason,
     const std::string& jobKey, LivingActivity::ActivityLease& handle)
 {
+    using LivingActivity::AcquisitionState;
     sLivingActivityCoordinator.ObserveLeaseBoundary(botGuid, LivingActivityCoordinator::LeaseBoundary::Acquire);
-    if (!sPlayerbotAIConfig.chatDirectorPartyActivityOwnership) return true;
+    if (!sPlayerbotAIConfig.chatDirectorPartyActivityOwnership)
+        return {AcquisitionState::LegacyAllowed, "legacy_ownership_disabled"};
     LivingActivity::ActivityLease identity;
     if (!sLivingActivityCoordinator.CompatibilityContext(botGuid, PartyActivityOwnerName(owner),
-        jobKey, identity)) return false;
+        jobKey, identity)) return {AcquisitionState::Invalidated, "native_context_unavailable"};
     auto now = std::chrono::steady_clock::now();
     auto found = externalLeases.find(botGuid);
     if (found != externalLeases.end() && found->second.expires > now &&
@@ -1126,7 +1128,7 @@ bool PlayerbotRendezvousManager::AcquirePartyActivityLease(uint32 botGuid, Party
     {
         QueueActivityTelemetry(botGuid, 0, 0, found->second.owner, found->second.phase,
             "conflict_prevented", reason);
-        return false;
+        return {AcquisitionState::Waiting, "another_committed_activity"};
     }
     // Category equality is not job identity. Even the same subsystem cannot
     // borrow another accepted job's lease or renew it with a delayed callback.
@@ -1167,19 +1169,22 @@ bool PlayerbotRendezvousManager::AcquirePartyActivityLease(uint32 botGuid, Party
     {
         QueueActivityTelemetry(botGuid, 0, 0, current, GetPartyActivityPhase(botGuid),
             "conflict_prevented", reason);
-        return false;
+        return {AcquisitionState::Waiting, "higher_priority_activity"};
     }
     if (found != externalLeases.end() && LivingActivity::SameLease(found->second.handle, handle) &&
         found->second.handle.context == identity.context && found->second.expires > now)
-        return UpdatePartyActivityLease(handle, phase, ttlSeconds, reason);
-    if (externalLeaseGeneration == UINT64_MAX) return false;
+        return UpdatePartyActivityLease(handle, phase, ttlSeconds, reason) ?
+            LivingActivity::Acquisition{AcquisitionState::Granted, ""} :
+            LivingActivity::Acquisition{AcquisitionState::Invalidated, "lease_context_changed"};
+    if (externalLeaseGeneration == UINT64_MAX)
+        return {AcquisitionState::Invalidated, "lease_generation_exhausted"};
     ExternalLease& lease = externalLeases[botGuid];
     identity.generation = ++externalLeaseGeneration;
     lease.handle = handle = identity;
     lease.owner = owner; lease.phase = phase; lease.reason = reason;
     lease.expires = now + std::chrono::seconds(std::max<uint32>(1, ttlSeconds));
     QueueActivityTelemetry(botGuid, 0, 0, owner, phase, "lease_acquired", reason);
-    return true;
+    return {AcquisitionState::Granted, ""};
 }
 
 bool PlayerbotRendezvousManager::HasPartyActivityLease(const LivingActivity::ActivityLease& handle) const
