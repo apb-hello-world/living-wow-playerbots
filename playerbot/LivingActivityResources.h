@@ -1,6 +1,7 @@
 #ifndef LIVING_ACTIVITY_RESOURCES_H
 #define LIVING_ACTIVITY_RESOURCES_H
 #include "LivingActivity.h"
+#include "LivingActivityResourceView.h"
 #include <map>
 #include <utility>
 
@@ -64,6 +65,7 @@ namespace LivingActivity {
         bool HasPending(const std::string& receipt) const { return pending.count(receipt) != 0; }
         size_t PendingCount() const { return pending.size(); }
         const ResourceProtection& Protection() const { return protection; }
+        ResourceReader Reader() const { return publisher.Reader(); }
         const ResourceClaim* Inspect(const std::string& id) const;
         size_t Size() const { return records.size(); }
     private:
@@ -80,6 +82,7 @@ namespace LivingActivity {
         bool restoreFailed = false;
         std::map<std::string, ResourceClaim> records;
         ResourceProtection protection;
+        ResourcePublisher publisher;
     };
 }
 #endif

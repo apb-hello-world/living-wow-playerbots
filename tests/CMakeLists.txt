@@ -31,13 +31,14 @@ target_sources(living_activity_requests PRIVATE ../playerbot/LivingActivity.cpp 
 target_sources(living_activity_operations PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityRequests.cpp ../playerbot/LivingActivityOperations.cpp)
 target_sources(living_activity_gameplay PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityAuthority.cpp ../playerbot/LivingActivityPermissions.cpp ../playerbot/LivingActivityScope.cpp)
 
-target_sources(living_activity_resources PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityClaimJournal.cpp)
+target_sources(living_activity_resources PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityClaimJournal.cpp ../playerbot/LivingActivityResourceView.cpp)
+target_link_libraries(living_activity_resources PRIVATE Threads::Threads)
 
 option(LIVING_DATABASE_TESTS "Build isolated MariaDB journal integration tests" OFF)
 if(LIVING_DATABASE_TESTS)
     find_path(MARIADB_INCLUDE_DIR mysql.h PATH_SUFFIXES mariadb mysql REQUIRED)
     find_library(MARIADB_LIBRARY mariadb REQUIRED)
-    add_executable(living_activity_database native/living_activity_database.cpp ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityClaimJournal.cpp)
+    add_executable(living_activity_database native/living_activity_database.cpp ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityClaimJournal.cpp ../playerbot/LivingActivityResourceView.cpp)
     target_include_directories(living_activity_database PRIVATE ../playerbot ${MARIADB_INCLUDE_DIR})
     target_link_libraries(living_activity_database PRIVATE ${MARIADB_LIBRARY} Threads::Threads)
     target_compile_features(living_activity_database PRIVATE cxx_std_17)

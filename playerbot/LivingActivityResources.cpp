@@ -81,6 +81,7 @@ namespace LivingActivity {
     }
     void ResourceClaimBook::Index(const ResourceClaim& claim, bool add) {
         if (!ProtectsResources(claim)) return;
+        publisher.Changed(claim);
         if (claim.copper) {
             // Native mail/auction escrow is not also spendable wallet money.
             if (claim.location == "money") Add(protection.money, claim.actor, claim.copper, add);
@@ -106,11 +107,13 @@ namespace LivingActivity {
         for (const auto& row : rows) if (!Inspect(row.id)) {
             records.emplace(row.id, row); Index(row, true);
         }
+        publisher.Publish(protection);
         return added ? ClaimInstall::Installed : ClaimInstall::Duplicate;
     }
     bool ResourceClaimBook::FinishRestore() {
         if (restoreFailed) return false;
         if (!protection.ready) { protection.ready = true; ++protection.revision; }
+        publisher.Publish(protection);
         return true;
     }
     size_t ResourceClaimBook::PendingSlots(const std::string& excluding) const {
@@ -195,6 +198,7 @@ namespace LivingActivity {
         }
         for (const auto& extra : reservation.additional) Index(extra,true);
         pending.emplace(receipt,std::move(reservation)); ++protection.revision;
+        publisher.Publish(protection);
         return ClaimInstall::Installed;
     }
     ClaimInstall ResourceClaimBook::CommitReservation(const std::string& receipt) {
@@ -206,6 +210,7 @@ namespace LivingActivity {
         if (result != ClaimInstall::Installed && result != ClaimInstall::Duplicate) return result;
         for (const auto& extra : found->second.additional) Index(extra,false);
         pending.erase(found);
+        publisher.Publish(protection);
         return result;
     }
     ClaimInstall ResourceClaimBook::InstallReceipt(const std::vector<ClaimReceiptChange>& changes) {
@@ -242,6 +247,7 @@ namespace LivingActivity {
             Index(change.after, true);
         }
         ++protection.revision;
+        if (committing.empty()) publisher.Publish(protection);
         return ClaimInstall::Installed;
     }
 }

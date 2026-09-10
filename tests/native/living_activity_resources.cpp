@@ -3,6 +3,8 @@
 #include <cassert>
 #include <limits>
 #include <stdexcept>
+#include <atomic>
+#include <thread>
 using namespace LivingActivity;
 static ResourceClaim ItemClaim(const std::string& suffix, uint32_t guid, uint64_t quantity) {
     ResourceClaim claim;
@@ -13,6 +15,36 @@ static ResourceClaim ItemClaim(const std::string& suffix, uint32_t guid, uint64_
     return claim;
 }
 int main() {
+    {
+        ResourceClaimBook shared;
+        const auto reader=shared.Reader();
+        assert(!reader.Inspect());
+        auto a=ItemClaim("61",100,4), b=ItemClaim("62",101,4);
+        assert(shared.RestoreBatch({a,b}) == ClaimInstall::Installed);
+        assert(!reader.Inspect()->ready && reader.Inspect()->UnreservedItem(497,100,2934,10) == 0);
+        assert(shared.FinishRestore());
+        const auto original=reader.Inspect();
+        assert(original->UnreservedItem(497,100,2934,10) == 6);
+        std::atomic<bool> stop{false}; std::atomic<unsigned> reads{0};
+        auto observe=[&] {
+            while (!stop.load()) {
+                const auto view=reader.Inspect(); assert(view && view->ready);
+                assert(view->UnreservedItem(497,100,2934,10)+view->UnreservedItem(497,101,2934,10) == 12);
+                ++reads;
+            }
+        };
+        std::thread one(observe),two(observe);
+        while (reads.load() < 2) std::this_thread::yield();
+        for (unsigned i=0;i<500;++i) {
+            const auto revision=a.revision;
+            ++a.revision; ++b.revision; a.quantity=1+i%7; b.quantity=8-a.quantity;
+            assert(shared.InstallReceipt({{a,revision},{b,revision}}) == ClaimInstall::Installed);
+        }
+        stop.store(true); one.join(); two.join();
+        assert(reads.load() >= 2 && original->UnreservedItem(497,100,2934,10) == 6);
+        assert(reader.Inspect()->revision > original->revision);
+        assert(reader.Inspect()->buckets[0] == original->buckets[0]); // Untouched bucket stays shared.
+    }
     {
         ResourceClaimBook pendingBook(4); assert(pendingBook.FinishRestore());
         auto reserved = ItemClaim("71",81,6);
@@ -25,6 +57,8 @@ int main() {
         assert(pendingBook.PendingCount() == 1 && pendingBook.Size() == 0);
         assert(!pendingBook.Inspect(reserved.id)); // Pending hold is not a saved claim.
         assert(pendingBook.Protection().UnreservedItem(497,81,2934,10) == 4);
+        const auto unacknowledged=pendingBook.Reader().Inspect();
+        assert(unacknowledged->UnreservedItem(53,81,2934,10) == 4);
         auto altered=reserved; altered.quantity=7;
         assert(pendingBook.ReservePending(receipt,{{altered,0}},{native}) == ClaimInstall::Invalid);
         auto competing=reserved; competing.id=ItemClaim("75",81,5).id; competing.quantity=5;
@@ -44,6 +78,8 @@ int main() {
         assert(pendingBook.ReservePending(ItemClaim("76",81,1).id,{{otherRelease,1}},{}) == ClaimInstall::Stale);
         assert(pendingBook.CommitReservation(receipt3) == ClaimInstall::Installed);
         assert(pendingBook.Protection().UnreservedItem(497,81,2934,10) == 6);
+        assert(pendingBook.Reader().Inspect()->UnreservedItem(497,81,2934,10) == 6);
+        assert(unacknowledged->UnreservedItem(497,81,2934,10) == 4);
         assert(pendingBook.CommitReservation(receipt2) == ClaimInstall::Installed);
         assert(pendingBook.Protection().UnreservedItem(497,81,2934,10) == 6);
         auto increase=competing; ++increase.revision; increase.quantity=7;
