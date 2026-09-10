@@ -9,6 +9,7 @@
 #include "LivingActivityAuthority.h"
 #include "LivingActivityOperations.h"
 class PlayerbotAI;
+class WorldPacket;
 
 class LivingActivityCoordinator {
 public:
@@ -60,6 +61,12 @@ public:
         LivingActivity::NativeOperationAdapter& adapter);
     LivingActivity::DispatchResult DispatchSavedOperation(const std::string& operation,
         const TaskGrant& grant, LivingActivity::NativeOperationAdapter& adapter);
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    // Test binary only: hold ONE fixture bot's decisions while native Unit/
+    // Spell updates continue. No live-environment or configuration path.
+    bool IsolatedGameplayActor(uint32_t actor) const;
+    void ObserveIsolatedGameplayPacket(PlayerbotAI& ai, const WorldPacket& packet);
+#endif
 private:
     LivingActivityCoordinator();
     ~LivingActivityCoordinator();
@@ -68,6 +75,9 @@ private:
     void RefreshPermission(uint32_t guid, uint64_t actorEpoch);
     void RunIsolatedBoundaryFixture();
     void RunIsolatedAdmissionFixture();
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    void RunIsolatedGameplayFixture();
+#endif
 };
 #define sLivingActivityCoordinator LivingActivityCoordinator::instance()
 #endif

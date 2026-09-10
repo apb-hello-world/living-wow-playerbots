@@ -120,6 +120,14 @@ struct LivingActivityCoordinator::State {
     OperationRequest operationFixtureRequest;
     unsigned operationFixtureCalls = 0;
     boost::property_tree::ptree admissionFixtureChecks;
+    std::atomic<uint32_t> gameplayFixtureActor{0}, gameplayFixtureSpell{0};
+    std::atomic<uint32_t> gameplayHealPackets{0}, gameplayHealAmount{0};
+    uint32_t gameplayOriginalHealth = 0, gameplayOriginalMana = 0, gameplaySetupHealth = 0;
+    uint32_t gameplayOriginalDelay = 0;
+    uint64_t gameplayOriginalMoney = 0, gameplayDeadline = 0;
+    ObjectGuid gameplayOriginalSelection;
+    WorldContext gameplayContext;
+    ActivityLease gameplayLease;
 #endif
     Mode effective = Mode::Off;
     std::string desired = "off", blocker = "not_enabled", loadCursor;
@@ -396,6 +404,7 @@ LivingActivityCoordinator& LivingActivityCoordinator::instance() {
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
 #include "../tests/realm/ActivityBoundaryFixture.inc"
 #include "../tests/realm/ActivityAdmissionFixture.inc"
+#include "../tests/realm/ActivityGameplayFixture.inc"
 #endif
 
 LivingActivityCoordinator::LivingActivityCoordinator() : state(new State) {

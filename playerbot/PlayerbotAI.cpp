@@ -434,6 +434,9 @@ PlayerbotAI::~PlayerbotAI()
 
 void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    if (sLivingActivityCoordinator.IsolatedGameplayActor(bot->GetGUIDLow())) return;
+#endif
     if (strategyResetRequested && bot->IsInWorld() && !bot->IsBeingTeleported())
     {
         const bool autoLoad = strategyResetAutoLoad;
@@ -1794,6 +1797,9 @@ void PlayerbotAI::HandleCommand(uint32 type, const std::string& text, Player& fr
 
 void PlayerbotAI::HandleBotOutgoingPacket(const WorldPacket& packet)
 {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    sLivingActivityCoordinator.ObserveIsolatedGameplayPacket(*this, packet);
+#endif
     //if (packet.empty())
     //    return;
 
