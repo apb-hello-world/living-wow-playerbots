@@ -101,6 +101,7 @@ private:
     void RunIsolatedAdmissionFixture();
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     void RunIsolatedGameplayFixture();
+    void RunIsolatedCombatFixture();
 #endif
 };
 #define sLivingActivityCoordinator LivingActivityCoordinator::instance()

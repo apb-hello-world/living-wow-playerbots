@@ -180,6 +180,7 @@ struct LivingActivityCoordinator::State {
     uint32_t gameplayMinimumMana = 0;
     uint64_t gameplayNextSample = 0;
     boost::property_tree::ptree gameplayTrace;
+    uint64_t combatFixtureDeadline = 0;
 #endif
     Mode effective = Mode::Off;
     std::string desired = "off", blocker = "not_enabled", loadCursor;
@@ -535,6 +536,7 @@ LivingActivityCoordinator& LivingActivityCoordinator::instance() {
 #include "../tests/realm/ActivityBoundaryFixture.inc"
 #include "../tests/realm/ActivityAdmissionFixture.inc"
 #include "../tests/realm/ActivityGameplayFixture.inc"
+#include "../tests/realm/ActivityCombatFixture.inc"
 #endif
 
 LivingActivityCoordinator::LivingActivityCoordinator() : state(new State) {
