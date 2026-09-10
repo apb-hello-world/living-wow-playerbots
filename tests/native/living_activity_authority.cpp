@@ -173,4 +173,40 @@ int main() {
     assert(exceptions.Authorize({Mask(Effect::Social), Lane::Social, true}, current, 1, nullptr, nullptr, &acknowledgement) == AuthorityCode::EffectsDenied);
     acknowledgement.effects = Mask(Effect::Social); acknowledgement.validated = false;
     assert(exceptions.Authorize({Mask(Effect::Social), Lane::Social, true}, current, 1, nullptr, nullptr, &acknowledgement) == AuthorityCode::EffectsDenied);
+
+    // Receipt-first native execution has one synchronous window. Merely holding
+    // an operation ID, queued intent or old scope cannot execute/replay it.
+    ExecutionAuthority atomic;
+    auto work = Root(); work.phase = Phase::Executing; current = work.context;
+    atomic.Observe(current, 0);
+    auto operationLease = atomic.Acquire(work, Movement, 1000, 5000);
+    assert(operationLease.Granted());
+    auto operationAction = Action(work, operationLease.lease); operationAction.operation = C;
+    assert(atomic.Authorize(move, current, 1100, &work, &operationAction) == AuthorityCode::StaleRevision);
+    assert(atomic.BeginDispatch(operationLease.lease, C, 1100).code == AuthorityCode::StaleLease);
+    assert(atomic.BeginAtomic(operationLease.lease, C, 1100).code == AuthorityCode::Allowed);
+    assert(atomic.Authorize(move, current, 1100, &work, &operationAction) == AuthorityCode::AtomicPending);
+    assert(atomic.BeginDispatch(operationLease.lease, B, 1100).code == AuthorityCode::StaleLease);
+    assert(atomic.BeginDispatch(operationLease.lease, C, 1100).code == AuthorityCode::Allowed);
+    assert(atomic.Authorize(move, current, 1100, &work, &operationAction) == AuthorityCode::Allowed);
+    auto wrongOperation = operationAction; wrongOperation.operation = B;
+    assert(atomic.Authorize(move, current, 1100, &work, &wrongOperation) == AuthorityCode::AtomicPending);
+    auto ordinaryAction = operationAction; ordinaryAction.operation.clear();
+    assert(atomic.Authorize(move, current, 1100, &work, &ordinaryAction) == AuthorityCode::AtomicPending);
+    assert(atomic.FinishAtomic(operationLease.lease, C).code == AuthorityCode::AtomicPending);
+    assert(atomic.BeginDispatch(operationLease.lease, C, 1100).code == AuthorityCode::AtomicPending);
+    assert(atomic.EndDispatch(operationLease.lease, C).code == AuthorityCode::AtomicPending);
+    assert(atomic.Authorize(move, current, 1100, &work, &operationAction) == AuthorityCode::AtomicPending);
+    assert(atomic.BeginDispatch(operationLease.lease, C, 1100).code == AuthorityCode::AtomicPending);
+    assert(atomic.Release(operationLease.lease).code == AuthorityCode::AtomicPending);
+    assert(atomic.FinishAtomic(operationLease.lease, C).code == AuthorityCode::Allowed);
+    assert(atomic.Authorize(move, current, 1100, &work, &operationAction) == AuthorityCode::StaleRevision);
+    assert(atomic.Authorize(move, current, 1100, &work, &ordinaryAction) == AuthorityCode::Allowed);
+    assert(atomic.BeginAtomic(operationLease.lease, B, 1100).code == AuthorityCode::Allowed);
+    assert(atomic.BeginDispatch(operationLease.lease, B, 1100).code == AuthorityCode::Allowed);
+    ++current.mapGeneration;
+    assert(atomic.Observe(current, 0).code == AuthorityCode::ReconciliationRequired);
+    assert(atomic.EndDispatch(operationLease.lease, B).code == AuthorityCode::ReconciliationRequired);
+    assert(atomic.BeginDispatch(operationLease.lease, B, 1100).code == AuthorityCode::ReconciliationRequired);
+    assert(atomic.FinishAtomic(operationLease.lease, B).code == AuthorityCode::ReconciliationRequired);
 }

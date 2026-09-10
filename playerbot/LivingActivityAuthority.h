@@ -28,6 +28,7 @@ namespace LivingActivity {
         ActivityLease lease;
         uint64_t expires = 0;
         std::string operation;
+        bool operationDispatched = false, operationExecuting = false;
         bool invalidated = false;
     };
 
@@ -44,6 +45,10 @@ namespace LivingActivity {
         AuthorityCode SelectStep(const ActivityLease& lease, const Task* step);
         AuthorityResult Forget(uint32_t actor);
         AuthorityResult BeginAtomic(const ActivityLease& lease, const std::string& operation, uint64_t now);
+        // World-only executor boundary, after an exact persisted intent receipt.
+        // Never used to automatically replay a restored/uncertain operation.
+        AuthorityResult BeginDispatch(const ActivityLease& lease, const std::string& operation, uint64_t now);
+        AuthorityResult EndDispatch(const ActivityLease& lease, const std::string& operation);
         AuthorityResult FinishAtomic(const ActivityLease& lease, const std::string& operation);
         AuthorityResult Inspect(uint32_t actor, uint64_t now) const;
         AuthoritySnapshot Read(uint32_t actor) const;

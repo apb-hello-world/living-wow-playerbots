@@ -68,6 +68,7 @@ namespace LivingActivity {
     AuthorityResult ExecutionAuthority::Drop(Actor& a, AuthorityCode code) {
         AuthorityResult result; result.code = code; result.displaced = a.lease;
         a.lease = {}; a.root = {}; a.step = {}; a.expires = 0; a.effects = 0; a.operation.clear(); a.invalidated = false;
+        a.operationDispatched = a.operationExecuting = false;
         return result;
     }
     AuthorityResult ExecutionAuthority::Observe(const WorldContext& current, uint32_t safety) {
@@ -181,7 +182,36 @@ namespace LivingActivity {
         if (a.safety) return {AuthorityCode::SafetyPaused, a.lease, {}};
         if (now >= a.expires) return {AuthorityCode::StaleLease, a.lease, {}};
         if (!a.operation.empty()) return {AuthorityCode::AtomicPending, a.lease, {}};
-        a.operation = operation; return {AuthorityCode::Allowed, a.lease, {}};
+        a.operation = operation; a.operationDispatched = a.operationExecuting = false;
+        return {AuthorityCode::Allowed, a.lease, {}};
+    }
+    AuthorityResult ExecutionAuthority::BeginDispatch(const ActivityLease& lease, const std::string& operation, uint64_t now) {
+        const auto found = actors.find(lease.actor);
+        if (found == actors.end() || !Matches(found->second.lease, lease) ||
+            operation.empty() || found->second.operation != operation)
+            return {AuthorityCode::StaleLease, {}, {}};
+        auto& a = found->second;
+        if (a.invalidated || !(a.current == lease.context)) return {AuthorityCode::ReconciliationRequired, a.lease, {}};
+        if (a.operationDispatched) return {AuthorityCode::AtomicPending, a.lease, {}};
+        if (a.safety) return {AuthorityCode::SafetyPaused, a.lease, {}};
+        if (now >= a.expires) return {AuthorityCode::StaleLease, a.lease, {}};
+        const auto& task = a.step.id.empty() ? a.root : a.step;
+        if (task.phase != Phase::Executing) return {AuthorityCode::InvalidRequest, a.lease, {}};
+        // Consume before calling native code. Throwing, returning false or losing
+        // context never makes this operation dispatchable a second time.
+        a.operationDispatched = a.operationExecuting = true;
+        return {AuthorityCode::Allowed, a.lease, {}};
+    }
+    AuthorityResult ExecutionAuthority::EndDispatch(const ActivityLease& lease, const std::string& operation) {
+        const auto found = actors.find(lease.actor);
+        if (found == actors.end() || !Matches(found->second.lease, lease) || operation.empty() ||
+            found->second.operation != operation || !found->second.operationExecuting)
+            return {AuthorityCode::StaleLease, {}, {}};
+        auto& a = found->second;
+        a.operationExecuting = false;
+        // Hold the operation identity until its native result is journalled or
+        // reconciled. This is not a completion acknowledgement.
+        return {a.invalidated ? AuthorityCode::ReconciliationRequired : AuthorityCode::AtomicPending, a.lease, {}};
     }
     AuthorityResult ExecutionAuthority::FinishAtomic(const ActivityLease& lease, const std::string& operation) {
         const auto found = actors.find(lease.actor);
@@ -189,7 +219,9 @@ namespace LivingActivity {
             operation.empty() || found->second.operation != operation)
             return {AuthorityCode::StaleLease, {}, {}};
         auto& a = found->second;
+        if (a.operationExecuting) return {AuthorityCode::AtomicPending, a.lease, {}};
         a.operation.clear();
+        a.operationDispatched = false;
         // This ends only the atomic execution boundary. It is NOT proof that
         // the operation succeeded or the task completed; the journal owns that.
         if (a.invalidated) return Drop(a, AuthorityCode::ReconciliationRequired);
@@ -241,7 +273,9 @@ namespace LivingActivity {
         }
         if (a.invalidated) return AuthorityCode::ReconciliationRequired;
         if (safety) return AuthorityCode::SafetyPaused;
-        if (!a.operation.empty()) return AuthorityCode::AtomicPending;
+        if (!a.operation.empty() && (!a.operationExecuting || !action || action->operation != a.operation))
+            return AuthorityCode::AtomicPending;
+        if (a.operation.empty() && action && !action->operation.empty()) return AuthorityCode::StaleRevision;
         if (!task || !action || !Executable(*task) || !Fresh(*task, *action, current) ||
             !Matches(a.lease, {task->actor, task->root, action->ownerGeneration, current}) || now >= a.expires)
             return AuthorityCode::StaleLease;

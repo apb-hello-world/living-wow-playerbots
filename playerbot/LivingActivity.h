@@ -94,6 +94,9 @@ namespace LivingActivity
         uint64_t revision = 0, ownerGeneration = 0;
         uint32_t permittedEffects = 0;
         WorldContext world;
+        // Populated only for the one synchronous dispatch of a journalled native
+        // operation. Its presence alone is not a grant and cannot replay work.
+        std::string operation;
     };
     struct ResourceClaim {
         std::string id, task, location, state;
