@@ -131,9 +131,27 @@ int main() {
     auto blockedChild = sibling; ++blockedChild.revision; blockedChild.phase = Phase::Preparing;
     assert(!db.Write(TaskWrite(blockedChild, 1, "ff2efbdf-f0ec-4539-b840-299847970c13", "task_admitted")));
     assert(!db.Write(OperationIntentWrite(executing, prepared.revision, operation, "vendor_purchase", "{\"copper\":999}")));
-    auto restartedTask = AfterRestart(executing, 700000);
-    assert(db.Write(TaskWrite(restartedTask, executing.revision, "ff2efbdf-f0ec-4539-b840-299847970c05", "restart_revalidation")));
+    auto uncertainTask = executing; ++uncertainTask.revision; uncertainTask.phase = Phase::Reconciling;
+    uncertainTask.checkpoint.blocker = "fixture_receipt_not_available";
+    OperationResult uncertain; uncertain.id = operation; uncertain.task = task.id; uncertain.taskRevision = executing.revision;
+    uncertain.kind = "vendor_purchase"; uncertain.state = OperationState::Reconciling;
+    uncertain.nativeReference = "fixture-mail:81"; uncertain.evidence = "fixture_receipt_not_available";
+    const std::string uncertainState = "{\"mail\":81,\"known_quantity\":1}";
+    auto uncertainty = OperationOutcomeWrite(uncertainTask, executing.revision, uncertain,
+        "ff2efbdf-f0ec-4539-b840-299847970c16", uncertainState);
+    assert(!db.Write(uncertainty, true)); assert(db.Write(uncertainty)); assert(db.Write(uncertainty));
+    assert(db.Scalar("SELECT native_reference FROM living_activity_operation") == "fixture-mail:81");
+    assert(db.Scalar("SELECT after_state FROM living_activity_operation") == uncertainState);
+    // The acknowledgement covers the observed evidence, not just its label.
+    assert(db.Execute("UPDATE living_activity_operation SET after_state='{}'"));
+    assert(!db.ReceiptPresent(uncertainty));
+    assert(db.Execute("UPDATE living_activity_operation SET after_state=" + SqlValue(uncertainState)));
+    assert(db.ReceiptPresent(uncertainty));
+    auto restartedTask = AfterRestart(uncertainTask, 700000);
+    assert(db.Write(TaskWrite(restartedTask, uncertainTask.revision, "ff2efbdf-f0ec-4539-b840-299847970c05", "restart_revalidation")));
     assert(db.Scalar("SELECT state FROM living_activity_operation") == "reconciling");
+    assert(db.Scalar("SELECT native_reference FROM living_activity_operation") == "fixture-mail:81");
+    assert(db.Scalar("SELECT after_state FROM living_activity_operation") == uncertainState);
     bypass = restartedTask; ++bypass.revision; bypass.phase = Phase::Preparing;
     assert(!db.Write(TaskWrite(bypass, restartedTask.revision, "ff2efbdf-f0ec-4539-b840-299847970c14", "task_admitted")));
     assert(db.Write(intent)); // Original receipt exists, but it is NOT permission to execute again.
@@ -160,5 +178,35 @@ int main() {
     assert(!db.Write(TaskWrite(corrected, 1, "ff2efbdf-f0ec-4539-b840-299847970c09", "restart_revalidation")));
     assert(db.Write(TaskWrite(corrected, 1, "ff2efbdf-f0ec-4539-b840-299847970c09", "observation_reclassified")));
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_task WHERE kind='progression'") == "1");
+    // A prior successful step cannot prove a later rejected operation completed.
+    Task multi = prepared; multi.id = multi.root = "637bd562-36d2-5b01-bc01-e2d831c49f41";
+    multi.sourceKey = "multi_step"; multi.phase = Phase::Queued; multi.revision = 1;
+    assert(db.Write(TaskWrite(multi, 0, "ff2efbdf-f0ec-4539-b840-299847970c20", "fixture_created")));
+    multi.phase = Phase::Preparing; ++multi.revision;
+    assert(db.Write(TaskWrite(multi, 1, "ff2efbdf-f0ec-4539-b840-299847970c21", "fixture_prepared")));
+    multi.phase = Phase::Executing; ++multi.revision;
+    const std::string firstOp = "ff2efbdf-f0ec-4539-b840-299847970c22";
+    assert(db.Write(OperationIntentWrite(multi, 2, firstOp, "fixture_step", "{}")));
+    // Another root for the same actor cannot start a second operation either.
+    Task competing = multi; competing.id = competing.root = "637bd562-36d2-5b01-bc01-e2d831c49f42";
+    competing.sourceKey = "competing_step"; competing.phase = Phase::Queued; competing.revision = 1;
+    assert(db.Write(TaskWrite(competing, 0, "ff2efbdf-f0ec-4539-b840-299847970c23", "fixture_created")));
+    competing.phase = Phase::Preparing; ++competing.revision;
+    assert(db.Write(TaskWrite(competing, 1, "ff2efbdf-f0ec-4539-b840-299847970c24", "fixture_prepared")));
+    competing.phase = Phase::Executing; ++competing.revision;
+    assert(!db.Write(OperationIntentWrite(competing, 2, "ff2efbdf-f0ec-4539-b840-299847970c25", "fixture_step", "{}")));
+    proof.id = firstOp; proof.task = multi.id; proof.taskRevision = 3; proof.kind = "fixture_step";
+    multi.phase = Phase::Verifying; ++multi.revision;
+    assert(db.Write(OperationOutcomeWrite(multi, 3, proof, "ff2efbdf-f0ec-4539-b840-299847970c26", "{}")));
+    multi.phase = Phase::Preparing; ++multi.revision;
+    assert(db.Write(TaskWrite(multi, 4, "ff2efbdf-f0ec-4539-b840-299847970c27", "fixture_next_step")));
+    multi.phase = Phase::Executing; ++multi.revision;
+    proof.id = "ff2efbdf-f0ec-4539-b840-299847970c28"; proof.taskRevision = 6;
+    assert(db.Write(OperationIntentWrite(multi, 5, proof.id, "fixture_step", "{}")));
+    proof.state = OperationState::Rejected; proof.nativeReference.clear(); proof.evidence = "fixture_native_rejected";
+    multi.phase = Phase::Verifying; ++multi.revision;
+    assert(db.Write(OperationOutcomeWrite(multi, 6, proof, "ff2efbdf-f0ec-4539-b840-299847970c29", "{}")));
+    multi.phase = Phase::Completed; ++multi.revision;
+    assert(!db.Write(TaskWrite(multi, 7, "ff2efbdf-f0ec-4539-b840-299847970c30", "fixture_completed")));
     std::cout << "PASS: real MariaDB atomic task/outbox and intent/outcome journals, duplicate/stale requests, transaction rollback, uncertain restart, immutable receipts, shadow completion guard (fixture metadata, NOT native gameplay proof)\n";
 }

@@ -899,17 +899,14 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     Task after = saved->second; ++after.revision; after.updatedAtMs = NowMs();
     pending.uncertain = observation.state == OperationState::Reconciling;
     pending.outcome = observation.state;
-    WritePlan plan;
-    if (pending.uncertain) {
-        after.phase = Phase::Reconciling; after.checkpoint.blocker = "native_outcome_uncertain";
-        plan = TaskWrite(after, saved->second.revision, NewId(), "native_outcome_uncertain");
-    } else {
-        after.phase = Phase::Verifying; after.checkpoint.blocker.clear();
-        OperationResult proof; proof.id = id; proof.task = intended.id; proof.taskRevision = intended.revision;
-        proof.kind = request.kind; proof.state = observation.state; proof.nativeReference = observation.nativeReference;
-        proof.evidence = observation.evidence;
-        plan = OperationOutcomeWrite(after, saved->second.revision, proof, NewId(), observation.afterState);
-    }
+    after.phase = pending.uncertain ? Phase::Reconciling : Phase::Verifying;
+    after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
+    // Uncertainty is itself a native observation. Retain its references and
+    // measured after-state so a restart can reconcile without guessing/replay.
+    OperationResult proof; proof.id = id; proof.task = intended.id; proof.taskRevision = intended.revision;
+    proof.kind = request.kind; proof.state = observation.state; proof.nativeReference = observation.nativeReference;
+    proof.evidence = observation.evidence;
+    auto plan = OperationOutcomeWrite(after, saved->second.revision, proof, NewId(), observation.afterState);
     state->pending.push_back({std::move(after), std::move(plan), "", id, true});
     state->nextWork = 0; result.outcomeQueued = true;
     return reject(AdmissionCode::Pending, pending.uncertain ? "native_outcome_uncertain" : "native_result_receipt_pending");

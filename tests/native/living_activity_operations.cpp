@@ -52,4 +52,19 @@ int main() {
     outcome.afterState = "invalid"; assert(!ValidateNativeObservation(outcome));
     outcome.afterState = "{}"; outcome.state = OperationState::Intent; assert(!ValidateNativeObservation(outcome));
     outcome.state = OperationState::Rejected; outcome.nativeReference.clear(); assert(ValidateNativeObservation(outcome));
+    // Unknown effects retain their native reconciliation reference and after-state.
+    outcome.state = OperationState::Reconciling; outcome.nativeReference = "native_mail:81";
+    outcome.afterState = "{\"attachment_seen\":true}";
+    assert(ValidateNativeObservation(outcome));
+    auto reconciling = request.transition.task; ++reconciling.revision; reconciling.phase = Phase::Reconciling;
+    OperationResult proof; proof.id = request.transition.receipt; proof.task = saved.id;
+    proof.taskRevision = request.transition.task.revision; proof.kind = request.kind;
+    proof.state = outcome.state; proof.nativeReference = outcome.nativeReference; proof.evidence = outcome.evidence;
+    const auto uncertainty = OperationOutcomeWrite(reconciling, request.transition.task.revision, proof,
+        "ff2efbdf-f0ec-4539-b840-299847970c02", outcome.afterState);
+    assert(uncertainty.receiptQuery.find("after_state=") != std::string::npos);
+    assert(uncertainty.statements.back().find("native_mail:81") != std::string::npos);
+    auto observed = proof; observed.evidence = "different_uncertainty";
+    assert(!SameRequest(uncertainty, OperationOutcomeWrite(reconciling, request.transition.task.revision, observed,
+        "ff2efbdf-f0ec-4539-b840-299847970c02", outcome.afterState)));
 }

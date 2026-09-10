@@ -249,10 +249,12 @@ namespace LivingActivity
             if (task.phase == Phase::Completed)
                 plan.statements.front() += " AND mode='active' AND phase='verifying' AND EXISTS "
                     "(SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id "
-                    "AND o.state='verified')";
-            else
-                plan.statements.front() += " AND NOT EXISTS (SELECT 1 FROM living_activity_claim c "
-                    "WHERE c.task_id=living_activity_task.task_id AND c.state IN ('held','in_transfer','reconciling'))";
+                    "AND o.state='verified') AND EXISTS (SELECT 1 FROM living_activity_transition r "
+                    "WHERE r.transition_id=living_activity_task.last_receipt_id AND r.code='operation_verified')";
+            // A terminal workflow cannot leave protected quantities behind.
+            // Acquired goods remain native possessions when a claim is released.
+            plan.statements.front() += " AND NOT EXISTS (SELECT 1 FROM living_activity_claim c "
+                "WHERE c.task_id=living_activity_task.task_id AND c.state IN ('held','in_transfer','reconciling'))";
             if (task.parent.empty())
                 plan.statements.front() += " AND NOT EXISTS (SELECT 1 FROM living_activity_task child "
                     "WHERE child.parent_task_id=living_activity_task.task_id AND child.phase NOT IN ('completed','cancelled','failed'))";
@@ -274,8 +276,8 @@ namespace LivingActivity
             !IsToken(kind, 48) || before.size() > 8192) throw std::invalid_argument("Invalid operation intent");
         auto plan = MakeTaskWrite(task, expected, op, "operation_intent", kind + ':' + before);
         plan.statements.front() += " AND mode='active' AND phase IN ('preparing','traveling') "
-            "AND NOT EXISTS (SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id "
-            "AND o.state IN ('intent','reconciling'))";
+            "AND NOT EXISTS (SELECT 1 FROM living_activity_operation o JOIN living_activity_task ot ON ot.task_id=o.task_id "
+            "WHERE ot.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))";
         plan.statements.push_back("INSERT INTO living_activity_operation (operation_id,task_id,task_revision,kind,"
             "request_hash,state,native_reference,before_state,after_state,evidence_code,created_at_ms,updated_at_ms) "
             "SELECT " + SqlValue(op) + ",t.task_id,t.revision," + SqlValue(kind) + ",r.request_hash,'intent',''," +
@@ -293,22 +295,25 @@ namespace LivingActivity
     WritePlan OperationOutcomeWrite(const Task& task, uint64_t expected, const OperationResult& outcome,
         const std::string& receipt, const std::string& after) {
         const bool verified = outcome.state == OperationState::Verified;
-        if (!expected || task.mode != Mode::Active || task.phase != Phase::Verifying ||
+        const bool uncertain = outcome.state == OperationState::Reconciling;
+        const char* state = verified ? "verified" : uncertain ? "reconciling" : "rejected";
+        if (!expected || task.mode != Mode::Active || task.phase != (uncertain ? Phase::Reconciling : Phase::Verifying) ||
             !IsUuid(outcome.id) || outcome.task != task.id || !outcome.taskRevision ||
             !IsToken(outcome.kind, 48) || !IsToken(outcome.evidence) || after.size() > 8192 ||
             outcome.nativeReference.size() > 160 || (verified && outcome.nativeReference.empty()) ||
-            (!verified && outcome.state != OperationState::Rejected))
+            (!verified && !uncertain && outcome.state != OperationState::Rejected))
             throw std::invalid_argument("Invalid native operation result");
         const std::string operationWhere = "o.operation_id=" + SqlValue(outcome.id) +
             " AND o.task_id=living_activity_task.task_id AND o.task_revision=" + Number(outcome.taskRevision) +
             " AND o.kind=" + SqlValue(outcome.kind) + " AND o.state IN ('intent','reconciling')";
-        auto plan = MakeTaskWrite(task, expected, receipt, verified ? "operation_verified" : "operation_rejected",
+        auto plan = MakeTaskWrite(task, expected, receipt,
+            verified ? "operation_verified" : uncertain ? "operation_uncertain" : "operation_rejected",
             SqlValue(outcome.id) + ':' + Number(outcome.taskRevision) + ':' + SqlValue(outcome.kind) + ':' +
             SqlValue(outcome.nativeReference) + ':' + SqlValue(outcome.evidence) + ':' + SqlValue(after));
         plan.statements.front() += " AND mode='active' AND phase IN ('executing','reconciling') "
             "AND EXISTS (SELECT 1 FROM living_activity_operation o WHERE " + operationWhere + ')';
         plan.statements.push_back("UPDATE living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id "
-            "SET o.state=" + SqlValue(verified ? "verified" : "rejected") + ",o.native_reference=" +
+            "SET o.state=" + SqlValue(state) + ",o.native_reference=" +
             SqlValue(outcome.nativeReference) + ",o.after_state=" + SqlValue(after) + ",o.evidence_code=" +
             SqlValue(outcome.evidence) + ",o.updated_at_ms=" + Number(task.updatedAtMs) +
             " WHERE o.operation_id=" + SqlValue(outcome.id) + " AND t.last_receipt_id=" + SqlValue(receipt) +
@@ -316,8 +321,8 @@ namespace LivingActivity
         plan.receiptQuery += " AND EXISTS (SELECT 1 FROM living_activity_operation o WHERE o.operation_id=" +
             SqlValue(outcome.id) + " AND o.task_id=" + SqlValue(task.id) + " AND o.task_revision=" +
             Number(outcome.taskRevision) + " AND o.kind=" + SqlValue(outcome.kind) + " AND o.state=" +
-            SqlValue(verified ? "verified" : "rejected") + " AND o.native_reference=" + SqlValue(outcome.nativeReference) +
-            " AND o.evidence_code=" + SqlValue(outcome.evidence) + ')';
+            SqlValue(state) + " AND o.native_reference=" + SqlValue(outcome.nativeReference) +
+            " AND o.evidence_code=" + SqlValue(outcome.evidence) + " AND o.after_state=" + SqlValue(after) + ')';
         return plan;
     }
     std::string PersistedTaskProjection() {
