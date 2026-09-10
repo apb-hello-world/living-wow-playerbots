@@ -4,6 +4,9 @@
 #include "ServerFacade.h"
 #include "Entities/Pet.h"
 #include "Groups/Group.h"
+#include "LivingActivitySpellResources.h"
+#include "PlayerbotActionBroker.h"
+#include "PlayerbotGuildSupplies.h"
 
 namespace LivingActivity {
     namespace {
@@ -76,6 +79,24 @@ namespace LivingActivity {
             PlayerbotAI::IsHealSpell(info), sServerFacade.IsFriendlyTo(actor, target));
         if (!healing && !ReadyForNativeOffense(*actor, *target, known, IsPositiveSpell(info),
             sServerFacade.IsHostileTo(actor, target), NativePartyEngaged(*actor, *target))) return {};
+        // Combat/healing is not permission to spend another obligation's stock.
+        // Read only native bag identities plus the immutable acknowledged/pending
+        // claim projection. Empty reagent lists avoid any bag scan or DB work.
+        std::vector<ReagentNeed> reagents;
+        if (!actor->CanNoReagentCast(info))
+            for (uint32_t i=0;i<MAX_SPELL_REAGENTS;++i)
+                if (info->Reagent[i] > 0 && info->ReagentCount[i] > 0)
+                    reagents.push_back({uint32_t(info->Reagent[i]),uint32_t(info->ReagentCount[i])});
+        if (!reagents.empty()) {
+            std::vector<ReagentStack> bags;
+            for (auto* stack : ai.InventoryParseItems("inventory",IterateItemsMask::ITERATE_ITEMS_IN_BAGS))
+                if (stack) bags.push_back({stack->GetGUIDLow(),stack->GetEntry(),stack->GetCount(),
+                    sPlayerbotActionBroker.IsItemReserved(stack->GetGUIDLow()) ||
+                    sGuildSupplies.ReservedEntry(actor->GetGUIDLow(),stack->GetEntry())});
+            const auto protection=sLivingActivityCoordinator.ResourceReservations().Inspect();
+            if (CheckUnclaimedReagents(actor->GetGUIDLow(),reagents,bags,protection.get()) != ReagentReadiness::Ready)
+                return {};
+        }
         // Ordinary native cast checks retain reagent, mana, range, cooldown,
         // stance and target requirements. They do not execute the spell.
         if (!ai.CanCastSpell(spell, target, uint8((1u << MAX_EFFECT_INDEX) - 1), true, item)) return {};
