@@ -114,6 +114,10 @@ struct LivingActivityCoordinator::State {
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     bool fixtureFinished = false;
     uint64_t fixtureNext = 0;
+    unsigned admissionFixtureStep = 0;
+    uint64_t admissionFixtureDeadline = 0;
+    TaskRequest admissionFixtureRequest;
+    boost::property_tree::ptree admissionFixtureChecks;
 #endif
     Mode effective = Mode::Off;
     std::string desired = "off", blocker = "not_enabled", loadCursor;
@@ -123,7 +127,7 @@ struct LivingActivityCoordinator::State {
     unsigned importFamily = 0;
     uint64_t acknowledged = 0, persistenceFailures = 0, invalidRecords = 0, transitionCount = 0;
     uint64_t maximumDispatchUs = 0, overBudgetUpdates = 0;
-    struct Pending { Task task; WritePlan plan; };
+    struct Pending { Task task; WritePlan plan; std::string admissionReceipt; };
     struct Incoming {
         bool restored = false;
         unsigned family = 0;
@@ -133,6 +137,10 @@ struct LivingActivityCoordinator::State {
     std::deque<Pending> pending;
     std::deque<Incoming> incoming;
     std::map<std::string, Task> cache;
+    // Compact last-receipt identity, bounded by the same task cache. Request
+    // content is compared with the cached task, not retained as duplicate SQL.
+    std::map<std::string, std::string> admissionReceipts;
+    uint64_t taskAdmissions = 0, savedGrants = 0;
     std::map<uint32_t, std::string> preferred;
     std::map<std::string, std::string> quarantined;
 
@@ -194,7 +202,7 @@ struct LivingActivityCoordinator::State {
     void Queue(Task task, uint64_t expected, const std::string& code) {
         if (cache.size() + quarantined.size() + pending.size() >= maxCache) { blocker = "task_cache_backpressure"; return; }
         auto plan = TaskWrite(task, expected, NewId(), code);
-        pending.push_back({std::move(task), std::move(plan)});
+        pending.push_back({std::move(task), std::move(plan), ""});
     }
     void Flush(std::chrono::steady_clock::time_point deadline) {
         const unsigned maximum = std::min<unsigned>(batch, pending.size());
@@ -226,7 +234,14 @@ struct LivingActivityCoordinator::State {
             if (accepted != count) {
                 ++persistenceFailures; blocker = "journal_receipt_not_verified"; nextWork = NowMs() + 5000; return;
             }
-            for (unsigned i = 0; i < count; ++i) { Remember(pending.front().task); pending.pop_front(); ++acknowledged; ++transitionCount; }
+            for (unsigned i = 0; i < count; ++i) {
+                const auto& acknowledgedWrite = pending.front();
+                Remember(acknowledgedWrite.task);
+                if (!acknowledgedWrite.admissionReceipt.empty())
+                    admissionReceipts[acknowledgedWrite.task.id] = acknowledgedWrite.admissionReceipt;
+                else admissionReceipts.erase(acknowledgedWrite.task.id);
+                pending.pop_front(); ++acknowledged; ++transitionCount;
+            }
             blocker.clear();
         }, query.c_str())) { ioPending = false; blocker = "journal_ack_queue_unavailable"; nextWork = NowMs() + 5000; }
     }
@@ -345,6 +360,7 @@ LivingActivityCoordinator& LivingActivityCoordinator::instance() {
 }
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
 #include "../tests/realm/ActivityBoundaryFixture.inc"
+#include "../tests/realm/ActivityAdmissionFixture.inc"
 #endif
 
 LivingActivityCoordinator::LivingActivityCoordinator() : state(new State) {
@@ -432,6 +448,7 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("action_cardinality_rejected", state->actionCardinalityRejected);
     p.put("native_views_published", state->nativeViewsPublished);
     p.put("stale_actor_observations", state->staleActorObservations);
+    p.put("task_admission_writes", state->taskAdmissions); p.put("saved_task_grants", state->savedGrants);
     p.put("execution_enforcement", state->enforceEffects.load(std::memory_order_acquire));
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     p.put("isolated_fixture_build", true);
@@ -566,4 +583,92 @@ bool LivingActivityCoordinator::CompatibilityContext(uint32_t guid, const std::s
 bool LivingActivityCoordinator::OnWorldThread() const {
     return state->worldThreadReady.load(std::memory_order_acquire) &&
         state->worldThread == std::this_thread::get_id();
+}
+
+AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request) {
+    AdmissionResult result; result.task = request.task.id; result.revision = request.task.revision;
+    auto reject = [&](AdmissionCode code, const std::string& reason = "") {
+        result.code = code; result.blocker = reason.empty() ? Name(code) : reason; return result;
+    };
+    if (!OnWorldThread()) return reject(AdmissionCode::InvalidRequest, "world_thread_required");
+    if (!state->enforceEffects.load(std::memory_order_acquire)) return reject(AdmissionCode::Disabled);
+    if (!state->schemaReady || !state->loaded || !state->incoming.empty()) return reject(AdmissionCode::NotReady);
+    const Task& task = request.task;
+    if (task.id != SourceId(task.source, task.sourceKey))
+        return reject(AdmissionCode::InvalidRequest, "source_identity_mismatch");
+    Player* bot = sRandomPlayerbotMgr.GetPlayerBot(task.actor);
+    if (!bot || !bot->GetPlayerbotAI()) return reject(AdmissionCode::StaleContext, "actor_not_available");
+    const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
+    const auto saved = state->cache.find(task.id);
+    WritePlan plan;
+    try { plan = TaskWrite(task, request.expectedRevision, request.receipt, "task_admitted"); }
+    catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest); }
+    for (const auto& queued : state->pending) {
+        if (queued.admissionReceipt == request.receipt && queued.task.id != task.id)
+            return reject(AdmissionCode::InvalidRequest, "receipt_identity_reused");
+        if (queued.task.id != task.id) continue;
+        // Duplicate calls share one pending write. Changing content with an old
+        // operation ID is never allowed to mutate a queued transaction.
+        if (queued.task.context == task.context && SameRequest(queued.plan, plan))
+            return reject(AdmissionCode::Pending);
+        return reject(AdmissionCode::ConflictingWrite);
+    }
+    const auto acknowledgedReceipt = state->admissionReceipts.find(task.id);
+    if (saved != state->cache.end() && saved->second.revision == task.revision &&
+        acknowledgedReceipt != state->admissionReceipts.end() && acknowledgedReceipt->second == request.receipt &&
+        saved->second.context == task.context && task.context == current &&
+        SameRequest(TaskWrite(saved->second, request.expectedRevision, request.receipt, "task_admitted"), plan))
+        return reject(AdmissionCode::Saved);
+    std::string reason;
+    const auto valid = ValidateTaskRequest(request, saved == state->cache.end() ? nullptr : &saved->second, current, reason);
+    if (valid != AdmissionCode::Pending) return reject(valid, reason);
+    if (task.mode != Mode::Active) return reject(AdmissionCode::InvalidRequest, "managed_task_requires_active_mode");
+    if (state->pending.size() >= state->batch ||
+        (saved == state->cache.end() && state->cache.size() + state->pending.size() + state->quarantined.size() >= state->maxCache) ||
+        state->transitionCount + state->pending.size() >= 200000)
+        return reject(AdmissionCode::Backpressure);
+    RefreshPermission(task.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    const auto owned = state->authority.Read(task.actor);
+    // An operation in flight must produce/reconcile its native receipt before
+    // a planner or domain can replace even this task's checkpoint.
+    if (!owned.operation.empty()) return reject(AdmissionCode::ReconciliationRequired, "atomic_operation_pending");
+    state->pending.push_back({task, std::move(plan), request.receipt});
+    ++state->taskAdmissions;
+    if (owned.lease.rootTask == task.id || owned.step.id == task.id) {
+        state->authority.Release(owned.lease);
+        state->bindings.at(task.actor).publisher.Publish(state->authority.Read(task.actor));
+    }
+    state->nextWork = 0; // Existing bounded receipt queue, no new worker/timer.
+    return reject(AdmissionCode::Pending);
+}
+
+LivingActivityCoordinator::TaskGrant LivingActivityCoordinator::AcquireSavedTask(
+    const std::string& id, uint64_t revision, uint32_t effects, uint64_t durationMs, const std::string& origin) {
+    TaskGrant result;
+    if (!OnWorldThread() || !state->enforceEffects.load(std::memory_order_acquire)) {
+        result.blocker = "execution_disabled"; return result;
+    }
+    const auto saved = state->cache.find(id);
+    if (!state->schemaReady || !state->loaded || saved == state->cache.end() || !IsToken(origin)) {
+        result.blocker = "acknowledged_task_unavailable"; return result;
+    }
+    for (const auto& queued : state->pending) if (queued.task.root == id) {
+        result.blocker = "task_write_pending"; return result;
+    }
+    Player* bot = sRandomPlayerbotMgr.GetPlayerBot(saved->second.actor);
+    if (!bot || !bot->GetPlayerbotAI()) { result.blocker = "actor_not_available"; return result; }
+    const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
+    if (!SavedTaskExecutable(saved->second, revision, current, NowMs(), result.blocker)) return result;
+    RefreshPermission(saved->second.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    result.authority = state->authority.Acquire(saved->second, effects, monotonic, durationMs);
+    if (!result.authority.Granted()) { result.blocker = Name(result.authority.code); return result; }
+    result.task = saved->second; result.task.ownerGeneration = result.authority.lease.generation;
+    result.action.task = result.task.id; result.action.rootTask = result.task.root;
+    result.action.revision = result.task.revision; result.action.ownerGeneration = result.task.ownerGeneration;
+    result.action.world = current; result.action.origin = origin; result.action.permittedEffects = effects;
+    state->bindings.at(result.task.actor).publisher.Publish(state->authority.Read(result.task.actor));
+    ++state->savedGrants;
+    return result;
 }

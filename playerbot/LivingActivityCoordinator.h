@@ -5,6 +5,8 @@
 #include <cstdint>
 #include "LivingActivityEffects.h"
 #include "LivingActivity.h"
+#include "LivingActivityRequests.h"
+#include "LivingActivityAuthority.h"
 class PlayerbotAI;
 
 class LivingActivityCoordinator {
@@ -29,6 +31,19 @@ public:
     bool CompatibilityContext(uint32_t guid, const std::string& source,
         const std::string& key, LivingActivity::ActivityLease& identity) const;
     bool OnWorldThread() const;
+    // Trusted domain producers only, on the native world thread. No native
+    // operation or lease is started by submission or persistence callbacks.
+    LivingActivity::AdmissionResult SubmitTask(const LivingActivity::TaskRequest& request);
+    struct TaskGrant {
+        LivingActivity::AuthorityResult authority;
+        LivingActivity::Task task;
+        LivingActivity::ActionContext action;
+        std::string blocker;
+    };
+    // Read the acknowledged cache, not a planner's copy. The caller must handle
+    // any returned displaced owner before performing its finite native step.
+    TaskGrant AcquireSavedTask(const std::string& task, uint64_t revision,
+        uint32_t effects, uint64_t durationMs, const std::string& origin);
 private:
     LivingActivityCoordinator();
     ~LivingActivityCoordinator();
@@ -36,6 +51,7 @@ private:
     std::unique_ptr<State> state;
     void RefreshPermission(uint32_t guid, uint64_t actorEpoch);
     void RunIsolatedBoundaryFixture();
+    void RunIsolatedAdmissionFixture();
 };
 #define sLivingActivityCoordinator LivingActivityCoordinator::instance()
 #endif

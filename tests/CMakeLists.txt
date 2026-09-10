@@ -3,7 +3,7 @@ project(LivingPlayerbotsNativeTests LANGUAGES CXX)
 enable_testing()
 option(LIVING_SANITIZERS "Run native contracts with ASan and UBSan" ON)
 find_package(Threads REQUIRED)
-foreach(test_name party_catchup_math party_positioning living_activity living_activity_authority living_activity_epoch living_activity_mailbox living_activity_permissions living_activity_scope living_activity_native_context)
+foreach(test_name party_catchup_math party_positioning living_activity living_activity_authority living_activity_epoch living_activity_mailbox living_activity_permissions living_activity_scope living_activity_native_context living_activity_requests)
     add_executable(${test_name} native/${test_name}.cpp)
     target_include_directories(${test_name} PRIVATE ../playerbot)
     target_compile_features(${test_name} PRIVATE cxx_std_17)
@@ -27,6 +27,7 @@ target_sources(living_activity_scope PRIVATE ../playerbot/LivingActivity.cpp ../
 target_link_libraries(living_activity_scope PRIVATE Threads::Threads)
 
 target_sources(living_activity_native_context PRIVATE ../playerbot/LivingActivity.cpp)
+target_sources(living_activity_requests PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityRequests.cpp)
 
 option(LIVING_DATABASE_TESTS "Build isolated MariaDB journal integration tests" OFF)
 if(LIVING_DATABASE_TESTS)
