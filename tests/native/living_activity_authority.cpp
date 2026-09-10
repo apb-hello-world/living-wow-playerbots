@@ -201,7 +201,7 @@ int main() {
     assert(atomic.Release(operationLease.lease).code == AuthorityCode::AtomicPending);
     assert(atomic.FinishAtomic(operationLease.lease, C).code == AuthorityCode::Allowed);
     assert(atomic.Authorize(move, current, 1100, &work, &operationAction) == AuthorityCode::StaleRevision);
-    assert(atomic.Authorize(move, current, 1100, &work, &ordinaryAction) == AuthorityCode::Allowed);
+    assert(atomic.Authorize(move, current, 1100, &work, &ordinaryAction) == AuthorityCode::ReconciliationRequired);
     assert(atomic.BeginAtomic(operationLease.lease, B, 1100).code == AuthorityCode::Allowed);
     assert(atomic.BeginDispatch(operationLease.lease, B, 1100).code == AuthorityCode::Allowed);
     ++current.mapGeneration;
@@ -209,4 +209,13 @@ int main() {
     assert(atomic.EndDispatch(operationLease.lease, B).code == AuthorityCode::ReconciliationRequired);
     assert(atomic.BeginDispatch(operationLease.lease, B, 1100).code == AuthorityCode::ReconciliationRequired);
     assert(atomic.FinishAtomic(operationLease.lease, B).code == AuthorityCode::ReconciliationRequired);
+    ExecutionAuthority resources;
+    auto resourceTask = Root(); resourceTask.phase = Phase::Preparing;
+    resources.Observe(resourceTask.context, 0);
+    const uint32_t resourceEffects = Mask(Effect::Inventory) | Mask(Effect::Money);
+    const auto resourceLease = resources.Acquire(resourceTask, resourceEffects, 1000, 1000);
+    assert(resourceLease.Granted());
+    auto resourceAction = Action(resourceTask, resourceLease.lease); resourceAction.permittedEffects = resourceEffects;
+    assert(resources.Authorize({0, Lane::Managed, true}, resourceTask.context, 1001, &resourceTask, &resourceAction) == AuthorityCode::Allowed);
+    assert(resources.Authorize({resourceEffects, Lane::Managed, true}, resourceTask.context, 1001, &resourceTask, &resourceAction) == AuthorityCode::ReconciliationRequired);
 }

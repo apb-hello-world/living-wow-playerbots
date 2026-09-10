@@ -117,6 +117,8 @@ struct LivingActivityCoordinator::State {
     unsigned admissionFixtureStep = 0;
     uint64_t admissionFixtureDeadline = 0;
     TaskRequest admissionFixtureRequest, admissionFixtureChild;
+    OperationRequest operationFixtureRequest;
+    unsigned operationFixtureCalls = 0;
     boost::property_tree::ptree admissionFixtureChecks;
 #endif
     Mode effective = Mode::Off;
@@ -127,7 +129,22 @@ struct LivingActivityCoordinator::State {
     unsigned importFamily = 0;
     uint64_t acknowledged = 0, persistenceFailures = 0, invalidRecords = 0, transitionCount = 0;
     uint64_t maximumDispatchUs = 0, overBudgetUpdates = 0;
-    struct Pending { Task task; WritePlan plan; std::string admissionReceipt; };
+    struct Pending {
+        Task task; WritePlan plan; std::string admissionReceipt;
+        std::string operation;
+        bool operationOutcome = false;
+    };
+    struct PendingOperation {
+        OperationRequest request;
+        bool ready = false, dispatched = false, uncertain = false;
+        OperationState outcome = OperationState::Reconciling;
+        ActivityLease held;
+    };
+    // Bounded transient admission state. An entry is created before its intent
+    // write; it is NEVER reconstructed as dispatchable from a persisted intent.
+    std::map<std::string, PendingOperation> operations;
+    bool operationDispatching = false;
+    uint64_t nativeDispatches = 0, nativeOutcomes = 0, nativeVerifiedResults = 0;
     struct Incoming {
         bool restored = false;
         unsigned family = 0;
@@ -240,6 +257,24 @@ struct LivingActivityCoordinator::State {
                 if (!acknowledgedWrite.admissionReceipt.empty())
                     admissionReceipts[acknowledgedWrite.task.id] = acknowledgedWrite.admissionReceipt;
                 else admissionReceipts.erase(acknowledgedWrite.task.id);
+                if (!acknowledgedWrite.operation.empty()) {
+                    auto operation = operations.find(acknowledgedWrite.operation);
+                    MANGOS_ASSERT(operation != operations.end());
+                    if (!acknowledgedWrite.operationOutcome) operation->second.ready = true;
+                    else {
+                        const auto held = operation->second.held;
+                        authority.FinishAtomic(held, operation->first);
+                        authority.Release(held);
+                        const auto binding = bindings.find(held.actor);
+                        if (binding != bindings.end()) binding->second.publisher.Publish(authority.Read(held.actor));
+                        ++nativeOutcomes;
+                        if (operation->second.outcome == OperationState::Verified) ++nativeVerifiedResults;
+                        // Uncertainty remains visible and cannot be replayed.
+                        // A domain reconciler must resolve the native references.
+                        if (operation->second.uncertain) operation->second.ready = false;
+                        else operations.erase(operation);
+                    }
+                }
                 pending.pop_front(); ++acknowledged; ++transitionCount;
             }
             blocker.clear();
@@ -442,7 +477,10 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("retained_transitions", state->transitionCount);
     p.put("pending_decode", state->incoming.size()); p.put("maximum_dispatch_us", state->maximumDispatchUs);
     p.put("over_budget_updates", state->overBudgetUpdates); p.put("next_import_family", state->importFamily);
-    p.put("invalid_records", state->invalidRecords); p.put("gameplay_mutations", 0);
+    p.put("invalid_records", state->invalidRecords); p.put("gameplay_mutations", state->nativeVerifiedResults);
+    p.put("native_dispatches", state->nativeDispatches); p.put("native_result_receipts", state->nativeOutcomes);
+    p.put("verified_native_results", state->nativeVerifiedResults);
+    p.put("pending_native_operations", state->operations.size());
     p.put("observed_actions", state->observedActions); p.put("unknown_effect_actions", state->unknownActions);
     p.put("optional_action_observations_rejected", state->actionInbox.Rejected());
     p.put("action_cardinality_rejected", state->actionCardinalityRejected);
@@ -489,6 +527,15 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
         p.put("blocker", task.checkpoint.blocker); p.put("active_elapsed_ms", task.checkpoint.activeElapsedMs);
         p.put("source", task.source); p.put("last_progress_at_ms", task.checkpoint.lastProgressAtMs);
         p.put("updated_at_ms", task.updatedAtMs); p.put("due_at_ms", task.dueAtMs); p.put("retry_at_ms", task.retryAtMs);
+    }
+    for (const auto& operation : state->operations) {
+        const auto& pending = operation.second;
+        if (pending.request.transition.task.actor != guid) continue;
+        p.put("native_operation.id", operation.first);
+        p.put("native_operation.task", pending.request.transition.task.id);
+        p.put("native_operation.kind", pending.request.kind);
+        p.put("native_operation.phase", pending.uncertain ? "reconciliation_required" : pending.dispatched ?
+            "result_receipt_pending" : pending.ready ? "ready_for_native_validation" : "intent_receipt_pending");
     }
     return Json(p);
 }
@@ -592,10 +639,14 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
     };
     if (!OnWorldThread()) return reject(AdmissionCode::InvalidRequest, "world_thread_required");
     if (!state->enforceEffects.load(std::memory_order_acquire)) return reject(AdmissionCode::Disabled);
+    if (state->operationDispatching) return reject(AdmissionCode::Backpressure, "native_result_capacity_reserved");
     if (!state->schemaReady || !state->loaded || !state->incoming.empty()) return reject(AdmissionCode::NotReady);
     const Task& task = request.task;
     if (task.phase == Phase::Executing || task.phase == Phase::Verifying)
         return reject(AdmissionCode::ReconciliationRequired, "native_operation_journal_required");
+    for (const auto& pending : state->operations)
+        if (pending.second.request.transition.task.root == task.root)
+            return reject(AdmissionCode::ReconciliationRequired, "native_operation_pending");
     if (task.id != SourceId(task.source, task.sourceKey))
         return reject(AdmissionCode::InvalidRequest, "source_identity_mismatch");
     if (!task.parent.empty() && ParentRevision(task) != request.rootRevision)
@@ -723,4 +774,143 @@ AuthorityResult LivingActivityCoordinator::ReleaseTaskLease(const ActivityLease&
     const auto binding = state->bindings.find(lease.actor);
     if (binding != state->bindings.end()) binding->second.publisher.Publish(state->authority.Read(lease.actor));
     return result;
+}
+
+AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const OperationRequest& request,
+    NativeOperationAdapter& adapter) {
+    const auto& next = request.transition.task;
+    AdmissionResult result; result.task = next.id; result.revision = next.revision;
+    auto reject = [&](AdmissionCode code, const std::string& blocker = "") {
+        result.code = code; result.blocker = blocker.empty() ? Name(code) : blocker; return result;
+    };
+    if (!OnWorldThread() || !state->enforceEffects.load(std::memory_order_acquire))
+        return reject(AdmissionCode::Disabled);
+    if (state->operationDispatching) return reject(AdmissionCode::Backpressure, "native_result_capacity_reserved");
+    if (!state->schemaReady || !state->loaded || !state->incoming.empty()) return reject(AdmissionCode::NotReady);
+    if (next.id != SourceId(next.source, next.sourceKey) || request.kind != adapter.OperationKind() ||
+        request.effects != adapter.OperationEffects()) return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
+    WritePlan plan;
+    try { plan = OperationRequestWrite(request); }
+    catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest, "invalid_native_operation_intent"); }
+    const auto prior = state->operations.find(request.transition.receipt);
+    if (prior != state->operations.end()) {
+        if (!SameRequest(plan, OperationRequestWrite(prior->second.request))) return reject(AdmissionCode::ConflictingWrite);
+        if (prior->second.dispatched) return reject(AdmissionCode::ReconciliationRequired, "operation_already_dispatched");
+        return reject(prior->second.ready ? AdmissionCode::Saved : AdmissionCode::Pending);
+    }
+    if (state->operations.size() >= 16 || state->pending.size() >= state->batch ||
+        state->transitionCount + state->pending.size() + 2 > 200000) return reject(AdmissionCode::Backpressure);
+    for (const auto& operation : state->operations)
+        if (operation.second.request.transition.task.actor == next.actor)
+            return reject(AdmissionCode::ReconciliationRequired, "actor_operation_unresolved");
+    for (const auto& queued : state->pending)
+        if (queued.task.root == next.root || queued.admissionReceipt == request.transition.receipt)
+            return reject(AdmissionCode::ConflictingWrite);
+    const auto saved = state->cache.find(next.id), root = state->cache.find(next.root);
+    Player* bot = sRandomPlayerbotMgr.GetPlayerBot(next.actor);
+    if (!bot || !bot->GetPlayerbotAI() || saved == state->cache.end()) return reject(AdmissionCode::NotReady);
+    const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
+    std::string blocker;
+    if (!ValidateOperationRequest(request, saved->second, current, root == state->cache.end() ? nullptr : &root->second, NowMs(), blocker))
+        return reject(AdmissionCode::InvalidRequest, blocker);
+    RefreshPermission(next.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    auto predecessor = saved->second; predecessor.ownerGeneration = request.authorization.ownerGeneration;
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    // Check scoped ownership without executing a resource effect before intent.
+    if (state->authority.Authorize({0, Lane::Managed, true}, current, now, &predecessor, &request.authorization) != AuthorityCode::Allowed)
+        return reject(AdmissionCode::StaleContext, "current_predecessor_lease_required");
+    try {
+        if (!adapter.ValidateNative(*bot, request, blocker))
+            return reject(AdmissionCode::InvalidRequest, IsToken(blocker) ? blocker : "native_prerequisite_unavailable");
+    } catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest, "native_validation_failed"); }
+    state->operations.emplace(request.transition.receipt, State::PendingOperation{request});
+    state->pending.push_back({next, std::move(plan), "", request.transition.receipt, false});
+    const auto held = state->authority.Read(next.actor).lease;
+    ReleaseTaskLease(held); // Intent is durable work, not a retained execution grant.
+    state->nextWork = 0;
+    return reject(AdmissionCode::Pending);
+}
+
+DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::string& id,
+    const TaskGrant& grant, NativeOperationAdapter& adapter) {
+    DispatchResult result;
+    auto reject = [&](AdmissionCode code, const std::string& blocker) {
+        result.admission.code = code; result.admission.blocker = blocker; return result;
+    };
+    if (!OnWorldThread() || !state->enforceEffects.load(std::memory_order_acquire))
+        return reject(AdmissionCode::Disabled, "execution_disabled");
+    const auto found = state->operations.find(id);
+    if (found == state->operations.end()) return reject(AdmissionCode::ReconciliationRequired, "no_fresh_intent_admission");
+    auto& pending = found->second; const auto& request = pending.request;
+    const auto& intended = request.transition.task;
+    result.admission.task = intended.id; result.admission.revision = intended.revision;
+    if (pending.dispatched) return reject(AdmissionCode::ReconciliationRequired, "operation_already_dispatched");
+    if (!pending.ready) return reject(AdmissionCode::Pending, "intent_receipt_pending");
+    // Reserve the existing result queue before any nonrepeatable effect. The
+    // world dispatch is synchronous and rejects reentrant task admissions.
+    if (state->operationDispatching || state->ioPending || !state->pending.empty() || !state->incoming.empty() ||
+        state->transitionCount >= 200000) return reject(AdmissionCode::Backpressure, "native_result_capacity_unavailable");
+    if (request.kind != adapter.OperationKind() || request.effects != adapter.OperationEffects())
+        return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
+    const auto saved = state->cache.find(intended.id);
+    Player* bot = sRandomPlayerbotMgr.GetPlayerBot(intended.actor);
+    if (!bot || !bot->GetPlayerbotAI() || saved == state->cache.end())
+        return reject(AdmissionCode::StaleContext, "actor_not_available");
+    const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
+    std::string blocker;
+    if (!SavedTaskExecutable(saved->second, intended.revision, current, NowMs(), blocker) ||
+        saved->second.phase != Phase::Executing || !grant.Permitted() || grant.action.task != intended.id ||
+        grant.action.revision != intended.revision || (request.effects & ~grant.action.permittedEffects))
+        return reject(AdmissionCode::StaleRevision, "exact_executing_grant_required");
+    RefreshPermission(intended.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    const auto held = state->authority.Read(intended.actor).lease;
+    if (!SameLease(held, grant.authority.lease)) return reject(AdmissionCode::StaleContext, "current_operation_lease_required");
+    const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    if (state->authority.BeginAtomic(held, id, monotonic).code != AuthorityCode::Allowed)
+        return reject(AdmissionCode::ReconciliationRequired, "atomic_admission_rejected");
+    pending.held = held; pending.dispatched = true; // Consumed before native execution.
+    state->operationDispatching = true;
+    struct DispatchGuard { State& state; ActivityLease lease; std::string id; ~DispatchGuard() {
+        state.authority.EndDispatch(lease, id);
+        const auto binding = state.bindings.find(lease.actor);
+        if (binding != state.bindings.end()) binding->second.publisher.Publish(state.authority.Read(lease.actor));
+        state.operationDispatching = false;
+    } } dispatchGuard{*state, held, id};
+    NativeObservation observation;
+    try {
+        if (!adapter.ValidateNative(*bot, request, blocker)) {
+            observation.state = OperationState::Rejected;
+            observation.evidence = IsToken(blocker) ? blocker : "native_prerequisite_changed";
+        } else if (state->authority.BeginDispatch(held, id, monotonic).code == AuthorityCode::Allowed) {
+            auto executing = saved->second; executing.ownerGeneration = held.generation;
+            auto action = grant.action; action.operation = id;
+            const Effects effects{request.effects, Lane::Managed, true};
+            if (state->authority.Authorize(effects, current, monotonic, &executing, &action) == AuthorityCode::Allowed) {
+                state->bindings.at(intended.actor).publisher.Publish(state->authority.Read(intended.actor));
+                ExecutionScope scope(executing, action);
+                ++state->nativeDispatches; result.executed = true;
+                observation = adapter.ExecuteNative(*bot, request);
+            }
+        }
+    } catch (const std::exception&) { observation = {}; }
+    state->authority.EndDispatch(held, id); // No old operation scope survives the callback.
+    state->bindings.at(intended.actor).publisher.Publish(state->authority.Read(intended.actor));
+    if (!ValidateNativeObservation(observation)) observation = {};
+    Task after = saved->second; ++after.revision; after.updatedAtMs = NowMs();
+    pending.uncertain = observation.state == OperationState::Reconciling;
+    pending.outcome = observation.state;
+    WritePlan plan;
+    if (pending.uncertain) {
+        after.phase = Phase::Reconciling; after.checkpoint.blocker = "native_outcome_uncertain";
+        plan = TaskWrite(after, saved->second.revision, NewId(), "native_outcome_uncertain");
+    } else {
+        after.phase = Phase::Verifying; after.checkpoint.blocker.clear();
+        OperationResult proof; proof.id = id; proof.task = intended.id; proof.taskRevision = intended.revision;
+        proof.kind = request.kind; proof.state = observation.state; proof.nativeReference = observation.nativeReference;
+        proof.evidence = observation.evidence;
+        plan = OperationOutcomeWrite(after, saved->second.revision, proof, NewId(), observation.afterState);
+    }
+    state->pending.push_back({std::move(after), std::move(plan), "", id, true});
+    state->nextWork = 0; result.outcomeQueued = true;
+    return reject(AdmissionCode::Pending, pending.uncertain ? "native_outcome_uncertain" : "native_result_receipt_pending");
 }

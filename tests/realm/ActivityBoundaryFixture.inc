@@ -21,7 +21,7 @@ namespace {
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
-    if (requested && std::string(requested) == "activity-admission-v1") {
+    if (requested && (std::string(requested) == "activity-admission-v1" || std::string(requested) == "activity-operations-v1")) {
         RunIsolatedAdmissionFixture(); return;
     }
     if (state->fixtureFinished || NowMs() < state->fixtureNext) return;

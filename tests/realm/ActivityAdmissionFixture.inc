@@ -1,25 +1,63 @@
 // Marked, copied-realm fixture. Uses the actual coordinator, CharacterDatabase
 // transaction/receipt callbacks and native TravelTarget, not a fake DB class.
 // No item/money/quest/talent effects, and no fabricated completed task.
+namespace {
+    class NativeTargetProbe final : public NativeOperationAdapter {
+    public:
+        explicit NativeTargetProbe(unsigned& executions) : executions(executions) {}
+        const char* OperationKind() const override { return "isolated_target_probe"; }
+        uint32_t OperationEffects() const override { return Mask(Effect::TravelTarget); }
+        bool ValidateNative(Player& actor, const OperationRequest& request, std::string& blocker) override {
+            const std::string identity = "{\"actor\":" + std::to_string(actor.GetGUIDLow()) +
+                ",\"level\":" + std::to_string(actor.GetLevel()) + '}';
+            const bool valid = actor.GetPlayerbotAI() && actor.IsInWorld() && !NativeSafety(&actor) && request.beforeState == identity;
+            if (!valid) blocker = "isolated_actor_changed";
+            return valid;
+        }
+        NativeObservation ExecuteNative(Player& actor, const OperationRequest&) override {
+            ++executions;
+            auto* target = actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get();
+            const auto before = target->GetRelevance();
+            struct Restore { ai::TravelTarget* target; uint32 value; ~Restore() { target->SetRelevance(value); } } restore{target, before};
+            target->SetRelevance(before ^ 0x100);
+            const bool changed = target->GetRelevance() == (before ^ 0x100);
+            target->SetRelevance(before);
+            NativeObservation result;
+            if (changed && target->GetRelevance() == before) {
+                result.state = OperationState::Verified;
+                result.nativeReference = "isolated_actor:" + std::to_string(actor.GetGUIDLow()) + ":travel_relevance";
+                result.evidence = "native_target_probe_restored";
+                result.afterState = "{\"before\":" + std::to_string(before) + ",\"restored\":true}";
+            }
+            return result;
+        }
+    private:
+        unsigned& executions;
+    };
+}
 void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
     MANGOS_ASSERT(OnWorldThread());
     if (state->fixtureFinished || NowMs() < state->fixtureNext) return;
     state->fixtureNext = NowMs() + 1000;
     RequireIsolatedNativeFixtureEnvironment();
+    const bool operationSuite = std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE")) == "activity-operations-v1";
+    const std::string suite = operationSuite ? "activity-operations-v1" : "activity-admission-v1";
     auto finish = [&](bool passed, const std::string& failure = "") {
         state->fixtureFinished = true;
         boost::property_tree::ptree report;
-        report.put("suite", "activity-admission-v1"); report.put("test_only", true);
+        report.put("suite", suite); report.put("test_only", true);
         report.put("boot", state->boot); report.put("task", state->admissionFixtureRequest.task.id);
         report.put("child_task", state->admissionFixtureChild.task.id);
         report.put("actor", state->admissionFixtureRequest.task.actor);
+        report.put("native_probe_executions", state->operationFixtureCalls);
+        report.put("operation", state->operationFixtureRequest.transition.receipt);
         report.put("outcome", passed ? "passed" : "failed"); report.put("failure", failure);
         report.put("fixture_step", state->admissionFixtureStep);
         report.put("native_inventory_operations", 0); report.put("persistent_task_completions", 0);
         report.put("fixture_task_cancelled", passed);
         report.put("general_execution_enabled", state->enforceEffects.load(std::memory_order_acquire));
         report.add_child("checks", state->admissionFixtureChecks);
-        std::ofstream evidence("/isolated/evidence/activity-admission-" + state->boot + ".json");
+        std::ofstream evidence("/isolated/evidence/" + std::string(operationSuite ? "activity-operations-" : "activity-admission-") + state->boot + ".json");
         evidence << Json(report); evidence.close();
         if (!evidence) sLog.outError("Living isolated admission evidence write failed");
         sLog.outString("Living isolated fixture: %s", Json(report).c_str());
@@ -79,6 +117,56 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
         const auto saved = state->cache.find(request.task.id);
         require(saved != state->cache.end() && saved->second.revision == request.task.revision,
             "exact_native_receipt_acknowledged");
+        if (operationSuite && state->admissionFixtureStep == 2) {
+            const auto grant = AcquireSavedTask(request.task.id, request.task.revision,
+                Mask(Effect::TravelTarget), 60000, "isolated_fixture");
+            require(grant.Permitted(), "native_intent_predecessor_grant");
+            auto& operation = state->operationFixtureRequest;
+            operation.transition = request; operation.transition.expectedRevision = request.task.revision;
+            ++operation.transition.task.revision; operation.transition.task.phase = Phase::Executing;
+            operation.transition.receipt = NewId(); operation.transition.task.updatedAtMs = NowMs();
+            operation.authorization = grant.action; operation.kind = "isolated_target_probe";
+            operation.effects = Mask(Effect::TravelTarget);
+            operation.beforeState = "{\"actor\":" + std::to_string(bot->GetGUIDLow()) + ",\"level\":" + std::to_string(bot->GetLevel()) + '}';
+            NativeTargetProbe adapter(state->operationFixtureCalls);
+            require(SubmitOperationIntent(operation, adapter).code == AdmissionCode::Pending, "native_intent_queued_before_effect");
+            require(SubmitOperationIntent(operation, adapter).code == AdmissionCode::Pending && state->pending.size() == 1,
+                "duplicate_intent_has_one_native_write");
+            require(!DispatchSavedOperation(operation.transition.receipt, grant, adapter).executed && !state->operationFixtureCalls,
+                "unacknowledged_intent_cannot_execute");
+            request = operation.transition; state->admissionFixtureStep = 30; return;
+        }
+        if (operationSuite && state->admissionFixtureStep == 30) {
+            const auto grant = AcquireSavedTask(request.task.id, request.task.revision,
+                Mask(Effect::TravelTarget), 60000, "isolated_fixture");
+            require(grant.Permitted(), "exact_journalled_task_receives_grant");
+            NativeTargetProbe adapter(state->operationFixtureCalls);
+            const auto id = state->operationFixtureRequest.transition.receipt;
+            const auto result = DispatchSavedOperation(id, grant, adapter);
+            require(result.executed && result.outcomeQueued && state->operationFixtureCalls == 1,
+                "persisted_intent_executes_native_callback_once");
+            require(!DispatchSavedOperation(id, grant, adapter).executed && state->operationFixtureCalls == 1,
+                "repeated_dispatch_before_ack_is_rejected");
+            require(state->pending.size() == 1 && state->pending.front().task.phase == Phase::Verifying,
+                "native_probe_result_queued_for_verification");
+            request.task = state->pending.front().task; state->admissionFixtureStep = 31; return;
+        }
+        if (operationSuite && state->admissionFixtureStep == 31) {
+            require(saved->second.phase == Phase::Verifying && state->nativeOutcomes == 1 && state->operations.empty(),
+                "exact_native_operation_outcome_receipt_acknowledged");
+            require(!state->authority.Read(request.task.actor).lease.actor, "journalled_result_releases_transient_owner");
+            NativeTargetProbe adapter(state->operationFixtureCalls);
+            require(!DispatchSavedOperation(state->operationFixtureRequest.transition.receipt, {}, adapter).executed &&
+                state->operationFixtureCalls == 1, "acknowledged_operation_cannot_be_replayed");
+            request.expectedRevision = request.task.revision++; request.task.phase = Phase::Cancelled;
+            request.task.checkpoint.blocker = "isolated_fixture_finished"; request.task.updatedAtMs = NowMs();
+            state->Queue(request.task, request.expectedRevision, "isolated_fixture_cleanup");
+            state->nextWork = 0; state->admissionFixtureStep = 32; return;
+        }
+        if (operationSuite && state->admissionFixtureStep == 32) {
+            require(saved->second.phase == Phase::Cancelled, "probe_task_cancelled_with_native_receipt");
+            state->enforceEffects.store(originalEnforcement, std::memory_order_release); finish(true); return;
+        }
         if (state->admissionFixtureStep == 1) {
             require(SubmitTask(request).code == AdmissionCode::Saved, "acknowledged_duplicate_is_read_only");
             require(!AcquireSavedTask(request.task.id, 1, Mask(Effect::TravelTarget), 60000, "isolated_fixture").authority.Granted(),

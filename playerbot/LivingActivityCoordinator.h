@@ -7,6 +7,7 @@
 #include "LivingActivity.h"
 #include "LivingActivityRequests.h"
 #include "LivingActivityAuthority.h"
+#include "LivingActivityOperations.h"
 class PlayerbotAI;
 
 class LivingActivityCoordinator {
@@ -50,6 +51,10 @@ public:
     TaskGrant SelectSavedStep(const LivingActivity::ActivityLease& lease,
         const std::string& step, uint64_t revision, uint32_t effects, const std::string& origin);
     LivingActivity::AuthorityResult ReleaseTaskLease(const LivingActivity::ActivityLease& lease);
+    LivingActivity::AdmissionResult SubmitOperationIntent(const LivingActivity::OperationRequest& request,
+        LivingActivity::NativeOperationAdapter& adapter);
+    LivingActivity::DispatchResult DispatchSavedOperation(const std::string& operation,
+        const TaskGrant& grant, LivingActivity::NativeOperationAdapter& adapter);
 private:
     LivingActivityCoordinator();
     ~LivingActivityCoordinator();

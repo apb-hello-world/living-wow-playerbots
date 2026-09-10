@@ -1,0 +1,55 @@
+#include "LivingActivityOperations.h"
+#include <cassert>
+using namespace LivingActivity;
+int main() {
+    Task saved; saved.id = saved.root = "637bd562-36d2-5b01-bc01-e2d831c49f38";
+    saved.actor = saved.context.actor = 497; saved.source = "profession_job"; saved.sourceKey = "497:2881:41";
+    saved.context.boot = "ff2efbdf-f0ec-4539-b840-299847970c00";
+    saved.context.actorGeneration = saved.context.mapGeneration = saved.context.policyRevision = 1;
+    saved.mode = Mode::Active; saved.phase = Phase::Preparing;
+    saved.createdAtMs = saved.updatedAtMs = 1000;
+    OperationRequest request; request.transition.task = saved; request.transition.task.phase = Phase::Executing;
+    request.transition.expectedRevision = saved.revision; ++request.transition.task.revision;
+    request.transition.receipt = "ff2efbdf-f0ec-4539-b840-299847970c01";
+    request.kind = "vendor_purchase"; request.effects = Mask(Effect::Inventory) | Mask(Effect::Money);
+    request.beforeState = "{\"item\":2880,\"quantity\":1,\"money\":100}";
+    auto& action = request.authorization; action.task = action.rootTask = saved.id;
+    action.world = saved.context; action.revision = saved.revision; action.ownerGeneration = 7;
+    action.origin = "vendor_adapter"; action.permittedEffects = request.effects;
+    std::string reason;
+    auto valid = [&](const OperationRequest& r, const Task& task) {
+        return ValidateOperationRequest(r, task, saved.context, nullptr, 1000, reason);
+    };
+    assert(valid(request, saved));
+    const auto plan = OperationRequestWrite(request);
+    assert(SameRequest(plan, OperationRequestWrite(request)));
+    auto changed = request; changed.beforeState = "{\"money\":1000}";
+    assert(!SameRequest(plan, OperationRequestWrite(changed)));
+    changed = request; changed.effects = Mask(Effect::Inventory);
+    assert(!SameRequest(plan, OperationRequestWrite(changed)));
+    for (unsigned field = 0; field < 8; ++field) {
+        changed = request;
+        switch (field) {
+        case 0: ++changed.authorization.revision; break;
+        case 1: changed.authorization.ownerGeneration = 0; break;
+        case 2: changed.authorization.permittedEffects = Mask(Effect::Inventory); break;
+        case 3: changed.authorization.operation = request.transition.receipt; break;
+        case 4: changed.effects = 512; break;
+        case 5: changed.kind = "not an operation"; break;
+        case 6: changed.beforeState = "[]"; break;
+        default: changed.transition.task.context.boot.clear();
+        }
+        assert(!valid(changed, saved));
+    }
+    auto blocked = saved; blocked.retryAtMs = 1001; assert(!valid(request, blocked));
+    blocked = saved; blocked.checkpoint.blocker = "paid_mail_pending"; assert(!valid(request, blocked));
+    blocked = AfterRestart(saved, 2000); assert(!valid(request, blocked));
+    NativeObservation outcome;
+    assert(ValidateNativeObservation(outcome)); // Uncertain by default, never success.
+    outcome.state = OperationState::Verified; assert(!ValidateNativeObservation(outcome));
+    outcome.nativeReference = "native_vendor_receipt:41"; outcome.evidence = "native_purchase_verified";
+    assert(ValidateNativeObservation(outcome));
+    outcome.afterState = "invalid"; assert(!ValidateNativeObservation(outcome));
+    outcome.afterState = "{}"; outcome.state = OperationState::Intent; assert(!ValidateNativeObservation(outcome));
+    outcome.state = OperationState::Rejected; outcome.nativeReference.clear(); assert(ValidateNativeObservation(outcome));
+}

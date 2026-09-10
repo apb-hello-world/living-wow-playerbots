@@ -276,6 +276,10 @@ namespace LivingActivity {
         if (!a.operation.empty() && (!a.operationExecuting || !action || action->operation != a.operation))
             return AuthorityCode::AtomicPending;
         if (a.operation.empty() && action && !action->operation.empty()) return AuthorityCode::StaleRevision;
+        const uint32_t journalled = Mask(Effect::Inventory) | Mask(Effect::Money) | Mask(Effect::Spell) |
+            Mask(Effect::Equipment) | Mask(Effect::Guild) | Mask(Effect::Group);
+        if (a.operation.empty() && ((effects.mask & journalled) || (task && task->phase == Phase::Executing)))
+            return AuthorityCode::ReconciliationRequired;
         if (!task || !action || !Executable(*task) || !Fresh(*task, *action, current) ||
             !Matches(a.lease, {task->actor, task->root, action->ownerGeneration, current}) || now >= a.expires)
             return AuthorityCode::StaleLease;

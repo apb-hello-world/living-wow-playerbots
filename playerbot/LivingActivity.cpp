@@ -257,7 +257,7 @@ namespace LivingActivity
                 plan.statements.front() += " AND NOT EXISTS (SELECT 1 FROM living_activity_task child "
                     "WHERE child.parent_task_id=living_activity_task.task_id AND child.phase NOT IN ('completed','cancelled','failed'))";
         }
-        if (expected && code == "restart_revalidation") {
+        if (expected && task.phase == Phase::Reconciling) {
             // An intent present at restart is uncertain, never permission to
             // repeat the native effect. Keep evidence/identity for reconciliation.
             plan.statements.insert(plan.statements.begin() + 1,
