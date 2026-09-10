@@ -240,6 +240,10 @@ namespace LivingActivity {
             return AuthorityCode::StaleLease;
         if (!IsToken(action->origin, 64) || (action->permittedEffects & ~a.effects) ||
             (effects.mask & ~action->permittedEffects)) return AuthorityCode::EffectsDenied;
+        // A selected service/preparation child is the current finite step.
+        // The parent keeps the lease, but an old parent executor cannot replace
+        // that child's movement while it is running under the same root.
+        if (task->id == a.root.id && !a.step.id.empty()) return AuthorityCode::StaleRevision;
         if (task->id != task->root && (task->revision != a.step.revision || !SameDefinition(*task, a.step)))
             return AuthorityCode::StaleRevision;
         if (task->id == a.root.id && (task->revision != a.root.revision || !SameDefinition(*task, a.root)))

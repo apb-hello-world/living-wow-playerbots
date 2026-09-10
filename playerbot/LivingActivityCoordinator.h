@@ -39,11 +39,17 @@ public:
         LivingActivity::Task task;
         LivingActivity::ActionContext action;
         std::string blocker;
+        bool Permitted() const { return authority.Granted() || authority.code == LivingActivity::AuthorityCode::Allowed; }
     };
     // Read the acknowledged cache, not a planner's copy. The caller must handle
     // any returned displaced owner before performing its finite native step.
     TaskGrant AcquireSavedTask(const std::string& task, uint64_t revision,
         uint32_t effects, uint64_t durationMs, const std::string& origin);
+    // A saved finite step shares the root lease. Empty step selects the saved
+    // parent again. No lease acquisition/priority contest or implicit scope.
+    TaskGrant SelectSavedStep(const LivingActivity::ActivityLease& lease,
+        const std::string& step, uint64_t revision, uint32_t effects, const std::string& origin);
+    LivingActivity::AuthorityResult ReleaseTaskLease(const LivingActivity::ActivityLease& lease);
 private:
     LivingActivityCoordinator();
     ~LivingActivityCoordinator();

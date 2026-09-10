@@ -72,6 +72,8 @@ int main() {
     assert(authority.Acquire(child, Movement, 1300, 5000).code == AuthorityCode::InvalidRequest);
     assert(authority.Authorize(move, current, 1300, &child, &childAction) == AuthorityCode::StaleRevision);
     assert(authority.SelectStep(second.lease, &child) == AuthorityCode::Allowed);
+    auto parentAction = Action(human, second.lease);
+    assert(authority.Authorize(move, current, 1300, &human, &parentAction) == AuthorityCode::StaleRevision);
     assert(authority.Authorize(move, current, 1300, &child, &childAction) == AuthorityCode::Allowed);
     auto nextChild = child; ++nextChild.revision; nextChild.checkpoint.step = "collect_mail";
     assert(authority.SelectStep(second.lease, &nextChild) == AuthorityCode::Allowed);
@@ -80,6 +82,7 @@ int main() {
     child = nextChild; childAction = Action(child, second.lease);
     assert(authority.Authorize(move, current, 1300, &child, &childAction) == AuthorityCode::Allowed);
     assert(authority.SelectStep(second.lease, nullptr) == AuthorityCode::Allowed);
+    assert(authority.Authorize(move, current, 1300, &human, &parentAction) == AuthorityCode::Allowed);
     assert(authority.Authorize(move, current, 1300, &child, &childAction) == AuthorityCode::StaleRevision);
     child.phase = Phase::WaitingExternal;
     assert(authority.Authorize(move, current, 1300, &child, &childAction) == AuthorityCode::StaleLease);

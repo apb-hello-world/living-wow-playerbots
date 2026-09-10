@@ -1,5 +1,7 @@
 #include "LivingActivityRequests.h"
 #include <limits>
+#include <boost/property_tree/json_parser.hpp>
+#include <sstream>
 
 namespace LivingActivity {
     const char* Name(AdmissionCode code) {
@@ -28,7 +30,7 @@ namespace LivingActivity {
         }
     }
     AdmissionCode ValidateTaskRequest(const TaskRequest& request, const Task* saved,
-        const WorldContext& current, std::string& reason) {
+        const WorldContext& current, std::string& reason, const Task* root) {
         const Task& task = request.task;
         if (!Validate(task, reason) || !IsUuid(request.receipt) || !IsSourceKey(task.sourceKey) ||
             request.expectedRevision >= std::numeric_limits<uint64_t>::max() - 1 ||
@@ -44,12 +46,24 @@ namespace LivingActivity {
             reason = "terminal_outcome_requires_native_proof";
             return AdmissionCode::ReconciliationRequired;
         }
+        if (!task.parent.empty()) {
+            // Only typed direct steps; no arbitrary dependency graph or second
+            // scheduler. The saved root, not the child, owns priority/authority.
+            if (!root || ParentRevision(task) != request.rootRevision || task.parent != task.root || root->id != task.root || !root->parent.empty() ||
+                root->root != root->id || root->actor != task.actor || root->mode != task.mode ||
+                root->priority != task.priority || root->accepted != task.accepted ||
+                root->revision != request.rootRevision || !(root->context == current) || Terminal(root->phase)) {
+                reason = "saved_parent_revision_required"; return AdmissionCode::StaleRevision;
+            }
+        } else if (request.rootRevision) {
+            reason = "unexpected_parent_revision"; return AdmissionCode::InvalidRequest;
+        }
         if (!saved) {
             if (request.expectedRevision) {
                 reason = "task_not_loaded"; return AdmissionCode::StaleRevision;
             }
-            if (task.phase != Phase::Queued || task.ownerGeneration || !task.parent.empty()) {
-                reason = "new_root_must_be_queued"; return AdmissionCode::InvalidRequest;
+            if (task.phase != Phase::Queued || task.ownerGeneration) {
+                reason = "new_task_must_be_queued"; return AdmissionCode::InvalidRequest;
             }
         } else {
             if (saved->revision != request.expectedRevision) {
@@ -76,6 +90,19 @@ namespace LivingActivity {
         return !a.receiptQuery.empty() && a.task == b.task && a.revision == b.revision &&
             a.receiptQuery == b.receiptQuery && a.statements == b.statements;
     }
+    uint64_t ParentRevision(const Task& child) {
+        if (child.parent.empty() || child.checkpoint.data.size() > 8192) return 0;
+        try {
+            boost::property_tree::ptree p; std::istringstream input(child.checkpoint.data);
+            boost::property_tree::read_json(input, p);
+            if (p.count("_root_revision") != 1) return 0;
+            const auto& field = p.get_child("_root_revision");
+            const auto& value = field.data();
+            if (!field.empty() || value.empty() || value.size() > 20 ||
+                value.find_first_not_of("0123456789") != std::string::npos) return 0;
+            return std::stoull(value);
+        } catch (const std::exception&) { return 0; }
+    }
     bool SavedTaskExecutable(const Task& saved, uint64_t revision,
         const WorldContext& current, uint64_t wallNow, std::string& reason) {
         if (saved.revision != revision) reason = "stale_task_revision";
@@ -87,5 +114,15 @@ namespace LivingActivity {
         else if (!saved.checkpoint.blocker.empty()) reason = saved.checkpoint.blocker;
         else { reason.clear(); return true; }
         return false;
+    }
+    bool SavedStepExecutable(const Task& step, const Task& root, uint64_t revision,
+        const WorldContext& current, uint64_t wallNow, std::string& reason) {
+        if (step.id == root.id || step.root != root.id || step.parent != root.id ||
+            step.actor != root.actor || root.root != root.id || !root.parent.empty() ||
+            step.priority != root.priority || step.accepted != root.accepted || ParentRevision(step) != root.revision) {
+            reason = "stale_parent_revision"; return false;
+        }
+        return SavedTaskExecutable(root, root.revision, current, wallNow, reason) &&
+            SavedTaskExecutable(step, revision, current, wallNow, reason);
     }
 }

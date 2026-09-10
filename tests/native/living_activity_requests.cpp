@@ -88,4 +88,32 @@ int main() {
     saved = AfterRestart(saved, 5000);
     assert(!SavedTaskExecutable(saved, saved.revision, current, 5000, reason));
     assert(saved.id == Id && saved.accepted);
+    auto root = Request().task; root.phase = Phase::Preparing;
+    auto child = Request(); child.task.id = Receipt; child.task.root = child.task.parent = root.id;
+    child.task.sourceKey += ":bank_prerequisite"; child.rootRevision = root.revision;
+    child.task.checkpoint.data = "{\"_root_revision\":1,\"service\":\"bank\"}";
+    assert(ValidateTaskRequest(child, nullptr, current, reason) == AdmissionCode::StaleRevision);
+    assert(ValidateTaskRequest(child, nullptr, current, reason, &root) == AdmissionCode::Pending);
+    ++root.revision;
+    assert(ValidateTaskRequest(child, nullptr, current, reason, &root) == AdmissionCode::StaleRevision);
+    child.rootRevision = root.revision;
+    assert(ValidateTaskRequest(child, nullptr, current, reason, &root) == AdmissionCode::StaleRevision);
+    child.task.checkpoint.data = "{\"_root_revision\":2,\"service\":\"bank\"}";
+    assert(ValidateTaskRequest(child, nullptr, current, reason, &root) == AdmissionCode::Pending);
+    child.task.phase = Phase::Preparing;
+    assert(SavedStepExecutable(child.task, root, 1, current, 1000, reason));
+    auto changedRoot = root; ++changedRoot.revision;
+    assert(!SavedStepExecutable(child.task, changedRoot, 1, current, 1000, reason));
+    for (const char* data : {"{}", "invalid", "{\"_root_revision\":-1}", "{\"_root_revision\":1.5}",
+        "{\"_root_revision\":2,\"_root_revision\":3}", "{\"_root_revision\":{}}", "{\"_root_revision\":18446744073709551616}"}) {
+        auto malformed = child.task; malformed.checkpoint.data = data;
+        assert(!ParentRevision(malformed));
+        assert(!SavedStepExecutable(malformed, root, 1, current, 1000, reason));
+    }
+    child.task.phase = Phase::Queued;
+    child.task.priority = Priority::Human;
+    assert(ValidateTaskRequest(child, nullptr, current, reason, &root) == AdmissionCode::StaleRevision);
+    child.task.priority = root.priority;
+    root.phase = Phase::Cancelled;
+    assert(ValidateTaskRequest(child, nullptr, current, reason, &root) == AdmissionCode::StaleRevision);
 }

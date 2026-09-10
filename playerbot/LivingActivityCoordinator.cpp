@@ -596,6 +596,8 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
     const Task& task = request.task;
     if (task.id != SourceId(task.source, task.sourceKey))
         return reject(AdmissionCode::InvalidRequest, "source_identity_mismatch");
+    if (!task.parent.empty() && ParentRevision(task) != request.rootRevision)
+        return reject(AdmissionCode::InvalidRequest, "checkpoint_parent_revision_required");
     Player* bot = sRandomPlayerbotMgr.GetPlayerBot(task.actor);
     if (!bot || !bot->GetPlayerbotAI()) return reject(AdmissionCode::StaleContext, "actor_not_available");
     const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
@@ -606,6 +608,7 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
     for (const auto& queued : state->pending) {
         if (queued.admissionReceipt == request.receipt && queued.task.id != task.id)
             return reject(AdmissionCode::InvalidRequest, "receipt_identity_reused");
+        if (!task.parent.empty() && queued.task.id == task.root) return reject(AdmissionCode::ConflictingWrite);
         if (queued.task.id != task.id) continue;
         // Duplicate calls share one pending write. Changing content with an old
         // operation ID is never allowed to mutate a queued transaction.
@@ -620,7 +623,9 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
         SameRequest(TaskWrite(saved->second, request.expectedRevision, request.receipt, "task_admitted"), plan))
         return reject(AdmissionCode::Saved);
     std::string reason;
-    const auto valid = ValidateTaskRequest(request, saved == state->cache.end() ? nullptr : &saved->second, current, reason);
+    const auto parent = state->cache.find(task.root);
+    const auto valid = ValidateTaskRequest(request, saved == state->cache.end() ? nullptr : &saved->second, current, reason,
+        parent == state->cache.end() ? nullptr : &parent->second);
     if (valid != AdmissionCode::Pending) return reject(valid, reason);
     if (task.mode != Mode::Active) return reject(AdmissionCode::InvalidRequest, "managed_task_requires_active_mode");
     if (state->pending.size() >= state->batch ||
@@ -670,5 +675,50 @@ LivingActivityCoordinator::TaskGrant LivingActivityCoordinator::AcquireSavedTask
     result.action.world = current; result.action.origin = origin; result.action.permittedEffects = effects;
     state->bindings.at(result.task.actor).publisher.Publish(state->authority.Read(result.task.actor));
     ++state->savedGrants;
+    return result;
+}
+
+LivingActivityCoordinator::TaskGrant LivingActivityCoordinator::SelectSavedStep(const ActivityLease& lease,
+    const std::string& id, uint64_t revision, uint32_t effects, const std::string& origin) {
+    TaskGrant result;
+    if (!OnWorldThread() || !state->enforceEffects.load(std::memory_order_acquire)) {
+        result.blocker = "execution_disabled"; return result;
+    }
+    const auto root = state->cache.find(lease.rootTask);
+    const auto selected = state->cache.find(id.empty() ? lease.rootTask : id);
+    if (root == state->cache.end() || selected == state->cache.end() || !IsToken(origin)) {
+        result.blocker = "acknowledged_task_unavailable"; return result;
+    }
+    for (const auto& queued : state->pending) if (queued.task.root == lease.rootTask) {
+        result.blocker = "task_write_pending"; return result;
+    }
+    Player* bot = sRandomPlayerbotMgr.GetPlayerBot(lease.actor);
+    if (!bot || !bot->GetPlayerbotAI()) { result.blocker = "actor_not_available"; return result; }
+    const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
+    if (id.empty() ? !SavedTaskExecutable(root->second, revision, current, NowMs(), result.blocker) :
+        !SavedStepExecutable(selected->second, root->second, revision, current, NowMs(), result.blocker)) return result;
+    RefreshPermission(lease.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto held = state->authority.Inspect(lease.actor, monotonic);
+    if (held.code != AuthorityCode::Allowed || !SameLease(held.lease, lease) ||
+        !effects || (effects & ~state->authority.Read(lease.actor).effects)) {
+        result.blocker = "current_root_lease_required"; return result;
+    }
+    result.authority.code = state->authority.SelectStep(lease, id.empty() ? nullptr : &selected->second);
+    if (result.authority.code != AuthorityCode::Allowed) { result.blocker = Name(result.authority.code); return result; }
+    result.authority.lease = lease; result.task = selected->second; result.task.ownerGeneration = lease.generation;
+    result.action.task = result.task.id; result.action.rootTask = result.task.root;
+    result.action.revision = result.task.revision; result.action.ownerGeneration = lease.generation;
+    result.action.world = current; result.action.origin = origin; result.action.permittedEffects = effects;
+    state->bindings.at(lease.actor).publisher.Publish(state->authority.Read(lease.actor));
+    return result;
+}
+
+AuthorityResult LivingActivityCoordinator::ReleaseTaskLease(const ActivityLease& lease) {
+    if (!OnWorldThread()) return {AuthorityCode::InvalidRequest, {}, {}};
+    auto result = state->authority.Release(lease); // Pending native operations cannot be discarded.
+    const auto binding = state->bindings.find(lease.actor);
+    if (binding != state->bindings.end()) binding->second.publisher.Publish(state->authority.Read(lease.actor));
     return result;
 }

@@ -123,6 +123,28 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
                 SameLease(state->authority.Read(binding.first).lease, second.lease), "stale_release_preserves_new_owner");
             human.ownerGeneration = second.lease.generation;
             action.task = action.rootTask = human.id; action.ownerGeneration = second.lease.generation;
+            Task child = human; child.id = NewId(); child.root = child.parent = human.id;
+            child.checkpoint.step = "fixture_dependent_service";
+            ActionContext childAction = action; childAction.task = child.id;
+            require(state->authority.SelectStep(second.lease, &child) == AuthorityCode::Allowed,
+                "finite_child_uses_parent_lease");
+            publisher.Publish(state->authority.Read(binding.first));
+            {
+                ExecutionScope parentScope(human, action); target->SetForced(!originalForced);
+                require(target->IsForced() == originalForced, "parent_cannot_overwrite_current_child_route");
+            }
+            {
+                ExecutionScope childScope(child, childAction); target->SetForced(!originalForced);
+                require(target->IsForced() != originalForced, "current_child_native_mutation_allowed");
+                target->SetForced(originalForced);
+            }
+            require(state->authority.SelectStep(second.lease, nullptr) == AuthorityCode::Allowed,
+                "child_handoff_preserves_parent_lease");
+            publisher.Publish(state->authority.Read(binding.first));
+            {
+                ExecutionScope oldChild(child, childAction); target->SetForced(!originalForced);
+                require(target->IsForced() == originalForced, "finished_child_cannot_mutate_parent_route");
+            }
             {
                 ExecutionScope scope(human, action); target->SetForced(originalForced);
                 require(target->IsForced() == originalForced, "replacement_owner_can_mutate");
