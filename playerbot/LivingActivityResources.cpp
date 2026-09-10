@@ -122,6 +122,10 @@ namespace LivingActivity {
             for (const auto& change : row.second.changes) count += change.expectedRevision == 0;
         return count;
     }
+    void ResourceClaimBook::BlockProjection() {
+        restoreFailed = true; protection.ready = false;
+        publisher.Publish(protection);
+    }
     ClaimInstall ResourceClaimBook::ReservePending(const std::string& receipt,
         const std::vector<ClaimReceiptChange>& changes,const std::vector<NativeResourceBalance>& balances) {
         if (!protection.ready) return ClaimInstall::NotReady;

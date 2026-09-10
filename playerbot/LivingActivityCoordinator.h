@@ -8,6 +8,7 @@
 #include "LivingActivityRequests.h"
 #include "LivingActivityAuthority.h"
 #include "LivingActivityOperations.h"
+#include "LivingActivityReservations.h"
 class PlayerbotAI;
 class WorldPacket;
 
@@ -41,6 +42,11 @@ public:
     // Trusted domain producers only, on the native world thread. No native
     // operation or lease is started by submission or persistence callbacks.
     LivingActivity::AdmissionResult SubmitTask(const LivingActivity::TaskRequest& request);
+    LivingActivity::AdmissionResult SubmitResourceReservation(const LivingActivity::ReservationRequest& request,
+        LivingActivity::NativeReservationAdapter& adapter);
+    // Read-only immutable projection. Never permission to consume a reserved
+    // item; a journalled service adapter must prove its own claim separately.
+    LivingActivity::ResourceReader ResourceReservations() const;
     struct TaskGrant {
         LivingActivity::AuthorityResult authority;
         LivingActivity::Task task;

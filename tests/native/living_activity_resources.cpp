@@ -44,6 +44,10 @@ int main() {
         assert(reads.load() >= 2 && original->UnreservedItem(497,100,2934,10) == 6);
         assert(reader.Inspect()->revision > original->revision);
         assert(reader.Inspect()->buckets[0] == original->buckets[0]); // Untouched bucket stays shared.
+        shared.BlockProjection();
+        assert(!reader.Inspect()->ready && reader.Inspect()->UnreservedItem(497,100,2934,10) == 0);
+        assert(!shared.FinishRestore()); // A corrupt projection cannot be casually reopened.
+        assert(original->ready); // Previously read immutable values did not change.
     }
     {
         ResourceClaimBook pendingBook(4); assert(pendingBook.FinishRestore());

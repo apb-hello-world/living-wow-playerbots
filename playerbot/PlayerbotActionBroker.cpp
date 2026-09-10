@@ -509,6 +509,12 @@ bool PlayerbotActionBroker::Authorizes(Player* bot, Player* trader) const
     return bot && trader && Find(bot->GetGUIDLow(), trader->GetGUIDLow()) != nullptr;
 }
 
+uint32 PlayerbotActionBroker::ReservedCopper(uint32 botGuid) const
+{
+    const auto found = reservedMoney.find(botGuid);
+    return found == reservedMoney.end() ? 0 : found->second;
+}
+
 bool PlayerbotActionBroker::IsItemReserved(uint32 itemGuid) const
 {
     return reservedItems.find(itemGuid) != reservedItems.end() || sGuildSupplies.Reserved(itemGuid);

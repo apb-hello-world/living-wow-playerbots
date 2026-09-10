@@ -26,7 +26,8 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     if (requested && std::string(requested) == "activity-gameplay-v1") {
         RunIsolatedGameplayFixture(); return;
     }
-    if (requested && (std::string(requested) == "activity-admission-v1" || std::string(requested) == "activity-operations-v1")) {
+    if (requested && (std::string(requested) == "activity-admission-v1" || std::string(requested) == "activity-operations-v1" ||
+        std::string(requested) == "activity-resources-v1")) {
         RunIsolatedAdmissionFixture(); return;
     }
     if (state->fixtureFinished || NowMs() < state->fixtureNext) return;

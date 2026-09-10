@@ -55,6 +55,7 @@ namespace LivingActivity {
         explicit ResourceClaimBook(size_t capacity = 50000) : capacity(capacity > 50000 ? 50000 : capacity) {}
         ClaimInstall RestoreBatch(const std::vector<ResourceClaim>& rows);
         bool FinishRestore();
+        void BlockProjection();
         ClaimInstall InstallReceipt(const std::vector<ClaimReceiptChange>& changes);
         // Protect additional quantities BEFORE asynchronous reservation SQL.
         // No timeout releases these holds. A negative/uncertain SQL result must

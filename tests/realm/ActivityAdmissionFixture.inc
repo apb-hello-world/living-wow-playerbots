@@ -2,6 +2,19 @@
 // transaction/receipt callbacks and native TravelTarget, not a fake DB class.
 // No item/money/quest/talent effects, and no fabricated completed task.
 namespace {
+    class NativeWalletReservation final : public NativeReservationAdapter {
+    public:
+        bool ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& blocker) override {
+            bool valid=request.transition.task.source == "isolated_admission_fixture" && request.changes.size() == 1;
+            if (valid) {
+                const auto& claim=request.changes.front().after;
+                valid=claim.actor == actor.GetGUIDLow() && claim.copper == 1 && claim.location == "money" &&
+                    (claim.state == "held" || claim.state == "released");
+            }
+            if (!valid) blocker="isolated_wallet_fixture_only";
+            return valid;
+        }
+    };
     class NativeTargetProbe final : public NativeOperationAdapter {
     public:
         explicit NativeTargetProbe(unsigned& executions) : executions(executions) {}
@@ -41,7 +54,8 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
     state->fixtureNext = NowMs() + 1000;
     RequireIsolatedNativeFixtureEnvironment();
     const bool operationSuite = std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE")) == "activity-operations-v1";
-    const std::string suite = operationSuite ? "activity-operations-v1" : "activity-admission-v1";
+    const bool resourceSuite = std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE")) == "activity-resources-v1";
+    const std::string suite = resourceSuite ? "activity-resources-v1" : operationSuite ? "activity-operations-v1" : "activity-admission-v1";
     auto finish = [&](bool passed, const std::string& failure = "") {
         state->fixtureFinished = true;
         boost::property_tree::ptree report;
@@ -56,8 +70,15 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
         report.put("native_inventory_operations", 0); report.put("persistent_task_completions", 0);
         report.put("fixture_task_cancelled", passed);
         report.put("general_execution_enabled", state->enforceEffects.load(std::memory_order_acquire));
+        if (resourceSuite) {
+            state->gameplayFixtureActor.store(0,std::memory_order_release);
+            report.put("native_money_before",state->gameplayOriginalMoney);
+            Player* actor=sRandomPlayerbotMgr.GetPlayerBot(state->admissionFixtureRequest.task.actor);
+            report.put("native_money_after",actor ? actor->GetMoney() : 0);
+            report.put("claim",state->reservationFixtureRequest.changes.empty() ? "" : state->reservationFixtureRequest.changes.front().after.id);
+        }
         report.add_child("checks", state->admissionFixtureChecks);
-        std::ofstream evidence("/isolated/evidence/" + std::string(operationSuite ? "activity-operations-" : "activity-admission-") + state->boot + ".json");
+        std::ofstream evidence("/isolated/evidence/" + std::string(resourceSuite ? "activity-resources-" : operationSuite ? "activity-operations-" : "activity-admission-") + state->boot + ".json");
         evidence << Json(report); evidence.close();
         if (!evidence) sLog.outError("Living isolated admission evidence write failed");
         sLog.outString("Living isolated fixture: %s", Json(report).c_str());
@@ -67,6 +88,7 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
     }
     if (sWorld.GetActiveAndQueuedSessionCount()) return;
     if (!state->loaded || state->ioPending || !state->pending.empty() || !state->incoming.empty()) return;
+    if (resourceSuite && !state->resources.Protection().ready) return;
     auto require = [&](bool result, const char* name) {
         boost::property_tree::ptree check; check.put("case", name); check.put("passed", result);
         state->admissionFixtureChecks.push_back({"", check});
@@ -77,6 +99,8 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
             for (const auto& binding : state->bindings) {
                 Player* bot = sRandomPlayerbotMgr.GetPlayerBot(binding.first);
                 if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || bot->GetGroup() || NativeSafety(bot)) continue;
+                if (resourceSuite && (bot->GetGuildId() || bot->GetMoney() < 10 || bot->GetTradeData() ||
+                    sPlayerbotActionBroker.ReservedCopper(bot->GetGUIDLow()))) continue;
                 const auto context = ReadNativeContext(*bot, state->policyRevision, state->boot);
                 if (!context.mapGeneration || state->authority.Read(binding.first).lease.actor) continue;
                 auto& request = state->admissionFixtureRequest;
@@ -88,6 +112,10 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
                 request.task.checkpoint.step = "native_admission_fixture";
                 request.task.createdAtMs = request.task.updatedAtMs = NowMs();
                 state->admissionFixtureDeadline = NowMs() + 180000;
+                if (resourceSuite) {
+                    state->gameplayOriginalMoney=bot->GetMoney();
+                    state->gameplayFixtureActor.store(bot->GetGUIDLow(),std::memory_order_release);
+                }
                 break;
             }
             if (!state->admissionFixtureRequest.task.actor) return;
@@ -117,6 +145,62 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
         const auto saved = state->cache.find(request.task.id);
         require(saved != state->cache.end() && saved->second.revision == request.task.revision,
             "exact_native_receipt_acknowledged");
+        if (resourceSuite && state->admissionFixtureStep == 2) {
+            const auto grant=AcquireSavedTask(request.task.id,request.task.revision,Mask(Effect::Money),60000,"isolated_fixture");
+            require(grant.Permitted(),"reservation_predecessor_grant");
+            auto& reservation=state->reservationFixtureRequest;
+            reservation.transition=request; reservation.transition.expectedRevision=request.task.revision;
+            ++reservation.transition.task.revision; reservation.transition.receipt=NewId();
+            reservation.transition.task.updatedAtMs=NowMs(); reservation.authorization=grant.action;
+            ResourceClaim claim; claim.id=NewId(); claim.task=request.task.id; claim.actor=request.task.actor;
+            claim.copper=1; claim.location="money"; claim.state="held";
+            reservation.changes={{claim,0}};
+            NativeWalletReservation adapter;
+            require(SubmitResourceReservation(reservation,adapter).code == AdmissionCode::Pending,"native_money_reservation_queued");
+            require(SubmitResourceReservation(reservation,adapter).code == AdmissionCode::Pending && state->pending.size() == 1,
+                "duplicate_pending_reservation_has_one_write");
+            auto changed=reservation; changed.changes.front().after.copper=2;
+            require(SubmitResourceReservation(changed,adapter).code == AdmissionCode::ConflictingWrite,"changed_reservation_rejected");
+            const auto view=ResourceReservations().Inspect();
+            require(view && view->UnreservedMoney(bot->GetGUIDLow(),bot->GetMoney()) == bot->GetMoney()-1,
+                "pending_reservation_protected_before_receipt");
+            require(!state->resources.Inspect(claim.id),"pending_claim_not_falsely_saved");
+            request=reservation.transition; state->admissionFixtureStep=40; return;
+        }
+        if (resourceSuite && state->admissionFixtureStep == 40) {
+            auto& reservation=state->reservationFixtureRequest; NativeWalletReservation adapter;
+            const auto* claim=state->resources.Inspect(reservation.changes.front().after.id);
+            require(claim && claim->state == "held" && !state->resources.PendingCount(),"native_reservation_receipt_installed");
+            require(SubmitResourceReservation(reservation,adapter).code == AdmissionCode::Saved,"saved_reservation_duplicate_read_only");
+            require(ResourceReservations().Inspect()->UnreservedMoney(bot->GetGUIDLow(),bot->GetMoney()) == bot->GetMoney()-1,
+                "saved_reservation_not_double_counted");
+            const auto grant=AcquireSavedTask(request.task.id,request.task.revision,Mask(Effect::Money),60000,"isolated_fixture");
+            require(grant.Permitted(),"release_predecessor_grant");
+            reservation.transition.expectedRevision=reservation.transition.task.revision++;
+            reservation.transition.receipt=NewId(); reservation.transition.task.updatedAtMs=NowMs();
+            reservation.authorization=grant.action;
+            auto& change=reservation.changes.front(); change.expectedRevision=change.after.revision++;
+            change.after.state="released";
+            require(SubmitResourceReservation(reservation,adapter).code == AdmissionCode::Pending,"native_release_queued");
+            require(ResourceReservations().Inspect()->UnreservedMoney(bot->GetGUIDLow(),bot->GetMoney()) == bot->GetMoney()-1,
+                "queued_release_keeps_protection");
+            request=reservation.transition; state->admissionFixtureStep=41; return;
+        }
+        if (resourceSuite && state->admissionFixtureStep == 41) {
+            const auto* claim=state->resources.Inspect(state->reservationFixtureRequest.changes.front().after.id);
+            require(claim && claim->state == "released" && !state->resources.PendingCount(),"release_receipt_installed");
+            require(ResourceReservations().Inspect()->UnreservedMoney(bot->GetGUIDLow(),bot->GetMoney()) == bot->GetMoney(),
+                "receipt_releases_exact_reserved_amount");
+            require(bot->GetMoney() == state->gameplayOriginalMoney,"native_money_unchanged");
+            request.expectedRevision=request.task.revision++; request.task.phase=Phase::Cancelled;
+            request.task.checkpoint.blocker="isolated_fixture_finished"; request.task.updatedAtMs=NowMs();
+            state->Queue(request.task,request.expectedRevision,"isolated_fixture_cleanup");
+            state->nextWork=0; state->admissionFixtureStep=42; return;
+        }
+        if (resourceSuite && state->admissionFixtureStep == 42) {
+            require(saved->second.phase == Phase::Cancelled,"reservation_fixture_cancelled_with_receipt");
+            state->enforceEffects.store(originalEnforcement,std::memory_order_release); finish(true); return;
+        }
         if (operationSuite && state->admissionFixtureStep == 2) {
             const auto grant = AcquireSavedTask(request.task.id, request.task.revision,
                 Mask(Effect::TravelTarget), 60000, "isolated_fixture");

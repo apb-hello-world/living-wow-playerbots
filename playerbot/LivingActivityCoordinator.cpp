@@ -12,6 +12,8 @@
 #include "LivingActivityScope.h"
 #include "LivingActivityNativeContext.h"
 #include "PlayerbotRendezvousManager.h"
+#include "PlayerbotActionBroker.h"
+#include "PlayerbotGuildSupplies.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/uuid/name_generator.hpp>
@@ -120,6 +122,7 @@ struct LivingActivityCoordinator::State {
     uint64_t admissionFixtureDeadline = 0;
     TaskRequest admissionFixtureRequest, admissionFixtureChild;
     OperationRequest operationFixtureRequest;
+    ReservationRequest reservationFixtureRequest;
     unsigned operationFixtureCalls = 0;
     boost::property_tree::ptree admissionFixtureChecks;
     std::atomic<uint32_t> gameplayFixtureActor{0}, gameplayFixtureSpell{0};
@@ -149,6 +152,8 @@ struct LivingActivityCoordinator::State {
         std::string operation;
         bool operationOutcome = false;
         ReceiptRetry retry{};
+        std::string reservation;
+        std::vector<ClaimReceiptChange> claims;
     };
     struct PendingOperation {
         OperationRequest request;
@@ -180,6 +185,7 @@ struct LivingActivityCoordinator::State {
     // Compact last-receipt identity, bounded by the same task cache. Request
     // content is compared with the cached task, not retained as duplicate SQL.
     std::map<std::string, std::string> admissionReceipts;
+    std::map<std::string,std::vector<std::string>> reservationClaimIds;
     uint64_t taskAdmissions = 0, savedGrants = 0;
     std::map<uint32_t, std::string> preferred;
     std::map<std::string, std::string> quarantined;
@@ -272,6 +278,16 @@ struct LivingActivityCoordinator::State {
                 while (result->NextRow());
             const bool healthy = receipts.count({"",0}) != 0;
             const auto accepted = SettleReceiptBatch(pending,count,healthy,receipts,NowMs(),[this](const Pending& acknowledgedWrite) {
+                if (!acknowledgedWrite.reservation.empty()) {
+                    const auto installed = resources.CommitReservation(acknowledgedWrite.reservation);
+                    if (installed != ClaimInstall::Installed && installed != ClaimInstall::Duplicate) {
+                        resources.BlockProjection(); claimRestoreFailed = true;
+                        claimBlocker = "acknowledged_claim_projection_mismatch"; ++invalidClaims;
+                    } else {
+                        auto& ids = reservationClaimIds[acknowledgedWrite.task.id]; ids.clear();
+                        for (const auto& change : acknowledgedWrite.claims) ids.push_back(change.after.id);
+                    }
+                } else reservationClaimIds.erase(acknowledgedWrite.task.id);
                 Remember(acknowledgedWrite.task);
                 if (!acknowledgedWrite.admissionReceipt.empty())
                     admissionReceipts[acknowledgedWrite.task.id] = acknowledgedWrite.admissionReceipt;
@@ -564,6 +580,7 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("unacknowledged_writes",std::count_if(state->pending.begin(),state->pending.end(),
         [](const State::Pending& write){return write.retry.failures != 0;}));
     p.put("cached_resource_claims", state->resources.Size());
+    p.put("pending_resource_reservations",state->resources.PendingCount());
     p.put("resource_claims_ready", state->resources.Protection().ready);
     p.put("pending_claim_decode", state->incomingClaims.size());
     p.put("invalid_resource_claims", state->invalidClaims);
@@ -740,6 +757,123 @@ bool LivingActivityCoordinator::OnWorldThread() const {
         state->worldThread == std::this_thread::get_id();
 }
 
+ResourceReader LivingActivityCoordinator::ResourceReservations() const { return state->resources.Reader(); }
+
+AdmissionResult LivingActivityCoordinator::SubmitResourceReservation(const ReservationRequest& original,
+    NativeReservationAdapter& adapter) {
+    if (original.changes.empty() || original.changes.size() > 16) {
+        AdmissionResult result; result.blocker="invalid_reservation_batch"; return result;
+    }
+    ReservationRequest request=original;
+    std::sort(request.changes.begin(),request.changes.end(),[](const auto& a,const auto& b){return a.after.id < b.after.id;});
+    const auto& next=request.transition.task;
+    AdmissionResult result; result.task=next.id; result.revision=next.revision;
+    auto reject=[&](AdmissionCode code,const std::string& reason="") {
+        result.code=code; result.blocker=reason.empty() ? Name(code) : reason; return result;
+    };
+    if (!OnWorldThread() || !state->enforceEffects.load(std::memory_order_acquire)) return reject(AdmissionCode::Disabled);
+    if (!state->schemaReady || !state->loaded || !state->resources.Protection().ready || !state->incoming.empty())
+        return reject(AdmissionCode::NotReady);
+    if (state->operationDispatching) return reject(AdmissionCode::Backpressure);
+    if (next.id != SourceId(next.source,next.sourceKey) || next.mode != Mode::Active || next.phase != Phase::Preparing ||
+        request.changes.empty() || request.changes.size() > 16) return reject(AdmissionCode::InvalidRequest);
+    Player* bot=sRandomPlayerbotMgr.GetPlayerBot(next.actor);
+    if (!bot || !bot->GetPlayerbotAI()) return reject(AdmissionCode::StaleContext);
+    const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    if (!(next.context == current)) return reject(AdmissionCode::StaleContext);
+    auto sameTask=[&](const Task& task) {
+        try { return SameRequest(TaskWrite(task,request.transition.expectedRevision,request.transition.receipt,"resources_reserved"),
+            TaskWrite(next,request.transition.expectedRevision,request.transition.receipt,"resources_reserved")); }
+        catch (const std::exception&) { return false; }
+    };
+    for (const auto& queued : state->pending) {
+        if (queued.reservation == request.transition.receipt && queued.task.id == next.id && sameTask(queued.task) &&
+            queued.claims.size() == request.changes.size()) {
+            for (size_t i=0;i<request.changes.size();++i)
+                if (queued.claims[i].expectedRevision != request.changes[i].expectedRevision ||
+                    !SameResourceClaim(queued.claims[i].after,request.changes[i].after)) return reject(AdmissionCode::ConflictingWrite);
+            return reject(AdmissionCode::Pending);
+        }
+        if (queued.task.actor == next.actor || queued.admissionReceipt == request.transition.receipt)
+            return reject(AdmissionCode::ConflictingWrite);
+    }
+    const auto saved=state->cache.find(next.id), root=state->cache.find(next.root);
+    const auto receipt=state->admissionReceipts.find(next.id);
+    const auto ids=state->reservationClaimIds.find(next.id);
+    if (saved != state->cache.end() && receipt != state->admissionReceipts.end() &&
+        receipt->second == request.transition.receipt && ids != state->reservationClaimIds.end() &&
+        ids->second.size() == request.changes.size() && sameTask(saved->second)) {
+        for (size_t i=0;i<request.changes.size();++i) {
+            const auto& change=request.changes[i]; const auto* claim=state->resources.Inspect(change.after.id);
+            if (ids->second[i] != change.after.id || !claim || change.after.revision != change.expectedRevision+1 ||
+                !SameResourceClaim(*claim,change.after)) return reject(AdmissionCode::ConflictingWrite);
+        }
+        return reject(AdmissionCode::Saved);
+    }
+    std::string blocker;
+    auto valid=ValidateTaskRequest(request.transition,saved == state->cache.end() ? nullptr : &saved->second,current,blocker,
+        root == state->cache.end() ? nullptr : &root->second);
+    if (valid != AdmissionCode::Pending || saved == state->cache.end()) return reject(valid,blocker);
+    if (state->pending.size() >= state->batch || state->transitionCount+state->pending.size() >= 200000)
+        return reject(AdmissionCode::Backpressure);
+    for (const auto& operation : state->operations) if (operation.second.request.transition.task.actor == next.actor)
+        return reject(AdmissionCode::ReconciliationRequired,"actor_operation_unresolved");
+    RefreshPermission(next.actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    auto predecessor=saved->second; predecessor.ownerGeneration=request.authorization.ownerGeneration;
+    const uint64_t monotonic=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    uint32_t required=0;
+    for (const auto& change : request.changes) required |= change.after.copper ? Mask(Effect::Money) : Mask(Effect::Inventory);
+    if ((required & ~request.authorization.permittedEffects) || (required & ~state->authority.Read(next.actor).effects))
+        return reject(AdmissionCode::InvalidRequest,"reservation_effects_not_granted");
+    if (state->authority.Authorize({0,Lane::Managed,true},current,monotonic,&predecessor,&request.authorization) != AuthorityCode::Allowed)
+        return reject(AdmissionCode::StaleContext,"current_predecessor_lease_required");
+    if (bot->GetTradeData()) return reject(AdmissionCode::InvalidRequest,"native_trade_in_progress");
+    std::vector<NativeResourceBalance> balances;
+    try {
+        if (!adapter.ValidatePurpose(*bot,request,blocker)) return reject(AdmissionCode::InvalidRequest,
+            IsToken(blocker) ? blocker : "native_reservation_purpose_rejected");
+        std::map<uint32_t,NativeResourceBalance> owned;
+        bool bags=false,bank=false,money=false;
+        for (const auto& change : request.changes) if (change.after.state == "held") {
+            bags |= change.after.location == "bags"; bank |= change.after.location == "bank";
+            money |= change.after.location == "money";
+        }
+        if (money) {
+            const uint32_t native=bot->GetMoney(), legacy=sPlayerbotActionBroker.ReservedCopper(next.actor);
+            owned.emplace(0,NativeResourceBalance{next.actor,0,0,0,native-std::min(native,legacy),"money"});
+        }
+        for (const auto& service : {std::make_pair(bags,IterateItemsMask::ITERATE_ITEMS_IN_BAGS),
+                                   std::make_pair(bank,IterateItemsMask::ITERATE_ITEMS_IN_BANK)}) if (service.first)
+            for (Item* item : bot->GetPlayerbotAI()->InventoryParseItems("inventory",service.second)) {
+                if (!item || sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
+                    sGuildSupplies.ReservedEntry(next.actor,item->GetEntry())) continue;
+                const std::string location=service.second == IterateItemsMask::ITERATE_ITEMS_IN_BAGS ? "bags" : "bank";
+                for (const auto& change : request.changes) if (change.after.state == "held" &&
+                    change.after.itemGuid == item->GetGUIDLow() && change.after.itemEntry == item->GetEntry() &&
+                    change.after.location == location)
+                    owned.emplace(item->GetGUIDLow(),NativeResourceBalance{next.actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,location});
+            }
+        for (const auto& row : owned) balances.push_back(row.second);
+        auto plan=ResourceReservationWrite(next,request.transition.expectedRevision,request.transition.receipt,request.changes,balances);
+        State::Pending write{next,std::move(plan),request.transition.receipt};
+        write.reservation=request.transition.receipt; write.claims=request.changes;
+        const auto reserved=state->resources.ReservePending(request.transition.receipt,request.changes,balances);
+        if (reserved != ClaimInstall::Installed) return reject(reserved == ClaimInstall::Capacity ? AdmissionCode::Backpressure :
+            AdmissionCode::InvalidRequest,"resources_unavailable_or_reserved");
+        state->pending.push_back(std::move(write));
+    } catch (const std::exception&) {
+        if (state->resources.HasPending(request.transition.receipt)) {
+            state->resources.BlockProjection(); state->claimRestoreFailed=true;
+            state->claimBlocker="reservation_admission_requires_reconciliation";
+            return reject(AdmissionCode::ReconciliationRequired,state->claimBlocker);
+        }
+        return reject(AdmissionCode::InvalidRequest,"invalid_native_reservation");
+    }
+    ReleaseTaskLease(state->authority.Read(next.actor).lease);
+    state->nextWork=0;
+    return reject(AdmissionCode::Pending);
+}
+
 AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request) {
     AdmissionResult result; result.task = request.task.id; result.revision = request.task.revision;
     auto reject = [&](AdmissionCode code, const std::string& reason = "") {
@@ -817,6 +951,9 @@ LivingActivityCoordinator::TaskGrant LivingActivityCoordinator::AcquireSavedTask
     const auto saved = state->cache.find(id);
     if (!state->schemaReady || !state->loaded || saved == state->cache.end() || !IsToken(origin)) {
         result.blocker = "acknowledged_task_unavailable"; return result;
+    }
+    if ((effects & (Mask(Effect::Inventory)|Mask(Effect::Money))) && !state->resources.Protection().ready) {
+        result.blocker="resource_protection_unavailable"; return result;
     }
     for (const auto& queued : state->pending) if (queued.task.root == id) {
         result.blocker = "task_write_pending"; return result;

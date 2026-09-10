@@ -44,6 +44,7 @@ public:
     PlayerbotActionResult Create(const ChatDirectorActionProposal& proposal, const ChatDirectorEvent& event);
     bool Authorizes(Player* bot, Player* trader) const;
     bool IsItemReserved(uint32 itemGuid) const;
+    uint32 ReservedCopper(uint32 botGuid) const;
     bool PopulateTrade(Player* bot, Player* trader);
     bool ValidateTrade(Player* bot, Player* trader);
     void CompleteTrade(Player* bot, Player* trader);
