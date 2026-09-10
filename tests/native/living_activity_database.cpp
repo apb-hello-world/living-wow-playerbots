@@ -4,6 +4,7 @@
 #include "LivingActivityCodec.h"
 #include "LivingActivityResources.h"
 #include "LivingActivityClaimConsumption.h"
+#include "LivingActivityOperations.h"
 #include "LivingActivityClaimCodec.h"
 #include "LivingActivityReceipts.h"
 #include <mysql.h>
@@ -369,8 +370,10 @@ int main() {
         {{spend,0}},{{700,0,0,0,1000,"money"}})));
     consuming.phase=Phase::Executing; ++consuming.revision;
     const std::string consumeId="ff2efbdf-f0ec-4539-b840-299847970e12";
-    const auto declared=ClaimedNativeState("{\"money\":1000}",{{spend,30}});
-    assert(db.Write(OperationIntentWrite(consuming,2,consumeId,"fixture_spend","{\"effects\":8,\"native\":"+declared+'}')));
+    OperationRequest spending; spending.transition.task=consuming; spending.transition.expectedRevision=2;
+    spending.transition.receipt=consumeId; spending.effects=Mask(Effect::Money); spending.kind="fixture_spend";
+    spending.beforeState="{\"money\":1000}"; spending.consumption={{spend,30}};
+    assert(db.Write(OperationRequestWrite(spending)));
     OperationResult consumed; consumed.id=consumeId; consumed.task=consuming.id; consumed.taskRevision=3;
     consumed.kind="fixture_spend"; consumed.state=OperationState::Verified;
     consumed.nativeReference="fixture_metadata:spend"; consumed.evidence="fixture_only_result";

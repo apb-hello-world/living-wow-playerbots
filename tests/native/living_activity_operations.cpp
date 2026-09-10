@@ -74,7 +74,9 @@ int main() {
     request.consumption={{claim,10}};
     assert(valid(request,saved));
     const auto claimed=OperationRequestWrite(request);
-    assert(claimed.statements.back().find("claimed_consumption") != std::string::npos);
+    assert(SameRequest(claimed,OperationIntentWrite(request.transition.task,request.transition.expectedRevision,
+        request.transition.receipt,request.kind,"{\"effects\":"+std::to_string(request.effects)+",\"native\":"+
+        ClaimedNativeState(request.beforeState,request.consumption)+'}')));
     changed=request; changed.consumption.front().used=11;
     assert(!SameRequest(claimed,OperationRequestWrite(changed)));
     changed=request; changed.consumption.front().before.actor++;

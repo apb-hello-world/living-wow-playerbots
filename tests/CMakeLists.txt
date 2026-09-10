@@ -43,7 +43,7 @@ option(LIVING_DATABASE_TESTS "Build isolated MariaDB journal integration tests" 
 if(LIVING_DATABASE_TESTS)
     find_path(MARIADB_INCLUDE_DIR mysql.h PATH_SUFFIXES mariadb mysql REQUIRED)
     find_library(MARIADB_LIBRARY mariadb REQUIRED)
-    add_executable(living_activity_database native/living_activity_database.cpp ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityClaimJournal.cpp ../playerbot/LivingActivityResourceView.cpp ../playerbot/LivingActivityClaimConsumption.cpp)
+    add_executable(living_activity_database native/living_activity_database.cpp ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityClaimJournal.cpp ../playerbot/LivingActivityResourceView.cpp ../playerbot/LivingActivityClaimConsumption.cpp ../playerbot/LivingActivityRequests.cpp ../playerbot/LivingActivityOperations.cpp)
     target_include_directories(living_activity_database PRIVATE ../playerbot ${MARIADB_INCLUDE_DIR})
     target_link_libraries(living_activity_database PRIVATE ${MARIADB_LIBRARY} Threads::Threads)
     target_compile_features(living_activity_database PRIVATE cxx_std_17)
