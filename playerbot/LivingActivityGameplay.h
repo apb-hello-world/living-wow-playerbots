@@ -34,7 +34,8 @@ namespace LivingActivity {
     // Inspects the actual native spell, known-spell record, target and CheckCast.
     // No talent change, role inference, synthetic spell or rotation selection.
     constexpr uint32_t SpellEffectMask(bool inventoryFreeDirectHeal) {
-        return Mask(Effect::Spell) | (inventoryFreeDirectHeal ? 0 : Mask(Effect::Inventory));
+        // Native casting can face the target and interrupt an existing move.
+        return Mask(Effect::Spell) | Mask(Effect::Movement) | (inventoryFreeDirectHeal ? 0 : Mask(Effect::Inventory));
     }
     template<class NativeSpell>
     bool InventoryFreeDirectHeal(const NativeSpell& spell, bool known, bool itemCast, uint32_t heal, uint32_t maxHeal) {

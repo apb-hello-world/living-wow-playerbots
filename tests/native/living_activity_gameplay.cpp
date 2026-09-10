@@ -24,8 +24,8 @@ namespace {
     };
 }
 int main() {
-    assert(SpellEffectMask(true) == Mask(Effect::Spell));
-    assert(SpellEffectMask(false) == (Mask(Effect::Spell) | Mask(Effect::Inventory)));
+    assert(SpellEffectMask(true) == (Mask(Effect::Spell) | Mask(Effect::Movement)));
+    assert(SpellEffectMask(false) == (Mask(Effect::Spell) | Mask(Effect::Movement) | Mask(Effect::Inventory)));
     NativeSpell direct;
     assert(!InventoryFreeDirectHeal(direct, true, false, 10, 67));
     direct.Effect[0] = 10;

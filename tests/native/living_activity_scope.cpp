@@ -18,9 +18,11 @@ int main() {
     const Effects movement{Mask(Effect::Movement), Lane::Managed, true};
     auto check = [&] { return ExecutionScope::Check(reader, movement, task.context, 200); };
     assert(check() == AuthorityCode::StaleLease);
+    assert(ExecutionScope::MutationEffects(task.actor,Mask(Effect::Movement)).lane == Lane::Managed);
     {
         ExecutionScope scope(task, action);
         assert(check() == AuthorityCode::Allowed);
+        assert(ExecutionScope::MutationEffects(task.actor,Mask(Effect::Movement)).lane == Lane::Managed);
         assert(ExecutionScope::Origin(task.actor) == "service_adapter");
         {
             EvaluationScope evaluation(true);
@@ -71,6 +73,16 @@ int main() {
     NativePermit native{task.context, Lane::Combat, Mask(Effect::Movement), 0, true};
     {
         ExecutionScope combat(native);
+        const auto nativeMovement=ExecutionScope::MutationEffects(task.actor,Mask(Effect::Movement));
+        assert(nativeMovement.lane == Lane::Combat);
+        assert(ExecutionScope::Check(reader,nativeMovement,task.context,200) == AuthorityCode::Allowed);
+        assert(ExecutionScope::MutationEffects(task.actor+1,Mask(Effect::Movement)).lane == Lane::Managed);
+        assert(ExecutionScope::MutationEffects(task.actor,Mask(Effect::TravelTarget)).lane == Lane::Managed);
+        {
+            EvaluationScope evaluation(true);
+            assert(ExecutionScope::Check(reader,nativeMovement,task.context,200) == AuthorityCode::EffectsDenied);
+            assert(evaluation.Rejected());
+        }
         assert(ExecutionScope::Check(reader, {Mask(Effect::Movement), Lane::Combat, true}, task.context, 200) == AuthorityCode::Allowed);
         assert(check() == AuthorityCode::StaleLease); // A combat permit never grants service travel.
     }

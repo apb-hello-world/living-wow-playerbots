@@ -35,4 +35,10 @@ namespace LivingActivity {
         if (head->permit) return "native_validated";
         return head->action && IsToken(head->action->origin) ? head->action->origin : "invalid_scope";
     }
+    Effects ExecutionScope::MutationEffects(uint32_t actor,uint32_t mask) {
+        Effects result{mask,Lane::Managed,true};
+        if (head && head->actor == actor && head->depth <= 16 && head->permit &&
+            head->permit->validated && !(mask & ~head->permit->effects)) result.lane=head->permit->lane;
+        return result; // The normal boundary still checks context, safety and effects.
+    }
 }

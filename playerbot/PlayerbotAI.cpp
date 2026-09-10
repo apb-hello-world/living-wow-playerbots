@@ -8870,6 +8870,9 @@ bool PlayerbotAI::CanMove()
 
 void PlayerbotAI::StopMoving()
 {
+    if (!sLivingActivityCoordinator.PermitEffects(*this,
+        LivingActivity::ExecutionScope::MutationEffects(bot->GetGUIDLow(),LivingActivity::Mask(LivingActivity::Effect::Movement)),
+        "native stop moving")) return;
     if (bot->IsTaxiFlying())
         return;
 
