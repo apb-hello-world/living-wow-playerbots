@@ -164,6 +164,7 @@ add_library(${LIBRARY_NAME} STATIC ${LIBRARY_SRCS})
 option(LIVING_ISOLATED_NATIVE_TESTS "Compile isolated-only Living native fixtures" OFF)
 if(LIVING_ISOLATED_NATIVE_TESTS)
   set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/playerbot/LivingActivityCoordinator.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotAI.cpp
     PROPERTIES COMPILE_DEFINITIONS LIVING_ISOLATED_NATIVE_TESTS=1)
 endif()
 
