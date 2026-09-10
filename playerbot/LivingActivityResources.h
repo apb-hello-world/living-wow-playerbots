@@ -15,6 +15,20 @@ namespace LivingActivity {
     };
     enum class ClaimInstall { Installed, Duplicate, Invalid, Stale, Capacity, NotReady };
 
+    // Supplied by the compiled native reservation adapter, never model input.
+    // A balance is an admission snapshot, not evidence of a purchase/transfer.
+    struct NativeResourceBalance {
+        uint32_t actor = 0, itemGuid = 0, itemEntry = 0, quantity = 0, copper = 0;
+        std::string location;
+    };
+    // Preparation-only reservation/release. No transfer, consumption, native
+    // effect or completion can be written through this path. The coordinator
+    // must validate actual possession and protect pending quantities before
+    // enqueueing; only an exact receipt may update its acknowledged claim book.
+    WritePlan ResourceReservationWrite(const Task& task, uint64_t expectedRevision,
+        const std::string& receipt, std::vector<ClaimReceiptChange> changes,
+        std::vector<NativeResourceBalance> balances);
+
     // Immutable value projection for consumers. It is protection, NOT an
     // execution grant or a copy of native possessions. Only actual native item
     // counts/money may be passed to the unreserved-quantity helpers.

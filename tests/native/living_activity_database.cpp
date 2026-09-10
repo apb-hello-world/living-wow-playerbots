@@ -2,6 +2,7 @@
 // Not linked into the game. No test controls enter the production executable.
 #include "LivingActivity.h"
 #include "LivingActivityCodec.h"
+#include "LivingActivityResources.h"
 #include <mysql.h>
 #include <cassert>
 #include <cstdlib>
@@ -10,6 +11,8 @@
 #include <stdexcept>
 #include <sstream>
 #include <boost/property_tree/json_parser.hpp>
+#include <atomic>
+#include <thread>
 
 using namespace LivingActivity;
 static const std::string Id = "637bd562-36d2-5b01-bc01-e2d831c49f38";
@@ -227,5 +230,99 @@ int main() {
     assert(db.Write(OperationOutcomeWrite(multi, 6, proof, "ff2efbdf-f0ec-4539-b840-299847970c29", "{}")));
     multi.phase = Phase::Completed; ++multi.revision;
     assert(!db.Write(TaskWrite(multi, 7, "ff2efbdf-f0ec-4539-b840-299847970c30", "fixture_completed")));
-    std::cout << "PASS: real MariaDB atomic task/outbox and intent/outcome journals, duplicate/stale requests, transaction rollback, uncertain restart, immutable receipts, shadow completion guard (fixture metadata, NOT native gameplay proof)\n";
+    // Reservation metadata only. These snapshots do NOT grant items or money.
+    Task reserve = prepared; reserve.id = reserve.root = "637bd562-36d2-5b01-bc01-e2d831c49f43";
+    reserve.actor = reserve.context.actor = 610; reserve.sourceKey = "reservation_a";
+    reserve.phase = Phase::Queued; reserve.revision = 1;
+    assert(db.Write(TaskWrite(reserve,0,"ff2efbdf-f0ec-4539-b840-299847970d00","fixture_created")));
+    Task competitor = reserve; competitor.id = competitor.root = "637bd562-36d2-5b01-bc01-e2d831c49f44";
+    competitor.sourceKey = "reservation_b";
+    assert(db.Write(TaskWrite(competitor,0,"ff2efbdf-f0ec-4539-b840-299847970d01","fixture_created")));
+    ResourceClaim claim; claim.id = "ff2efbdf-f0ec-4539-b840-299847970d02";
+    claim.task = reserve.id; claim.actor = reserve.actor; claim.itemGuid = 900;
+    claim.itemEntry = 2934; claim.quantity = 6; claim.location = "bags"; claim.state = "held";
+    NativeResourceBalance stock{610,900,2934,10,0,"bags"};
+    reserve.phase = Phase::Preparing; ++reserve.revision;
+    const auto reservation = ResourceReservationWrite(reserve,1,"ff2efbdf-f0ec-4539-b840-299847970d03",{{claim,0}},{stock});
+    assert(!db.Write(reservation,true));
+    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim") == "0");
+    assert(db.Write(reservation)); assert(db.Write(reservation));
+    assert(db.Scalar("SELECT quantity FROM living_activity_claim WHERE claim_id=" + SqlValue(claim.id)) == "6");
+    auto tamperedClaim = claim; tamperedClaim.quantity = 8;
+    assert(!db.Write(ResourceReservationWrite(reserve,1,"ff2efbdf-f0ec-4539-b840-299847970d03",{{tamperedClaim,0}},{stock})));
+    assert(db.Scalar("SELECT quantity FROM living_activity_claim WHERE claim_id=" + SqlValue(claim.id)) == "6");
+    auto extraClaim = claim; extraClaim.id = "ff2efbdf-f0ec-4539-b840-299847970d04"; extraClaim.quantity = 2;
+    assert(!db.Write(ResourceReservationWrite(reserve,1,"ff2efbdf-f0ec-4539-b840-299847970d03",{{claim,0},{extraClaim,0}},{stock})));
+    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim") == "1");
+    auto competingClaim = claim; competingClaim.id = "ff2efbdf-f0ec-4539-b840-299847970d05";
+    competingClaim.task = competitor.id; competingClaim.quantity = 5;
+    competitor.phase = Phase::Preparing; ++competitor.revision;
+    assert(!db.Write(ResourceReservationWrite(competitor,1,"ff2efbdf-f0ec-4539-b840-299847970d06",{{competingClaim,0}},{stock})));
+    assert(db.Scalar("SELECT revision FROM living_activity_task WHERE task_id=" + SqlValue(competitor.id)) == "1");
+    competingClaim.quantity = 4;
+    assert(db.Write(ResourceReservationWrite(competitor,1,"ff2efbdf-f0ec-4539-b840-299847970d07",{{competingClaim,0}},{stock})));
+    assert(db.Scalar("SELECT SUM(quantity) FROM living_activity_claim WHERE state='held'") == "10");
+    ResourceClaim cash = claim; cash.id = "ff2efbdf-f0ec-4539-b840-299847970d08";
+    cash.itemGuid = cash.itemEntry = 0; cash.quantity = 0; cash.copper = 600; cash.location = "money";
+    NativeResourceBalance wallet{610,0,0,0,1000,"money"};
+    ++reserve.revision;
+    assert(db.Write(ResourceReservationWrite(reserve,2,"ff2efbdf-f0ec-4539-b840-299847970d09",{{cash,0}},{wallet})));
+    auto otherCash = cash; otherCash.id = "ff2efbdf-f0ec-4539-b840-299847970d10";
+    otherCash.task = competitor.id; otherCash.copper = 500;
+    ++competitor.revision;
+    assert(!db.Write(ResourceReservationWrite(competitor,2,"ff2efbdf-f0ec-4539-b840-299847970d11",{{otherCash,0}},{wallet})));
+    otherCash.copper = 400;
+    assert(db.Write(ResourceReservationWrite(competitor,2,"ff2efbdf-f0ec-4539-b840-299847970d12",{{otherCash,0}},{wallet})));
+    auto releasedClaim = claim; ++releasedClaim.revision; releasedClaim.state = "released";
+    auto releasedCash = cash; ++releasedCash.revision; releasedCash.state = "released";
+    auto cancelledReserve = reserve; ++cancelledReserve.revision; cancelledReserve.phase = Phase::Cancelled;
+    assert(!db.Write(TaskWrite(cancelledReserve,3,"ff2efbdf-f0ec-4539-b840-299847970d13","fixture_cancelled")));
+    ++reserve.revision;
+    const auto release = ResourceReservationWrite(reserve,3,"ff2efbdf-f0ec-4539-b840-299847970d14",{{releasedClaim,1},{releasedCash,1}},{});
+    assert(!db.Write(release,true));
+    assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id=" + SqlValue(claim.id)) == "held");
+    assert(db.Write(release)); assert(db.Write(release));
+    assert(db.Scalar("SELECT SUM(copper) FROM living_activity_claim WHERE state='held'") == "400");
+    assert(db.Scalar("SELECT SUM(quantity) FROM living_activity_claim WHERE state='held'") == "4");
+    cancelledReserve = reserve; ++cancelledReserve.revision; cancelledReserve.phase = Phase::Cancelled;
+    assert(db.Write(TaskWrite(cancelledReserve,4,"ff2efbdf-f0ec-4539-b840-299847970d15","fixture_cancelled")));
+    assert(db.ReceiptPresent(release)); // Native quantities are untouched by a release.
+    bool transferRejected = false;
+    auto illicit = competingClaim; ++illicit.revision; illicit.state = "in_transfer"; illicit.location = "mail"; illicit.nativeReference = 120;
+    ++competitor.revision;
+    try { ResourceReservationWrite(competitor,3,"ff2efbdf-f0ec-4539-b840-299847970d16",{{illicit,1}},{}); }
+    catch (const std::invalid_argument&) { transferRejected = true; }
+    assert(transferRejected);
+    // Fail closed if native stock shrank before a new reservation. Never
+    // compensate by rewriting the already-held quantities of another job.
+    stock.quantity = 3; auto newClaim = competingClaim; newClaim.id = extraClaim.id; newClaim.quantity = 1;
+    assert(!db.Write(ResourceReservationWrite(competitor,3,"ff2efbdf-f0ec-4539-b840-299847970d17",{{newClaim,0}},{stock})));
+    assert(db.Scalar("SELECT quantity FROM living_activity_claim WHERE claim_id=" + SqlValue(competingClaim.id)) == "4");
+    // Two concurrent root jobs for one actor cannot each reserve six out of
+    // the same ten items. The common actor row lock precedes the stock check.
+    Task raceA = reserve; raceA.id = raceA.root = "637bd562-36d2-5b01-bc01-e2d831c49f45";
+    raceA.actor = raceA.context.actor = 611; raceA.sourceKey = "reservation_race_a";
+    raceA.phase = Phase::Queued; raceA.revision = 1;
+    Task raceB = raceA; raceB.id = raceB.root = "637bd562-36d2-5b01-bc01-e2d831c49f46"; raceB.sourceKey = "reservation_race_b";
+    assert(db.Write(TaskWrite(raceA,0,"ff2efbdf-f0ec-4539-b840-299847970d20","fixture_created")));
+    assert(db.Write(TaskWrite(raceB,0,"ff2efbdf-f0ec-4539-b840-299847970d21","fixture_created")));
+    raceA.phase = raceB.phase = Phase::Preparing; ++raceA.revision; ++raceB.revision;
+    auto raceClaimA = claim; raceClaimA.id = "ff2efbdf-f0ec-4539-b840-299847970d22";
+    raceClaimA.actor = 611; raceClaimA.task = raceA.id; raceClaimA.itemGuid = 901;
+    auto raceClaimB = raceClaimA; raceClaimB.id = "ff2efbdf-f0ec-4539-b840-299847970d23"; raceClaimB.task = raceB.id;
+    NativeResourceBalance raceStock{611,901,2934,10,0,"bags"};
+    const auto racePlanA = ResourceReservationWrite(raceA,1,"ff2efbdf-f0ec-4539-b840-299847970d24",{{raceClaimA,0}},{raceStock});
+    const auto racePlanB = ResourceReservationWrite(raceB,1,"ff2efbdf-f0ec-4539-b840-299847970d25",{{raceClaimB,0}},{raceStock});
+    std::atomic<unsigned> ready{0}, wins{0}; std::atomic<bool> go{false};
+    auto compete = [&](const WritePlan& plan) {
+        Connection connection; ++ready;
+        while (!go.load()) std::this_thread::yield();
+        if (connection.Write(plan)) ++wins;
+    };
+    std::thread first(compete,std::cref(racePlanA)), second(compete,std::cref(racePlanB));
+    while (ready.load() != 2) std::this_thread::yield();
+    go.store(true); first.join(); second.join();
+    assert(wins.load() == 1);
+    assert(db.Scalar("SELECT SUM(quantity) FROM living_activity_claim WHERE item_guid=901 AND state='held'") == "6");
+    std::cout << "PASS: real MariaDB atomic task/outbox, intent/outcome and reservation journals, duplicate/stale requests, rollback, uncertain evidence, stock/money exclusion and release conservation (fixture metadata, NOT native gameplay proof)\n";
 }

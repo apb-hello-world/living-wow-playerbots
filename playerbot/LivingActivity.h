@@ -142,7 +142,7 @@ namespace LivingActivity
         uint64_t revision = 0;
     };
     WritePlan TaskWrite(const Task& task, uint64_t expectedRevision,
-        const std::string& receipt, const std::string& code);
+        const std::string& receipt, const std::string& code, const std::string& dependentFingerprint = "");
     WritePlan OperationIntentWrite(const Task& executingTask, uint64_t expectedRevision,
         const std::string& operation, const std::string& kind, const std::string& beforeJson);
     WritePlan OperationOutcomeWrite(const Task& verifyingTask, uint64_t expectedRevision,

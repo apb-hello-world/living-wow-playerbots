@@ -224,10 +224,12 @@ namespace LivingActivity
             rid + " AND request_hash=" + hash;
         return plan;
     }
-    WritePlan TaskWrite(const Task& task, uint64_t expected, const std::string& receipt, const std::string& code) {
+    WritePlan TaskWrite(const Task& task, uint64_t expected, const std::string& receipt, const std::string& code,
+        const std::string& dependentFingerprint) {
         if (task.phase == Phase::Executing || task.phase == Phase::Verifying)
             throw std::invalid_argument("Execution and verification require a native operation journal");
-        auto plan = MakeTaskWrite(task, expected, receipt, code, "");
+        if (dependentFingerprint.size() > 8192) throw std::invalid_argument("Dependent receipt fingerprint too large");
+        auto plan = MakeTaskWrite(task, expected, receipt, code, dependentFingerprint);
         if (expected && (task.phase == Phase::Preparing || task.phase == Phase::Traveling || Terminal(task.phase))) {
             // An old intent cannot be bypassed by changing the same root or a
             // sibling step back to ordinary preparation. Keep accepted work,
