@@ -28,7 +28,7 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     if (!state->loaded || state->ioPending || !state->pending.empty() || !state->incoming.empty()) return;
     // Fixtures never run in the presence of an authenticated native client.
     // Random bots use separate holder sessions, not World client sessions.
-    if (sWorld.GetActiveSessionCount()) return;
+    if (sWorld.GetActiveAndQueuedSessionCount()) return;
 
     for (auto& binding : state->bindings) {
         Player* bot = sRandomPlayerbotMgr.GetPlayerBot(binding.first);

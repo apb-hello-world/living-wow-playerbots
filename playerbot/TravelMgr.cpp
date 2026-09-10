@@ -949,6 +949,9 @@ bool TravelTarget::IsDestinationActive()
 
 bool TravelTarget::IsConditionsActive(bool clear)
 {
+    // Refreshing a query must not clear another commitment's cached inputs.
+    // Reading them remains available without taking execution ownership.
+    if (clear && !AllowActivityMutation()) clear = false;
     Player* player = bot;
     if (groupMember)
     {
@@ -983,6 +986,9 @@ bool TravelTarget::IsConditionsActive(bool clear)
 
 void TravelTarget::CheckStatus()
 {
+    // This is also called outside action dispatch. Its route expiry, forced
+    // flag and one-shot strategy changes belong to the installed route owner.
+    if (!AllowActivityMutation()) return;
     if (!IsActive())
         return;
 

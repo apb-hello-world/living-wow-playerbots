@@ -433,6 +433,10 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("native_views_published", state->nativeViewsPublished);
     p.put("stale_actor_observations", state->staleActorObservations);
     p.put("execution_enforcement", state->enforceEffects.load(std::memory_order_acquire));
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    p.put("isolated_fixture_build", true);
+    p.put("isolated_fixture_attempted", state->fixtureFinished);
+#endif
     for (unsigned boundary = 0; boundary != 3; ++boundary) {
         const char* name = boundary == 0 ? "acquire" : boundary == 1 ? "renew" : "release";
         for (unsigned lane = 0; lane != 2; ++lane)
