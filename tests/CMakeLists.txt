@@ -28,7 +28,9 @@ target_link_libraries(living_activity_scope PRIVATE Threads::Threads)
 
 target_sources(living_activity_native_context PRIVATE ../playerbot/LivingActivity.cpp)
 target_sources(living_activity_requests PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityRequests.cpp)
-target_sources(living_activity_operations PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityRequests.cpp ../playerbot/LivingActivityOperations.cpp)
+target_sources(living_activity_operations PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityRequests.cpp ../playerbot/LivingActivityOperations.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityResourceView.cpp ../playerbot/LivingActivityClaimConsumption.cpp)
+
+target_link_libraries(living_activity_operations PRIVATE Threads::Threads)
 target_sources(living_activity_gameplay PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityAuthority.cpp ../playerbot/LivingActivityPermissions.cpp ../playerbot/LivingActivityScope.cpp)
 
 target_sources(living_activity_resources PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityClaimJournal.cpp ../playerbot/LivingActivityResourceView.cpp)

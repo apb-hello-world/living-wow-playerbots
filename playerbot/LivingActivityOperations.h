@@ -2,6 +2,7 @@
 #define LIVING_ACTIVITY_OPERATIONS_H
 #include "LivingActivityRequests.h"
 #include "LivingActivityEffects.h"
+#include "LivingActivityClaimConsumption.h"
 class Player;
 namespace LivingActivity {
     struct OperationRequest {
@@ -9,6 +10,7 @@ namespace LivingActivity {
         ActionContext authorization; // Exact saved predecessor's scoped authority.
         std::string kind, beforeState = "{}";
         uint32_t effects = 0;
+        std::vector<ClaimConsumption> consumption;
     };
     struct NativeObservation {
         OperationState state = OperationState::Reconciling;
@@ -21,6 +23,9 @@ namespace LivingActivity {
         virtual ~NativeOperationAdapter() = default;
         virtual const char* OperationKind() const = 0;
         virtual uint32_t OperationEffects() const = 0;
+        // Gains and transfers require their own native identity adapters. They
+        // are not disguised as consumption or inferred from an effect bit.
+        virtual bool SupportsClaimedConsumption() const { return false; }
         virtual bool ValidateNative(Player& actor, const OperationRequest& request, std::string& blocker) = 0;
         virtual NativeObservation ExecuteNative(Player& actor, const OperationRequest& request) = 0;
     };
@@ -29,6 +34,11 @@ namespace LivingActivity {
     // Effects are fingerprinted with native before-state, not transient hints.
     WritePlan OperationRequestWrite(const OperationRequest& request);
     bool ValidateNativeObservation(const NativeObservation& result);
+    bool ValidateOperationResources(const OperationRequest& request, const ResourceClaimBook& claims,
+        const std::vector<NativeResourceBalance>& balances, std::string& blocker);
+    bool VerifyConsumedNativeResources(const OperationRequest& request,
+        const std::vector<NativeResourceBalance>& before, const std::vector<NativeResourceBalance>& after,
+        std::string& blocker);
     struct DispatchResult {
         AdmissionResult admission;
         bool executed = false, outcomeQueued = false;

@@ -47,6 +47,36 @@ namespace {
     std::string Json(const boost::property_tree::ptree& value) {
         std::ostringstream out; boost::property_tree::write_json(out, value, false); return out.str();
     }
+    std::vector<NativeResourceBalance> NativeClaimBalances(Player& bot,const std::vector<ResourceClaim>& claims,bool admission=true) {
+        std::map<uint32_t,NativeResourceBalance> owned;
+        bool bags=false,bank=false,money=false;
+        for (const auto& claim : claims) if (claim.state == "held") {
+            bags |= claim.location == "bags"; bank |= claim.location == "bank"; money |= claim.location == "money";
+        }
+        const auto actor=bot.GetGUIDLow();
+        if (money) {
+            const uint32_t native=bot.GetMoney(),legacy=admission ? sPlayerbotActionBroker.ReservedCopper(actor) : 0;
+            owned.emplace(0,NativeResourceBalance{actor,0,0,0,native-std::min(native,legacy),"money"});
+        }
+        for (const auto& service : {std::make_pair(bags,IterateItemsMask::ITERATE_ITEMS_IN_BAGS),
+                                   std::make_pair(bank,IterateItemsMask::ITERATE_ITEMS_IN_BANK)}) if (service.first)
+            for (Item* item : bot.GetPlayerbotAI()->InventoryParseItems("inventory",service.second)) {
+                if (!item || (admission && (sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
+                    sGuildSupplies.ReservedEntry(actor,item->GetEntry())))) continue;
+                const std::string location=service.second == IterateItemsMask::ITERATE_ITEMS_IN_BAGS ? "bags" : "bank";
+                for (const auto& claim : claims) if (claim.state == "held" && claim.itemGuid == item->GetGUIDLow() &&
+                    claim.itemEntry == item->GetEntry() && claim.location == location)
+                    owned.emplace(item->GetGUIDLow(),NativeResourceBalance{actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,location});
+            }
+        std::vector<NativeResourceBalance> result;
+        for (const auto& row : owned) result.push_back(row.second);
+        return result;
+    }
+    std::vector<NativeResourceBalance> NativeConsumptionBalances(Player& bot,const OperationRequest& request,bool admission=true) {
+        std::vector<ResourceClaim> claims;
+        for (const auto& use : request.consumption) claims.push_back(use.before);
+        return NativeClaimBalances(bot,claims,admission);
+    }
     // Only identifiers and typed source facts enter checkpoints. Do not import
     // arbitrary legacy payloads, user event descriptions or private dialogue.
     std::string ImportQuery(unsigned family, unsigned limit) {
@@ -287,7 +317,16 @@ struct LivingActivityCoordinator::State {
                         auto& ids = reservationClaimIds[acknowledgedWrite.task.id]; ids.clear();
                         for (const auto& change : acknowledgedWrite.claims) ids.push_back(change.after.id);
                     }
-                } else reservationClaimIds.erase(acknowledgedWrite.task.id);
+                } else {
+                    reservationClaimIds.erase(acknowledgedWrite.task.id);
+                    if (!acknowledgedWrite.claims.empty()) {
+                        const auto installed=resources.InstallReceipt(acknowledgedWrite.claims);
+                        if (installed != ClaimInstall::Installed && installed != ClaimInstall::Duplicate) {
+                            resources.BlockProjection(); claimRestoreFailed=true;
+                            claimBlocker="consumed_claim_projection_mismatch"; ++invalidClaims;
+                        }
+                    }
+                }
                 Remember(acknowledgedWrite.task);
                 if (!acknowledgedWrite.admissionReceipt.empty())
                     admissionReceipts[acknowledgedWrite.task.id] = acknowledgedWrite.admissionReceipt;
@@ -834,28 +873,9 @@ AdmissionResult LivingActivityCoordinator::SubmitResourceReservation(const Reser
     try {
         if (!adapter.ValidatePurpose(*bot,request,blocker)) return reject(AdmissionCode::InvalidRequest,
             IsToken(blocker) ? blocker : "native_reservation_purpose_rejected");
-        std::map<uint32_t,NativeResourceBalance> owned;
-        bool bags=false,bank=false,money=false;
-        for (const auto& change : request.changes) if (change.after.state == "held") {
-            bags |= change.after.location == "bags"; bank |= change.after.location == "bank";
-            money |= change.after.location == "money";
-        }
-        if (money) {
-            const uint32_t native=bot->GetMoney(), legacy=sPlayerbotActionBroker.ReservedCopper(next.actor);
-            owned.emplace(0,NativeResourceBalance{next.actor,0,0,0,native-std::min(native,legacy),"money"});
-        }
-        for (const auto& service : {std::make_pair(bags,IterateItemsMask::ITERATE_ITEMS_IN_BAGS),
-                                   std::make_pair(bank,IterateItemsMask::ITERATE_ITEMS_IN_BANK)}) if (service.first)
-            for (Item* item : bot->GetPlayerbotAI()->InventoryParseItems("inventory",service.second)) {
-                if (!item || sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
-                    sGuildSupplies.ReservedEntry(next.actor,item->GetEntry())) continue;
-                const std::string location=service.second == IterateItemsMask::ITERATE_ITEMS_IN_BAGS ? "bags" : "bank";
-                for (const auto& change : request.changes) if (change.after.state == "held" &&
-                    change.after.itemGuid == item->GetGUIDLow() && change.after.itemEntry == item->GetEntry() &&
-                    change.after.location == location)
-                    owned.emplace(item->GetGUIDLow(),NativeResourceBalance{next.actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,location});
-            }
-        for (const auto& row : owned) balances.push_back(row.second);
+        std::vector<ResourceClaim> claims;
+        for (const auto& change : request.changes) claims.push_back(change.after);
+        balances=NativeClaimBalances(*bot,claims);
         auto plan=ResourceReservationWrite(next,request.transition.expectedRevision,request.transition.receipt,request.changes,balances);
         State::Pending write{next,std::move(plan),request.transition.receipt};
         write.reservation=request.transition.receipt; write.claims=request.changes;
@@ -1039,6 +1059,9 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
     if (!state->schemaReady || !state->loaded || !state->incoming.empty()) return reject(AdmissionCode::NotReady);
     if (next.id != SourceId(next.source, next.sourceKey) || request.kind != adapter.OperationKind() ||
         request.effects != adapter.OperationEffects()) return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
+    if ((request.effects & (Mask(Effect::Money)|Mask(Effect::Inventory))) &&
+        (!adapter.SupportsClaimedConsumption() || request.consumption.empty()))
+        return reject(AdmissionCode::InvalidRequest,"resource_effect_adapter_not_supported");
     WritePlan plan;
     try { plan = OperationRequestWrite(request); }
     catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest, "invalid_native_operation_intent"); }
@@ -1070,6 +1093,8 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
     if (state->authority.Authorize({0, Lane::Managed, true}, current, now, &predecessor, &request.authorization) != AuthorityCode::Allowed)
         return reject(AdmissionCode::StaleContext, "current_predecessor_lease_required");
     try {
+        if (bot->GetTradeData() || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker))
+            return reject(AdmissionCode::InvalidRequest,bot->GetTradeData() ? "native_trade_in_progress" : blocker);
         if (!adapter.ValidateNative(*bot, request, blocker))
             return reject(AdmissionCode::InvalidRequest, IsToken(blocker) ? blocker : "native_prerequisite_unavailable");
     } catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest, "native_validation_failed"); }
@@ -1103,7 +1128,8 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         return reject(AdmissionCode::Backpressure, "native_result_capacity_unavailable");
     for (const auto& write : state->pending) if (write.task.actor == intended.actor)
         return reject(AdmissionCode::ReconciliationRequired,"actor_journal_write_pending");
-    if (request.kind != adapter.OperationKind() || request.effects != adapter.OperationEffects())
+    if (request.kind != adapter.OperationKind() || request.effects != adapter.OperationEffects() ||
+        (!request.consumption.empty() && !adapter.SupportsClaimedConsumption()))
         return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
     const auto saved = state->cache.find(intended.id);
     Player* bot = sRandomPlayerbotMgr.GetPlayerBot(intended.actor);
@@ -1131,9 +1157,11 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     } } dispatchGuard{*state, held, id};
     NativeObservation observation;
     try {
-        if (!adapter.ValidateNative(*bot, request, blocker)) {
+        if (bot->GetTradeData() || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker) ||
+            !adapter.ValidateNative(*bot, request, blocker)) {
             observation.state = OperationState::Rejected;
-            observation.evidence = IsToken(blocker) ? blocker : "native_prerequisite_changed";
+            observation.evidence = bot->GetTradeData() ? "native_trade_in_progress" :
+                (IsToken(blocker) ? blocker : "native_prerequisite_changed");
         } else if (state->authority.BeginDispatch(held, id, monotonic).code == AuthorityCode::Allowed) {
             auto executing = saved->second; executing.ownerGeneration = held.generation;
             auto action = grant.action; action.operation = id;
@@ -1141,8 +1169,14 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
             if (state->authority.Authorize(effects, current, monotonic, &executing, &action) == AuthorityCode::Allowed) {
                 state->bindings.at(intended.actor).publisher.Publish(state->authority.Read(intended.actor));
                 ExecutionScope scope(executing, action);
+                const auto nativeBefore=NativeConsumptionBalances(*bot,request,false);
                 ++state->nativeDispatches; result.executed = true;
                 observation = adapter.ExecuteNative(*bot, request);
+                if (observation.state == OperationState::Verified &&
+                    !VerifyConsumedNativeResources(request,nativeBefore,NativeConsumptionBalances(*bot,request,false),blocker)) {
+                    observation.state=OperationState::Reconciling;
+                    observation.evidence=blocker; // Preserve actual adapter after-state and native reference.
+                }
             }
         }
     } catch (const std::exception&) { observation = {}; }
@@ -1159,8 +1193,25 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     OperationResult proof; proof.id = id; proof.task = intended.id; proof.taskRevision = intended.revision;
     proof.kind = request.kind; proof.state = observation.state; proof.nativeReference = observation.nativeReference;
     proof.evidence = observation.evidence;
-    auto plan = OperationOutcomeWrite(after, saved->second.revision, proof, NewId(), observation.afterState);
-    state->pending.push_back({std::move(after), std::move(plan), "", id, true});
+    const auto receipt=NewId();
+    WritePlan plan; std::vector<ClaimReceiptChange> changes;
+    try {
+        if (proof.state == OperationState::Verified && !request.consumption.empty()) {
+            auto consumed=ConsumedOperationWrite(after,saved->second.revision,proof,receipt,observation.afterState,request.consumption);
+            plan=std::move(consumed.journal); changes=std::move(consumed.changes);
+        } else plan=OperationOutcomeWrite(after,saved->second.revision,proof,receipt,observation.afterState);
+    } catch (const std::exception&) {
+        // Never replay a native effect because its consumed-claim projection
+        // could not be produced. Preserve its actual after-state for recovery.
+        pending.uncertain=true; pending.outcome=proof.state=OperationState::Reconciling;
+        proof.evidence="claim_outcome_requires_reconciliation";
+        after.phase=Phase::Reconciling; after.checkpoint.blocker=proof.evidence;
+        changes.clear();
+        plan=OperationOutcomeWrite(after,saved->second.revision,proof,receipt,observation.afterState);
+    }
+    State::Pending write{std::move(after),std::move(plan),"",id,true};
+    write.claims=std::move(changes);
+    state->pending.push_back(std::move(write));
     state->nextWork = 0; result.outcomeQueued = true;
     return reject(AdmissionCode::Pending, pending.uncertain ? "native_outcome_uncertain" : "native_result_receipt_pending");
 }

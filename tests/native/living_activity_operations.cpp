@@ -67,4 +67,41 @@ int main() {
     auto observed = proof; observed.evidence = "different_uncertainty";
     assert(!SameRequest(uncertainty, OperationOutcomeWrite(reconciling, request.transition.task.revision, observed,
         "ff2efbdf-f0ec-4539-b840-299847970c02", outcome.afterState)));
+
+    ResourceClaim claim; claim.id="ff2efbdf-f0ec-4539-b840-299847970c03"; claim.task=saved.id;
+    claim.actor=saved.actor; claim.copper=30; claim.location="money"; claim.state="held"; claim.revision=1;
+    ResourceClaimBook book; assert(book.RestoreBatch({claim}) == ClaimInstall::Installed); assert(book.FinishRestore());
+    request.consumption={{claim,10}};
+    assert(valid(request,saved));
+    const auto claimed=OperationRequestWrite(request);
+    assert(claimed.statements.back().find("claimed_consumption") != std::string::npos);
+    changed=request; changed.consumption.front().used=11;
+    assert(!SameRequest(claimed,OperationRequestWrite(changed)));
+    changed=request; changed.consumption.front().before.actor++;
+    assert(!valid(changed,saved));
+    changed=request; changed.effects=Mask(Effect::Inventory); assert(!valid(changed,saved));
+    changed=request; changed.consumption.push_back(changed.consumption.front()); assert(!valid(changed,saved));
+    const std::vector<NativeResourceBalance> wallet={{saved.actor,0,0,0,100,"money"}};
+    assert(ValidateOperationResources(request,book,wallet,reason));
+    changed=request; ++changed.consumption.front().before.revision;
+    assert(!ValidateOperationResources(changed,book,wallet,reason) && reason == "acknowledged_claim_changed");
+    assert(!ValidateOperationResources(request,book,{},reason) && reason == "claimed_native_resource_unavailable");
+    assert(!ValidateOperationResources(request,book,{{saved.actor,0,0,0,29,"money"}},reason));
+    auto other=claim; other.id="ff2efbdf-f0ec-4539-b840-299847970c04";
+    other.task="ff2efbdf-f0ec-4539-b840-299847970c05"; other.copper=50;
+    assert(book.ReservePending("ff2efbdf-f0ec-4539-b840-299847970c06",{{other,0}},wallet) == ClaimInstall::Installed);
+    assert(!ValidateOperationResources(request,book,{{saved.actor,0,0,0,79,"money"}},reason));
+    assert(ValidateOperationResources(request,book,wallet,reason));
+    assert(VerifyConsumedNativeResources(request,wallet,{{saved.actor,0,0,0,90,"money"}},reason));
+    assert(!VerifyConsumedNativeResources(request,wallet,wallet,reason) && reason == "native_consumption_delta_mismatch");
+    assert(!VerifyConsumedNativeResources(request,wallet,{},reason) && reason == "native_consumption_proof_missing");
+    assert(!VerifyConsumedNativeResources(request,wallet,{{saved.actor,0,0,0,89,"money"}},reason));
+    book.BlockProjection(); assert(!ValidateOperationResources(request,book,wallet,reason));
+    claim.itemGuid=45; claim.itemEntry=2880; claim.quantity=5; claim.copper=0; claim.location="bags";
+    request.consumption={{claim,5}};
+    const std::vector<NativeResourceBalance> stack={{saved.actor,45,2880,5,0,"bags"}};
+    assert(VerifyConsumedNativeResources(request,stack,{},reason));
+    request.consumption.front().used=2;
+    assert(VerifyConsumedNativeResources(request,stack,{{saved.actor,45,2880,3,0,"bags"}},reason));
+    assert(!VerifyConsumedNativeResources(request,stack,{},reason));
 }
