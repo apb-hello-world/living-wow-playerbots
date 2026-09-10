@@ -95,7 +95,7 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         auto* bot = sRandomPlayerbotMgr.GetPlayerBot(binding.first);
         auto* ai = bot ? bot->GetPlayerbotAI() : nullptr;
         if (!ai || !bot->IsInWorld() || bot->GetGroup() || NativeSafety(bot) || !bot->IsStopped() ||
-            bot->IsMounted() || bot->GetStandState() != UNIT_STAND_STATE_STAND ||
+            bot->IsMounted() || bot->getStandState() != UNIT_STAND_STATE_STAND ||
             bot->IsNonMeleeSpellCasted(true) || bot->GetHealth() < 4 ||
             state->authority.Read(binding.first).lease.actor) continue;
         uint32 spellId = 0;
