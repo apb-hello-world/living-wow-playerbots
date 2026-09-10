@@ -10,8 +10,15 @@ namespace LivingActivity {
             // transport, death, falling, or another unfinished atomic operation.
             switch (lane) {
             case Lane::Combat: case Lane::Healing: case Lane::Loot: case Lane::Roll:
-            case Lane::LocalQuest: case Lane::Social:
+            case Lane::LocalQuest:
                 return uint32_t(Safety::Combat);
+            case Lane::Social:
+                // Safety pauses movement/native work, not a validated factual
+                // acknowledgement (including a dead or on-transport bot). This
+                // lane permits ONLY social output; it cannot move or use items.
+                return uint32_t(Safety::Combat) | uint32_t(Safety::Death) | uint32_t(Safety::Transfer) |
+                    uint32_t(Safety::Taxi) | uint32_t(Safety::Transport) | uint32_t(Safety::Falling) |
+                    uint32_t(Safety::UnsafeOperation);
             case Lane::Safety:
                 return uint32_t(Safety::Death) | uint32_t(Safety::Transfer) | uint32_t(Safety::Taxi) |
                     uint32_t(Safety::Transport) | uint32_t(Safety::Falling);

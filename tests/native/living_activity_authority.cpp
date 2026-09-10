@@ -145,8 +145,8 @@ int main() {
     assert(authority.Acquire(accepted, Movement, 7000, 1000).code == AuthorityCode::InvalidRequest);
     // Even an incorrectly broad native adapter cannot waive unrelated safety.
     ExecutionAuthority exceptions; current = Context(); exceptions.Observe(current, 0);
-    for (auto lane : {Lane::Combat, Lane::Healing, Lane::Loot, Lane::Roll, Lane::LocalQuest, Lane::Social}) {
-        const auto mask = lane == Lane::Social || lane == Lane::Roll ? Mask(Effect::Social) :
+    for (auto lane : {Lane::Combat, Lane::Healing, Lane::Loot, Lane::Roll, Lane::LocalQuest}) {
+        const auto mask = lane == Lane::Roll ? Mask(Effect::Social) :
             lane == Lane::LocalQuest || lane == Lane::Loot ? Mask(Effect::Inventory) : Mask(Effect::Spell);
         NativePermit permit{current, lane, mask, uint32_t(Safety::Combat), true};
         const Effects native{mask, lane, true};
@@ -166,4 +166,11 @@ int main() {
     assert(exceptions.Authorize({Mask(Effect::Movement), Lane::Safety, true}, current, 1, nullptr, nullptr, &transport) == AuthorityCode::Allowed);
     transport.allowedSafety |= uint32_t(Safety::Combat);
     assert(exceptions.Authorize({Mask(Effect::Movement), Lane::Safety, true}, current, 1, nullptr, nullptr, &transport) == AuthorityCode::EffectsDenied);
+    NativePermit acknowledgement{current, Lane::Social, Mask(Effect::Social), 127, true};
+    exceptions.Observe(current, 127);
+    assert(exceptions.Authorize({Mask(Effect::Social), Lane::Social, true}, current, 1, nullptr, nullptr, &acknowledgement) == AuthorityCode::Allowed);
+    acknowledgement.effects |= Mask(Effect::Movement);
+    assert(exceptions.Authorize({Mask(Effect::Social), Lane::Social, true}, current, 1, nullptr, nullptr, &acknowledgement) == AuthorityCode::EffectsDenied);
+    acknowledgement.effects = Mask(Effect::Social); acknowledgement.validated = false;
+    assert(exceptions.Authorize({Mask(Effect::Social), Lane::Social, true}, current, 1, nullptr, nullptr, &acknowledgement) == AuthorityCode::EffectsDenied);
 }
