@@ -31,6 +31,11 @@ namespace LivingActivity {
             target.IsInWorld() && target.IsAlive() && actor.GetMapId() == target.GetMapId() &&
             actor.GetInstanceId() == target.GetInstanceId();
     }
+    constexpr uint32_t AttackEffectMask() { return Mask(Effect::Movement) | Mask(Effect::Spell); }
+    template<class NativePlayer, class NativeUnit>
+    bool ReadyForNativeEngagedAttack(NativePlayer& actor, NativeUnit& target, bool hostile, bool engaged, bool inSight) {
+        return inSight && ReadyForNativeCombatMovement(actor, target, hostile, false, engaged);
+    }
     // Inspects the actual native spell, known-spell record, target and CheckCast.
     // No talent change, role inference, synthetic spell or rotation selection.
     constexpr uint32_t SpellEffectMask(bool inventoryFreeDirectHeal) {
@@ -56,5 +61,8 @@ namespace LivingActivity {
     // Explicit combat-positioning callers only. Native victim/attacker/threat
     // relations establish engagement; a combat flag or a nearby NPC does not.
     NativePermit NativeCombatMovementPermit(PlayerbotAI& ai, Unit* target);
+    // Weapon/pet attack control may continue an established native encounter.
+    // Neither an old current-target value nor a combat flag authorizes a pull.
+    NativePermit NativeEngagedAttackPermit(PlayerbotAI& ai, Unit* target);
 }
 #endif

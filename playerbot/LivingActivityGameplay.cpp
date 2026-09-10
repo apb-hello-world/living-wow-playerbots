@@ -66,6 +66,18 @@ namespace LivingActivity {
             itemCast, SPELL_EFFECT_HEAL, SPELL_EFFECT_HEAL_MAX_HEALTH);
         return {SpellEffectMask(freeHeal), Lane::Managed, true};
     }
+    NativePermit NativeEngagedAttackPermit(PlayerbotAI& ai, Unit* target) {
+        auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Combat,
+            AttackEffectMask(), uint32_t(Safety::Combat));
+        if (!permit.world.actor) return {};
+        auto* actor = ai.GetBot();
+        if (!actor || !target || (target->GetTypeId() == TYPEID_PLAYER &&
+            static_cast<Player*>(target)->IsBeingTeleported())) return {};
+        permit.validated = ReadyForNativeEngagedAttack(*actor, *target,
+            sServerFacade.IsHostileTo(actor, target), NativePartyEngaged(*actor, *target),
+            sServerFacade.GetDistance2d(actor, target) <= sPlayerbotAIConfig.sightDistance);
+        return permit.validated ? permit : NativePermit{};
+    }
     NativePermit NativeSpellPermit(PlayerbotAI& ai, uint32_t spell, Unit* target, Item* item) {
         const auto effects = NativeSpellEffects(ai, spell, item != nullptr);
         auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Healing,

@@ -233,6 +233,10 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
                 PlayerbotRendezvousManager::PartyActivityPhase::traveling,45,"isolated_competitor",state->boot,competitor);
             require(waiting.Waiting() && !competitor.actor && SameLease(state->authority.Read(binding.first).lease,replacement.lease),
                 "legacy_competitor_waits_behind_managed_owner");
+            state->enforceEffects.store(true,std::memory_order_release);
+            require(!NativeEngagedAttackPermit(*ai,nullptr).validated,"missing_native_attack_target_not_authorized");
+            require(!NativeEngagedAttackPermit(*ai,bot).validated,"self_attack_has_no_native_exception");
+            state->enforceEffects.store(false,std::memory_order_release);
             // Native slot layout, deliberately NOT a live membership mutation
             // or proof of a complete human-party workflow (stage 6).
             Group::MemberSlotList offlineRoster;

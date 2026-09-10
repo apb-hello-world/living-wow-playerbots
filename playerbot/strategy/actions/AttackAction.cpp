@@ -6,8 +6,31 @@
 #include "playerbot/LootObjectStack.h"
 #include "playerbot/ServerFacade.h"
 #include "playerbot/strategy/generic/CombatStrategy.h"
+#include "playerbot/LivingActivityCoordinator.h"
+#include "playerbot/LivingActivityScope.h"
 
 using namespace ai;
+
+LivingActivity::NativePermit AttackAction::GetNativeActivityPermit(Event& event)
+{
+    return LivingActivity::NativeEngagedAttackPermit(*ai, ActivityAttackTarget(event));
+}
+
+Unit* AttackMyTargetAction::ActivityAttackTarget(Event& event)
+{
+    Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
+    return requester ? ai->GetUnit(requester->GetSelectionGuid()) : nullptr;
+}
+
+Unit* AttackRTITargetAction::ActivityAttackTarget(Event&)
+{
+    return AI_VALUE(Unit*, "rti target");
+}
+
+Unit* AttackDuelOpponentAction::ActivityAttackTarget(Event&)
+{
+    return AI_VALUE(Unit*, "duel target");
+}
 
 bool AttackAction::Execute(Event& event)
 {
@@ -80,6 +103,15 @@ bool AttackRTITargetAction::isUseful()
 
 bool AttackAction::Attack(Player* requester, Unit* target)
 {
+    // Recheck the ACTUAL execution target before unmounting, selection, attack
+    // state or pet commands. A permit for a previously selected enemy must not
+    // authorize another target supplied by a direct caller or changed event.
+    const auto permit = LivingActivity::NativeEngagedAttackPermit(*ai, target);
+    std::unique_ptr<LivingActivity::ExecutionScope> nativeScope;
+    if (permit.validated) nativeScope.reset(new LivingActivity::ExecutionScope(permit));
+    const LivingActivity::Effects effects{LivingActivity::AttackEffectMask(),
+        permit.validated ? permit.lane : LivingActivity::Lane::Managed, true};
+    if (!sLivingActivityCoordinator.PermitEffects(*ai, effects, "native attack")) return false;
     if (target && !sPlayerbotPartyCombatCoordinator.CanInitiate(bot, target))
         return false;
 
@@ -230,6 +262,12 @@ bool AttackAction::Attack(Player* requester, Unit* target)
 
 bool AttackAction::PetAttack(Player* requester, Unit* target)
 {
+    const auto permit = LivingActivity::NativeEngagedAttackPermit(*ai, target);
+    std::unique_ptr<LivingActivity::ExecutionScope> nativeScope;
+    if (permit.validated) nativeScope.reset(new LivingActivity::ExecutionScope(permit));
+    const LivingActivity::Effects effects{LivingActivity::AttackEffectMask(),
+        permit.validated ? permit.lane : LivingActivity::Lane::Managed, true};
+    if (!sLivingActivityCoordinator.PermitEffects(*ai, effects, "native pet attack")) return false;
     // If we're done waiting to attack and there's mobs to cc, we can't use defensive/aggressive
     // because non passive pets will ignore our cc
     // Therefore, we'll keep passive so we can only attack the current target specifically

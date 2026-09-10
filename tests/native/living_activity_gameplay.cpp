@@ -24,6 +24,7 @@ namespace {
     };
 }
 int main() {
+    assert(AttackEffectMask() == (Mask(Effect::Movement) | Mask(Effect::Spell)));
     assert(SpellEffectMask(true) == (Mask(Effect::Spell) | Mask(Effect::Movement)));
     assert(SpellEffectMask(false) == (Mask(Effect::Spell) | Mask(Effect::Movement) | Mask(Effect::Inventory)));
     NativeSpell direct;
@@ -45,6 +46,12 @@ int main() {
     player.transferring = true; assert(!ReadyForNativeLootVote(player, &roll, 7, false)); player.transferring = false;
     player.inWorld = false; assert(!ReadyForNativeLootVote(player, &roll, 7, false)); player.inWorld = true;
     NativePlayer target;
+    assert(ReadyForNativeEngagedAttack(player, target, true, true, true));
+    assert(!ReadyForNativeEngagedAttack(player, target, true, false, true));
+    assert(!ReadyForNativeEngagedAttack(player, target, false, true, true));
+    assert(!ReadyForNativeEngagedAttack(player, target, true, true, false));
+    target.alive = false; assert(!ReadyForNativeEngagedAttack(player, target, true, true, true)); target.alive = true;
+    ++target.instance; assert(!ReadyForNativeEngagedAttack(player, target, true, true, true)); --target.instance;
     assert(ReadyForNativeCombatMovement(player, target, true, false, true));
     assert(ReadyForNativeCombatMovement(player, target, false, true, true));
     assert(!ReadyForNativeCombatMovement(player, target, true, false, false));
@@ -103,6 +110,16 @@ int main() {
     }
     assert(ExecutionScope::Check(reader, vote, task.context, 200) == AuthorityCode::EffectsDenied);
     const Effects combatMove{Mask(Effect::Movement), Lane::Combat, true};
+    {
+        const NativePermit attack{task.context, Lane::Combat, AttackEffectMask(), uint32_t(Safety::Combat), true};
+        ExecutionScope scope(attack);
+        assert(ExecutionScope::Check(reader, {AttackEffectMask(), Lane::Combat, true}, task.context, 200) == AuthorityCode::Allowed);
+        assert(ExecutionScope::Check(reader, {AttackEffectMask(), Lane::Managed, true}, task.context, 200) != AuthorityCode::Allowed);
+        assert(ExecutionScope::Check(reader, {Mask(Effect::TravelTarget), Lane::Combat, true}, task.context, 200) == AuthorityCode::EffectsDenied);
+        assert(ExecutionScope::Check(reader, {Mask(Effect::Inventory), Lane::Combat, true}, task.context, 200) == AuthorityCode::EffectsDenied);
+        assert(ExecutionScope::Check(reader, {AttackEffectMask(), Lane::Combat, true}, task.context, 200,
+            uint32_t(Safety::Transport)) == AuthorityCode::SafetyPaused);
+    }
     {
         const NativePermit movement{task.context, Lane::Combat, combatMove.mask, uint32_t(Safety::Combat), true};
         ExecutionScope scope(movement);

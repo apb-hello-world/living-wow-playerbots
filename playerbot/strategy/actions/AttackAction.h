@@ -2,6 +2,7 @@
 
 #include "playerbot/strategy/Action.h"
 #include "MovementActions.h"
+#include "playerbot/LivingActivityGameplay.h"
 
 namespace ai
 {
@@ -12,9 +13,14 @@ namespace ai
 
     public:
         virtual bool Execute(Event& event) override;
+        LivingActivity::Effects GetActivityEffects() const override {
+            return {LivingActivity::AttackEffectMask(), LivingActivity::Lane::Managed, true};
+        }
+        LivingActivity::NativePermit GetNativeActivityPermit(Event& event) override;
         virtual bool isPossible() override { return !bot->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_CLIENT_CONTROL_LOST); }; //Override movement stay.
 
     protected:
+        virtual Unit* ActivityAttackTarget(Event&) { return GetTarget(); }
         bool Attack(Player* requester, Unit* target);
         bool PetAttack(Player* requester, Unit* target);
         bool IsTargetValid(Player* requester, Unit* target);
@@ -40,7 +46,11 @@ namespace ai
         virtual bool Execute(Event& event) override;
         virtual bool isUseful() override;
 
+    protected:
+        Unit* ActivityAttackTarget(Event& event) override;
+
 #ifdef GenerateBotHelp
+    public:
         virtual std::string GetHelpName() { return "attack my target"; }
         virtual std::string GetHelpDescription()
         {
@@ -61,7 +71,11 @@ namespace ai
         virtual bool Execute(Event& event) override;
         virtual bool isUseful() override;
 
+    protected:
+        Unit* ActivityAttackTarget(Event& event) override;
+
 #ifdef GenerateBotHelp
+    public:
         virtual std::string GetHelpName() { return "attack rti target"; }
         virtual std::string GetHelpDescription()
         {
@@ -82,7 +96,11 @@ namespace ai
         virtual bool Execute(Event& event) override;
         virtual bool isUseful() override;
 
+    protected:
+        Unit* ActivityAttackTarget(Event& event) override;
+
 #ifdef GenerateBotHelp
+    public:
         virtual std::string GetHelpName() { return "attack duel opponent"; }
         virtual std::string GetHelpDescription()
         {
