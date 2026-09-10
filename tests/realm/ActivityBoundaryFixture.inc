@@ -233,6 +233,35 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
                 PlayerbotRendezvousManager::PartyActivityPhase::traveling,45,"isolated_competitor",state->boot,competitor);
             require(waiting.Waiting() && !competitor.actor && SameLease(state->authority.Read(binding.first).lease,replacement.lease),
                 "legacy_competitor_waits_behind_managed_owner");
+            // Native slot layout, deliberately NOT a live membership mutation
+            // or proof of a complete human-party workflow (stage 6).
+            Group::MemberSlotList offlineRoster;
+            Group::MemberSlot offline; offline.guid=bot->GetObjectGuid(); offline.livingActivityAccountId=1;
+            offlineRoster.push_back(offline);
+            const auto offlineHuman=ReadPartyProtection(offlineRoster,[](uint32_t){return false;},[](ObjectGuid){return false;});
+            require(offlineHuman==PartyProtection::Human &&
+                *PartyAdmissionBlocker(offlineHuman,PartyAdmission::ServiceCompatibility,false),
+                "native_member_slot_offline_human_protected");
+            require(*PartyAdmissionBlocker(offlineHuman,PartyAdmission::SavedExecutor,true),
+                "unmigrated_saved_party_executor_cannot_claim_human_priority");
+            offlineRoster.front().livingActivityAccountId=0;
+            require(ReadPartyProtection(offlineRoster,[](uint32_t){return true;},[](ObjectGuid){return false;})==PartyProtection::Unresolved,
+                "native_member_slot_unknown_account_fails_closed");
+            require(ReleaseTaskLease(replacement.lease).code==AuthorityCode::Released,
+                "managed_owner_released_before_cross_domain_replay");
+            ActivityLease oldService, explicitWork;
+            const auto service=sPlayerbotRendezvousManager.AcquirePartyActivityLease(binding.first,
+                PlayerbotRendezvousManager::PartyActivityOwner::economy_service,
+                PlayerbotRendezvousManager::PartyActivityPhase::traveling,45,"isolated_priority_replay",state->boot,oldService);
+            require(service.Permitted(),"legacy_service_priority_replay_acquired");
+            const auto explicitGrant=sPlayerbotRendezvousManager.AcquirePartyActivityLease(binding.first,
+                PlayerbotRendezvousManager::PartyActivityOwner::player_command,
+                PlayerbotRendezvousManager::PartyActivityPhase::traveling,45,"isolated_priority_replay",state->boot,explicitWork);
+            require(explicitGrant.Permitted() && explicitWork.generation>oldService.generation &&
+                !sPlayerbotRendezvousManager.HasPartyActivityLease(oldService),"legacy_human_priority_preempts_legacy_service");
+            sPlayerbotRendezvousManager.ReleasePartyActivityLease(oldService,
+                PlayerbotRendezvousManager::PartyActivityPhase::deferred,"isolated_stale_release");
+            require(sPlayerbotRendezvousManager.HasPartyActivityLease(explicitWork),"preempted_service_cannot_release_explicit_work");
         } catch (const std::exception& error) { passed = false; report.put("failure", error.what()); }
         restore.fn(); restore.fn = [] {};
         const bool restored = target->IsForced() == originalForced && target->GetRelevance() == originalRelevance &&

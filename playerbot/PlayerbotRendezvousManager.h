@@ -48,6 +48,10 @@ public:
     // remains in the party and can be recalled through ResumePartyAssist.
     bool BeginPartyFreeTime(Player* bot, Player* player, const std::string& reason);
     bool IsPartyFreeTime(uint32 botGuid) const;
+    // World-thread admission check, not a movement owner. Revalidate the
+    // existing free-time permission and recall instead of treating a stale
+    // state string or an offline human as permission to leave the party.
+    bool HasSafePartyServiceWindow(Player* bot) const;
     bool HasVerifiedErrandRoute(uint32 botGuid) const;
     bool FindClassTrainingDestination(Player* bot, ai::TravelDestination*& destination,
         ai::WorldPosition*& position) const;
@@ -164,6 +168,8 @@ private:
         uint32 hearthStartMapId = 0;
         uint32 freeTimePlayerZoneId = 0;
         uint32 freeTimePlayerAreaId = 0;
+        uint32 freeTimePlayerMapId = 0;
+        uint32 freeTimePlayerInstanceId = 0;
         uint32 settlementKey = 0;
         uint32 automaticErrandMask = 0;
         uint32 automaticErrandScopeMask = 0;

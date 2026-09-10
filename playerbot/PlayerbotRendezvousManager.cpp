@@ -1158,9 +1158,8 @@ LivingActivity::Acquisition PlayerbotRendezvousManager::AcquirePartyActivityLeas
         jobKey, identity)) return {AcquisitionState::Invalidated, "native_context_unavailable"};
     auto now = std::chrono::steady_clock::now();
     auto found = ReadExternalLease(botGuid);
-    if (found && found->expires > now &&
-        (found->owner != owner ||
-         !LivingActivity::MayAcquireCompatibilityLease(found->handle, handle, identity, true)))
+    if (found && found->expires > now && found->owner == owner &&
+        !LivingActivity::MayAcquireCompatibilityLease(found->handle, handle, identity, true))
     {
         QueueActivityTelemetry(botGuid, 0, 0, found->owner, found->phase,
             "conflict_prevented", reason);
@@ -1169,8 +1168,25 @@ LivingActivity::Acquisition PlayerbotRendezvousManager::AcquirePartyActivityLeas
     // Category equality is not job identity. Even the same subsystem cannot
     // borrow another accepted job's lease or renew it with a delayed callback.
     auto party = partySessions.find(botGuid);
-    if (owner == PartyActivityOwner::player_command && party != partySessions.end() &&
-        party->second.state == "free_time")
+    const bool preemptErrand = owner == PartyActivityOwner::player_command && party != partySessions.end() &&
+        party->second.state == "free_time";
+    PartyActivityOwner current = GetPartyActivityOwner(botGuid);
+    const bool centralOwner = current == PartyActivityOwner::player_command ||
+        current == PartyActivityOwner::guild_supply || current == PartyActivityOwner::economy_service;
+    if (!centralOwner && current != PartyActivityOwner::none && current != PartyActivityOwner::party_follow &&
+        current != owner && !(preemptErrand && current == PartyActivityOwner::party_errand))
+    {
+        QueueActivityTelemetry(botGuid, 0, 0, current, GetPartyActivityPhase(botGuid),
+            "conflict_prevented", reason);
+        return {AcquisitionState::Waiting, "higher_priority_activity"};
+    }
+    // Shared authority decides cross-domain priority. Do not keep an older
+    // external lease as an unconditional barrier to a validated human request.
+    // No old errand state may be changed until this actual acquisition passes.
+    const auto acquired=sLivingActivityCoordinator.AcquireCompatibilityLease(botGuid,PartyActivityOwnerName(owner),
+        PartyActivityPhaseName(phase),ttlSeconds,reason,jobKey,handle);
+    if(!acquired.Permitted()) return acquired;
+    if (preemptErrand)
     {
         PartySession& session = party->second;
         if (session.currentErrand)
@@ -1199,23 +1215,10 @@ LivingActivity::Acquisition PlayerbotRendezvousManager::AcquirePartyActivityLeas
         session.reason = "player_command_preempted_errand";
         PersistPartySession(session);
     }
-    PartyActivityOwner current = GetPartyActivityOwner(botGuid);
-    if (current != PartyActivityOwner::none && current != PartyActivityOwner::party_follow &&
-        current != owner)
-    {
-        QueueActivityTelemetry(botGuid, 0, 0, current, GetPartyActivityPhase(botGuid),
-            "conflict_prevented", reason);
-        return {AcquisitionState::Waiting, "higher_priority_activity"};
-    }
-    if (found && LivingActivity::SameLease(found->handle, handle) &&
-        found->handle.context == identity.context && found->expires > now)
-        return UpdatePartyActivityLease(handle, phase, ttlSeconds, reason) ?
-            LivingActivity::Acquisition{AcquisitionState::Granted, ""} :
-            LivingActivity::Acquisition{AcquisitionState::Invalidated, "lease_context_changed"};
-    const auto acquired=sLivingActivityCoordinator.AcquireCompatibilityLease(botGuid,PartyActivityOwnerName(owner),
-        PartyActivityPhaseName(phase),ttlSeconds,reason,jobKey,handle);
-    if(!acquired.Permitted()) return acquired;
-    QueueActivityTelemetry(botGuid, 0, 0, owner, phase, "lease_acquired", reason);
+    if (found && !LivingActivity::SameLease(found->handle,handle))
+        QueueActivityTelemetry(botGuid,0,0,found->owner,found->phase,"lease_preempted","higher_priority_activity");
+    QueueActivityTelemetry(botGuid, 0, 0, owner, phase,
+        found && LivingActivity::SameLease(found->handle,handle) ? "lease_updated" : "lease_acquired", reason);
     return {AcquisitionState::Granted, ""};
 }
 
@@ -1502,6 +1505,8 @@ bool PlayerbotRendezvousManager::BeginPartyFreeTime(Player* bot, Player* player,
     session.freeTimeRecallRequested = false;
     session.freeTimePlayerZoneId = player->GetZoneId();
     session.freeTimePlayerAreaId = sServerFacade.GetAreaId(player);
+    session.freeTimePlayerMapId = player->GetMapId();
+    session.freeTimePlayerInstanceId = player->GetInstanceId();
     bool automaticSettlement = reason == "automatic_settlement_errands";
     bool verifiedBundle = sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands;
     session.freeTimeUntil = verifiedBundle ? std::chrono::steady_clock::time_point() :
@@ -1577,6 +1582,28 @@ bool PlayerbotRendezvousManager::IsPartyFreeTime(uint32 botGuid) const
 {
     auto found = partySessions.find(botGuid);
     return found != partySessions.end() && found->second.state == "free_time";
+}
+
+bool PlayerbotRendezvousManager::HasSafePartyServiceWindow(Player* bot) const
+{
+    if (!bot || !bot->GetGroup() || !bot->IsInWorld() || !bot->GetMap() ||
+        bot->GetMap()->IsDungeon() || bot->InBattleGround()) return false;
+    const auto found = partySessions.find(bot->GetGUIDLow());
+    if (found == partySessions.end()) return false;
+    const auto& session = found->second;
+    const auto now = std::chrono::steady_clock::now();
+    if (session.state != "free_time" || session.freeTimeRecallRequested ||
+        session.groupId != bot->GetGroup()->GetId() || session.currentErrand ||
+        (session.freeTimeUntil.time_since_epoch().count() && now >= session.freeTimeUntil) ||
+        (session.automaticErrandHardDeadline.time_since_epoch().count() && now >= session.automaticErrandHardDeadline))
+        return false;
+    Player* human = sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER, session.playerGuid));
+    return human && human->isRealPlayer() && human->IsInWorld() && human->IsAlive() &&
+        human->GetGroup() == bot->GetGroup() && human->GetGroup()->IsLeader(human->GetObjectGuid()) &&
+        !human->IsInCombat() && !human->IsBeingTeleported() && !human->IsTaxiFlying() && !human->GetTransport() &&
+        !human->InBattleGround() && human->GetMap() && !human->GetMap()->IsDungeon() &&
+        human->GetMapId() == session.freeTimePlayerMapId && human->GetInstanceId() == session.freeTimePlayerInstanceId &&
+        human->GetZoneId() == session.freeTimePlayerZoneId && sServerFacade.GetAreaId(human) == session.freeTimePlayerAreaId;
 }
 
 bool PlayerbotRendezvousManager::HasVerifiedErrandRoute(uint32 botGuid) const

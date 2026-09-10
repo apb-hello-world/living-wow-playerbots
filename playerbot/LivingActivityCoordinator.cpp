@@ -11,6 +11,7 @@
 #include "LivingActivityPermissions.h"
 #include "LivingActivityScope.h"
 #include "LivingActivityNativeContext.h"
+#include "LivingActivityCommitments.h"
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
@@ -30,6 +31,16 @@
 
 using namespace LivingActivity;
 namespace {
+    PartyProtection NativePartyProtection(Player& bot) {
+        const auto* group = bot.GetGroup();
+        if (!group) return PartyProtection::None;
+        return ReadPartyProtection(group->GetMemberSlots(),
+            [](uint32_t account) { return sPlayerbotAIConfig.IsInRandomAccountList(account); },
+            [](ObjectGuid guid) {
+                Player* member = sObjectMgr.GetPlayer(guid);
+                return member && member->isRealPlayer();
+            });
+    }
     uint32_t NativeSafety(Player* bot) {
         return ReadNativeSafety(*bot, MovementFlags(MOVEFLAG_FALLING | MOVEFLAG_FALLINGFAR));
     }
@@ -662,6 +673,14 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
     p.put("actor_guid", guid); p.put("effective_mode", Name(state->effective));
     p.put("execution_owner", PlayerbotRendezvousManager::PartyActivityOwnerName(
         PlayerbotRendezvousManager::instance().GetPartyActivityOwner(guid)));
+    if (OnWorldThread()) {
+        if (Player* bot = sRandomPlayerbotMgr.GetPlayerBot(guid)) {
+            const auto roster = NativePartyProtection(*bot);
+            p.put("party_commitment.roster", Name(roster));
+            p.put("party_commitment.saved_executor_blocker", PartyAdmissionBlocker(roster, PartyAdmission::SavedExecutor, false));
+            p.put("party_commitment.safe_service_window", sPlayerbotRendezvousManager.HasSafePartyServiceWindow(bot));
+        }
+    }
     const auto lease=state->authority.Read(guid);
     if(lease.lease.actor) {
         const uint64_t now=std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -832,6 +851,10 @@ Acquisition LivingActivityCoordinator::AcquireCompatibilityLease(uint32_t actor,
     Player* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
     if(!bot || !bot->GetPlayerbotAI()) return {AcquisitionState::Invalidated,"native_context_unavailable"};
     RefreshPermission(actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    const auto admission = owner == "player_command" ? PartyAdmission::ValidatedHumanCompatibility : PartyAdmission::ServiceCompatibility;
+    const char* partyBlocker = PartyAdmissionBlocker(NativePartyProtection(*bot), admission,
+        sPlayerbotRendezvousManager.HasSafePartyServiceWindow(bot));
+    if (*partyBlocker) return {AcquisitionState::Waiting, partyBlocker};
     const auto before=state->authority.Read(actor);
     const uint64_t monotonic=std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -841,7 +864,7 @@ Acquisition LivingActivityCoordinator::AcquireCompatibilityLease(uint32_t actor,
     task.mode=Mode::Active;task.phase=Phase::Traveling;task.checkpoint.step="legacy_movement";
     task.createdAtMs=task.updatedAtMs=NowMs();
     ActivityLease identity{actor,task.id,0,task.context};
-    if(before.lease.actor && before.expires>monotonic && before.compatibility &&
+    if(before.lease.actor && before.expires>monotonic && before.compatibility && before.root.source==owner &&
         !MayAcquireCompatibilityLease(before.lease,handle,identity,true))
         return {AcquisitionState::Waiting,"another_committed_activity"};
     if(before.compatibility && before.root.id==task.id && before.root.context==task.context)
@@ -1090,6 +1113,8 @@ LivingActivityCoordinator::TaskGrant LivingActivityCoordinator::AcquireSavedTask
     if (!bot || !bot->GetPlayerbotAI()) { result.blocker = "actor_not_available"; return result; }
     const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
     if (!SavedTaskExecutable(saved->second, revision, current, NowMs(), result.blocker)) return result;
+    result.blocker = PartyAdmissionBlocker(NativePartyProtection(*bot), PartyAdmission::SavedExecutor, false);
+    if (!result.blocker.empty()) return result;
     RefreshPermission(saved->second.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
     const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
