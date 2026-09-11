@@ -75,10 +75,13 @@ int main() {
     assert(valid(request,saved));
     const auto claimed=OperationRequestWrite(request);
     assert(SameRequest(claimed,OperationIntentWrite(request.transition.task,request.transition.expectedRevision,
-        request.transition.receipt,request.kind,"{\"effects\":"+std::to_string(request.effects)+",\"native\":"+
+        request.transition.receipt,request.kind,"{\"effects\":"+std::to_string(request.effects)+",\"persistence\":0,\"native\":"+
         ClaimedNativeState(request.beforeState,request.consumption)+'}')));
     changed=request; changed.consumption.front().used=11;
     assert(!SameRequest(claimed,OperationRequestWrite(changed)));
+    changed=request; changed.persistence=NativePersistence::Inventory;
+    assert(valid(changed,saved) && !SameRequest(claimed,OperationRequestWrite(changed)));
+    changed.persistence=NativePersistence(99); assert(!valid(changed,saved));
     changed=request; changed.consumption.front().before.actor++;
     assert(!valid(changed,saved));
     changed=request; changed.effects=Mask(Effect::Inventory); assert(!valid(changed,saved));

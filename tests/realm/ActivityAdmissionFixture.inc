@@ -55,6 +55,12 @@ namespace {
         const char* OperationKind() const override { return "isolated_wallet_consumption"; }
         uint32_t OperationEffects() const override { return Mask(Effect::Money); }
         bool SupportsClaimedConsumption() const override { return true; }
+        NativePersistence PersistencePolicy() const override { return NativePersistence::Inventory; }
+        std::string PersistedNativeProof(Player& actor,const OperationRequest&,const Task& outcome) const override {
+            return "SELECT "+SqlValue(outcome.id)+','+std::to_string(outcome.revision)+
+                " FROM characters WHERE guid="+std::to_string(actor.GetGUIDLow())+
+                " AND money="+std::to_string(actor.GetMoney());
+        }
         bool ValidateNative(Player& actor,const OperationRequest& request,std::string& blocker) override {
             const bool valid=actor.IsInWorld() && actor.GetPlayerbotAI() && !NativeSafety(&actor) &&
                 !actor.GetTradeData() && actor.GetMoney() >= 1 &&
@@ -70,7 +76,6 @@ namespace {
             result.nativeReference="isolated_actor:"+std::to_string(actor.GetGUIDLow())+":wallet";
             result.afterState="{\"money\":"+std::to_string(actor.GetMoney())+",\"fixture_only\":true}";
             if (before && actor.GetMoney() == before-1) {
-                actor.SaveToDB();
                 result.state=OperationState::Verified; result.evidence="isolated_native_copper_consumed";
             }
             return result;
@@ -111,12 +116,16 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
         report.put("general_execution_enabled", state->enforceEffects.load(std::memory_order_acquire));
         if (consumptionSuite) {
             Player* actor=sRandomPlayerbotMgr.GetPlayerBot(state->admissionFixtureRequest.task.actor);
-            const bool restore=actor && state->operationFixtureCalls == 1 && actor->GetMoney()+1 == state->gameplayOriginalMoney;
+            const bool restore=actor && !DefersNativeSave(actor->GetGUIDLow()) && state->operationFixtureCalls == 1 &&
+                actor->GetMoney()+1 == state->gameplayOriginalMoney;
             report.put("native_copper_consumed",state->operationFixtureCalls == 1 ? 1 : 0);
             report.put("test_restoration_copper",restore ? 1 : 0);
             report.put("native_money_before_restoration",actor ? actor->GetMoney() : 0);
             if (restore) {actor->ModifyMoney(1);actor->SaveToDB();}
             report.put("paid_service_workflow_proof",false);
+            report.put("native_save_attempts",state->nativeSaveFixtureAttempts);
+            report.put("lost_acknowledgement_injected",state->nativeSaveFixtureLostAck);
+            report.add_child("native_save_checks",state->nativeSaveFixtureChecks);
         }
         if (resourceSuite) {
             if (!holdSuite || !passed) state->gameplayFixtureActor.store(0,std::memory_order_release);
@@ -204,6 +213,9 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
                 if (resourceSuite) {
                     state->gameplayOriginalMoney=bot->GetMoney();
                     state->gameplayFixtureActor.store(bot->GetGUIDLow(),std::memory_order_release);
+                    // Persist ordinary pre-fixture state ahead of the ordered
+                    // intent receipt; rollback checks compare this real wallet.
+                    if (consumptionSuite) bot->SaveToDB();
                 }
                 break;
             }
@@ -299,6 +311,7 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
                 operation.transition.task.updatedAtMs=NowMs(); operation.transition.receipt=NewId();
                 operation.authorization=grant.action; operation.kind="isolated_wallet_consumption";
                 operation.effects=Mask(Effect::Money); operation.consumption={{*claim,1}};
+                operation.persistence=NativePersistence::Inventory;
                 operation.beforeState="{\"money\":"+std::to_string(bot->GetMoney())+'}';
                 NativeWalletConsumption consume(state->operationFixtureCalls);
                 auto wrong=operation; ++wrong.consumption.front().before.revision;
@@ -372,6 +385,11 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
             require(state->pending.size() == 1 && state->pending.front().task.phase == Phase::Verifying,
                 "native_probe_result_queued_for_verification");
             if (consumptionSuite) {
+                require(state->pending.front().nativeSave != nullptr,"native_body_retained_with_journal");
+                state->pending.front().nativeSave->InjectIsolatedProofFailures();
+                require(DefersNativeSave(bot->GetGUIDLow()),"later_character_save_held_until_native_receipt");
+                bot->SaveToDB(); // Must not overtake the retained native batch.
+                require(!CharacterDatabase.HasOpenTransaction(),"native_capture_detaches_caller_transaction");
                 const auto* claim=state->resources.Inspect(state->reservationFixtureRequest.changes.front().after.id);
                 require(claim && claim->state == "held" && claim->revision == 1,"consumed_claim_waits_for_receipt");
                 require(bot->GetMoney()+1 == state->gameplayOriginalMoney,"native_consumption_changed_exactly_one_copper");
@@ -389,6 +407,13 @@ void LivingActivityCoordinator::RunIsolatedAdmissionFixture() {
             require(!DispatchSavedOperation(state->operationFixtureRequest.transition.receipt, {}, adapter).executed &&
                 state->operationFixtureCalls == 1, "acknowledged_operation_cannot_be_replayed");
             if (consumptionSuite) {
+                require(!DefersNativeSave(bot->GetGUIDLow()),"acknowledged_native_save_releases_actor_hold");
+                require(state->nativeSaveFixtureAttempts == 4 && state->nativeSaveFixtureLostAck,
+                    "two_real_rollbacks_then_commit_then_lost_ack_reconciliation");
+                require(state->nativeSaveFixtureChecks.size() == 4,"every_native_save_attempt_observed");
+                for (const auto& check : state->nativeSaveFixtureChecks)
+                    require(check.second.get<bool>("native_money_claim_operation_and_receipt_agree"),
+                        "database_wallet_claim_journal_and_receipt_conserved");
                 const auto* claim=state->resources.Inspect(state->reservationFixtureRequest.changes.front().after.id);
                 require(claim && claim->state == "consumed" && claim->revision == 2,"consumption_receipt_installs_exact_claim");
                 require(ResourceReservations().Inspect()->UnreservedMoney(bot->GetGUIDLow(),bot->GetMoney()) == bot->GetMoney(),

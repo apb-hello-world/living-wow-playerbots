@@ -6,6 +6,7 @@
 #include "LivingActivityCodec.h"
 #include "LivingActivityClaimCodec.h"
 #include "LivingActivityReceipts.h"
+#include "LivingActivityNativeCommit.h"
 #include "LivingActivityMailbox.h"
 #include "LivingActivityAuthority.h"
 #include "LivingActivityPermissions.h"
@@ -150,6 +151,7 @@ struct LivingActivityCoordinator::State {
     BoundedMailbox<ActionObservation> actionInbox{2048};
     std::atomic<bool> observeEffects{false};
     std::atomic<bool> enforceEffects{false}; // No configuration can enable it before Stage 3 acceptance.
+    std::shared_ptr<const std::set<uint32_t>> nativeSaveHolds = std::make_shared<const std::set<uint32_t>>();
     std::atomic<uint64_t> publishedPolicyRevision{0};
     std::atomic<uint64_t> leaseBoundaries[3][2]{};
     std::thread::id worldThread;
@@ -167,6 +169,9 @@ struct LivingActivityCoordinator::State {
     ReservationRequest reservationFixtureRequest;
     unsigned operationFixtureCalls = 0;
     boost::property_tree::ptree admissionFixtureChecks;
+    boost::property_tree::ptree nativeSaveFixtureChecks;
+    unsigned nativeSaveFixtureAttempts = 0;
+    bool nativeSaveFixtureLostAck = false;
     std::atomic<uint32_t> gameplayFixtureActor{0}, gameplayFixtureSpell{0};
     std::atomic<uint32_t> gameplayHealPackets{0}, gameplayHealAmount{0};
     std::atomic<uint32_t> gameplayCastFailure{0}, gameplayCastResult{0};
@@ -197,10 +202,11 @@ struct LivingActivityCoordinator::State {
         ReceiptRetry retry{};
         std::string reservation;
         std::vector<ClaimReceiptChange> claims;
+        std::shared_ptr<NativeSaveBatch> nativeSave;
     };
     struct PendingOperation {
         OperationRequest request;
-        bool ready = false, dispatched = false, uncertain = false;
+        bool ready = false, dispatched = false, uncertain = false, saveBlocked = false;
         OperationState outcome = OperationState::Reconciling;
         ActivityLease held;
     };
@@ -294,14 +300,37 @@ struct LivingActivityCoordinator::State {
         auto plan = TaskWrite(task, expected, NewId(), code);
         pending.push_back({std::move(task), std::move(plan), ""});
     }
+    void HoldNativeSave(uint32_t actor, bool hold) {
+        auto next = std::make_shared<std::set<uint32_t>>(*std::atomic_load_explicit(&nativeSaveHolds, std::memory_order_acquire));
+        if (hold) next->insert(actor); else next->erase(actor);
+        std::shared_ptr<const std::set<uint32_t>> immutable = std::move(next);
+        std::atomic_store_explicit(&nativeSaveHolds, std::move(immutable), std::memory_order_release);
+    }
     void Flush(std::chrono::steady_clock::time_point deadline) {
-        const unsigned maximum = PrepareReceiptBatch(pending,batch,NowMs(),preferReceiptRetry);
-        if (!maximum || !CharacterDatabase.BeginTransaction()) return;
+        const auto now = NowMs();
+        const auto native = std::find_if(pending.begin(),pending.end(),[&](const Pending& write) {
+            return write.nativeSave && write.retry.dueAtMs <= now;
+        });
+        unsigned maximum;
+        if (native != pending.end()) { std::rotate(pending.begin(),native,std::next(native)); maximum=1; }
+        else maximum=PrepareReceiptBatch(pending,batch,now,preferReceiptRetry);
+        if (!maximum) return;
+        const bool nativeBatch = pending.front().nativeSave != nullptr;
+        if (nativeBatch) {
+            if (!pending.front().nativeSave->Queue(CharacterDatabase)) {
+                pending.front().retry.Missed(now); blocker="native_save_queue_unavailable"; return;
+            }
+        } else {
+            // A retained native body must NEVER fall through to journal-only retry.
+            for (unsigned i=1;i<maximum;++i) if (pending[i].nativeSave) { maximum=i; break; }
+            if (!CharacterDatabase.BeginTransaction()) return;
+        }
         preferReceiptRetry = !pending.front().retry.failures; // Alternate fresh batches and due failed writes.
         unsigned count = 0;
         std::string query;
         for (; count < maximum;) {
-            for (const auto& sql : pending[count].plan.statements) CharacterDatabase.Execute(sql.c_str());
+            if (!nativeBatch)
+                for (const auto& sql : pending[count].plan.statements) CharacterDatabase.Execute(sql.c_str());
             if (!query.empty()) query += " UNION ALL ";
             query += pending[count].plan.receiptQuery;
             ++count;
@@ -309,8 +338,19 @@ struct LivingActivityCoordinator::State {
         }
         // One ordered native DB transaction followed by its receipt query. No
         // synchronous DB query or extra worker on the world thread.
-        if (!CharacterDatabase.CommitTransaction()) { CharacterDatabase.RollbackTransaction(); return; }
+        if (!nativeBatch && !CharacterDatabase.CommitTransaction()) { CharacterDatabase.RollbackTransaction(); return; }
         query += " UNION ALL SELECT '',0"; // Healthy empty acknowledgement differs from query failure.
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+        if (nativeBatch && pending.front().operation == operationFixtureRequest.transition.receipt &&
+            operationFixtureRequest.kind == "isolated_wallet_consumption") {
+            query += " UNION ALL SELECT 'isolated_native_wallet',money FROM characters WHERE guid=" +
+                std::to_string(pending.front().task.actor);
+            query += " UNION ALL SELECT 'isolated_claim_revision',revision FROM living_activity_claim WHERE claim_id=" +
+                SqlValue(reservationFixtureRequest.changes.front().after.id);
+            query += " UNION ALL SELECT 'isolated_native_operation',CASE WHEN state='intent' THEN 1 WHEN state='verified' THEN 2 ELSE 0 END "
+                "FROM living_activity_operation WHERE operation_id=" + SqlValue(pending.front().operation);
+        }
+#endif
         ioPending = true;
         const auto token = epoch;
         if (!CharacterDatabase.AsyncQuery([this, count, token](QueryResult* result) {
@@ -320,6 +360,32 @@ struct LivingActivityCoordinator::State {
             if (result) do { auto* f = result->Fetch(); receipts.emplace(f[0].GetCppString(), f[1].GetUInt64()); }
                 while (result->NextRow());
             const bool healthy = receipts.count({"",0}) != 0;
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+            if (count == 1 && !pending.empty() && pending.front().nativeSave &&
+                pending.front().operation == operationFixtureRequest.transition.receipt &&
+                operationFixtureRequest.kind == "isolated_wallet_consumption") {
+                const auto& write = pending.front();
+                const auto status = write.nativeSave->Status();
+                nativeSaveFixtureAttempts = write.nativeSave->Attempts();
+                const bool committed = status == NativeSaveStatus::Committed || status == NativeSaveStatus::AlreadyCommitted;
+                const bool rollback = status == NativeSaveStatus::NativeProofRejected || status == NativeSaveStatus::JournalProofRejected;
+                boost::property_tree::ptree check;
+                check.put("attempt",nativeSaveFixtureAttempts); check.put("status",Name(status));
+                const bool correct = healthy && (committed || rollback) &&
+                    receipts.count({"isolated_native_wallet",gameplayOriginalMoney-(committed ? 1 : 0)}) &&
+                    receipts.count({"isolated_claim_revision",committed ? 2 : 1}) &&
+                    receipts.count({"isolated_native_operation",committed ? 2 : 1}) &&
+                    (bool(receipts.count({write.plan.task,write.plan.revision})) == committed);
+                check.put("native_money_claim_operation_and_receipt_agree",correct);
+                nativeSaveFixtureChecks.push_back({"",check});
+                if (status == NativeSaveStatus::Committed && !nativeSaveFixtureLostAck) {
+                    // Lose only this test acknowledgement AFTER an actual native
+                    // commit. The subsequent attempt must reconcile, not replay.
+                    nativeSaveFixtureLostAck = true;
+                    receipts.erase({write.plan.task,write.plan.revision});
+                }
+            }
+#endif
             const auto accepted = SettleReceiptBatch(pending,count,healthy,receipts,NowMs(),[this](const Pending& acknowledgedWrite) {
                 if (!acknowledgedWrite.reservation.empty()) {
                     const auto installed = resources.CommitReservation(acknowledgedWrite.reservation);
@@ -350,8 +416,11 @@ struct LivingActivityCoordinator::State {
                     if (!acknowledgedWrite.operationOutcome) operation->second.ready = true;
                     else {
                         const auto held = operation->second.held;
-                        authority.FinishAtomic(held, operation->first);
-                        authority.Release(held);
+                        if (!operation->second.saveBlocked) {
+                            authority.FinishAtomic(held, operation->first);
+                            authority.Release(held);
+                            HoldNativeSave(held.actor,false);
+                        }
                         const auto binding = bindings.find(held.actor);
                         if (binding != bindings.end()) binding->second.publisher.Publish(authority.Read(held.actor));
                         ++nativeOutcomes;
@@ -367,6 +436,9 @@ struct LivingActivityCoordinator::State {
             if (accepted != count) {
                 ++persistenceFailures;
                 blocker = healthy ? "actor_journal_receipt_pending" : "journal_ack_query_failed";
+                for (const auto& write : pending) if (write.nativeSave) {
+                    blocker=Name(write.nativeSave->Status()); break;
+                }
             } else blocker.clear();
         }, query.c_str())) { ioPending = false; blocker = "journal_ack_queue_unavailable"; nextWork = NowMs() + 5000; }
     }
@@ -697,10 +769,16 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
         p.put("execution_lease.remaining_ms",lease.expires>now?lease.expires-now:0);
         p.put("execution_lease.operation",lease.operation);
     }
-    for (const auto& write : state->pending) if (write.task.actor == guid && write.retry.failures) {
+    p.put("native_save_deferred", DefersNativeSave(guid));
+    for (const auto& write : state->pending) if (write.task.actor == guid && (write.nativeSave || write.retry.failures)) {
         p.put("journal.task",write.task.id); p.put("journal.revision",write.task.revision);
-        p.put("journal.blocker","exact_receipt_not_verified"); p.put("journal.attempts",write.retry.failures);
+        p.put("journal.blocker",write.nativeSave ? Name(write.nativeSave->Status()) : "exact_receipt_not_verified");
+        p.put("journal.attempts",write.retry.failures);
         p.put("journal.retry_at_ms",write.retry.dueAtMs); p.put("journal.native_outcome_retained",write.operationOutcome);
+        if (write.nativeSave) {
+            p.put("journal.native_save_attempts",write.nativeSave->Attempts());
+            p.put("journal.native_save_in_flight",write.nativeSave->InFlight());
+        }
         break;
     }
     auto selected = state->preferred.find(guid);
@@ -720,6 +798,7 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
         p.put("native_operation.id", operation.first);
         p.put("native_operation.task", pending.request.transition.task.id);
         p.put("native_operation.kind", pending.request.kind);
+        p.put("native_operation.save_capture_blocked", pending.saveBlocked);
         p.put("native_operation.phase", pending.uncertain ? "reconciliation_required" : pending.dispatched ?
             "result_receipt_pending" : pending.ready ? "ready_for_native_validation" : "intent_receipt_pending");
     }
@@ -838,6 +917,11 @@ ResourceReader LivingActivityCoordinator::ResourceReservations() const { return 
 
 bool LivingActivityCoordinator::EffectEnforcementEnabled() const {
     return state->enforceEffects.load(std::memory_order_acquire);
+}
+
+bool LivingActivityCoordinator::DefersNativeSave(uint32_t actor) const {
+    const auto held = std::atomic_load_explicit(&state->nativeSaveHolds, std::memory_order_acquire);
+    return actor && held && held->count(actor);
 }
 
 Acquisition LivingActivityCoordinator::AcquireCompatibilityLease(uint32_t actor,const std::string& owner,
@@ -1190,9 +1274,10 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
     if (state->operationDispatching) return reject(AdmissionCode::Backpressure, "native_result_capacity_reserved");
     if (!state->schemaReady || !state->loaded || !state->incoming.empty()) return reject(AdmissionCode::NotReady);
     if (next.id != SourceId(next.source, next.sourceKey) || request.kind != adapter.OperationKind() ||
-        request.effects != adapter.OperationEffects()) return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
+        request.effects != adapter.OperationEffects() || request.persistence != adapter.PersistencePolicy())
+        return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
     if ((request.effects & (Mask(Effect::Money)|Mask(Effect::Inventory))) &&
-        (!adapter.SupportsClaimedConsumption() || request.consumption.empty()))
+        (!adapter.SupportsClaimedConsumption() || request.consumption.empty() || request.persistence == NativePersistence::JournalOnly))
         return reject(AdmissionCode::InvalidRequest,"resource_effect_adapter_not_supported");
     WritePlan plan;
     try { plan = OperationRequestWrite(request); }
@@ -1261,6 +1346,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     for (const auto& write : state->pending) if (write.task.actor == intended.actor)
         return reject(AdmissionCode::ReconciliationRequired,"actor_journal_write_pending");
     if (request.kind != adapter.OperationKind() || request.effects != adapter.OperationEffects() ||
+        request.persistence != adapter.PersistencePolicy() ||
         (!request.consumption.empty() && !adapter.SupportsClaimedConsumption()))
         return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
     const auto saved = state->cache.find(intended.id);
@@ -1288,6 +1374,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         state.operationDispatching = false;
     } } dispatchGuard{*state, held, id};
     NativeObservation observation;
+    bool nativeTransactionOpen = false;
     try {
         if (bot->GetTradeData() || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker) ||
             !adapter.ValidateNative(*bot, request, blocker)) {
@@ -1302,8 +1389,20 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                 state->bindings.at(intended.actor).publisher.Publish(state->authority.Read(intended.actor));
                 ExecutionScope scope(executing, action);
                 const auto nativeBefore=NativeConsumptionBalances(*bot,request,false);
-                ++state->nativeDispatches; result.executed = true;
-                observation = adapter.ExecuteNative(*bot, request);
+                if (request.persistence != NativePersistence::JournalOnly) {
+                    // Local service adapters are admitted only without a native
+                    // transaction already in progress. Mail/guild operations
+                    // with their own transactions require dedicated hooks.
+                    nativeTransactionOpen = !CharacterDatabase.HasOpenTransaction() && CharacterDatabase.BeginTransaction();
+                    if (nativeTransactionOpen) state->HoldNativeSave(intended.actor,true);
+                }
+                if (request.persistence == NativePersistence::JournalOnly || nativeTransactionOpen) {
+                    ++state->nativeDispatches; result.executed = true;
+                    observation = adapter.ExecuteNative(*bot, request);
+                } else {
+                    observation.state=OperationState::Rejected;
+                    observation.evidence="native_save_transaction_unavailable";
+                }
                 if (observation.state == OperationState::Verified &&
                     !VerifyConsumedNativeResources(request,nativeBefore,NativeConsumptionBalances(*bot,request,false),blocker)) {
                     observation.state=OperationState::Reconciling;
@@ -1311,7 +1410,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                 }
             }
         }
-    } catch (const std::exception&) { observation = {}; }
+    } catch (const std::exception&) { observation = {}; observation.evidence="native_adapter_exception"; }
     state->authority.EndDispatch(held, id); // No old operation scope survives the callback.
     state->bindings.at(intended.actor).publisher.Publish(state->authority.Read(intended.actor));
     if (!ValidateNativeObservation(observation)) observation = {};
@@ -1343,6 +1442,24 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     }
     State::Pending write{std::move(after),std::move(plan),"",id,true};
     write.claims=std::move(changes);
+    if (nativeTransactionOpen) {
+        try {
+            if (!CharacterDatabase.HasOpenTransaction()) throw std::runtime_error("native_transaction_escaped");
+            bot->SaveServiceStateToDB(request.persistence == NativePersistence::Profession);
+            write.nativeSave=NativeSaveBatch::Capture(CharacterDatabase,write.plan,
+                adapter.PersistedNativeProof(*bot,request,write.task));
+        } catch (const std::exception&) {
+            // Never emit the old success receipt alone after a native save
+            // could not be sealed. Preserve uncertainty and both actor holds.
+            if (CharacterDatabase.HasOpenTransaction()) CharacterDatabase.RollbackTransaction();
+            pending.saveBlocked=pending.uncertain=true;
+            pending.outcome=proof.state=OperationState::Reconciling;
+            proof.evidence="native_save_capture_requires_reconciliation";
+            write.task.phase=Phase::Reconciling; write.task.checkpoint.blocker=proof.evidence;
+            write.claims.clear();
+            write.plan=OperationOutcomeWrite(write.task,saved->second.revision,proof,receipt,observation.afterState);
+        }
+    }
     state->pending.push_back(std::move(write));
     state->nextWork = 0; result.outcomeQueued = true;
     return reject(AdmissionCode::Pending, pending.uncertain ? "native_outcome_uncertain" : "native_result_receipt_pending");

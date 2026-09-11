@@ -42,6 +42,9 @@ public:
         const std::string& key, LivingActivity::ActivityLease& identity) const;
     bool OnWorldThread() const;
     bool EffectEnforcementEnabled() const;
+    // Read-only native full-save guard. The actor-ID projection survives AI
+    // object replacement; no Player/Map pointers or DB query cross threads.
+    bool DefersNativeSave(uint32_t actor) const;
     struct CompatibilityLease {
         LivingActivity::ActivityLease handle;
         std::string owner,phase,reason;

@@ -27,7 +27,8 @@ namespace LivingActivity {
     bool ValidateOperationRequest(const OperationRequest& request, const Task& saved,
         const WorldContext& current, const Task* root, uint64_t wallNow, std::string& blocker) {
         const auto& next = request.transition.task;
-        if (!request.effects || (request.effects & ~AllEffects) || !IsToken(request.kind, 48) ||
+        if (!request.effects || (request.effects & ~AllEffects) ||
+            unsigned(request.persistence) > unsigned(NativePersistence::Profession) || !IsToken(request.kind, 48) ||
             !JsonObject(request.beforeState, 4096) || next.phase != Phase::Executing ||
             (saved.phase != Phase::Preparing && saved.phase != Phase::Traveling)) {
             blocker = "invalid_native_operation_intent"; return false;
@@ -46,9 +47,11 @@ namespace LivingActivity {
         blocker.clear(); return true;
     }
     WritePlan OperationRequestWrite(const OperationRequest& request) {
-        if (!JsonObject(request.beforeState, 4096) || !request.effects || (request.effects & ~AllEffects))
+        if (!JsonObject(request.beforeState, 4096) || !request.effects || (request.effects & ~AllEffects) ||
+            unsigned(request.persistence) > unsigned(NativePersistence::Profession))
             throw std::invalid_argument("Invalid native operation state/effects");
-        const std::string state = "{\"effects\":" + std::to_string(request.effects) + ",\"native\":" + NativeBefore(request) + '}';
+        const std::string state = "{\"effects\":" + std::to_string(request.effects) +
+            ",\"persistence\":" + std::to_string(unsigned(request.persistence)) + ",\"native\":" + NativeBefore(request) + '}';
         return OperationIntentWrite(request.transition.task, request.transition.expectedRevision,
             request.transition.receipt, request.kind, state);
     }

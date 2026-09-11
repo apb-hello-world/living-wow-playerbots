@@ -5,11 +5,13 @@
 #include "LivingActivityClaimConsumption.h"
 class Player;
 namespace LivingActivity {
+    enum class NativePersistence { JournalOnly, Inventory, Profession };
     struct OperationRequest {
         TaskRequest transition; // Preparing/traveling -> executing, receipt is operation ID.
         ActionContext authorization; // Exact saved predecessor's scoped authority.
         std::string kind, beforeState = "{}";
         uint32_t effects = 0;
+        NativePersistence persistence = NativePersistence::JournalOnly;
         std::vector<ClaimConsumption> consumption;
     };
     struct NativeObservation {
@@ -26,6 +28,10 @@ namespace LivingActivity {
         // Gains and transfers require their own native identity adapters. They
         // are not disguised as consumption or inferred from an effect bit.
         virtual bool SupportsClaimedConsumption() const { return false; }
+        virtual NativePersistence PersistencePolicy() const { return NativePersistence::JournalOnly; }
+        // Compiled native after-state predicate, checked in the SAME transaction
+        // as the native save and journal. No player/model SQL enters this API.
+        virtual std::string PersistedNativeProof(Player&, const OperationRequest&, const Task&) const { return {}; }
         virtual bool ValidateNative(Player& actor, const OperationRequest& request, std::string& blocker) = 0;
         virtual NativeObservation ExecuteNative(Player& actor, const OperationRequest& request) = 0;
     };
