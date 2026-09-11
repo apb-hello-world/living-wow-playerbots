@@ -122,6 +122,11 @@ namespace LivingActivity {
             for (const auto& change : row.second.changes) count += change.expectedRevision == 0;
         return count;
     }
+    bool ResourceClaimBook::CanAdmitNewClaims(size_t count) const {
+        const auto slots=PendingSlots();
+        return protection.ready && count <= capacity && slots <= capacity-count &&
+            records.size() <= capacity-count-slots && pending.size() < 32;
+    }
     void ResourceClaimBook::BlockProjection() {
         restoreFailed = true; protection.ready = false;
         publisher.Publish(protection);

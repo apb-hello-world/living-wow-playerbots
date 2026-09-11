@@ -3,6 +3,7 @@
 #include "LivingActivityRequests.h"
 #include "LivingActivityEffects.h"
 #include "LivingActivityClaimConsumption.h"
+#include "LivingActivityItemGain.h"
 class Player;
 namespace LivingActivity {
     enum class NativePersistence { JournalOnly, Inventory, Profession };
@@ -13,6 +14,7 @@ namespace LivingActivity {
         uint32_t effects = 0;
         NativePersistence persistence = NativePersistence::JournalOnly;
         std::vector<ClaimConsumption> consumption;
+        ItemGainSpec itemGain; // Exact output bound into intent before purchase.
     };
     struct NativeObservation {
         OperationState state = OperationState::Reconciling;
@@ -28,6 +30,7 @@ namespace LivingActivity {
         // Gains and transfers require their own native identity adapters. They
         // are not disguised as consumption or inferred from an effect bit.
         virtual bool SupportsClaimedConsumption() const { return false; }
+        virtual bool SupportsItemGain() const { return false; }
         virtual NativePersistence PersistencePolicy() const { return NativePersistence::JournalOnly; }
         // Compiled native after-state predicate, checked in the SAME transaction
         // as the native save and journal. No player/model SQL enters this API.

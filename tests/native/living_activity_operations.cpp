@@ -77,6 +77,14 @@ int main() {
     assert(SameRequest(claimed,OperationIntentWrite(request.transition.task,request.transition.expectedRevision,
         request.transition.receipt,request.kind,"{\"effects\":"+std::to_string(request.effects)+",\"persistence\":0,\"native\":"+
         ClaimedNativeState(request.beforeState,request.consumption)+'}')));
+    changed=request; changed.itemGain={3371,1};
+    assert(!valid(changed,saved)); // Journal-only cannot acknowledge item gains.
+    changed.persistence=NativePersistence::Inventory;
+    assert(valid(changed,saved));
+    auto gained=OperationRequestWrite(changed);
+    assert(!SameRequest(gained,claimed));
+    changed.itemGain.quantity=2; assert(!SameRequest(gained,OperationRequestWrite(changed)));
+    changed.itemGain.entry=0; assert(!valid(changed,saved));
     changed=request; changed.consumption.front().used=11;
     assert(!SameRequest(claimed,OperationRequestWrite(changed)));
     changed=request; changed.persistence=NativePersistence::Inventory;

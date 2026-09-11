@@ -90,6 +90,33 @@ namespace {
         for (const auto& use : request.consumption) claims.push_back(use.before);
         return NativeClaimBalances(bot,claims,admission);
     }
+    std::vector<NativeItemStack> NativeGainStacks(Player& bot,const ItemGainSpec& spec) {
+        std::vector<NativeItemStack> rows;
+        if (spec.Empty()) return rows;
+        if (!ValidItemGainSpec(spec) || !bot.GetPlayerbotAI()) throw std::invalid_argument("Invalid native gain actor/scope");
+        for (Item* item : bot.GetPlayerbotAI()->InventoryParseItems("inventory",IterateItemsMask::ITERATE_ITEMS_IN_BAGS)) {
+            if (!item || item->GetEntry() != spec.entry) continue;
+            if (rows.size() >= 256 || item->GetOwnerGuid() != bot.GetObjectGuid())
+                throw std::invalid_argument("Native gain inventory identity unavailable");
+            rows.push_back({bot.GetGUIDLow(),item->GetGUIDLow(),item->GetEntry(),item->GetCount(),
+                item->GetContainer() ? item->GetContainer()->GetGUIDLow() : 0,item->GetSlot()});
+        }
+        return rows;
+    }
+    std::string NativeGainProof(const std::vector<VerifiedItemGain>& gains) {
+        std::string predicate;
+        for (const auto& gain : gains) {
+            const auto& item=gain.after;
+            // Pinned native inventory schema. This is a predicate on the real
+            // serializers' results, never replacement inventory-writing SQL.
+            predicate+=" AND EXISTS (SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+
+                std::to_string(item.actor)+" AND v.item="+std::to_string(item.guid)+" AND v.item_template="+std::to_string(item.entry)+
+                " AND v.bag="+std::to_string(item.bagGuid)+" AND v.slot="+std::to_string(item.slot)+
+                " AND i.owner_guid="+std::to_string(item.actor)+" AND i.itemEntry="+std::to_string(item.entry)+
+                " AND i.count="+std::to_string(item.count)+')';
+        }
+        return predicate;
+    }
     // Only identifiers and typed source facts enter checkpoints. Do not import
     // arbitrary legacy payloads, user event descriptions or private dialogue.
     std::string ImportQuery(unsigned family, unsigned limit) {
@@ -211,6 +238,7 @@ struct LivingActivityCoordinator::State {
         bool operationOutcome = false;
         ReceiptRetry retry{};
         std::string reservation;
+        std::string gainReservation;
         std::vector<ClaimReceiptChange> claims;
         std::shared_ptr<NativeSaveBatch> nativeSave;
     };
@@ -398,10 +426,18 @@ struct LivingActivityCoordinator::State {
             }
 #endif
             const auto accepted = SettleReceiptBatch(pending,count,healthy,receipts,NowMs(),[this](const Pending& acknowledgedWrite) {
+                bool claimProjectionValid=true;
+                if (!acknowledgedWrite.gainReservation.empty()) {
+                    const auto installed=resources.CommitReservation(acknowledgedWrite.gainReservation);
+                    if (installed != ClaimInstall::Installed && installed != ClaimInstall::Duplicate) {
+                        resources.BlockProjection(); claimRestoreFailed=true; claimProjectionValid=false;
+                        claimBlocker="acquired_claim_projection_mismatch"; ++invalidClaims;
+                    }
+                }
                 if (!acknowledgedWrite.reservation.empty()) {
                     const auto installed = resources.CommitReservation(acknowledgedWrite.reservation);
                     if (installed != ClaimInstall::Installed && installed != ClaimInstall::Duplicate) {
-                        resources.BlockProjection(); claimRestoreFailed = true;
+                        resources.BlockProjection(); claimRestoreFailed = true; claimProjectionValid=false;
                         claimBlocker = "acknowledged_claim_projection_mismatch"; ++invalidClaims;
                     } else {
                         auto& ids = reservationClaimIds[acknowledgedWrite.task.id]; ids.clear();
@@ -410,9 +446,14 @@ struct LivingActivityCoordinator::State {
                 } else {
                     reservationClaimIds.erase(acknowledgedWrite.task.id);
                     if (!acknowledgedWrite.claims.empty()) {
-                        const auto installed=resources.InstallReceipt(acknowledgedWrite.claims);
+                        // New gained claims were installed from their pending
+                        // hold above; settle the input claims from this receipt.
+                        std::vector<ClaimReceiptChange> input;
+                        for (const auto& change : acknowledgedWrite.claims)
+                            if (acknowledgedWrite.gainReservation.empty() || change.expectedRevision) input.push_back(change);
+                        const auto installed=input.empty() ? ClaimInstall::Duplicate : resources.InstallReceipt(input);
                         if (installed != ClaimInstall::Installed && installed != ClaimInstall::Duplicate) {
-                            resources.BlockProjection(); claimRestoreFailed=true;
+                            resources.BlockProjection(); claimRestoreFailed=true; claimProjectionValid=false;
                             claimBlocker="consumed_claim_projection_mismatch"; ++invalidClaims;
                         }
                     }
@@ -427,6 +468,7 @@ struct LivingActivityCoordinator::State {
                     if (!acknowledgedWrite.operationOutcome) operation->second.ready = true;
                     else {
                         const auto held = operation->second.held;
+                        if (!claimProjectionValid) operation->second.saveBlocked=operation->second.uncertain=true;
                         if (!operation->second.saveBlocked) {
                             authority.FinishAtomic(held, operation->first);
                             authority.Release(held);
@@ -1298,6 +1340,8 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
     if ((request.effects & (Mask(Effect::Money)|Mask(Effect::Inventory))) &&
         (!adapter.SupportsClaimedConsumption() || request.consumption.empty() || request.persistence == NativePersistence::JournalOnly))
         return reject(AdmissionCode::InvalidRequest,"resource_effect_adapter_not_supported");
+    if (!request.itemGain.Empty() && (!adapter.SupportsItemGain() || !ValidItemGainSpec(request.itemGain)))
+        return reject(AdmissionCode::InvalidRequest,"native_item_gain_adapter_not_supported");
     WritePlan plan;
     try { plan = OperationRequestWrite(request); }
     catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest, "invalid_native_operation_intent"); }
@@ -1366,6 +1410,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         return reject(AdmissionCode::ReconciliationRequired,"actor_journal_write_pending");
     if (request.kind != adapter.OperationKind() || request.effects != adapter.OperationEffects() ||
         request.persistence != adapter.PersistencePolicy() ||
+        (!request.itemGain.Empty() && !adapter.SupportsItemGain()) ||
         (!request.consumption.empty() && !adapter.SupportsClaimedConsumption()))
         return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
     const auto saved = state->cache.find(intended.id);
@@ -1381,6 +1426,10 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     RefreshPermission(intended.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
     const auto held = state->authority.Read(intended.actor).lease;
     if (!SameLease(held, grant.authority.lease)) return reject(AdmissionCode::StaleContext, "current_operation_lease_required");
+    // Reserve bounded result/projection capacity before the nonrepeatable call.
+    // This world-thread dispatch cannot interleave another claim admission.
+    if (!request.itemGain.Empty() && !state->resources.CanAdmitNewClaims(MaximumItemGainStacks))
+        return reject(AdmissionCode::Backpressure,"native_item_gain_claim_capacity");
     const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (state->authority.BeginAtomic(held, id, monotonic).code != AuthorityCode::Allowed)
         return reject(AdmissionCode::ReconciliationRequired, "atomic_admission_rejected");
@@ -1393,6 +1442,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         state.operationDispatching = false;
     } } dispatchGuard{*state, held, id};
     NativeObservation observation;
+    std::vector<VerifiedItemGain> nativeGains;
     bool nativeTransactionOpen = false;
     try {
         if (bot->GetTradeData() || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker) ||
@@ -1408,6 +1458,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                 state->bindings.at(intended.actor).publisher.Publish(state->authority.Read(intended.actor));
                 ExecutionScope scope(executing, action);
                 const auto nativeBefore=NativeConsumptionBalances(*bot,request,false);
+                const auto itemsBefore=NativeGainStacks(*bot,request.itemGain);
                 if (request.persistence != NativePersistence::JournalOnly) {
                     // Local service adapters are admitted only without a native
                     // transaction already in progress. Mail/guild operations
@@ -1427,6 +1478,10 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                     observation.state=OperationState::Reconciling;
                     observation.evidence=blocker; // Preserve actual adapter after-state and native reference.
                 }
+                if (observation.state == OperationState::Verified && !request.itemGain.Empty() &&
+                    !VerifyNativeItemGain(intended.actor,request.itemGain,itemsBefore,NativeGainStacks(*bot,request.itemGain),nativeGains,blocker)) {
+                    observation.state=OperationState::Reconciling; observation.evidence=blocker;
+                }
             }
         }
     } catch (const std::exception&) { observation = {}; observation.evidence="native_adapter_exception"; }
@@ -1435,6 +1490,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     if (!ValidateNativeObservation(observation)) observation = {};
     Task after = saved->second; ++after.revision; after.updatedAtMs = NowMs();
     pending.uncertain = observation.state == OperationState::Reconciling;
+    if (pending.uncertain && !request.itemGain.Empty()) pending.saveBlocked=true;
     pending.outcome = observation.state;
     after.phase = pending.uncertain ? Phase::Reconciling : Phase::Verifying;
     after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
@@ -1445,8 +1501,25 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     proof.evidence = observation.evidence;
     const auto receipt=NewId();
     WritePlan plan; std::vector<ClaimReceiptChange> changes;
+    std::string gainReservation;
     try {
-        if (proof.state == OperationState::Verified && !request.consumption.empty()) {
+        if (proof.state == OperationState::Verified && !request.itemGain.Empty()) {
+            auto acquired=AcquiredOperationWrite(after,saved->second.revision,proof,receipt,observation.afterState,
+                request.consumption,request.itemGain,nativeGains);
+            const auto acquiredClaims=ItemGainClaims(after,id,request.itemGain,nativeGains);
+            std::vector<NativeResourceBalance> balances;
+            for (const auto& gain : nativeGains) balances.push_back({intended.actor,gain.after.guid,gain.after.entry,gain.after.count,0,"bags"});
+            // Protect the actual gained quantities before any map-worker turn,
+            // and retain protection across persistence retries/lost replies.
+            const auto heldGains=state->resources.ReservePending(receipt,acquiredClaims,balances);
+            if (heldGains != ClaimInstall::Installed && heldGains != ClaimInstall::Duplicate) {
+                state->resources.BlockProjection(); state->claimRestoreFailed=true;
+                state->claimBlocker="native_acquired_items_require_reconciliation"; ++state->invalidClaims;
+                pending.saveBlocked=true;
+                throw std::runtime_error("Native gain protection failed");
+            }
+            gainReservation=receipt; plan=std::move(acquired.journal); changes=std::move(acquired.changes);
+        } else if (proof.state == OperationState::Verified && !request.consumption.empty()) {
             auto consumed=ConsumedOperationWrite(after,saved->second.revision,proof,receipt,observation.afterState,request.consumption);
             plan=std::move(consumed.journal); changes=std::move(consumed.changes);
         } else plan=OperationOutcomeWrite(after,saved->second.revision,proof,receipt,observation.afterState);
@@ -1461,12 +1534,13 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     }
     State::Pending write{std::move(after),std::move(plan),"",id,true};
     write.claims=std::move(changes);
+    write.gainReservation=gainReservation;
     if (nativeTransactionOpen) {
         try {
             if (!CharacterDatabase.HasOpenTransaction()) throw std::runtime_error("native_transaction_escaped");
             bot->SaveServiceStateToDB(request.persistence == NativePersistence::Profession);
             write.nativeSave=NativeSaveBatch::Capture(CharacterDatabase,write.plan,
-                adapter.PersistedNativeProof(*bot,request,write.task));
+                adapter.PersistedNativeProof(*bot,request,write.task)+NativeGainProof(nativeGains));
         } catch (const std::exception&) {
             // Never emit the old success receipt alone after a native save
             // could not be sealed. Preserve uncertainty and both actor holds.
@@ -1476,6 +1550,9 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
             proof.evidence="native_save_capture_requires_reconciliation";
             write.task.phase=Phase::Reconciling; write.task.checkpoint.blocker=proof.evidence;
             write.claims.clear();
+            // A failed capture cannot acknowledge acquired claims separately.
+            // Their pending holds remain until native domain reconciliation.
+            write.gainReservation.clear();
             write.plan=OperationOutcomeWrite(write.task,saved->second.revision,proof,receipt,observation.afterState);
         }
     }

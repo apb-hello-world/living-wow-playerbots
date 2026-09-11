@@ -29,7 +29,10 @@ namespace LivingActivity {
         const auto& next = request.transition.task;
         if (!request.effects || (request.effects & ~AllEffects) ||
             unsigned(request.persistence) > unsigned(NativePersistence::Profession) || !IsToken(request.kind, 48) ||
-            !JsonObject(request.beforeState, 4096) || next.phase != Phase::Executing ||
+            !JsonObject(request.beforeState, 4096) ||
+            (!request.itemGain.Empty() && (!ValidItemGainSpec(request.itemGain) ||
+                !(request.effects & Mask(Effect::Inventory)) || request.persistence == NativePersistence::JournalOnly)) ||
+            next.phase != Phase::Executing ||
             (saved.phase != Phase::Preparing && saved.phase != Phase::Traveling)) {
             blocker = "invalid_native_operation_intent"; return false;
         }
@@ -50,10 +53,16 @@ namespace LivingActivity {
         if (!JsonObject(request.beforeState, 4096) || !request.effects || (request.effects & ~AllEffects) ||
             unsigned(request.persistence) > unsigned(NativePersistence::Profession))
             throw std::invalid_argument("Invalid native operation state/effects");
+        const std::string gain = request.itemGain.Empty() ? "" : ",\"item_gain\":"+ItemGainSpecJson(request.itemGain);
+        if (!gain.empty() && (!(request.effects & Mask(Effect::Inventory)) || request.persistence == NativePersistence::JournalOnly))
+            throw std::invalid_argument("Item gains require native inventory persistence");
         const std::string state = "{\"effects\":" + std::to_string(request.effects) +
             ",\"persistence\":" + std::to_string(unsigned(request.persistence)) + ",\"native\":" + NativeBefore(request) + '}';
+        // Preserve the exact historical intent encoding for operations without
+        // output claims. An old receipt does not silently change fingerprint.
+        const auto intent=gain.empty() ? state : state.substr(0,state.size()-1)+gain+'}';
         return OperationIntentWrite(request.transition.task, request.transition.expectedRevision,
-            request.transition.receipt, request.kind, state);
+            request.transition.receipt, request.kind, intent);
     }
     bool ValidateNativeObservation(const NativeObservation& result) {
         if (!IsToken(result.evidence) || !JsonObject(result.afterState, 8192) || result.nativeReference.size() > 160)

@@ -69,6 +69,7 @@ namespace LivingActivity {
         ResourceReader Reader() const { return publisher.Reader(); }
         const ResourceClaim* Inspect(const std::string& id) const;
         size_t Size() const { return records.size(); }
+        bool CanAdmitNewClaims(size_t count) const;
     private:
         void Index(const ResourceClaim& claim, bool add);
         size_t PendingSlots(const std::string& excluding = "") const;

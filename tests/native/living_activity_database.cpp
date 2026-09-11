@@ -392,5 +392,50 @@ int main() {
     assert(db.Scalar("SELECT JSON_EXTRACT(after_state,'$.native.money') FROM living_activity_operation WHERE operation_id="+SqlValue(consumeId)) == "970");
     consuming.phase=Phase::Completed; ++consuming.revision;
     assert(db.Write(TaskWrite(consuming,4,"ff2efbdf-f0ec-4539-b840-299847970e14","fixture_completed")));
-    std::cout << "PASS: real MariaDB task/outbox, intent/outcome, reservations and intent-bound consumed claims; atomic rollback, stale/changed retry rejection, conservation and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
+    // One purchase receipt consumes its input claim and acquires exact output
+    // identities atomically. These are fixture journal rows, not game items.
+    Task purchase=consuming; purchase.id=purchase.root="637bd562-36d2-5b01-bc01-e2d831c49f81";
+    purchase.actor=purchase.context.actor=701; purchase.sourceKey="claimed_item_gain";
+    purchase.phase=Phase::Queued; purchase.revision=1;
+    assert(db.Write(TaskWrite(purchase,0,"ff2efbdf-f0ec-4539-b840-299847970f10","fixture_created")));
+    auto purchaseMoney=spend; purchaseMoney.id="ff2efbdf-f0ec-4539-b840-299847970f11";
+    purchaseMoney.actor=701; purchaseMoney.task=purchase.id;
+    purchase.phase=Phase::Preparing; ++purchase.revision;
+    assert(db.Write(ResourceReservationWrite(purchase,1,"ff2efbdf-f0ec-4539-b840-299847970f12",
+        {{purchaseMoney,0}},{{701,0,0,0,100,"money"}})));
+    purchase.phase=Phase::Executing; ++purchase.revision;
+    const std::string purchaseId="ff2efbdf-f0ec-4539-b840-299847970f13";
+    OperationRequest buying; buying.transition.task=purchase; buying.transition.expectedRevision=2;
+    buying.transition.receipt=purchaseId; buying.effects=Mask(Effect::Money)|Mask(Effect::Inventory);
+    buying.persistence=NativePersistence::Inventory; buying.kind="vendor_purchase";
+    buying.beforeState="{\"money\":100}"; buying.consumption={{purchaseMoney,30}}; buying.itemGain={3371,3};
+    assert(db.Write(OperationRequestWrite(buying)));
+    OperationResult bought=consumed; bought.id=purchaseId; bought.task=purchase.id; bought.kind="vendor_purchase";
+    bought.nativeReference="fixture_metadata:item_gain";
+    purchase.phase=Phase::Verifying; ++purchase.revision;
+    const std::string purchaseReceipt="ff2efbdf-f0ec-4539-b840-299847970f14";
+    const std::vector<VerifiedItemGain> outputs={
+        {{701,950,3371,19,0,23},{701,950,3371,20,0,23},1},
+        {{701,951,3371,0,9510,0},{701,951,3371,2,9510,0},2}};
+    const auto received=AcquiredOperationWrite(purchase,3,bought,purchaseReceipt,"{\"money\":70}",buying.consumption,buying.itemGain,outputs);
+    auto changedOutputs=outputs; ++changedOutputs[1].after.count; ++changedOutputs[1].added;
+    const auto wrongQuantity=AcquiredOperationWrite(purchase,3,bought,purchaseReceipt,"{\"money\":70}",buying.consumption,{3371,4},changedOutputs);
+    assert(!db.Write(wrongQuantity.journal)); // Exact saved desired quantity, not retrospective intent.
+    assert(!db.Write(received.journal,true));
+    assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(purchaseMoney.id))=="held");
+    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE item_guid IN (950,951)")=="0");
+    assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+SqlValue(purchaseId))=="intent");
+    assert(db.Write(received.journal)); assert(db.Write(received.journal));
+    assert(!db.Write(wrongQuantity.journal));
+    assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(purchaseMoney.id))=="consumed");
+    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE item_guid IN (950,951) AND state='held'")=="2");
+    assert(db.Scalar("SELECT SUM(quantity) FROM living_activity_claim WHERE item_guid IN (950,951) AND state='held'")=="3");
+    assert(db.Scalar("SELECT quantity FROM living_activity_claim WHERE claim_id="+SqlValue(ItemGainClaimId(purchaseId,950)))=="1");
+    assert(db.Scalar("SELECT JSON_EXTRACT(after_state,'$.native.result.money') FROM living_activity_operation WHERE operation_id="+SqlValue(purchaseId))=="70");
+    { Connection restarted; assert(restarted.ReceiptPresent(received.journal)); }
+    // Native output ownership remains held until a later verified craft or
+    // explicit release; task completion cannot silently discard those goods.
+    ++purchase.revision; purchase.phase=Phase::Completed;
+    assert(!db.Write(TaskWrite(purchase,4,"ff2efbdf-f0ec-4539-b840-299847970f15","fixture_completed")));
+    std::cout << "PASS: real MariaDB task/outbox, intent/outcome, reservations and intent-bound consumed/acquired claims; atomic rollback, stale/changed retry rejection, conservation and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }
