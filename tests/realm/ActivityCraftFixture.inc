@@ -214,6 +214,24 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             request=reservation.transition;fixture.step=3;return;
         }
         if (fixture.step==3) {
+            if (paid) {
+                // Real coordinator owns the request shape and reads the saved
+                // recipe, current native frame and inherited purchase claim.
+                const auto receipt=NewId();
+                const auto admitted=PrepareProfessionAttempt(request.task.actor,request.task.id,request.task.revision,receipt);
+                fixture.blocker=admitted.blocker;
+                if (admitted.code==AdmissionCode::NotReady) return;
+                require(admitted.code==AdmissionCode::Pending,"paid_coordinator_prepares_exact_native_attempt");
+                require(PrepareProfessionAttempt(request.task.actor,request.task.id,request.task.revision,receipt).code==
+                    AdmissionCode::Pending,"paid_duplicate_preparation_shares_one_operation");
+                require(!DispatchProfessionAttempt(request.task.actor,receipt).executed,"paid_unsaved_intent_cannot_cast");
+                operation=state->operations.at(receipt).request;
+                require(operation.consumption.size()==fixture.inputs.size(),"paid_coordinator_selects_saved_input_claims");
+                for (const auto& use : operation.consumption)
+                    require(std::find(fixture.inputs.begin(),fixture.inputs.end(),use.before.id)!=fixture.inputs.end(),
+                        "paid_coordinator_preserves_existing_claim_identity");
+                request=operation.transition;fixture.step=4;return;
+            }
             const auto grant=AcquireSavedTask(request.task.id,request.task.revision,effects,60000,"isolated_craft_fixture");
             require(grant.Permitted(),"craft_intent_authority");
             operation.transition=request;operation.transition.expectedRevision=request.task.revision;
@@ -238,11 +256,13 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         if (fixture.step==4) {
             const auto grant=AcquireSavedTask(request.task.id,request.task.revision,effects,60000,"isolated_craft_fixture");
             require(grant.Permitted(),"craft_saved_execution_grant");
-            const auto result=DispatchSavedOperation(operation.transition.receipt,grant,craft);fixture.blocker=result.admission.blocker;
+            const auto result=paid ? DispatchProfessionAttempt(request.task.actor,operation.transition.receipt) :
+                DispatchSavedOperation(operation.transition.receipt,grant,craft);fixture.blocker=result.admission.blocker;
             if (result.executed) ++fixture.launches;
             require(result.executed && !result.outcomeQueued && fixture.launches==1,"craft_native_cast_started_not_completed");
             require(!CharacterDatabase.HasOpenTransaction() && DefersNativeSave(bot->GetGUIDLow()),"craft_no_cross_tick_transaction_and_save_held");
-            require(!DispatchSavedOperation(operation.transition.receipt,grant,craft).executed,"craft_pending_cast_not_replayed");
+            require(!(paid ? DispatchProfessionAttempt(request.task.actor,operation.transition.receipt) :
+                DispatchSavedOperation(operation.transition.receipt,grant,craft)).executed,"craft_pending_cast_not_replayed");
             require(!bot->GetPlayerbotAI()->HasSpellItems(2329,nullptr),"bound_native_craft_cannot_skip_real_reagents");
             if (interrupted) {
                 const auto& pending=state->operations.at(operation.transition.receipt);

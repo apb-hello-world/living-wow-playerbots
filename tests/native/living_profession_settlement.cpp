@@ -3,7 +3,9 @@
 #include <cassert>
 using namespace LivingActivity;
 using namespace LivingActivityTest;
+#include "fixtures/ProfessionAttempt.inc"
 int main() {
+    TestProfessionAttemptPlan();
     Task task;task.id=task.root="637bd562-36d2-5b01-bc01-e2d831c49f92";
     task.actor=task.context.actor=703;task.source="profession_job";task.sourceKey="settlement_fixture";
     task.mode=Mode::Active;task.phase=Phase::Verifying;task.kind=Kind::Profession;task.revision=5;

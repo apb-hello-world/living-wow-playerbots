@@ -85,6 +85,11 @@ public:
         LivingActivity::ProfessionHistory& history,std::string& blocker);
     bool ReadProfessionSnapshot(uint32_t actor,const std::string& task,uint64_t revision,
         LivingActivity::ProfessionSnapshot& snapshot,std::string& blocker);
+    // Build one exact craft intent from the saved job, current native snapshot
+    // and its existing claims. Callers supply identity, not ingredients/output.
+    LivingActivity::AdmissionResult PrepareProfessionAttempt(uint32_t actor,const std::string& task,
+        uint64_t expectedRevision,const std::string& operation);
+    LivingActivity::DispatchResult DispatchProfessionAttempt(uint32_t actor,const std::string& operation);
     // Compiled finite completion step. Reads fresh saved proof and personal
     // stock itself; callers cannot submit a fabricated completion snapshot.
     LivingActivity::AdmissionResult SettleProfessionJob(uint32_t actor,const std::string& task,

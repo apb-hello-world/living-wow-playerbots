@@ -15,6 +15,7 @@
 #include "LivingActivityCommitments.h"
 #include "LivingProfessionNative.h"
 #include "LivingProfessionSettlement.h"
+#include "LivingProfessionAttempt.h"
 #include "LivingNativeCraftCapture.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
 #include "LivingProfessionDemand.h"
@@ -226,6 +227,7 @@ struct LivingActivityCoordinator::State {
     uint64_t petFixtureDeadline = 0;
     uint64_t professionFixtureDeadline = 0;
     NativeVendorQuote vendorFixtureQuote;
+    uint32_t vendorFixtureSpawn=0,vendorFixtureEntry=0;
     struct CraftFixture {
         TaskRequest request;
         ReservationRequest reservation;
@@ -1496,6 +1498,61 @@ AdmissionResult LivingActivityCoordinator::SubmitResourceReservation(const Reser
     ReleaseTaskLease(state->authority.Read(next.actor).lease);
     state->nextWork=0;
     return reject(AdmissionCode::Pending);
+}
+
+AdmissionResult LivingActivityCoordinator::PrepareProfessionAttempt(uint32_t actor,const std::string& id,
+    uint64_t expectedRevision,const std::string& operation) {
+    AdmissionResult result;result.task=id;result.revision=expectedRevision+1;
+    auto reject=[&](AdmissionCode code,const std::string& blocker="") {
+        result.code=code;result.blocker=blocker.empty() ? Name(code) : blocker;return result;
+    };
+    if (!OnWorldThread() || !state->enforceEffects.load(std::memory_order_acquire)) return reject(AdmissionCode::Disabled);
+    if (!actor || !IsUuid(id) || !IsUuid(operation) || !expectedRevision ||
+        expectedRevision>=std::numeric_limits<uint64_t>::max()-1) return reject(AdmissionCode::InvalidRequest);
+    if (!state->schemaReady || !state->loaded || !state->resources.Protection().ready) return reject(AdmissionCode::NotReady);
+    const auto existing=state->operations.find(operation);
+    if (existing!=state->operations.end()) {
+        const auto& request=existing->second.request;
+        if (request.kind!="profession_craft" || request.transition.task.id!=id || request.transition.task.actor!=actor ||
+            request.transition.expectedRevision!=expectedRevision) return reject(AdmissionCode::InvalidRequest,"receipt_identity_reused");
+        return reject(existing->second.ready ? AdmissionCode::Saved : AdmissionCode::Pending);
+    }
+    const auto saved=ReadSavedTask(id);
+    if (!saved || saved->actor!=actor || saved->revision!=expectedRevision) return reject(AdmissionCode::StaleRevision);
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) return reject(AdmissionCode::StaleContext);
+    ProfessionSnapshot snapshot;UnsettledClaimBatch batch;CraftFrame frame;ProfessionJob job;std::string blocker;
+    if (!ReadProfessionSnapshot(actor,id,expectedRevision,snapshot,blocker)) return reject(AdmissionCode::NotReady,blocker);
+    if (!state->resources.ReadUnsettled(id,batch,blocker) || !DecodeProfessionJob(saved->checkpoint.data,job,blocker) ||
+        !ReadNativeCraftFrame(*bot,job,frame,blocker)) return reject(AdmissionCode::ReconciliationRequired,blocker);
+    ProfessionAttemptPlan plan;
+    if (!PlanProfessionAttempt(*saved,snapshot,batch,frame,plan,blocker)) return reject(AdmissionCode::NotReady,blocker);
+    NativeCraftOperation craft;
+    const auto grant=AcquireSavedTask(id,expectedRevision,craft.OperationEffects(),60000,"profession_native_attempt");
+    if (!grant.Permitted()) return reject(AdmissionCode::NotReady,grant.blocker);
+    OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=expectedRevision;
+    ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+    request.transition.task.updatedAtMs=NowMs();request.transition.receipt=operation;request.authorization=grant.action;
+    request.kind=craft.OperationKind();request.effects=craft.OperationEffects();request.persistence=craft.PersistencePolicy();
+    request.beforeState=std::move(plan.beforeState);request.itemGain=plan.output;request.consumption=std::move(plan.consumption);
+    return SubmitOperationIntent(request,craft);
+}
+DispatchResult LivingActivityCoordinator::DispatchProfessionAttempt(uint32_t actor,const std::string& operation) {
+    DispatchResult result;
+    auto reject=[&](AdmissionCode code,const char* blocker) {result.admission.code=code;result.admission.blocker=blocker;return result;};
+    if (!OnWorldThread() || !state->enforceEffects.load(std::memory_order_acquire))
+        return reject(AdmissionCode::Disabled,"execution_disabled");
+    const auto saved=state->operations.find(operation);
+    if (!actor || saved==state->operations.end() || saved->second.request.kind!="profession_craft" ||
+        saved->second.request.transition.task.actor!=actor)
+        return reject(AdmissionCode::InvalidRequest,"profession_saved_operation_missing");
+    const auto& task=saved->second.request.transition.task;
+    NativeCraftOperation craft;
+    const auto grant=AcquireSavedTask(task.id,task.revision,craft.OperationEffects(),60000,"profession_native_attempt");
+    if (!grant.Permitted()) {
+        result.admission.code=AdmissionCode::NotReady;result.admission.blocker=grant.blocker;return result;
+    }
+    return DispatchSavedOperation(operation,grant,craft);
 }
 
 AdmissionResult LivingActivityCoordinator::SettleProfessionJob(uint32_t actor,const std::string& id,

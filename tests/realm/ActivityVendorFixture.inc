@@ -91,9 +91,9 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
         if (!request.task.actor) {
             // Explicit fixture content from this copied TBC database. Resolve
             // its actual spawn and validate native service/faction/stock later.
-            const auto* spawn=sObjectMgr.GetCreatureData(46560);
-            if (!spawn || spawn->id!=4229 || spawn->mapid!=1)
-                throw std::runtime_error("fixture_service_spawn_missing");
+            // Both factions/continents have a real vial vendor in this copied
+            // fixture database. Native stock/access validation still runs at
+            // arrival and purchase; these are test destinations, not planner policy.
             // One bounded current snapshot, not one repeated check/history row
             // per second. Guild membership alone is not a service commitment:
             // native reservations and the actual executor still validate it.
@@ -104,7 +104,12 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
             for (const auto& binding : state->bindings) {
                 auto* bot=sRandomPlayerbotMgr.GetPlayerBot(binding.first);
                 if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) {skipped("native_actor_unavailable");continue;}
-                if (bot->GetMapId()!=spawn->mapid || bot->GetTeam()!=ALLIANCE) {skipped("service_map_or_faction");continue;}
+                const bool alliance=bot->GetTeam()==ALLIANCE;
+                const auto spawnId=bot->GetMapId()==1 ? (alliance ? 46560u : 4687u) :
+                    bot->GetMapId()==0 ? (alliance ? 79831u : 17628u) : 0u;
+                const auto entry=bot->GetMapId()==1 ? (alliance ? 4229u : 3348u) : (alliance ? 1313u : 4610u);
+                const auto* spawn=spawnId ? sObjectMgr.GetCreatureData(spawnId) : nullptr;
+                if (!spawn || spawn->id!=entry || bot->GetMapId()!=spawn->mapid) {skipped("service_map_or_faction");continue;}
                 if (NativeSafety(bot)) {skipped("native_safety");continue;}
                 if (bot->GetGroup() || bot->GetTradeData() || state->authority.Read(binding.first).lease.actor) {
                     skipped("existing_commitment");continue;
@@ -146,6 +151,7 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
                 request.task.checkpoint.step="profession_prepare";request.task.checkpoint.data=EncodeProfessionJob(job);
                 request.task.createdAtMs=request.task.updatedAtMs=NowMs();request.receipt=NewId();
                 state->vendorFixtureX=bot->GetPositionX();state->vendorFixtureY=bot->GetPositionY();
+                state->vendorFixtureSpawn=spawnId;state->vendorFixtureEntry=entry;
                 state->vendorFixtureZ=bot->GetPositionZ();state->vendorFixtureO=bot->GetOrientation();
                 state->gameplayFixtureActor.store(binding.first,std::memory_order_release);
                 bot->GetMotionMaster()->Clear();bot->StopMoving();
@@ -163,7 +169,7 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
             restore{*state,original};
         const uint32_t effects=Mask(Effect::Money)|Mask(Effect::Inventory);
         if (!state->admissionFixtureStep) {
-            const auto vendor=ObjectGuid(HIGHGUID_UNIT,uint32(4229),uint32(46560)).GetRawValue();
+            const auto vendor=ObjectGuid(HIGHGUID_UNIT,state->vendorFixtureEntry,state->vendorFixtureSpawn).GetRawValue();
             const auto* material=sObjectMgr.GetItemPrototype(3371);
             require(material && material->BuyCount,"fixture_native_vendor_material_exists");
             if (!InspectNativeVendorQuote(*bot,vendor,3371,material->BuyCount,quote,state->vendorFixtureBlocker)) return;
