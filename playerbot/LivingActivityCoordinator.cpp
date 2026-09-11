@@ -179,6 +179,7 @@ struct LivingActivityCoordinator::State {
     uint32_t gameplayOriginalRage = 0, gameplayOriginalEnergy = 0;
     bool supportFixtureLookupStarted = false;
     uint32_t supportFixtureRequestedActor = 0;
+    boost::property_tree::ptree supportFixtureCandidates;
     uint32_t gameplayOriginalDelay = 0;
     uint64_t gameplayOriginalMoney = 0, gameplayDeadline = 0;
     ObjectGuid gameplayOriginalSelection;

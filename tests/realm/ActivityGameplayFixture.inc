@@ -60,6 +60,7 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
             report.put("fixture_existing_aura_removed",false); // Selected only absent forms.
             report.put("requested_existing_form_caster",state->supportFixtureRequestedActor);
             report.put("fixture_spells_granted",0);
+            report.add_child("form_candidate_diagnostics",state->supportFixtureCandidates);
         }
         report.put("native_heal_packets", state->gameplayHealPackets.load(std::memory_order_acquire));
         report.put("native_heal_amount", state->gameplayHealAmount.load(std::memory_order_acquire));
@@ -153,11 +154,33 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
     for (auto& binding : state->bindings) {
         auto* bot = sRandomPlayerbotMgr.GetPlayerBot(binding.first);
         auto* ai = bot ? bot->GetPlayerbotAI() : nullptr;
-        if (!ai || !bot->IsInWorld() || bot->GetGroup() || NativeSafety(bot) || !bot->IsStopped() ||
-            bot->IsMounted() || bot->getStandState() != UNIT_STAND_STATE_STAND ||
-            bot->IsNonMeleeSpellCasted(true) || bot->GetHealth() < 4 ||
-            state->authority.Read(binding.first).lease.actor) continue;
-        if (support && (bot->getClass() != CLASS_DRUID || bot->GetShapeshiftForm() != FORM_NONE)) continue;
+        if (support && (!bot || bot->getClass() != CLASS_DRUID)) continue;
+        const auto roster = bot ? NativePartyProtection(*bot) : PartyProtection::Unresolved;
+        std::string unavailable;
+        if (!ai || !bot->IsInWorld()) unavailable="native_actor_not_ready";
+        else if (support ? (roster != PartyProtection::None && roster != PartyProtection::BotOnly) : bot->GetGroup()!=nullptr)
+            unavailable="native_party_protected";
+        else if (NativeSafety(bot)) unavailable="native_safety_pause";
+        else if (!bot->IsStopped()) unavailable="native_actor_moving";
+        else if (bot->IsMounted()) unavailable="native_actor_mounted";
+        else if (bot->getStandState() != UNIT_STAND_STATE_STAND) unavailable="native_actor_not_standing";
+        else if (bot->IsNonMeleeSpellCasted(true)) unavailable="native_cast_in_progress";
+        else if (bot->GetHealth() < 4) unavailable="native_actor_low_health";
+        else if (state->authority.Read(binding.first).lease.actor) unavailable="native_activity_owned";
+        else if (support && bot->GetShapeshiftForm() != FORM_NONE) unavailable="native_form_already_active";
+        auto candidate = [&](const std::string& reason) {
+            if (!support) return;
+            const auto key=std::to_string(binding.first);
+            if (!state->supportFixtureCandidates.get_child_optional(key) && state->supportFixtureCandidates.size() >= 50) return;
+            boost::property_tree::ptree detail;
+            detail.put("reason",reason); detail.put("roster",Name(roster)); detail.put("observed_at_ms",NowMs());
+            if (ai && bot->IsInWorld()) {
+                detail.put("native_safety",NativeSafety(bot)); detail.put("stopped",bot->IsStopped());
+                detail.put("native_form",uint32(bot->GetShapeshiftForm())); detail.put("mana",bot->GetPower(POWER_MANA));
+            }
+            state->supportFixtureCandidates.put_child(key,detail);
+        };
+        if (!unavailable.empty()) { candidate(unavailable); continue; }
         uint32 spellId = 0;
         for (const auto& known : bot->GetSpellMap()) {
             if (known.second.state == PLAYERSPELL_REMOVED || known.second.disabled) continue;
@@ -176,7 +199,8 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
                 spellId = known.first; break;
             }
         }
-        if (!spellId) continue;
+        if (!spellId) { candidate("no_known_form_passes_native_cast_validation"); continue; }
+        candidate("native_form_candidate_validated");
         const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
         Task task; task.id = task.root = NewId(); task.actor = binding.first; task.context = current;
         task.source = "isolated_gameplay_fixture"; task.sourceKey = state->boot;
