@@ -6,6 +6,25 @@
 #include <map>
 
 namespace LivingActivity {
+    bool BuildNativeSkillGainJob(Player& actor,uint32_t recipe,ProfessionJob& job,std::string& blocker) {
+        job={};job.recipe=recipe;
+        auto reject=[&](const char* why){blocker=why;return false;};
+        const auto bounds=sSpellMgr.GetSkillLineAbilityMapBoundsBySpellId(recipe);
+        for (auto it=bounds.first;it!=bounds.second;++it) {
+            const auto* line=it->second;
+            if (!line || !actor.GetSkillValuePure(line->skillId) ||
+                (!LivingProfessions::Primary(line->skillId) && line->skillId!=SKILL_COOKING && line->skillId!=SKILL_FIRST_AID)) continue;
+            if (job.skill && job.skill!=line->skillId) return reject("profession_skill_identity_ambiguous");
+            job.skill=line->skillId;
+        }
+        const auto native=InspectNativeProfessionRecipe(actor,job);
+        if (!native.blocker.empty()) {blocker=native.blocker;return false;}
+        if (native.operation!=ProfessionOperation::CreateItem) return reject("profession_subject_executor_required");
+        job.initialSkill=native.skillValue;job.targetSkill=native.skillValue+1;
+        job.operation=native.operation;job.purpose=ProfessionPurpose::SkillGain;
+        job.outputEntry=native.outputEntry;job.outputQuantity=1;job.reagents=native.reagents;
+        return MatchNativeProfessionRecipe(job,native,blocker);
+    }
     NativeProfessionRecipe InspectNativeProfessionRecipe(Player& actor, const ProfessionJob& job) {
         NativeProfessionRecipe result;
         auto reject = [&](const char* blocker) { result.blocker = blocker; return result; };

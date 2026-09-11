@@ -55,6 +55,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             report.put("native_money_after",fixture.after.money);report.put("skill_after",fixture.after.skill);
         } // An uncollected sample is unknown, not zero gold/skill.
         report.put("paid_workflow_proof",passed && paid);report.put("profession_job_completion_proof",passed && settling);report.put("travel_proof",false);
+        report.put("ordinary_profession_runner",paid);
         if (paid) {
             report.put("vendor_operation",state->operationFixtureRequest.transition.receipt);
             report.put("vendor_dispatches",state->operationFixtureCalls);
@@ -172,18 +173,48 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             request.task=saved->second;
         }
         require(saved->second.revision==request.task.revision,"craft_exact_saved_revision");
+        auto followRunnerWrite=[&]() {
+            for (const auto& write : state->pending) if (write.task.id==request.task.id) {
+                request.expectedRevision=request.task.revision;request.task=write.task;request.receipt=write.admissionReceipt;
+                return true;
+            }
+            return false;
+        };
         auto advance=[&](Phase phase) {
             request.expectedRevision=request.task.revision++;request.receipt=NewId();
             request.task.phase=phase;request.task.updatedAtMs=NowMs();
             require(SubmitTask(request).code==AdmissionCode::Pending,"craft_fixture_phase_queued");
         };
-        if (fixture.step==1) {advance(Phase::Preparing);fixture.step=2;return;}
+        if (fixture.step==1) {
+            if (paid) {
+                fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+                if (!followRunnerWrite()) return;
+                require(request.task.phase==Phase::Preparing,"paid_runner_resumes_preparation_after_purchase");
+            } else advance(Phase::Preparing);
+            fixture.step=2;return;
+        }
         if (fixture.step==2) {
             ProfessionSnapshot prepared;
             if (!ReadProfessionSnapshot(request.task.actor,request.task.id,request.task.revision,prepared,fixture.blocker)) return;
             require(NextProfessionStep(request.task,prepared).step==ProfessionStep::Execute &&
                 prepared.attempts.empty() && prepared.outputPerAttempt==1,
                 "craft_initial_native_snapshot_selects_exact_ready_attempt");
+            if (paid) {
+                fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+                if (!followRunnerWrite()) return;
+                fixture.inputs=fixture.inheritedInputs;
+                for (const auto& write : state->pending) if (write.task.id==request.task.id)
+                    for (const auto& change : write.claims) {
+                        require(change.after.itemEntry!=3371 && change.after.quantity==1,
+                            "paid_runner_reserves_only_missing_herbs_not_paid_bundle");
+                        fixture.inputs.push_back(change.after.id);
+                    }
+                require(fixture.inputs.size()==3,"paid_runner_preserves_paid_claim_and_reserves_both_herbs");
+                const auto count=state->pending.size();
+                AdvanceProfessionJob(request.task.actor,request.task.id);
+                require(state->pending.size()==count,"paid_runner_duplicate_reservation_does_not_repeat_write");
+                fixture.step=3;return;
+            }
             const auto grant=AcquireSavedTask(request.task.id,request.task.revision,effects,60000,"isolated_craft_fixture");
             require(grant.Permitted(),"craft_reservation_authority");
             auto& reservation=fixture.reservation;reservation.transition=request;reservation.transition.expectedRevision=request.task.revision;
@@ -217,11 +248,11 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             if (paid) {
                 // Real coordinator owns the request shape and reads the saved
                 // recipe, current native frame and inherited purchase claim.
-                const auto receipt=NewId();
-                const auto admitted=PrepareProfessionAttempt(request.task.actor,request.task.id,request.task.revision,receipt);
-                fixture.blocker=admitted.blocker;
-                if (admitted.code==AdmissionCode::NotReady) return;
-                require(admitted.code==AdmissionCode::Pending,"paid_coordinator_prepares_exact_native_attempt");
+                fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+                std::string receipt;
+                for (const auto& row : state->operations) if (row.second.request.transition.task.id==request.task.id) receipt=row.first;
+                if (receipt.empty()) return;
+                require(!state->operations.at(receipt).dispatched,"paid_coordinator_prepares_exact_native_attempt");
                 require(PrepareProfessionAttempt(request.task.actor,request.task.id,request.task.revision,receipt).code==
                     AdmissionCode::Pending,"paid_duplicate_preparation_shares_one_operation");
                 require(!DispatchProfessionAttempt(request.task.actor,receipt).executed,"paid_unsaved_intent_cannot_cast");
@@ -256,8 +287,13 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         if (fixture.step==4) {
             const auto grant=AcquireSavedTask(request.task.id,request.task.revision,effects,60000,"isolated_craft_fixture");
             require(grant.Permitted(),"craft_saved_execution_grant");
-            const auto result=paid ? DispatchProfessionAttempt(request.task.actor,operation.transition.receipt) :
-                DispatchSavedOperation(operation.transition.receipt,grant,craft);fixture.blocker=result.admission.blocker;
+            DispatchResult result;
+            if (paid) {
+                const bool before=state->operations.at(operation.transition.receipt).dispatched;
+                fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+                const auto& pending=state->operations.at(operation.transition.receipt);
+                result.executed=!before && pending.dispatched && pending.craftAwaiting;
+            } else {result=DispatchSavedOperation(operation.transition.receipt,grant,craft);fixture.blocker=result.admission.blocker;}
             if (result.executed) ++fixture.launches;
             require(result.executed && !result.outcomeQueued && fixture.launches==1,"craft_native_cast_started_not_completed");
             require(!CharacterDatabase.HasOpenTransaction() && DefersNativeSave(bot->GetGUIDLow()),"craft_no_cross_tick_transaction_and_save_held");
@@ -342,14 +378,20 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(gained==(interrupted ? 0u : 1u),"craft_exact_native_output_claimed");
             require(!DispatchSavedOperation(operation.transition.receipt,{},craft).executed,"craft_saved_operation_not_replayed");
             if (settling) {
-                request.expectedRevision=request.task.revision;request.receipt=NewId();
-                require(SettleProfessionJob(request.task.actor,request.task.id,request.expectedRevision,request.receipt).code==
-                    AdmissionCode::Pending,"profession_verified_job_settlement_queued");
+                if (paid) {
+                    fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+                    require(followRunnerWrite() && request.task.phase==Phase::Completed,"profession_verified_job_settlement_queued");
+                } else {
+                    request.expectedRevision=request.task.revision;request.receipt=NewId();
+                    require(SettleProfessionJob(request.task.actor,request.task.id,request.expectedRevision,request.receipt).code==
+                        AdmissionCode::Pending,"profession_verified_job_settlement_queued");
+                    ++request.task.revision;
+                }
                 require(SettleProfessionJob(request.task.actor,request.task.id,request.expectedRevision,request.receipt).code==
                     AdmissionCode::Pending,"profession_duplicate_settlement_shares_pending_write");
                 for (const auto& change : fixture.reservation.changes)
                     require(state->resources.Inspect(change.after.id)->state=="held","profession_claim_held_until_saved_completion");
-                ++request.task.revision;fixture.step=9;return;
+                fixture.step=9;return;
             }
             advance(Phase::Preparing);fixture.step=6;return;
         }

@@ -159,6 +159,24 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
                 state->vendorFixturePositionChanged=true;
                 return; // Let the native map/grid complete the relocation.
             }
+            if (paid && !state->supportFixtureLookupStarted) {
+                state->supportFixtureLookupStarted=true;
+                CharacterDatabase.AsyncQuery([this](QueryResult* rows) {
+                    MANGOS_ASSERT(OnWorldThread());RequireIsolatedNativeFixtureEnvironment();
+                    if (!rows || state->fixtureFinished || sWorld.GetActiveAndQueuedSessionCount() ||
+                        sRandomPlayerbotMgr.GetAllBots().size()>=49) return;
+                    do {
+                        const auto* fields=rows->Fetch();
+                        if (!sPlayerbotAIConfig.IsInRandomAccountList(fields[1].GetUInt32())) continue;
+                        state->supportFixtureRequestedActor=fields[0].GetUInt32();
+                        sRandomPlayerbotMgr.AddRandomBot(state->supportFixtureRequestedActor);break;
+                    } while(rows->NextRow());
+                },"SELECT c.guid,c.account FROM characters c JOIN character_spell s ON s.guid=c.guid AND s.spell=2329 AND s.disabled=0 "
+                  "JOIN character_skills k ON k.guid=c.guid AND k.skill=171 AND k.value BETWEEN 1 AND 9 "
+                  "WHERE c.online=0 AND c.money>=100 AND NOT EXISTS(SELECT 1 FROM item_instance i WHERE i.owner_guid=c.guid AND i.itemEntry=3371) "
+                  "AND NOT EXISTS(SELECT 1 FROM group_member g WHERE g.memberGuid=c.guid) "
+                  "AND NOT EXISTS(SELECT 1 FROM living_activity_task t WHERE t.actor_guid=c.guid AND t.mode='active' AND t.phase NOT IN ('completed','cancelled','failed')) ORDER BY c.guid LIMIT 4");
+            }
             state->vendorFixtureBlocker="no_safe_known_recipe_actor_with_missing_vendor_material";return;
         }
         auto* bot=sRandomPlayerbotMgr.GetPlayerBot(request.task.actor);

@@ -7,6 +7,7 @@ namespace LivingActivity {
     // World-thread transition/admission inspection only, not a per-tick scan.
     // No native mutation, database query, material attribution or cast occurs.
     NativeProfessionRecipe InspectNativeProfessionRecipe(Player& actor, const ProfessionJob& job);
+    bool BuildNativeSkillGainJob(Player& actor,uint32_t recipe,ProfessionJob& job,std::string& blocker);
     bool ValidateNativeProfessionTask(Player& actor, const Task& task, std::string& blocker);
     // Fresh world-thread composition of acknowledged history and actual native
     // possessions/readiness. Never acquires a lease or changes a task, spell,

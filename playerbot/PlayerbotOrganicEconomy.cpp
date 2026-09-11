@@ -1,7 +1,10 @@
 #include "botpch.h"
+#include "Database/DatabaseImpl.h"
 #include "PlayerbotOrganicEconomy.h"
 #include "LivingServiceExecution.h"
 #include "LivingProfessionPlan.h"
+#include "LivingActivityCoordinator.h"
+#include "LivingProfessionEconomy.h"
 #include "PlayerbotInventoryPressure.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
@@ -300,15 +303,9 @@ PlayerbotOrganicEconomy::Policy PlayerbotOrganicEconomy::LoadPolicy()
 std::map<uint32, PlayerbotOrganicEconomy::Profile> PlayerbotOrganicEconomy::LoadProfiles()
 {
     std::map<uint32, Profile> profiles;
-    std::unique_ptr<QueryResult> result = CharacterDatabase.Query(
-        "SELECT profile.character_guid,profile.career_participant,COALESCE(profile.intended_profession_one,0),"
-        "COALESCE(profile.intended_profession_two,0),COALESCE(goal.capability_ref,''),"
-        "COALESCE(goal.goal_type,''),COALESCE(goal.state,''),profile.profession_plan_version,actor.race,"
-        "COALESCE(UNIX_TIMESTAMP(goal.created_at),0),COALESCE(JSON_EXTRACT(goal.authoritative_payload,'$.paid_materials_until'),0) FROM organic_economy_profile profile "
-        "JOIN characters actor ON actor.guid=profile.character_guid "
-        "LEFT JOIN organic_economy_goal goal ON goal.goal_id=(SELECT MAX(candidate.goal_id) FROM organic_economy_goal candidate "
-        "WHERE candidate.character_guid=profile.character_guid AND candidate.state IN ('active','proposed','candidate') "
-        "AND (candidate.expires_at IS NULL OR candidate.expires_at>NOW()))");
+    const bool managed=sLivingActivityCoordinator.ProfessionStoreReady();
+    const auto query=LivingActivity::EconomyProfessionProfilesQuery(managed);
+    std::unique_ptr<QueryResult> result = CharacterDatabase.Query(query.c_str());
     if (result)
     {
         do
@@ -324,10 +321,17 @@ std::map<uint32, PlayerbotOrganicEconomy::Profile> PlayerbotOrganicEconomy::Load
             profile.currentGoalId = fields[4].GetString();
             profile.currentGoalType = fields[5].GetString();
             profile.currentGoalState = fields[6].GetString();
+            profile.goalRow=fields[11].GetUInt64();profile.managedTask=fields[12].GetCppString();profile.managedPhase=fields[13].GetCppString();
             profiles[fields[0].GetUInt32()] = profile;
         } while (result->NextRow());
     }
 
+    // A refresh can race an accepted task's pending SQL receipt. Retain its
+    // exact in-memory row identity until the shared coordinator acknowledges it.
+    for (const auto& prior : this->profiles)
+        if (prior.second.currentGoalState=="active" &&
+            sLivingActivityCoordinator.OwnsEconomyProfession(prior.first,prior.second.goalRow))
+            profiles[prior.first]=prior.second;
     LivingProfessions::Counts coverage[2] = {};
     unsigned population[2] = {};
     for (const auto& row : profiles)
@@ -385,6 +389,23 @@ std::map<uint32, PlayerbotOrganicEconomy::Profile> PlayerbotOrganicEconomy::Load
         profiles[guid] = profile;
     }
     return profiles;
+}
+
+void PlayerbotOrganicEconomy::LookupGoalRow(uint32 guid,Profile& profile)
+{
+    if (profile.goalRow || profile.goalLookupToken || profile.currentGoalState!="active") return;
+    const auto token=++goalLookupSequence;profile.goalLookupToken=token;
+    const auto capability=profile.currentGoalId;
+    const auto query="SELECT goal_id,capability_ref,state FROM organic_economy_goal WHERE character_guid="+
+        std::to_string(guid)+" AND state='active' ORDER BY goal_id DESC LIMIT 1";
+    if (!CharacterDatabase.AsyncQuery([this,guid,token,capability](QueryResult* result) {
+        const auto found=profiles.find(guid);
+        if (found==profiles.end() || found->second.goalLookupToken!=token) return;
+        auto& current=found->second;current.goalLookupToken=0;
+        if (!result || current.currentGoalState!="active" || current.currentGoalId!=capability) return;
+        auto* fields=result->Fetch();
+        if (fields[1].GetCppString()==capability && fields[2].GetCppString()=="active") current.goalRow=fields[0].GetUInt64();
+    },query.c_str())) profile.goalLookupToken=0;
 }
 
 std::string PlayerbotOrganicEconomy::CurrentGoalType(uint32 characterGuid) const
@@ -879,6 +900,28 @@ bool PlayerbotOrganicEconomy::ExecuteGoal(Player* bot, Profile& profile,
     }
     if (goalType == "profession_skill_up" && currentPolicy.careers)
     {
+        // Once handed over, even disabling execution cannot return this job to
+        // legacy casting or purchases. Only its saved native owner may advance.
+        const bool owned=!profile.managedTask.empty() || sLivingActivityCoordinator.OwnsEconomyProfession(bot->GetGUIDLow(),profile.goalRow);
+        // Cut over at a clean boundary. An existing legacy cast/service or paid
+        // window must finish under its current owner, not be reinterpreted as a
+        // new recipe job without its original operation evidence.
+        const bool legacyInFlight=craftAttempts.count(bot->GetGUIDLow()) || serviceTrips.count(bot->GetGUIDLow()) ||
+            profile.committedUntil>uint32(time(nullptr));
+        if (owned || (sLivingActivityCoordinator.ProfessionAdmissionsEnabled() && !legacyInFlight)) {
+            if (owned && legacyInFlight) {failureReason="profession_legacy_handoff_requires_reconciliation";return false;}
+            if (!profile.goalRow) {failureReason="profession_native_goal_identity_pending";return false;}
+            if (profile.managedPhase=="completed") return true; // Native persisted terminal projection, not a planner flag.
+            if (!profile.managedTask.empty() && !sLivingActivityCoordinator.ReadSavedTask(profile.managedTask)) {
+                failureReason="profession_saved_owner_requires_reconciliation";return false;
+            }
+            const auto admission=sLivingActivityCoordinator.AdmitEconomyProfession(bot->GetGUIDLow(),profile.goalRow,goalId);
+            failureReason=admission.blocker;
+            if (admission.code!=LivingActivity::AdmissionCode::Saved) return false;
+            profile.managedTask=admission.task;
+            const auto progress=sLivingActivityCoordinator.AdvanceProfessionJob(bot->GetGUIDLow(),admission.task);
+            failureReason=progress.blocker;return progress.completed;
+        }
         const uint32 epoch = uint32(time(nullptr));
         auto pending = craftAttempts.find(bot->GetGUIDLow());
         if (pending != craftAttempts.end() && pending->second.goal != goalId)
@@ -1104,6 +1147,9 @@ void PlayerbotOrganicEconomy::ProcessActiveGoals(const Policy& currentPolicy,
         Profile& profile = profiles[guid];
         if (profile.currentGoalState != "active" || profile.currentGoalId.empty()) continue;
         if (retryCooldowns[guid].time_since_epoch().count() && now < retryCooldowns[guid]) continue;
+        if (!profile.goalRow) {
+            LookupGoalRow(guid,profile);retryCooldowns[guid]=now+std::chrono::seconds(5);continue;
+        }
         Player* bot = sRandomPlayerbotMgr.GetPlayerBot(guid);
         // Result inspection doesn't move, respec, buy or cast. A human joining
         // after the cast must not prevent us observing its real outcome.
@@ -1116,24 +1162,24 @@ void PlayerbotOrganicEconomy::ProcessActiveGoals(const Policy& currentPolicy,
             // immunity from replanning. The deadline survives realm restarts.
             const uint32 epoch=uint32(time(nullptr));
             profile.committedUntil=std::min(epoch+1800,profile.createdAt+10800);
-            CharacterDatabase.PExecute("UPDATE organic_economy_goal SET authoritative_payload=JSON_SET(authoritative_payload,'$.paid_materials_until',%u),expires_at=GREATEST(expires_at,FROM_UNIXTIME(%u)) WHERE character_guid=%u AND capability_ref='%s' AND state='active'",profile.committedUntil,profile.committedUntil,guid,profile.currentGoalId.c_str());
+            CharacterDatabase.PExecute("UPDATE organic_economy_goal SET authoritative_payload=JSON_SET(authoritative_payload,'$.paid_materials_until',%u),expires_at=GREATEST(expires_at,FROM_UNIXTIME(%u)) WHERE character_guid=%u AND goal_id=%llu AND state='active'",profile.committedUntil,profile.committedUntil,guid,static_cast<unsigned long long>(profile.goalRow));
         }
-        retryCooldowns[guid] = now + std::chrono::seconds(completed ? 600 : serviceTrips.count(guid) ? 5 : 20);
+        retryCooldowns[guid] = now + std::chrono::seconds(completed ? 600 : (!profile.managedTask.empty() || serviceTrips.count(guid)) ? 5 : 20);
         if (!completed)
         {
             if (lastBlockers[guid] != failureReason)
             {
                 lastBlockers[guid] = failureReason;
-                CharacterDatabase.PExecute("UPDATE organic_economy_goal SET failure_reason='%s' WHERE character_guid=%u AND capability_ref='%s' AND state='active'",
-                    failureReason.c_str(), guid, profile.currentGoalId.c_str());
+                CharacterDatabase.PExecute("UPDATE organic_economy_goal SET failure_reason='%s' WHERE character_guid=%u AND goal_id=%llu AND state='active'",
+                    failureReason.c_str(), guid, static_cast<unsigned long long>(profile.goalRow));
             }
             continue;
         }
         lastBlockers.erase(guid);
         actionCooldowns[guid] = now;
         CharacterDatabase.PExecute(
-            "UPDATE organic_economy_goal SET state='completed',failure_reason='' WHERE character_guid='%u' AND capability_ref='%s' AND state='active'",
-            guid, profile.currentGoalId.c_str());
+            "UPDATE organic_economy_goal SET state='completed',failure_reason='' WHERE character_guid='%u' AND goal_id=%llu AND state='active'",
+            guid, static_cast<unsigned long long>(profile.goalRow));
         profile.currentGoalState = "completed";
     }
     if (!guids.empty()) executionCursor = (executionCursor + work.size()) % guids.size();
@@ -1158,6 +1204,9 @@ void PlayerbotOrganicEconomy::ApplyPlans(const std::string& response, const Poli
         if (!guid || planId.empty() || goalId.empty()) continue;
         auto attempt = craftAttempts.find(guid);
         auto active = profiles.find(guid);
+        if (active!=profiles.end() && active->second.currentGoalState=="active" &&
+            (!active->second.managedTask.empty() || sLivingActivityCoordinator.OwnsEconomyProfession(guid,active->second.goalRow)))
+            continue; // Accepted ownership is durable; no receipt-window expiry.
         if(currentPolicy.mode=="active" && active!=profiles.end() && active->second.currentGoalState=="active" &&
             active->second.currentGoalType=="profession_skill_up") {
             Player* bot=sRandomPlayerbotMgr.GetPlayerBot(guid);
@@ -1176,8 +1225,7 @@ void PlayerbotOrganicEconomy::ApplyPlans(const std::string& response, const Poli
             active->second.currentGoalState == "active" &&
             PreserveCraftResult(attempt->second.goal, active->second.currentGoalId, attempt->second.started, uint32(time(nullptr))))
             continue; // Inspect the in-flight result before replacing its goal.
-        CharacterDatabase.PExecute(
-            "UPDATE organic_economy_goal SET state='expired' WHERE character_guid='%u' AND state IN ('candidate','proposed','active')", guid);
+        CharacterDatabase.Execute(LivingActivity::EconomyProfessionExpiryQuery(guid,sLivingActivityCoordinator.ProfessionStoreReady()).c_str());
         CharacterDatabase.PExecute(
             "INSERT INTO organic_economy_goal (character_guid,goal_type,capability_ref,state,utility,source,authoritative_payload,expires_at) "
             "VALUES ('%u','%s','%s','%s',0,'%s','{}',DATE_ADD(NOW(),INTERVAL 1 HOUR))",
@@ -1187,6 +1235,7 @@ void PlayerbotOrganicEconomy::ApplyPlans(const std::string& response, const Poli
         profile.currentGoalType = goalType;
         profile.currentGoalState = currentPolicy.mode == "active" ? "active" : "proposed";
         profile.createdAt=uint32(time(nullptr));profile.committedUntil=0;
+        profile.goalRow=0;profile.goalLookupToken=0;profile.managedTask.clear();profile.managedPhase.clear();
         retryCooldowns.erase(guid);
         lastBlockers.erase(guid);
         craftAttempts.erase(guid);

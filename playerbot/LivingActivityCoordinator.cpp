@@ -39,6 +39,23 @@
 
 using namespace LivingActivity;
 namespace {
+    class ProfessionMaterialReservationAdapter final : public NativeReservationAdapter {
+    public:
+        bool ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& blocker) override {
+            ProfessionJob job;
+            if (!DecodeProfessionJob(request.transition.task.checkpoint.data,job,blocker)) return false;
+            for (const auto& change : request.changes) {
+                const auto& claim=change.after;
+                const auto need=std::find_if(job.reagents.begin(),job.reagents.end(),[&](const auto& r){return r.entry==claim.itemEntry;});
+                if (change.expectedRevision || claim.revision!=1 || claim.actor!=actor.GetGUIDLow() ||
+                    claim.task!=request.transition.task.root || claim.state!="held" || claim.location!="bags" ||
+                    !claim.itemGuid || claim.copper || claim.nativeReference || need==job.reagents.end() || claim.quantity!=need->perAttempt) {
+                    blocker="profession_material_reservation_mismatch";return false;
+                }
+            }
+            blocker.clear();return !request.changes.empty();
+        }
+    };
     PartyProtection NativePartyProtection(Player& bot) {
         const auto* group = bot.GetGroup();
         if (!group) return PartyProtection::None;
@@ -1302,6 +1319,120 @@ bool LivingActivityCoordinator::ReadProfessionSnapshot(uint32_t actor,const std:
         blocker="profession_snapshot_task_changed";return false;
     }
     return InspectNativeProfessionSnapshot(*bot,*saved,history,NowMs(),snapshot,blocker);
+}
+bool LivingActivityCoordinator::ProfessionStoreReady() const {
+    return OnWorldThread() && state->schemaReady && state->loaded && state->effective!=Mode::Off;
+}
+bool LivingActivityCoordinator::ProfessionAdmissionsEnabled() const {
+    // Isolated finite-operation tests temporarily enable effect checks while
+    // remaining Observe. That must not switch every ordinary bot to new work.
+    return ProfessionStoreReady() && state->effective==Mode::Active && EffectEnforcementEnabled();
+}
+bool LivingActivityCoordinator::OwnsEconomyProfession(uint32_t actor,uint64_t goalRow) const {
+    if (!OnWorldThread() || !actor || !goalRow) return false;
+    const auto id=SourceId("profession_job",EconomyProfessionSourceKey(goalRow));
+    const auto saved=state->cache.find(id);
+    if (saved!=state->cache.end() && saved->second.actor==actor && saved->second.mode==Mode::Active && saved->second.accepted) return true;
+    for (const auto& write : state->pending)
+        if (write.task.id==id && write.task.actor==actor && write.task.mode==Mode::Active && write.task.accepted) return true;
+    return false;
+}
+AdmissionResult LivingActivityCoordinator::AdmitEconomyProfession(uint32_t actor,uint64_t goalRow,const std::string& capability) {
+    AdmissionResult result;uint32_t recipe=0;
+    auto reject=[&](AdmissionCode code,const std::string& why="") {result.code=code;result.blocker=why.empty()?Name(code):why;return result;};
+    if (!OnWorldThread()) return reject(AdmissionCode::Disabled,"world_thread_required");
+    if (!actor || !goalRow || !EconomyProfessionRecipe(actor,capability,recipe)) return reject(AdmissionCode::InvalidRequest,"profession_legacy_identity_invalid");
+    result.task=SourceId("profession_job",EconomyProfessionSourceKey(goalRow));
+    const auto saved=ReadSavedTask(result.task);
+    if (saved) {
+        result.revision=saved->revision;
+        return reject(MatchesEconomyProfession(*saved,actor,goalRow,capability)?AdmissionCode::Saved:AdmissionCode::InvalidRequest,
+            MatchesEconomyProfession(*saved,actor,goalRow,capability)?"saved":"profession_legacy_intent_changed");
+    }
+    for (const auto& write : state->pending) if (write.task.id==result.task) {
+        result.revision=write.task.revision;
+        return reject(MatchesEconomyProfession(write.task,actor,goalRow,capability)?AdmissionCode::Pending:AdmissionCode::ConflictingWrite);
+    }
+    if (!EffectEnforcementEnabled()) return reject(AdmissionCode::Disabled);
+    if (!ProfessionStoreReady()) return reject(AdmissionCode::NotReady);
+    // New admission only; not a per-tick task scan. Older accepted work cannot
+    // be displaced by a newer planner row for the same character.
+    for (const auto& row : state->cache) if (row.second.actor==actor && row.second.mode==Mode::Active &&
+        row.second.accepted && IsProfessionJob(row.second) && !Terminal(row.second.phase))
+        return reject(AdmissionCode::ConflictingWrite,"accepted_profession_requires_reconciliation");
+    for (const auto& row : state->pending) if (row.task.actor==actor && row.task.mode==Mode::Active &&
+        row.task.accepted && IsProfessionJob(row.task) && !Terminal(row.task.phase))
+        return reject(AdmissionCode::ConflictingWrite,"accepted_profession_requires_reconciliation");
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) return reject(AdmissionCode::StaleContext);
+    ProfessionJob job;std::string blocker;
+    if (!BuildNativeSkillGainJob(*bot,recipe,job,blocker)) return reject(AdmissionCode::InvalidRequest,blocker);
+    TaskRequest request;auto& task=request.task;
+    task.id=task.root=result.task;task.source="profession_job";task.sourceKey=EconomyProfessionSourceKey(goalRow);
+    task.actor=actor;task.kind=Kind::Profession;task.mode=Mode::Active;task.priority=Priority::Progression;task.accepted=true;
+    task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    task.createdAtMs=task.updatedAtMs=NowMs();task.checkpoint.step="profession_prepare";
+    task.checkpoint.data=EncodeProfessionJob(job);request.receipt=NewId();
+    return SubmitTask(request);
+}
+LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceProfessionJob(uint32_t actor,const std::string& id) {
+    ProfessionProgress progress;
+    auto stop=[&](const std::string& why){progress.blocker=why;return progress;};
+    if (!OnWorldThread()) return stop("world_thread_required");
+    const auto saved=ReadSavedTask(id);
+    if (!saved || !actor || saved->actor!=actor || saved->mode!=Mode::Active || !saved->accepted || !IsProfessionJob(*saved))
+        return stop("profession_saved_job_unavailable");
+    if (saved->phase==Phase::Completed) {progress.completed=true;return progress;}
+    if (Terminal(saved->phase)) return stop("profession_job_terminal_requires_projection");
+    if (!EffectEnforcementEnabled()) return stop("execution_disabled");
+    for (const auto& write : state->pending) if (write.task.actor==actor) return stop("profession_transition_pending");
+    for (const auto& row : state->operations) if (row.second.request.transition.task.actor==actor) {
+        if (row.second.request.transition.task.id!=id || row.second.request.kind!="profession_craft") return stop("profession_operation_requires_reconciliation");
+        if (row.second.dispatched || !row.second.ready) return stop("profession_native_result_pending");
+        return stop(DispatchProfessionAttempt(actor,row.first).admission.blocker);
+    }
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) return stop("profession_native_actor_unavailable");
+    const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    if (!(current==saved->context)) {
+        if (saved->phase==Phase::Verifying)
+            return stop(ReconcileProfessionCompletion(actor,id,saved->revision,NewId()).blocker);
+        return stop("profession_restart_preparation_requires_reconciliation");
+    }
+    auto advance=[&](Phase phase) {
+        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
+        ++request.task.revision;request.task.phase=phase;request.task.updatedAtMs=NowMs();request.receipt=NewId();
+        return stop(SubmitTask(request).blocker);
+    };
+    if (saved->phase==Phase::Queued) return advance(Phase::Preparing);
+    ProfessionSnapshot snapshot;std::string blocker;
+    if (!ReadProfessionSnapshot(actor,id,saved->revision,snapshot,blocker)) return stop(blocker);
+    const auto next=NextProfessionStep(*saved,snapshot);
+    if (next.step==ProfessionStep::Finalize)
+        return stop(SettleProfessionJob(actor,id,saved->revision,NewId()).blocker);
+    if (next.step!=ProfessionStep::Execute) return stop(next.blocker.empty()?"profession_service_adapter_required":next.blocker);
+    if (saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
+    if (saved->phase!=Phase::Preparing) return stop("profession_preparation_requires_reconciliation");
+    ProfessionJob job;CraftFrame frame;UnsettledClaimBatch batch;
+    std::vector<ProfessionMaterialReservation> missing;
+    if (!DecodeProfessionJob(saved->checkpoint.data,job,blocker) || !ReadNativeCraftFrame(*bot,job,frame,blocker) ||
+        !state->resources.ReadUnsettled(id,batch,blocker) ||
+        !PlanProfessionMaterialReservations(*saved,snapshot,batch,frame,missing,blocker)) return stop(blocker);
+    if (!missing.empty()) {
+        const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_material_preparation");
+        if (!grant.Permitted()) return stop(grant.blocker);
+        ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+        ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+        request.authorization=grant.action;
+        for (const auto& item : missing) {
+            ResourceClaim claim;claim.id=NewId();claim.actor=actor;claim.task=id;claim.itemGuid=item.guid;
+            claim.itemEntry=item.entry;claim.quantity=item.quantity;claim.location="bags";claim.state="held";
+            request.changes.push_back({claim,0});
+        }
+        ProfessionMaterialReservationAdapter adapter;
+        return stop(SubmitResourceReservation(request,adapter).blocker);
+    }
+    return stop(PrepareProfessionAttempt(actor,id,saved->revision,NewId()).blocker);
 }
 
 bool LivingActivityCoordinator::EffectEnforcementEnabled() const {

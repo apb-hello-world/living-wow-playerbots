@@ -20,6 +20,25 @@ void TestProfessionAttemptPlan() {
         claim.quantity=item.count;claim.location="bags";claim.state="held";claims.claims.push_back(claim);
     }
     ProfessionAttemptPlan result;std::string blocker;
+    {
+        std::vector<ProfessionMaterialReservation> missing;
+        auto plan=[&](const UnsettledClaimBatch& rows,const CraftFrame& native) {
+            return PlanProfessionMaterialReservations(task,view,rows,native,missing,blocker);
+        };
+        assert(plan(claims,frame) && missing.empty());
+        auto partial=claims;partial.claims.erase(partial.claims.begin(),partial.claims.begin()+2);
+        assert(plan(partial,frame) && missing.size()==2 && missing[0].quantity==1 && missing[1].quantity==1);
+        assert(partial.claims[0].quantity==5); // Paid surplus is inherited, not re-reserved.
+        partial.claims.clear();assert(plan(partial,frame) && missing.size()==3 && missing[2].quantity==1);
+        partial.complete=false;assert(!plan(partial,frame) && missing.empty());
+        partial=claims;partial.claims.back().state="reconciling";assert(!plan(partial,frame) && missing.empty());
+        partial=claims;partial.claims.back().actor=704;assert(!plan(partial,frame) && missing.empty());
+        partial=claims;partial.claims.back().location="bank";assert(!plan(partial,frame) && missing.empty());
+        auto mixed=frame;auto extra=mixed.stacks.back();extra.guid=103;extra.slot=26;mixed.stacks.push_back(extra);
+        assert(!plan(claims,mixed) && missing.empty());
+        auto stale=view;++stale.revision;
+        assert(!PlanProfessionMaterialReservations(task,stale,claims,frame,missing,blocker) && missing.empty());
+    }
     auto run=[&](const Task& owner,const ProfessionSnapshot& snapshot,const UnsettledClaimBatch& resources,const CraftFrame& native) {
         return PlanProfessionAttempt(owner,snapshot,resources,native,result,blocker);
     };

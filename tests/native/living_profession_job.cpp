@@ -4,6 +4,17 @@
 using namespace LivingActivity;
 int main() {
     {
+        uint32_t recipe=0;
+        assert(EconomyProfessionSourceKey(0).empty());
+        assert(EconomyProfessionSourceKey(18446744073709551615ULL)=="economy_goal:18446744073709551615");
+        assert(EconomyProfessionRecipe(497,"profession:497:2881",recipe) && recipe==2881);
+        for (const auto& invalid : {"profession:498:2881","profession:497:02881","profession:497:0",
+             "profession:497:-1","profession:497:4294967296","profession:497:2881x","profession:497:","2881"}) {
+            recipe=42;assert(!EconomyProfessionRecipe(497,invalid,recipe) && !recipe);
+        }
+        assert(!EconomyProfessionRecipe(0,"profession:0:2881",recipe));
+    }
+    {
         ProfessionReagent need{3371,1}; ProfessionStock stock; stock.entry=3371;
         uint32_t quantity=99; std::string blocker;
         assert(RequiredProfessionVendorQuantity(need,stock,5,quantity,blocker) && quantity==5);
@@ -102,6 +113,12 @@ int main() {
     saved.checkpoint.data=encoded; saved.context.boot="8fa5315c-4c08-48b2-b4db-af5a481dcf30";
     saved.context.policyRevision=saved.context.actorGeneration=saved.context.mapGeneration=1;
     assert(ValidateProfessionTask(saved,reason));
+    auto linked=saved;linked.sourceKey=EconomyProfessionSourceKey(901);
+    assert(MatchesEconomyProfession(linked,497,901,"profession:497:2881"));
+    assert(!MatchesEconomyProfession(linked,497,902,"profession:497:2881"));
+    assert(!MatchesEconomyProfession(linked,497,901,"profession:497:9060"));
+    assert(!MatchesEconomyProfession(linked,498,901,"profession:498:2881"));
+    linked.accepted=false;assert(!MatchesEconomyProfession(linked,497,901,"profession:497:2881"));
     TaskRequest request; request.task=saved; request.expectedRevision=1; request.task.revision=2;
     request.task.phase=Phase::Preparing; request.receipt="65c7e527-cb15-4d63-966a-199af209c4fb";
     assert(ValidateTaskRequest(request,&saved,saved.context,reason)==AdmissionCode::Pending);

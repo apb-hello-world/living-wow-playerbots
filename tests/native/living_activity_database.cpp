@@ -10,6 +10,7 @@
 #include "LivingPurchaseBudget.h"
 #include "LivingProfessionEvidence.h"
 #include "LivingProfessionSettlement.h"
+#include "LivingProfessionEconomy.h"
 #include "fixtures/CraftEvidence.h"
 #include <mysql.h>
 #include <cassert>
@@ -534,5 +535,33 @@ int main() {
     assert(db.Execute("ROLLBACK"));
     {Connection restarted;assert(restarted.History(historyTask)==db.History(historyTask));}
     ProfessionSettlementDatabase(db);
-    std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history and skill-job settlement; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
+    // Execute the exact production projection/expiry SQL, including old-schema
+    // compatibility and a newer speculative row with the same recipe label.
+    assert(db.Execute("CREATE TABLE characters(guid INT PRIMARY KEY,race INT)"));
+    assert(db.Execute("CREATE TABLE organic_economy_profile(character_guid INT PRIMARY KEY,career_participant INT,intended_profession_one INT,intended_profession_two INT,profession_plan_version INT)"));
+    assert(db.Execute("CREATE TABLE organic_economy_goal(goal_id BIGINT PRIMARY KEY,character_guid INT,capability_ref VARCHAR(120),goal_type VARCHAR(40),state VARCHAR(20),created_at DATETIME,expires_at DATETIME,authoritative_payload LONGTEXT)"));
+    assert(db.Execute("INSERT INTO characters VALUES(899,5)"));
+    assert(db.Execute("INSERT INTO organic_economy_profile VALUES(899,1,171,182,1)"));
+    assert(db.Execute("INSERT INTO organic_economy_goal VALUES(701,899,'profession:899:2329','profession_skill_up','active',NOW(),DATE_SUB(NOW(),INTERVAL 1 DAY),'{}'),(702,899,'profession:899:2329','profession_skill_up','active',NOW(),DATE_ADD(NOW(),INTERVAL 1 HOUR),'{}')"));
+    auto owner=historyTask;owner.id=owner.root="637bd562-36d2-5b01-bc01-e2d831c49ff1";
+    owner.actor=owner.context.actor=899;owner.source="profession_job";owner.sourceKey="economy_goal:701";
+    owner.mode=Mode::Active;owner.phase=Phase::Preparing;owner.accepted=true;owner.revision=1;
+    assert(db.Write(TaskWrite(owner,0,"ff2efbdf-f0ec-4539-b840-299847970c91","legacy_handoff_fixture")));
+    auto selected=[&](bool enabled,unsigned column) {
+        assert(db.Execute(EconomyProfessionProfilesQuery(enabled)));
+        auto* rows=mysql_store_result(db.db);assert(rows && mysql_num_fields(rows)==14 && mysql_num_rows(rows)==1);
+        auto row=mysql_fetch_row(rows);const std::string value=row[column] ? row[column] : "";mysql_free_result(rows);return value;
+    };
+    assert(selected(false,11)=="702" && selected(false,12).empty());
+    assert(selected(true,11)=="701" && selected(true,12)==owner.id && selected(true,13)=="preparing");
+    assert(db.Execute(EconomyProfessionExpiryQuery(899,true)));
+    assert(db.Scalar("SELECT state FROM organic_economy_goal WHERE goal_id=701")=="active");
+    assert(db.Scalar("SELECT state FROM organic_economy_goal WHERE goal_id=702")=="expired");
+    assert(db.Execute(EconomyProfessionExpiryQuery(900,true)));
+    assert(selected(true,11)=="701");
+    assert(db.Execute("UPDATE living_activity_task SET phase='completed' WHERE task_id='"+owner.id+"'"));
+    assert(selected(true,13)=="completed"); // Pending legacy acknowledgement still finds its native owner.
+    assert(db.Execute("UPDATE organic_economy_goal SET state='completed' WHERE goal_id=701"));
+    assert(selected(true,11)=="0");
+    std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history, skill-job settlement and exact-row legacy handoff; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

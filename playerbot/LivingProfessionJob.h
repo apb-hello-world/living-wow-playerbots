@@ -27,6 +27,11 @@ namespace LivingActivity {
     bool IsProfessionJob(const Task& task);
     bool ValidateProfessionTask(const Task& task, std::string& blocker);
     bool PreserveProfessionIntent(const Task& before, const Task& after, std::string& blocker);
+    // A reusable recipe label is not a job identity. The native economy row
+    // survives planner refresh and names exactly one accepted obligation.
+    std::string EconomyProfessionSourceKey(uint64_t goalRow);
+    bool EconomyProfessionRecipe(uint32_t actor,const std::string& capability,uint32_t& recipe);
+    bool MatchesEconomyProfession(const Task& task,uint32_t actor,uint64_t goalRow,const std::string& capability);
 
     // Value-only native recipe facts. Produced synchronously from the native
     // spellbook, skill-line records and owned subject item; never from a model.

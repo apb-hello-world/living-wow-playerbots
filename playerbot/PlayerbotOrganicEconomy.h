@@ -43,11 +43,13 @@ private:
         uint32 planVersion = 0;
         uint32 race = 0;
         uint32 createdAt = 0, committedUntil = 0;
+        uint64 goalRow = 0, goalLookupToken = 0;
         uint32 intendedOne = 0;
         uint32 intendedTwo = 0;
         std::string currentGoalId;
         std::string currentGoalType;
         std::string currentGoalState;
+        std::string managedTask, managedPhase;
     };
 
     struct CraftAttempt
@@ -78,6 +80,7 @@ private:
     PlayerbotOrganicEconomy() = default;
     Policy LoadPolicy();
     std::map<uint32, Profile> LoadProfiles();
+    void LookupGoalRow(uint32 guid, Profile& profile);
     bool Submit(const Policy& policy);
     void ApplyPlans(const std::string& response, const Policy& policy);
     void ProcessActiveGoals(const Policy& policy, std::chrono::steady_clock::time_point now);
@@ -94,6 +97,7 @@ private:
     std::map<uint32, std::chrono::steady_clock::time_point> retryCooldowns;
     std::map<uint32, std::chrono::steady_clock::time_point> adCooldowns;
     uint32 executionCursor = 0;
+    uint64 goalLookupSequence = 0;
     std::map<uint32, Profile> profiles;
     Policy policy;
 };

@@ -8,6 +8,27 @@
 #include <tuple>
 
 namespace LivingActivity {
+    std::string EconomyProfessionSourceKey(uint64_t goalRow) {
+        return goalRow ? "economy_goal:"+std::to_string(goalRow) : "";
+    }
+    bool EconomyProfessionRecipe(uint32_t actor,const std::string& capability,uint32_t& recipe) {
+        recipe=0;
+        const auto prefix="profession:"+std::to_string(actor)+":";
+        if (!actor || capability.compare(0,prefix.size(),prefix)) return false;
+        const auto value=capability.substr(prefix.size());
+        if (value.empty() || value.size()>10 || value[0]=='0' || value.find_first_not_of("0123456789")!=std::string::npos)
+            return false;
+        const auto parsed=std::stoull(value);
+        if (parsed>std::numeric_limits<uint32_t>::max()) return false;
+        recipe=uint32_t(parsed);return true;
+    }
+    bool MatchesEconomyProfession(const Task& task,uint32_t actor,uint64_t goalRow,const std::string& capability) {
+        ProfessionJob job;std::string blocker;uint32_t recipe=0;
+        return goalRow && task.source=="profession_job" && task.sourceKey==EconomyProfessionSourceKey(goalRow) &&
+            task.actor==actor && task.id==task.root && task.parent.empty() && task.accepted && task.mode==Mode::Active &&
+            EconomyProfessionRecipe(actor,capability,recipe) && DecodeProfessionJob(task.checkpoint.data,job,blocker) &&
+            job.recipe==recipe;
+    }
     bool RequiredProfessionVendorQuantity(const ProfessionReagent& need,const ProfessionStock& stock,
         uint32_t bundle,uint32_t& quantity,std::string& blocker) {
         quantity=0;

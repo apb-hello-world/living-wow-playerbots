@@ -85,6 +85,14 @@ public:
         LivingActivity::ProfessionHistory& history,std::string& blocker);
     bool ReadProfessionSnapshot(uint32_t actor,const std::string& task,uint64_t revision,
         LivingActivity::ProfessionSnapshot& snapshot,std::string& blocker);
+    bool ProfessionStoreReady() const;
+    bool ProfessionAdmissionsEnabled() const;
+    bool OwnsEconomyProfession(uint32_t actor,uint64_t goalRow) const;
+    LivingActivity::AdmissionResult AdmitEconomyProfession(uint32_t actor,uint64_t goalRow,const std::string& capability);
+    // One bounded step, invoked by the existing economy work order. No new
+    // loop, timer, recipe choice or private executor state lives in the caller.
+    struct ProfessionProgress { bool completed=false; std::string blocker; };
+    ProfessionProgress AdvanceProfessionJob(uint32_t actor,const std::string& task);
     // Build one exact craft intent from the saved job, current native snapshot
     // and its existing claims. Callers supply identity, not ingredients/output.
     LivingActivity::AdmissionResult PrepareProfessionAttempt(uint32_t actor,const std::string& task,
