@@ -53,13 +53,17 @@ namespace LivingActivity {
         if (!actor || !ValidItemGainSpec(spec) || before.size() > 256 || after.size() > 256)
             return reject("invalid_native_item_gain_scope");
         std::map<uint32_t,NativeItemStack> initial,final;
-        for (const auto& rows : {std::make_pair(&before,&initial),std::make_pair(&after,&final)}) {
+        auto indexSnapshot = [&](const std::vector<NativeItemStack>& rows,
+            std::map<uint32_t,NativeItemStack>& index) {
             std::set<std::pair<uint32_t,uint8_t>> places;
-            for (const auto& row : *rows.first)
+            for (const auto& row : rows)
                 if (row.actor != actor || !row.guid || row.entry != spec.entry || !row.count ||
-                    !rows.second->emplace(row.guid,row).second || !places.emplace(row.bagGuid,row.slot).second)
-                    return reject("ambiguous_native_item_gain_snapshot");
-        }
+                    !index.emplace(row.guid,row).second || !places.emplace(row.bagGuid,row.slot).second)
+                    return false;
+            return true;
+        };
+        if (!indexSnapshot(before,initial) || !indexSnapshot(after,final))
+            return reject("ambiguous_native_item_gain_snapshot");
         for (const auto& old : initial) {
             const auto found=final.find(old.first);
             if (found == final.end() || !SamePlace(old.second,found->second) || found->second.count < old.second.count)

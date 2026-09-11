@@ -7,6 +7,7 @@
 #include "LivingActivityOperations.h"
 #include "LivingActivityClaimCodec.h"
 #include "LivingActivityReceipts.h"
+#include "LivingPurchaseBudget.h"
 #include <mysql.h>
 #include <cassert>
 #include <cstdlib>
@@ -57,6 +58,14 @@ public:
         auto row = mysql_fetch_row(result);
         bool present = row && row[0] && row[1] && ReceiptMatches(plan, row[0], std::stoull(row[1]));
         mysql_free_result(result); return present;
+    }
+    PurchaseSpend Budget(uint32_t actor,uint64_t now,const std::string& operation="") {
+        if (!Execute(PurchaseSpendQuery(actor,now,operation))) throw std::runtime_error(mysql_error(db));
+        MYSQL_RES* result=mysql_store_result(db); assert(result && mysql_num_fields(result)==4);
+        const auto row=mysql_fetch_row(result); assert(row);
+        PurchaseSpend spend;
+        DecodePurchaseSpend({row[0] ? row[0] : "",row[1] ? row[1] : "",row[2] ? row[2] : "",row[3] ? row[3] : ""},spend);
+        mysql_free_result(result); return spend;
     }
     bool Write(const WritePlan& plan, bool injectFailure = false) {
         assert(Execute("START TRANSACTION"));
@@ -437,5 +446,30 @@ int main() {
     // explicit release; task completion cannot silently discard those goods.
     ++purchase.revision; purchase.phase=Phase::Completed;
     assert(!db.Write(TaskWrite(purchase,4,"ff2efbdf-f0ec-4539-b840-299847970f15","fixture_completed")));
-    std::cout << "PASS: real MariaDB task/outbox, intent/outcome, reservations and intent-bound consumed/acquired claims; atomic rollback, stale/changed retry rejection, conservation and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
+    // Use the actual common ledger query, not a parallel arithmetic fixture.
+    // These auction rows exist ONLY in this marked dedicated test database.
+    assert(db.Execute("CREATE TABLE organic_economy_auction_history (buyer_guid INT UNSIGNED,outcome VARCHAR(20),"
+        "unit_price_copper INT UNSIGNED,quantity INT UNSIGNED,occurred_at TIMESTAMP)"));
+    constexpr uint64_t budgetNow=172800000;
+    assert(db.Execute("INSERT INTO organic_economy_auction_history VALUES (701,'sold',10,2,FROM_UNIXTIME(172000)),"
+        "(701,'bid',5,2,FROM_UNIXTIME(170000)),(701,'posted',999,1,FROM_UNIXTIME(172000)),"
+        "(700,'sold',999,1,FROM_UNIXTIME(172000)),(701,'sold',999,1,FROM_UNIXTIME(1000))"));
+    assert(db.Execute("UPDATE living_activity_operation SET updated_at_ms=172000000 WHERE operation_id="+SqlValue(purchaseId)));
+    auto budget=db.Budget(701,budgetNow);
+    assert(budget.complete && budget.auctionCountHour==2 && budget.spentDay==60 && budget.committed==0);
+    // A verified purchase may not be hidden by passing its operation ID again.
+    assert(db.Budget(701,budgetNow,purchaseId).spentDay==60);
+    assert(db.Execute("UPDATE living_activity_operation SET state='intent',updated_at_ms=1000 WHERE operation_id="+SqlValue(purchaseId)));
+    budget=db.Budget(701,budgetNow);
+    assert(budget.complete && budget.spentDay==30 && budget.committed==30); // Old unresolved intent never expires.
+    assert(db.Budget(701,budgetNow,purchaseId).committed==0); // Current fresh intent, not a second charge.
+    assert(db.Execute("UPDATE living_activity_operation SET state='reconciling' WHERE operation_id="+SqlValue(purchaseId)));
+    assert(db.Budget(701,budgetNow,purchaseId).committed==30); // Uncertainty is never excluded.
+    assert(db.Execute("START TRANSACTION"));
+    assert(db.Execute("UPDATE living_activity_operation SET before_state='{}' WHERE operation_id="+SqlValue(purchaseId)));
+    assert(!db.Budget(701,budgetNow).complete); // Malformed proof does not become zero spend.
+    assert(db.Execute("ROLLBACK"));
+    assert(db.Execute("UPDATE living_activity_operation SET state='verified',updated_at_ms=172000000 WHERE operation_id="+SqlValue(purchaseId)));
+    { Connection restarted; assert(restarted.Budget(701,budgetNow).spentDay==60); }
+    std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims and shared vendor/AH budget; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

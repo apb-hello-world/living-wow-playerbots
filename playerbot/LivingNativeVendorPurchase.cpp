@@ -3,6 +3,7 @@
 #include "LivingProfessionNative.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingServiceExecution.h"
+#include "LivingPurchaseBudget.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -96,6 +97,7 @@ namespace LivingActivity {
         // Native return value means LIMITED STOCK, not purchase success. An
         // ordinary unlimited vendor therefore normally returns false on success.
         const bool limitedStock=actor.BuyItemFromVendor(ObjectGuid(quote.vendor),quote.entry,uint8_t(quote.buyUnits),NULL_BAG,NULL_SLOT);
+        NativePurchaseEpoch().Changed(actor.GetGUIDLow());
         const auto countAfter=actor.GetItemCount(quote.entry,false);
         result.nativeReference="vendor:"+std::to_string(quote.vendor)+":item:"+std::to_string(quote.entry);
         result.afterState="{\"money\":"+std::to_string(actor.GetMoney())+",\"quantity_before\":"+std::to_string(countBefore)+

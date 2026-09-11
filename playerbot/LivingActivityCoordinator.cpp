@@ -229,6 +229,15 @@ struct LivingActivityCoordinator::State {
     uint64_t policyRevision = 0, epoch = 0, nextPolicy = 0, nextWork = 0, nextLog = 0;
     unsigned batch = 32, loadBatch = 64, maxCache = 20000;
     bool ioPending = false, schemaReady = false, loaded = false;
+    std::atomic<bool> purchaseLedgerReady{false};
+    struct BudgetRead {
+        std::string task, operation, blocker="purchase_budget_queued";
+        uint64_t revision=0, generation=0, receivedAt=0, dueAt=0, requestedAt=0;
+        PurchaseSpend spend;
+        bool pending=false;
+    };
+    std::map<uint32_t,BudgetRead> purchaseBudgets; // At most 64 requested reads.
+    uint64_t budgetReads=0, budgetFailures=0;
     unsigned importFamily = 0;
     uint64_t acknowledged = 0, persistenceFailures = 0, invalidRecords = 0, transitionCount = 0;
     uint64_t maximumDispatchUs = 0, overBudgetUpdates = 0;
@@ -510,10 +519,52 @@ struct LivingActivityCoordinator::State {
         if (!CharacterDatabase.AsyncQuery([this](QueryResult* result) {
             ioPending = false;
             schemaReady = result && result->Fetch()[0].GetUInt32() == 1 && result->Fetch()[1].GetUInt32() == 23;
+            purchaseLedgerReady.store(schemaReady,std::memory_order_release);
             if (schemaReady) transitionCount = result->Fetch()[2].GetUInt64();
             blocker = schemaReady ? "startup_reconciliation" : "activity_schema_unavailable";
             nextWork = NowMs() + (schemaReady ? 1000 : 60000);
         }, sql.c_str())) { ioPending = false; nextWork = NowMs() + 60000; }
+    }
+    bool QueryPurchaseBudget(uint64_t now) {
+        for (auto it=purchaseBudgets.begin();it!=purchaseBudgets.end();) {
+            if (!it->second.pending && now>it->second.requestedAt+30000) it=purchaseBudgets.erase(it);
+            else ++it;
+        }
+        for (auto& row : purchaseBudgets) {
+            auto& read=row.second;
+            if (read.pending || !read.dueAt || read.dueAt>now) continue;
+            const auto generation=NativePurchaseEpoch().Read(row.first);
+            if (!generation) { read.dueAt=now+1000; continue; }
+            const auto actor=row.first;
+            const auto revision=read.revision;
+            const auto task=read.task, operation=read.operation;
+            const auto query=PurchaseSpendQuery(actor,now,operation);
+            read.pending=true; ioPending=true; ++budgetReads;
+            if (!CharacterDatabase.AsyncQuery([this,actor,revision,task,operation,generation](QueryResult* result) {
+                ioPending=false;
+                const auto found=purchaseBudgets.find(actor);
+                if (found==purchaseBudgets.end()) return;
+                auto& read=found->second; read.pending=false;
+                if (read.revision!=revision || read.task!=task || read.operation!=operation) return;
+                read.spend={}; read.generation=generation; read.receivedAt=NowMs();
+                bool valid=false;
+                if (result && result->GetFieldCount()==4) {
+                    auto* fields=result->Fetch();
+                    valid=DecodePurchaseSpend({fields[0].GetCppString(),fields[1].GetCppString(),
+                        fields[2].GetCppString(),fields[3].GetCppString()},read.spend);
+                }
+                if (generation!=NativePurchaseEpoch().Read(actor)) {
+                    read.spend={}; read.blocker="purchase_budget_changed_during_read"; read.dueAt=NowMs()+1000;
+                } else if (!valid) {
+                    ++budgetFailures; read.blocker="purchase_budget_ledger_unavailable"; read.dueAt=NowMs()+5000;
+                } else { read.blocker.clear(); read.dueAt=0; }
+            },query.c_str())) {
+                ioPending=false; read.pending=false; read.dueAt=now+5000;
+                read.blocker="purchase_budget_queue_unavailable"; ++budgetFailures;
+            }
+            return true;
+        }
+        return false;
     }
     void Load() {
         const std::string projection = PersistedTaskProjection();
@@ -723,6 +774,11 @@ void LivingActivityCoordinator::Update() {
     queues.incoming = state->incoming.size();
     queues.cacheLimit = state->maxCache; queues.retained = state->transitionCount;
     const auto work = NextObservationWork(queues);
+    // Native receipt verification stays ahead of speculative budget reads.
+    // Reads run only when requested, using the same bounded DB queue as tasks.
+    if (state->effective!=Mode::Off && !state->ioPending && state->schemaReady && state->loaded &&
+        state->claimsEnumerated && state->incoming.empty() && state->incomingClaims.empty() &&
+        !queues.pending && state->QueryPurchaseBudget(now)) return;
     if (work == ObservationWork::Wait) return;
     if (work == ObservationWork::Decode) {
         try { state->DecodeIncoming(deadline); }
@@ -757,6 +813,8 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("native_dispatches", state->nativeDispatches); p.put("native_result_receipts", state->nativeOutcomes);
     p.put("verified_native_results", state->nativeVerifiedResults);
     p.put("pending_native_operations", state->operations.size());
+    p.put("purchase_budget_reads",state->budgetReads); p.put("purchase_budget_failures",state->budgetFailures);
+    p.put("purchase_budget_cache",state->purchaseBudgets.size());
     p.put("unacknowledged_writes",std::count_if(state->pending.begin(),state->pending.end(),
         [](const State::Pending& write){return write.retry.failures != 0;}));
     p.put("cached_resource_claims", state->resources.Size());
@@ -969,6 +1027,43 @@ bool LivingActivityCoordinator::OnWorldThread() const {
 }
 
 ResourceReader LivingActivityCoordinator::ResourceReservations() const { return state->resources.Reader(); }
+bool LivingActivityCoordinator::PurchaseLedgerReady() const {
+    return state->purchaseLedgerReady.load(std::memory_order_acquire);
+}
+bool LivingActivityCoordinator::ReadPurchaseBudget(uint32_t actor,const std::string& task,uint64_t revision,
+    const std::string& operation,PurchaseSpend& spend,std::string& blocker) {
+    spend={};
+    auto reject=[&](const char* why){blocker=why; return false;};
+    if (!OnWorldThread() || !PurchaseLedgerReady() || state->effective==Mode::Off)
+        return reject("purchase_budget_coordinator_unavailable");
+    const auto saved=state->cache.find(task);
+    if (!actor || !IsUuid(operation) || saved==state->cache.end() || saved->second.actor!=actor ||
+        saved->second.revision!=revision || Terminal(saved->second.phase))
+        return reject("purchase_budget_task_changed");
+    const auto now=NowMs(), generation=NativePurchaseEpoch().Read(actor);
+    if (!generation) return reject("purchase_budget_native_mutation_pending");
+    auto found=state->purchaseBudgets.find(actor);
+    if (found==state->purchaseBudgets.end()) {
+        if (state->purchaseBudgets.size()>=64) {
+            for (auto it=state->purchaseBudgets.begin();it!=state->purchaseBudgets.end();) {
+                if (!it->second.pending && now>it->second.receivedAt+30000) it=state->purchaseBudgets.erase(it);
+                else ++it;
+            }
+            if (state->purchaseBudgets.size()>=64) return reject("purchase_budget_queue_full");
+        }
+        found=state->purchaseBudgets.emplace(actor,State::BudgetRead{}).first;
+    }
+    auto& read=found->second;
+    if (read.pending) return reject("purchase_budget_read_pending");
+    if (read.task!=task || read.revision!=revision || read.operation!=operation || read.generation!=generation ||
+        (read.receivedAt && (now<read.receivedAt || now-read.receivedAt>15000))) {
+        read={}; read.task=task; read.revision=revision; read.operation=operation;
+        read.generation=generation; read.dueAt=now;
+    }
+    read.requestedAt=now;
+    if (!read.spend.complete) { blocker=read.blocker; return false; }
+    spend=read.spend; blocker.clear(); return true;
+}
 
 bool LivingActivityCoordinator::EffectEnforcementEnabled() const {
     return state->enforceEffects.load(std::memory_order_acquire);
@@ -1379,6 +1474,7 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
             return reject(AdmissionCode::InvalidRequest, IsToken(blocker) ? blocker : "native_prerequisite_unavailable");
     } catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest, "native_validation_failed"); }
     state->operations.emplace(request.transition.receipt, State::PendingOperation{request});
+    if (request.kind=="vendor_purchase") NativePurchaseEpoch().Changed(request.transition.task.actor);
     state->pending.push_back({next, std::move(plan), "", request.transition.receipt, false});
     const auto held = state->authority.Read(next.actor).lease;
     ReleaseTaskLease(held); // Intent is durable work, not a retained execution grant.

@@ -10,6 +10,7 @@
 #include "LivingActivityOperations.h"
 #include "LivingActivityReservations.h"
 #include "LivingActivityAcquisition.h"
+#include "LivingPurchaseBudget.h"
 #include <optional>
 class PlayerbotAI;
 class WorldPacket;
@@ -68,6 +69,12 @@ public:
     // Read-only immutable projection. Never permission to consume a reserved
     // item; a journalled service adapter must prove its own claim separately.
     LivingActivity::ResourceReader ResourceReservations() const;
+    bool PurchaseLedgerReady() const;
+    // Due-queued read of the common native spend ledger. This is NOT authority
+    // to buy; the compiled adapter still validates its saved task, claims,
+    // demand, quote and effect grant immediately before the native mutation.
+    bool ReadPurchaseBudget(uint32_t actor,const std::string& task,uint64_t revision,
+        const std::string& currentOperation,LivingActivity::PurchaseSpend& spend,std::string& blocker);
     struct TaskGrant {
         LivingActivity::AuthorityResult authority;
         LivingActivity::Task task;
