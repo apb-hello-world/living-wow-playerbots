@@ -14,6 +14,9 @@
 #include "LivingActivityNativeContext.h"
 #include "LivingActivityCommitments.h"
 #include "LivingProfessionNative.h"
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+#include "LivingProfessionDemand.h"
+#endif
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
@@ -220,6 +223,11 @@ struct LivingActivityCoordinator::State {
     uint64_t combatFixtureDeadline = 0;
     uint64_t petFixtureDeadline = 0;
     uint64_t professionFixtureDeadline = 0;
+    NativeVendorQuote vendorFixtureQuote;
+    uint32_t vendorFixtureCountBefore = 0;
+    float vendorFixtureX = 0, vendorFixtureY = 0, vendorFixtureZ = 0, vendorFixtureO = 0;
+    bool vendorFixturePositionChanged = false;
+    std::string vendorFixtureBlocker;
     std::atomic<uint64_t> petFixtureCaster{0}, petFixtureTarget{0};
     std::atomic<uint32_t> petFixtureDamagePackets{0}, petFixtureDamage{0};
     boost::property_tree::ptree petFixtureCandidates;
@@ -714,6 +722,7 @@ LivingActivityCoordinator& LivingActivityCoordinator::instance() {
 #include "../tests/realm/ActivityGameplayFixture.inc"
 #include "../tests/realm/ActivityCombatFixture.inc"
 #include "../tests/realm/ActivityPetFixture.inc"
+#include "../tests/realm/ActivityVendorFixture.inc"
 #endif
 
 LivingActivityCoordinator::LivingActivityCoordinator() : state(new State) {

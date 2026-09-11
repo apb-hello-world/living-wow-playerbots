@@ -116,6 +116,7 @@ private:
     void RunIsolatedGameplayFixture();
     void RunIsolatedCombatFixture();
     void RunIsolatedPetFixture();
+    void RunIsolatedVendorFixture();
 #endif
 };
 #define sLivingActivityCoordinator LivingActivityCoordinator::instance()
