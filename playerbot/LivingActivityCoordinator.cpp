@@ -1279,6 +1279,16 @@ bool LivingActivityCoordinator::ReadProfessionHistory(uint32_t actor,const std::
         history.unresolvedOperation=true;
     blocker=history.unresolvedOperation ? "profession_history_operation_unresolved" : "";return true;
 }
+bool LivingActivityCoordinator::ReadProfessionSnapshot(uint32_t actor,const std::string& id,uint64_t revision,
+    ProfessionSnapshot& snapshot,std::string& blocker) {
+    snapshot={};ProfessionHistory history;
+    if (!ReadProfessionHistory(actor,id,revision,history,blocker)) return false;
+    const auto saved=ReadSavedTask(id);auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if (!saved || !bot || saved->revision!=revision || saved->actor!=actor) {
+        blocker="profession_snapshot_task_changed";return false;
+    }
+    return InspectNativeProfessionSnapshot(*bot,*saved,history,NowMs(),snapshot,blocker);
+}
 
 bool LivingActivityCoordinator::EffectEnforcementEnabled() const {
     return state->enforceEffects.load(std::memory_order_acquire);

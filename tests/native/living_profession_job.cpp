@@ -157,6 +157,12 @@ int main() {
     assert(NextProfessionStep(saved,changed).blocker=="profession_target_met_without_job_proof");
     changed=snapshot; changed.useful=false;
     assert(NextProfessionStep(saved,changed).step==ProfessionStep::Defer);
+    changed=snapshot; changed.blocker="profession_bank_withdrawal_adapter_required";
+    assert(NextProfessionStep(saved,changed).blocker==changed.blocker);
+    changed.blocker="untrusted text is not a diagnostic token";
+    assert(NextProfessionStep(saved,changed).blocker=="profession_native_inspection_blocked");
+    changed=snapshot;changed.blocker="profession_material_sources_not_planned";changed.safe=false;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Pause);
     changed=snapshot; changed.capacity=false;
     assert(NextProfessionStep(saved,changed).step==ProfessionStep::PrepareCapacity);
     changed=snapshot; changed.tools=false;
@@ -208,6 +214,13 @@ int main() {
     changed=snapshot; changed.attempts={proof}; changed.skill=2;
     next=NextProfessionStep(saved,changed);
     assert(next.step==ProfessionStep::Finalize && next.verifiedAttempts==1 && next.verifiedOutput==1);
+    changed.blocker="profession_material_sources_not_planned";changed.stock[0].bag=0;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Finalize);
+    changed.blocker="profession_recipe_no_longer_useful";changed.useful=false;changed.knownRecipe=false;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Finalize);
+    changed.unresolvedOperation=true;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed=snapshot;changed.attempts={proof};changed.skill=2;
     assert(saved.phase==Phase::Queued); // A decision never mutates/persists completion.
     changed.attempts[0].committed=false;
     assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);

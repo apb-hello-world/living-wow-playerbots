@@ -10,6 +10,11 @@ class Spell;
 
 namespace LivingActivity {
     bool ReadNativeCraftFrame(Player& actor,const ProfessionJob& job,CraftFrame& frame,std::string& blocker);
+    // Inspect the same exact output contract used at cast attachment. Creates
+    // only an unstarted native Spell for its calculation; never calls CheckCast,
+    // SpellStart, resource effects, or a model. Unsupported variable/scripted
+    // outcomes require their own adapter rather than an assumed output count.
+    bool ReadNativeCraftOutput(Player& actor,const ProfessionJob& job,ItemGainSpec& output,std::string& blocker);
     // One reserved, value-only binding for one native Spell. The coordinator
     // retains the same capture until its guarded save is acknowledged. No
     // Player/Item/Spell pointer is retained here or delivered to another thread.

@@ -84,6 +84,11 @@ namespace LivingActivity {
         uint32_t skill = 0;
         std::vector<ProfessionStock> stock;
         std::vector<ProfessionCraftProof> attempts;
+        // A complete native inspection may expose an unsupported prerequisite.
+        // It is not permission to execute, nor a reason to discard a receipt.
+        std::string blocker;
+        uint64_t nativeReference = 0;
+        uint32_t outputPerAttempt = 0;
     };
     struct ProfessionDecision {
         ProfessionStep step = ProfessionStep::Reconcile;

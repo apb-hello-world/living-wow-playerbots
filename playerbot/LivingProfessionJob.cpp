@@ -236,6 +236,8 @@ namespace LivingActivity {
             return stop(ProfessionStep::Defer, "profession_attempt_limit");
         if (job.purpose == ProfessionPurpose::SkillGain && snapshot.skill >= job.targetSkill)
             return stop(ProfessionStep::Defer, "profession_target_met_without_job_proof");
+        if (!snapshot.blocker.empty())
+            return stop(ProfessionStep::Defer, IsToken(snapshot.blocker) ? snapshot.blocker.c_str() : "profession_native_inspection_blocked");
         if (!snapshot.useful) return stop(ProfessionStep::Defer, "profession_recipe_no_longer_useful");
 
         bool withdraw = false, collect = false, incoming = false, unavailable = false;

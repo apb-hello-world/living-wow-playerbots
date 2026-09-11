@@ -83,6 +83,8 @@ public:
     // the existing world/DB queue; this neither grants a lease nor resumes work.
     bool ReadProfessionHistory(uint32_t actor,const std::string& task,uint64_t revision,
         LivingActivity::ProfessionHistory& history,std::string& blocker);
+    bool ReadProfessionSnapshot(uint32_t actor,const std::string& task,uint64_t revision,
+        LivingActivity::ProfessionSnapshot& snapshot,std::string& blocker);
     struct TaskGrant {
         LivingActivity::AuthorityResult authority;
         LivingActivity::Task task;

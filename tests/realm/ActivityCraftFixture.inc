@@ -149,6 +149,11 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         };
         if (fixture.step==1) {advance(Phase::Preparing);fixture.step=2;return;}
         if (fixture.step==2) {
+            ProfessionSnapshot prepared;
+            if (!ReadProfessionSnapshot(request.task.actor,request.task.id,request.task.revision,prepared,fixture.blocker)) return;
+            require(NextProfessionStep(request.task,prepared).step==ProfessionStep::Execute &&
+                prepared.attempts.empty() && prepared.outputPerAttempt==1,
+                "craft_initial_native_snapshot_selects_exact_ready_attempt");
             const auto grant=AcquireSavedTask(request.task.id,request.task.revision,effects,60000,"isolated_craft_fixture");
             require(grant.Permitted(),"craft_reservation_authority");
             auto& reservation=fixture.reservation;reservation.transition=request;reservation.transition.expectedRevision=request.task.revision;
@@ -217,6 +222,23 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(proof.committed && proof.receipt.id==operation.transition.receipt &&
                 proof.receipt.state==(interrupted ? OperationState::Rejected : OperationState::Verified) &&
                 proof.nativeEffectVerified==!interrupted,"craft_history_matches_actual_saved_native_outcome");
+            ProfessionSnapshot snapshot;
+            require(ReadProfessionSnapshot(request.task.actor,request.task.id,request.task.revision,snapshot,fixture.blocker),
+                "craft_fresh_native_snapshot_uses_saved_history");
+            const auto decision=NextProfessionStep(request.task,snapshot);
+            require(decision.step==(interrupted ? ProfessionStep::Defer : ProfessionStep::Finalize) &&
+                decision.verifiedAttempts==(interrupted ? 0u : 1u) && decision.verifiedOutput==(interrupted ? 0u : 1u),
+                "craft_next_step_recognizes_success_or_exhausted_cancellation");
+            require(snapshot.skill==bot->GetSkillValuePure(SKILL_ALCHEMY) && snapshot.outputPerAttempt==1 &&
+                snapshot.tools && snapshot.atStation,"craft_snapshot_native_skill_tools_station_output");
+            auto staleHistory=history;++staleHistory.revision;ProfessionSnapshot rejected;std::string staleBlocker;
+            require(!InspectNativeProfessionSnapshot(*bot,request.task,staleHistory,NowMs(),rejected,staleBlocker) &&
+                !rejected.complete && staleBlocker=="profession_snapshot_history_not_current",
+                "craft_snapshot_rejects_stale_history_before_native_planning");
+            auto staleTask=request.task;staleTask.context.boot=NewId();
+            require(!InspectNativeProfessionSnapshot(*bot,staleTask,history,NowMs(),rejected,staleBlocker) &&
+                !rejected.complete && staleBlocker=="profession_snapshot_context_changed",
+                "craft_snapshot_rejects_old_boot_authority");
             ProfessionJob job;std::string blocker;require(DecodeProfessionJob(request.task.checkpoint.data,job,blocker),"craft_result_job_decoded");
             require(ReadNativeCraftFrame(*bot,job,fixture.after,blocker),"craft_after_native_frame");
             require(fixture.before.money==fixture.after.money,"craft_money_conserved");

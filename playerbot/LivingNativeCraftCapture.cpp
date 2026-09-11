@@ -8,6 +8,7 @@
 #include "PlayerbotGuildSupplies.h"
 #include "Skills/SkillExtraItems.h"
 #include "Spells/Spell.h"
+#include "Spells/Scripts/SpellScript.h"
 #include <algorithm>
 #include <chrono>
 #include <map>
@@ -29,6 +30,45 @@ namespace LivingActivity {
             }
             return json+"]}";
         }
+        bool ExactOutput(Spell& spell,Player& actor,const ProfessionJob& job,ItemGainSpec& output,std::string& blocker) {
+            output={};
+            auto reject=[&](const char* code){blocker=code;return false;};
+            unsigned outputs=0;uint32_t quantity=0;
+            const auto* info=spell.m_spellInfo;
+            if (!info || info->Id!=job.recipe || job.subjectItem ||
+                (job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial))
+                return reject("native_craft_exact_output_contract_required");
+            for (uint8_t i=0;i<MAX_EFFECT_INDEX;++i) {
+                if (!info->Effect[i]) continue;
+                if (info->Effect[i]!=SPELL_EFFECT_CREATE_ITEM || info->EffectItemType[i]!=job.outputEntry ||
+                    info->EffectDieSides[i]>1 || info->EffectDicePerLevel[i]!=0 || spell.GetSpellScript())
+                    return reject("native_craft_variable_or_scripted_output_unsupported");
+                ++outputs;const auto* item=sObjectMgr.GetItemPrototype(job.outputEntry);
+                if (!item || !item->Stackable) return reject("native_craft_output_unavailable");
+                const auto amount=spell.CalculateSpellEffectValue(SpellEffectIndex(i),&actor,true,false);
+                quantity=std::min(uint32_t(item->Stackable),uint32_t(std::max(1,amount)));
+            }
+            float chance=0;uint8_t extras=0;
+            if (outputs!=1 || !ValidItemGainSpec({job.outputEntry,quantity}) ||
+                canCreateExtraItems(&actor,job.recipe,chance,extras))
+                return reject("native_craft_exact_output_contract_required");
+            output={job.outputEntry,quantity};blocker.clear();return true;
+        }
+    }
+    bool ReadNativeCraftOutput(Player& actor,const ProfessionJob& job,ItemGainSpec& output,std::string& blocker) {
+        output={};
+        if (!sLivingActivityCoordinator.OnWorldThread() || !actor.IsInWorld() || actor.IsBeingTeleported()) {
+            blocker="native_craft_actor_unavailable";return false;
+        }
+        const auto* info=sSpellTemplate.LookupEntry<SpellEntry>(job.recipe);
+        if (!info) {blocker="native_craft_recipe_missing";return false;}
+        // Spell's constructor calls script OnInit. Reject BEFORE construction
+        // so a read-only projection cannot run an arbitrary scripted effect.
+        if (SpellScriptMgr::GetSpellScript(job.recipe)) {
+            blocker="native_craft_variable_or_scripted_output_unsupported";return false;
+        }
+        Spell inspect(&actor,info,false);
+        return ExactOutput(inspect,actor,job,output,blocker);
     }
     bool ReadNativeCraftFrame(Player& actor,const ProfessionJob& job,CraftFrame& frame,std::string& blocker) {
         frame={};
@@ -127,20 +167,9 @@ namespace LivingActivity {
         if (!MatchNativeProfessionRecipe(currentJob,native,blocker)) return false;
         if (job.purpose==ProfessionPurpose::SkillGain && native.skillValue>=job.targetSkill)
             return reject("native_craft_skill_goal_already_reached");
-        unsigned outputs=0;uint32_t quantity=0;
-        for (uint8_t i=0;i<MAX_EFFECT_INDEX;++i) {
-            const auto* info=spell.m_spellInfo;
-            if (!info->Effect[i]) continue;
-            if (info->Effect[i]!=SPELL_EFFECT_CREATE_ITEM || info->EffectItemType[i]!=output.entry ||
-                info->EffectDieSides[i]>1 || info->EffectDicePerLevel[i]!=0 || spell.GetSpellScript())
-                return reject("native_craft_variable_or_scripted_output_unsupported");
-            ++outputs;const auto* item=sObjectMgr.GetItemPrototype(output.entry);
-            if (!item || !item->Stackable) return reject("native_craft_output_unavailable");
-            const auto amount=spell.CalculateSpellEffectValue(SpellEffectIndex(i),actor,true,false);
-            quantity=std::min(uint32_t(item->Stackable),uint32_t(std::max(1,amount)));
-        }
-        float chance=0;uint8_t extras=0;
-        if (outputs!=1 || quantity!=output.quantity || canCreateExtraItems(actor,job.recipe,chance,extras))
+        ItemGainSpec expected;
+        if (!ExactOutput(spell,*actor,job,expected,blocker)) return false;
+        if (expected.entry!=output.entry || expected.quantity!=output.quantity)
             return reject("native_craft_exact_output_contract_required");
         ItemPosCountVec destinations;
         if (actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,destinations,output.entry,output.quantity)!=EQUIP_ERR_OK)
