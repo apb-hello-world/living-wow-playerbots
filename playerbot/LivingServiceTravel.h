@@ -4,6 +4,9 @@
 #include <tuple>
 
 namespace LivingActivity {
+    inline bool LegacyProfessionInFlight(bool casting,bool service,bool savedService,bool paidWindow) {
+        return casting || (service && !savedService) || paidWindow;
+    }
     enum class ServiceDestination { Mailbox, PersonalBank, CraftingStation };
     inline const char* ServiceStep(ServiceDestination service) {
         switch (service) {

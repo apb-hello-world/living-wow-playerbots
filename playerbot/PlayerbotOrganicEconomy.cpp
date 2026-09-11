@@ -1040,11 +1040,14 @@ bool PlayerbotOrganicEconomy::ExecuteGoal(Player* bot, Profile& profile,
         // Once handed over, even disabling execution cannot return this job to
         // legacy casting or purchases. Only its saved native owner may advance.
         const bool owned=!profile.managedTask.empty() || sLivingActivityCoordinator.OwnsEconomyProfession(bot->GetGUIDLow(),profile.goalRow);
+        const auto service=serviceTrips.find(bot->GetGUIDLow());
+        const bool managedService=service!=serviceTrips.end() && service->second.managedTask.actor;
+        if(managedService && !owned) {failureReason="profession_service_owned_by_saved_job";return false;}
         // Cut over at a clean boundary. An existing legacy cast/service or paid
         // window must finish under its current owner, not be reinterpreted as a
         // new recipe job without its original operation evidence.
-        const bool legacyInFlight=craftAttempts.count(bot->GetGUIDLow()) || serviceTrips.count(bot->GetGUIDLow()) ||
-            profile.committedUntil>uint32(time(nullptr));
+        const bool legacyInFlight=LivingActivity::LegacyProfessionInFlight(craftAttempts.count(bot->GetGUIDLow()),
+            service!=serviceTrips.end(),managedService,profile.committedUntil>uint32(time(nullptr)));
         if (owned || (sLivingActivityCoordinator.ProfessionAdmissionsEnabled() && !legacyInFlight)) {
             if (owned && legacyInFlight) {failureReason="profession_legacy_handoff_requires_reconciliation";return false;}
             if (!profile.goalRow) {failureReason="profession_native_goal_identity_pending";return false;}
@@ -1055,6 +1058,7 @@ bool PlayerbotOrganicEconomy::ExecuteGoal(Player* bot, Profile& profile,
             const auto admission=sLivingActivityCoordinator.AdmitEconomyProfession(bot->GetGUIDLow(),profile.goalRow,goalId);
             failureReason=admission.blocker;
             if (admission.code!=LivingActivity::AdmissionCode::Saved) return false;
+            if(managedService && service->second.goal!=admission.task) {failureReason="profession_service_other_job_pending";return false;}
             profile.managedTask=admission.task;
             const auto progress=sLivingActivityCoordinator.AdvanceProfessionJob(bot->GetGUIDLow(),admission.task);
             failureReason=progress.blocker;return progress.completed;

@@ -7,6 +7,10 @@
 using namespace LivingActivity;
 int main() {
     {
+        assert(!LegacyProfessionInFlight(false,true,true,false)); // A saved trip must not deadlock its own runner.
+        assert(LegacyProfessionInFlight(false,true,false,false));
+        assert(LegacyProfessionInFlight(true,true,true,false));
+        assert(LegacyProfessionInFlight(false,true,true,true));
         // The shared four-trip admission queue is FIFO within a priority band,
         // not GUID order. Unsafe/paused waiters do not hold the front forever.
         std::vector<ServiceQueueEntry> queue{
