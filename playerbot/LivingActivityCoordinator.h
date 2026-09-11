@@ -69,6 +69,9 @@ public:
     // Read-only immutable projection. Never permission to consume a reserved
     // item; a journalled service adapter must prove its own claim separately.
     LivingActivity::ResourceReader ResourceReservations() const;
+    std::optional<LivingActivity::Task> ReadSavedTask(const std::string& id) const;
+    bool TaskResourceAvailability(const std::string& task,uint64_t revision,
+        const LivingActivity::NativeResourceBalance& native,uint32_t& available,std::string& blocker) const;
     bool PurchaseLedgerReady() const;
     // Due-queued read of the common native spend ledger. This is NOT authority
     // to buy; the compiled adapter still validates its saved task, claims,

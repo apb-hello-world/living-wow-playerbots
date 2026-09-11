@@ -82,7 +82,10 @@ namespace LivingActivity {
         job.initialSkill=native.skillValue;
         if (!MatchNativeProfessionRecipe(job,native,blocker)) return false;
         const auto reagent=std::find_if(job.reagents.begin(),job.reagents.end(),[&](const auto& r){return r.entry==quote.entry;});
-        if (reagent == job.reagents.end() || uint64_t(reagent->perAttempt)*job.attemptLimit < quote.quantity)
+        const auto bundle=sObjectMgr.GetItemPrototype(quote.entry)->BuyCount;
+        const uint64_t total=reagent==job.reagents.end() ? 0 : uint64_t(reagent->perAttempt)*job.attemptLimit;
+        const uint64_t maximum=total ? ((total+bundle-1)/bundle)*bundle : 0;
+        if (reagent == job.reagents.end() || quote.quantity>maximum)
             return reject("vendor_purchase_not_a_required_recipe_material");
         // Native quote/possession checks never manufacture budget authorization.
         return prerequisites.ValidateCommittedDemandAndBudget(actor,request,quote,blocker);

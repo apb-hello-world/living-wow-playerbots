@@ -1027,6 +1027,23 @@ bool LivingActivityCoordinator::OnWorldThread() const {
 }
 
 ResourceReader LivingActivityCoordinator::ResourceReservations() const { return state->resources.Reader(); }
+std::optional<Task> LivingActivityCoordinator::ReadSavedTask(const std::string& id) const {
+    if (!OnWorldThread()) return {};
+    const auto found=state->cache.find(id);
+    return found==state->cache.end() ? std::optional<Task>{} : found->second;
+}
+bool LivingActivityCoordinator::TaskResourceAvailability(const std::string& id,uint64_t revision,
+    const NativeResourceBalance& native,uint32_t& available,std::string& blocker) const {
+    available=0;
+    const auto task=ReadSavedTask(id);
+    if (!task || task->revision!=revision || task->actor!=native.actor || Terminal(task->phase)) {
+        blocker="resource_demand_task_changed"; return false;
+    }
+    if (!state->resources.AvailableToTask(task->root,native,available)) {
+        blocker="resource_demand_requires_reconciliation"; return false;
+    }
+    blocker.clear(); return true;
+}
 bool LivingActivityCoordinator::PurchaseLedgerReady() const {
     return state->purchaseLedgerReady.load(std::memory_order_acquire);
 }
@@ -1522,6 +1539,8 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     RefreshPermission(intended.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
     const auto held = state->authority.Read(intended.actor).lease;
     if (!SameLease(held, grant.authority.lease)) return reject(AdmissionCode::StaleContext, "current_operation_lease_required");
+    if (!adapter.PrepareDispatch(*bot,request,blocker))
+        return reject(AdmissionCode::Pending,IsToken(blocker) ? blocker : "native_prerequisite_read_pending");
     // Reserve bounded result/projection capacity before the nonrepeatable call.
     // This world-thread dispatch cannot interleave another claim admission.
     if (!request.itemGain.Empty() && !state->resources.CanAdmitNewClaims(MaximumItemGainStacks))

@@ -36,6 +36,10 @@ namespace LivingActivity {
         // as the native save and journal. No player/model SQL enters this API.
         virtual std::string PersistedNativeProof(Player&, const OperationRequest&, const Task&) const { return {}; }
         virtual bool ValidateNative(Player& actor, const OperationRequest& request, std::string& blocker) = 0;
+        // A bounded asynchronous prerequisite may need a fresh read after
+        // intent admission. False waits WITHOUT dispatching or recording a
+        // rejected native effect. The exact native validator still runs later.
+        virtual bool PrepareDispatch(Player&,const OperationRequest&,std::string&) { return true; }
         virtual NativeObservation ExecuteNative(Player& actor, const OperationRequest& request) = 0;
     };
     bool ValidateOperationRequest(const OperationRequest& request, const Task& saved,

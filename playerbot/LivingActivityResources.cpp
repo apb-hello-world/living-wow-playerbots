@@ -79,6 +79,33 @@ namespace LivingActivity {
     const ResourceClaim* ResourceClaimBook::Inspect(const std::string& id) const {
         const auto found = records.find(id); return found == records.end() ? nullptr : &found->second;
     }
+    void ResourceClaimBook::IndexAcknowledged(const ResourceClaim& claim,bool add) {
+        if (!ProtectsResources(claim)) return;
+        if (claim.quantity || claim.location=="money")
+            Add(acknowledgedProtected,RootItemKey{claim.task,claim.actor,claim.itemGuid,claim.itemEntry},
+                claim.quantity+claim.copper,add);
+        if (claim.state!="held" || claim.nativeReference ||
+            (claim.location!="bags" && claim.location!="bank" && claim.location!="money")) return;
+        Add(acknowledgedOwned,OwnedKey{claim.task,claim.actor,claim.itemGuid,claim.itemEntry,claim.location},
+            claim.copper+claim.quantity,add);
+    }
+    bool ResourceClaimBook::AvailableToTask(const std::string& task,const NativeResourceBalance& native,uint32_t& available) const {
+        available=0;
+        if (!protection.ready || !IsUuid(task) || !native.actor ||
+            (native.location=="money" ? (native.itemGuid || native.itemEntry || native.quantity) :
+                (!native.itemGuid || !native.itemEntry || native.copper || (native.location!="bags" && native.location!="bank"))))
+            return false;
+        const uint64_t actual=uint64_t(native.copper)+native.quantity;
+        const uint64_t protectedAmount=native.location=="money" ? protection.ProtectedMoney(native.actor) :
+            protection.ProtectedItem(native.actor,native.itemGuid,native.itemEntry);
+        const auto owned=Lookup(acknowledgedOwned,OwnedKey{task,native.actor,native.itemGuid,native.itemEntry,native.location});
+        auto rootProtected=Lookup(acknowledgedProtected,RootItemKey{task,native.actor,native.itemGuid,native.itemEntry});
+        if (native.itemGuid) rootProtected+=Lookup(acknowledgedProtected,RootItemKey{task,native.actor,0,native.itemEntry});
+        // A root's received mail / moved bank stack with an old saved location
+        // is uncertainty, not zero available stock that should be bought again.
+        if (protectedAmount>actual || owned>protectedAmount || rootProtected!=owned) return false;
+        available=uint32_t(actual-(protectedAmount-owned)); return true;
+    }
     void ResourceClaimBook::Index(const ResourceClaim& claim, bool add) {
         if (!ProtectsResources(claim)) return;
         publisher.Changed(claim);
@@ -105,7 +132,7 @@ namespace LivingActivity {
             restoreFailed = true; return ClaimInstall::Capacity;
         }
         for (const auto& row : rows) if (!Inspect(row.id)) {
-            records.emplace(row.id, row); Index(row, true);
+            records.emplace(row.id, row); Index(row, true); IndexAcknowledged(row,true);
         }
         publisher.Publish(protection);
         return added ? ClaimInstall::Installed : ClaimInstall::Duplicate;
@@ -251,9 +278,9 @@ namespace LivingActivity {
         const auto slots = PendingSlots(committing);
         if (added > capacity || slots > capacity-added || records.size() > capacity-added-slots) return ClaimInstall::Capacity;
         for (const auto& change : changes) {
-            if (const auto* old = Inspect(change.after.id)) Index(*old, false);
+            if (const auto* old = Inspect(change.after.id)) { Index(*old, false); IndexAcknowledged(*old,false); }
             records[change.after.id] = change.after;
-            Index(change.after, true);
+            Index(change.after, true); IndexAcknowledged(change.after,true);
         }
         ++protection.revision;
         if (committing.empty()) publisher.Publish(protection);

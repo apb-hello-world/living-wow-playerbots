@@ -4,6 +4,7 @@
 #include "LivingActivityResourceView.h"
 #include <map>
 #include <utility>
+#include <tuple>
 
 namespace LivingActivity {
     bool ValidResourceClaim(const ResourceClaim& claim);
@@ -70,8 +71,14 @@ namespace LivingActivity {
         const ResourceClaim* Inspect(const std::string& id) const;
         size_t Size() const { return records.size(); }
         bool CanAdmitNewClaims(size_t count) const;
+        // Planning availability for one acknowledged root: its own saved,
+        // held stock remains usable while other roots and unacknowledged holds
+        // remain protected. This does not authorize consumption or a transfer.
+        // False means ambiguous/unreconciled ownership, NOT zero stock to buy.
+        bool AvailableToTask(const std::string& task,const NativeResourceBalance& native,uint32_t& available) const;
     private:
         void Index(const ResourceClaim& claim, bool add);
+        void IndexAcknowledged(const ResourceClaim& claim,bool add);
         size_t PendingSlots(const std::string& excluding = "") const;
         struct PendingReservation {
             std::vector<ClaimReceiptChange> changes;
@@ -83,6 +90,10 @@ namespace LivingActivity {
         size_t capacity;
         bool restoreFailed = false;
         std::map<std::string, ResourceClaim> records;
+        using OwnedKey=std::tuple<std::string,uint32_t,uint32_t,uint32_t,std::string>;
+        std::map<OwnedKey,uint64_t> acknowledgedOwned; // Updated only with saved receipts, not pending holds.
+        using RootItemKey=std::tuple<std::string,uint32_t,uint32_t,uint32_t>;
+        std::map<RootItemKey,uint64_t> acknowledgedProtected;
         ResourceProtection protection;
         ResourcePublisher publisher;
     };

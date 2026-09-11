@@ -8,6 +8,21 @@
 #include <tuple>
 
 namespace LivingActivity {
+    bool RequiredProfessionVendorQuantity(const ProfessionReagent& need,const ProfessionStock& stock,
+        uint32_t bundle,uint32_t& quantity,std::string& blocker) {
+        quantity=0;
+        auto reject=[&](const char* why){blocker=why; return false;};
+        if (!need.entry || need.entry!=stock.entry || !need.perAttempt || !bundle)
+            return reject("profession_vendor_demand_invalid");
+        if (stock.bag>=need.perAttempt) return reject("profession_purchase_material_already_available");
+        if (stock.bank) return reject("profession_banked_material_requires_collection");
+        if (stock.delivered) return reject("profession_delivered_material_requires_collection");
+        if (stock.paidInTransit) return reject("profession_paid_material_in_transit");
+        const uint64_t units=(uint64_t(need.perAttempt-stock.bag)+bundle-1)/bundle;
+        const uint64_t rounded=units*bundle;
+        if (units>255 || rounded>10000) return reject("profession_vendor_quantity_exceeds_native_bound");
+        quantity=uint32_t(rounded); blocker.clear(); return true;
+    }
     namespace {
         using Tree = boost::property_tree::ptree;
         uint32_t Number(const Tree& node) {

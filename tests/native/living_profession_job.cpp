@@ -3,6 +3,27 @@
 #include <cassert>
 using namespace LivingActivity;
 int main() {
+    {
+        ProfessionReagent need{3371,1}; ProfessionStock stock; stock.entry=3371;
+        uint32_t quantity=99; std::string blocker;
+        assert(RequiredProfessionVendorQuantity(need,stock,5,quantity,blocker) && quantity==5);
+        stock.bag=1;
+        assert(!RequiredProfessionVendorQuantity(need,stock,5,quantity,blocker) && !quantity);
+        stock.bag=0; stock.bank=1;
+        assert(!RequiredProfessionVendorQuantity(need,stock,5,quantity,blocker) && blocker=="profession_banked_material_requires_collection");
+        stock.bank=0; stock.delivered=1;
+        assert(!RequiredProfessionVendorQuantity(need,stock,5,quantity,blocker));
+        stock.delivered=0; stock.paidInTransit=1;
+        assert(!RequiredProfessionVendorQuantity(need,stock,5,quantity,blocker) && blocker=="profession_paid_material_in_transit");
+        stock.paidInTransit=0; need.perAttempt=256;
+        assert(!RequiredProfessionVendorQuantity(need,stock,1,quantity,blocker));
+        need.perAttempt=5000;
+        assert(RequiredProfessionVendorQuantity(need,stock,20,quantity,blocker) && quantity==5000);
+        need.perAttempt=10001;
+        assert(!RequiredProfessionVendorQuantity(need,stock,100,quantity,blocker));
+        stock.entry=999;
+        assert(!RequiredProfessionVendorQuantity(need,stock,100,quantity,blocker));
+    }
     ProfessionJob job; job.recipe=2881; job.skill=165; job.outputEntry=2318; job.outputQuantity=1;
     job.initialSkill=1; job.targetSkill=2; job.reagents={{2934,3}};
     std::string reason;

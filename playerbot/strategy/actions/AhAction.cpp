@@ -3,6 +3,7 @@
 #include "playerbot/playerbot.h"
 #include "playerbot/LivingActivityCoordinator.h"
 #include "playerbot/LivingPurchaseBudget.h"
+#include "playerbot/LivingProfessionDemand.h"
 #include "playerbot/PlayerbotAuctionEligibility.h"
 #include "playerbot/PlayerbotServiceTracking.h"
 #include "AhAction.h"
@@ -52,6 +53,8 @@ namespace
 
     OrganicAuctionPolicy GetOrganicAuctionPolicy()
     {
+        static std::mutex policyMutex;
+        std::lock_guard<std::mutex> guard(policyMutex);
         static OrganicAuctionPolicy policy;
         static std::chrono::steady_clock::time_point loaded;
         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
@@ -186,6 +189,17 @@ namespace
         const uint32 account = sObjectMgr.GetPlayerAccountIdByGUID(ObjectGuid(HIGHGUID_PLAYER,seller));
         return seller && seller != bot->GetGUIDLow() && account && account != bot->GetSession()->GetAccountId();
     }
+}
+
+bool LivingActivity::ValidateNativeProfessionBudget(Player& actor,const Task& saved,const std::string& operation,
+    uint32_t price,std::string& blocker)
+{
+    const auto policy=GetOrganicAuctionPolicy();
+    if (policy.mode!="active" || !actor.GetPlayerbotAI()) {blocker="profession_purchasing_policy_disabled"; return false;}
+    PurchaseSpend spend;
+    if (!sLivingActivityCoordinator.ReadPurchaseBudget(actor.GetGUIDLow(),saved.id,saved.revision,operation,spend,blocker)) return false;
+    const uint32 available=actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<uint32>("free money for",uint32(NeedMoneyFor::tradeskill))->Get();
+    return WithinPurchaseBudget(spend,{policy.maxPurchasesPerHour,policy.maxDailySpendPercent},actor.GetMoney(),available,price,false,blocker);
 }
 
 bool AhBidAction::HasPendingMaterial(Player* bot, uint32 entry)

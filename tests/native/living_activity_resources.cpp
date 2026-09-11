@@ -16,6 +16,38 @@ static ResourceClaim ItemClaim(const std::string& suffix, uint32_t guid, uint64_
 }
 int main() {
     {
+        ResourceClaimBook ownership;
+        auto mine=ItemClaim("90",800,4), other=ItemClaim("91",800,3);
+        other.task="637bd562-36d2-5b01-bc01-e2d831c49f39";
+        const NativeResourceBalance native{497,800,2934,10,0,"bags"};
+        uint32_t available=99;
+        assert(!ownership.AvailableToTask(mine.task,native,available) && !available);
+        assert(ownership.RestoreBatch({mine,other})==ClaimInstall::Installed && ownership.FinishRestore());
+        assert(ownership.AvailableToTask(mine.task,native,available) && available==7);
+        assert(ownership.AvailableToTask(other.task,native,available) && available==6);
+        assert(ownership.Protection().UnreservedItem(497,800,2934,10)==3);
+        auto added=ItemClaim("92",800,2); const auto receipt=ItemClaim("93",801,1).id;
+        assert(ownership.ReservePending(receipt,{{added,0}},{native})==ClaimInstall::Installed);
+        assert(ownership.AvailableToTask(mine.task,native,available) && available==5); // Pending own hold is NOT saved ownership.
+        assert(ownership.CommitReservation(receipt)==ClaimInstall::Installed);
+        assert(ownership.AvailableToTask(mine.task,native,available) && available==7);
+        auto changedNative=native; changedNative.quantity=8;
+        assert(!ownership.AvailableToTask(mine.task,changedNative,available) && !available);
+        auto changed=mine; changed.location="bank"; ++changed.revision;
+        assert(ownership.InstallReceipt({{changed,1}})==ClaimInstall::Installed);
+        auto banked=native; banked.location="bank";
+        assert(!ownership.AvailableToTask(mine.task,banked,available)); // Incomplete native location reconciliation.
+        assert(!ownership.AvailableToTask(mine.task,native,available));
+        auto otherBanked=other; otherBanked.location="bank"; ++otherBanked.revision;
+        added.location="bank"; ++added.revision;
+        assert(ownership.InstallReceipt({{otherBanked,1},{added,1}})==ClaimInstall::Installed);
+        assert(ownership.AvailableToTask(mine.task,banked,available) && available==7);
+        auto consumed=added; consumed.state="consumed"; ++consumed.revision;
+        assert(ownership.InstallReceipt({{consumed,2}})==ClaimInstall::Installed);
+        assert(ownership.AvailableToTask(mine.task,banked,available) && available==7);
+        ownership.BlockProjection(); assert(!ownership.AvailableToTask(mine.task,banked,available));
+    }
+    {
         ResourceClaimBook shared;
         const auto reader=shared.Reader();
         assert(!reader.Inspect());
