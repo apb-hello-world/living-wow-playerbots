@@ -54,12 +54,20 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
             boost::property_tree::ptree entry;entry.put("task",task.id);entry.put("revision",task.revision);
             entry.put("actor",task.actor);entry.put("phase",Name(task.phase));accepted.push_back({"",entry});
         }
+        // Earlier isolated fault injection deliberately retained this unsupported
+        // checkpoint. It must stay quarantined, not be deleted to pass a restart.
+        const bool knownQuarantine=state->quarantined.empty() ||
+            (state->quarantined.size()==1 &&
+             state->quarantined.begin()->first=="99f5da45-114a-581c-8d27-52016d6d8e37" &&
+             state->quarantined.begin()->second=="unsupported_checkpoint");
+        report.put("only_known_metadata_fault_quarantined",knownQuarantine);
         const bool passed=state->desired=="off" && state->effective==Mode::Off &&
             !state->enforceEffects.load(std::memory_order_acquire) &&
             ProfessionOwnershipProjection()==EconomyOwnershipProjection::Managed && ProfessionStoreReady() &&
             state->resources.Protection().ready && state->resources.Size() && !accepted.empty() &&
             !state->taskAdmissions && !state->nativeDispatches && !state->acknowledged &&
-            !state->invalidRecords && !state->invalidClaims && state->pending.empty();
+            knownQuarantine && state->invalidRecords==state->quarantined.size() &&
+            !state->invalidClaims && state->pending.empty();
         report.put("outcome",passed ? "passed" : "failed");report.add_child("accepted",accepted);
         boost::property_tree::ptree status;std::istringstream input(StatusJson());
         boost::property_tree::read_json(input,status);report.add_child("status",status);
