@@ -2,6 +2,7 @@
 #include "Mails/Mail.h"
 #include "playerbot/playerbot.h"
 #include "playerbot/PlayerbotServiceTracking.h"
+#include "playerbot/LivingActivityCoordinator.h"
 #include "MailAction.h"
 #include "playerbot/PlayerbotAIConfig.h"
 #include "playerbot/Helpers.h"
@@ -122,6 +123,13 @@ public:
                 Item* item = bot->GetMItem(guid);
                 if (!item) continue;
                 const uint32 entry = item->GetEntry(), count = item->GetCount();
+                // Accepted work retains its attachment even while execution is
+                // paused/observing. Only its journalled collection adapter may
+                // move the item and acknowledge the claim's new location.
+                // A partial or not-yet-restored claim cannot authorize a merge.
+                const auto claims = sLivingActivityCoordinator.ResourceReservations().Inspect();
+                if (!claims || claims->UnreservedItem(bot->GetGUIDLow(), guid, entry, count) != count)
+                    continue;
                 const uint32 before = bot->GetItemCount(entry, false);
                 const std::string itemText = ChatHelper::formatItem(item, count);
                 WorldPacket packet;

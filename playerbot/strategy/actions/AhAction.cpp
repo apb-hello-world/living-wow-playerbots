@@ -257,6 +257,9 @@ bool AhBidAction::CollectRecipeMaterial(uint32 entry, std::string& blocker)
             Item* item = bot->GetMItem(attachment.item_guid);
             if (!item) { blocker = "recipe_mail_attachment_unavailable"; return false; }
             const uint32 guid = attachment.item_guid, count = item->GetCount(), before = bot->GetItemCount(entry, false);
+            const auto claims = sLivingActivityCoordinator.ResourceReservations().Inspect();
+            if (!claims || claims->UnreservedItem(bot->GetGUIDLow(), guid, entry, count) != count)
+            { blocker = "recipe_mail_owned_by_saved_task"; return false; }
             WorldPacket packet; packet << mailbox->GetObjectGuid() << mail->messageID;
 #ifndef MANGOSBOT_ZERO
             packet << guid;

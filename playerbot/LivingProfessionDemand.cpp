@@ -41,7 +41,7 @@ namespace LivingActivity {
                 uint32_t available=0;
                 if (!sLivingActivityCoordinator.TaskResourceAvailability(saved.id,saved.revision,
                     {saved.actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,bank ? "bank" : "bags"},available,demand.blocker))
-                    return false;
+                    {demand.nativeReference=item->GetGUIDLow();return false;}
                 auto& count=bank ? stock.at(item->GetEntry()).bank : stock.at(item->GetEntry()).bag;
                 if (uint64_t(count)+available>std::numeric_limits<uint32_t>::max()) return reject("profession_stock_overflow");
                 count+=available;

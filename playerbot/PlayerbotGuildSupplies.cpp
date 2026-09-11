@@ -1,6 +1,7 @@
 #include "playerbot/playerbot.h"
 #include "PlayerbotGuildSupplies.h"
 #include "LivingServiceExecution.h"
+#include "LivingActivityCoordinator.h"
 #include "GuildSupplyPolicy.h"
 #include "GuildGovernancePolicy.h"
 #include "PlayerbotGuildGovernance.h"
@@ -458,6 +459,10 @@ void PlayerbotGuildSupplies::Update() {
             if(!s.MakeCollectionRoom(p,d,now)) continue;
             if(auto* mailbox=s.Reach(p,d,true,now)) {
                 if(!p->GetMItem(d.item)) {s.Block(d,"attachment_unavailable_review",now,true);continue;}
+                const auto claims=sLivingActivityCoordinator.ResourceReservations().Inspect();
+                const auto* attachment=p->GetMItem(d.item);
+                if(!claims || claims->UnreservedItem(p->GetGUIDLow(),d.item,attachment->GetEntry(),attachment->GetCount())!=attachment->GetCount())
+                {s.Block(d,"mail_owned_by_saved_task",now);continue;}
                 if(++d.operations>2) {s.Block(d,"mail_collection_blocked",now,true);continue;}
                 WorldPacket packet(CMSG_MAIL_TAKE_ITEM);packet<<mailbox->GetObjectGuid()<<d.mail<<d.item;
                 p->GetSession()->HandleMailTakeItem(packet);s.Release(d);s.load=0;

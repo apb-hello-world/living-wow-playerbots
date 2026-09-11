@@ -73,6 +73,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         report.put("local_service_walk_proof",passed && serviceTravel && fixture.travelArrived && fixture.travelConflictChecked);
         report.put("route_or_transport_proof",false);
         if(serviceTravel) {
+            report.put("legacy_mail_reservation_guard_proof",fixture.travelLegacyChecked);
             report.put("fixture_initial_distance",fixture.travelInitialDistance);
             report.put("walk_samples",fixture.travelSamples);report.put("walk_mailbox",fixture.travelMailbox);
             report.add_child("walk_trace",fixture.travelTrace);
@@ -127,9 +128,9 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         std::ofstream evidence("/isolated/evidence/activity-craft-"+state->boot+".json");evidence<<Json(report);evidence.close();
         if (!evidence) sLog.outError("Living isolated craft evidence write failed");
         sLog.outString("Living isolated fixture: %s",Json(report).c_str());
-        // Checkpoint mode preserves the copied actor's hold until the operator
-        // performs the planned restart; it has not completed its obligation.
-        if (!passed || !checkpoint) state->gameplayFixtureActor.store(0,std::memory_order_release);
+        // Failed/checkpoint actors keep their copied-realm hold until the next
+        // explicit restart. Do not let legacy work rewrite the failed evidence.
+        if (passed && !checkpoint) state->gameplayFixtureActor.store(0,std::memory_order_release);
         state->fixtureFinished=true;
     };
     auto require=[&](bool value,const char* name) {
@@ -512,6 +513,33 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 fixture.mailClaim=claim.id;followRunnerWrite();if (checkpoint) fixture.step=12;return;
             }
             if(serviceTravel && !fixture.travelPositioned) {
+                if(!fixture.travelLegacyChecked) {
+                    auto* letter=bot->GetMail(fixture.mailId);
+                    require(letter && bot->GetMItem(fixture.mailGuid),"walk_keeps_exact_uncollected_attachment");
+                    if(letter->deliver_time>time(nullptr)) {fixture.blocker="walk_probe_waits_for_native_delivery";return;}
+                    unsigned index=0;bool found=false;
+                    for(auto it=bot->GetMailBegin();it!=bot->GetMailEnd();++it) {
+                        if((*it)->state==MAIL_STATE_DELETED || (*it)->deliver_time>time(nullptr)) continue;
+                        ++index;if((*it)->messageID==fixture.mailId) {found=true;break;}
+                    }
+                    require(found,"walk_probe_exact_visible_envelope");
+                    Event take("rpg action","take "+std::to_string(index));
+                    MailAction legacy(bot->GetPlayerbotAI());
+                    const auto money=bot->GetMoney();
+                    const bool enforcement=state->enforceEffects.exchange(false,std::memory_order_acq_rel);
+                    legacy.Execute(take);
+                    AhBidAction auctionMail(bot->GetPlayerbotAI());std::string legacyBlocker;
+                    const bool auctionCollected=auctionMail.CollectRecipeMaterial(765,legacyBlocker);
+                    state->enforceEffects.store(enforcement,std::memory_order_release);
+                    require(!auctionCollected && legacyBlocker=="recipe_mail_owned_by_saved_task",
+                        "legacy_profession_mail_cannot_bypass_saved_claim");
+                    NativeResourceBalance protectedMail;
+                    const auto* held=state->resources.Inspect(fixture.mailClaim);
+                    require(held && ReadNativeMailBalance(*bot,*held,protectedMail) &&
+                        !bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,fixture.mailGuid)) && bot->GetMoney()==money,
+                        "legacy_mail_cannot_collect_saved_attachment_with_execution_disabled");
+                    fixture.travelLegacyChecked=true;
+                }
                 for(const auto& id:fixture.inheritedInputs) {
                     const auto* held=state->resources.Inspect(id);
                     if(held && held->location=="mail") continue;

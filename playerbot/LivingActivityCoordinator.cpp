@@ -25,6 +25,8 @@
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
 #include "LivingProfessionDemand.h"
 #include "PlayerbotInventoryPressure.h"
+#include "strategy/actions/MailAction.h"
+#include "strategy/actions/AhAction.h"
 #endif
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotActionBroker.h"
@@ -288,7 +290,7 @@ struct LivingActivityCoordinator::State {
         std::string resumeReceipt;
         std::vector<ResourceClaim> resumeClaims;
         bool mailCollectedAtResume=false,mailLookupStarted=false,mailLookupReady=false;
-        bool travelPositioned=false,travelStarted=false,travelArrived=false,travelConflictChecked=false;
+        bool travelPositioned=false,travelStarted=false,travelArrived=false,travelConflictChecked=false,travelLegacyChecked=false;
         uint64_t travelMailbox=0,travelSampleAt=0;
         uint32_t travelSamples=0;
         float travelX=0,travelY=0,travelZ=0,travelInitialDistance=0;
