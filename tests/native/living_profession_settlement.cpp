@@ -38,6 +38,37 @@ int main() {
     assert(completed.plan.statements.front().find("actor_guid=actor_guid")!=std::string::npos);
     assert(completed.plan.statements[1].find("$.native.result.after.skill")!=std::string::npos);
     assert(completed.plan.statements[1].find("c.state NOT IN ('consumed','released')")!=std::string::npos);
+    WorldContext restarted=task.context;restarted.boot="ff2efbdf-f0ec-4539-b840-299847974001";
+    restarted.actorGeneration=19;restarted.mapGeneration=27;restarted.policyRevision=3;
+    auto recoveredSnapshot=snapshot;recoveredSnapshot.context=restarted;
+    auto recover=[&](const WorldContext& context,const ProfessionSnapshot& view) {
+        return PrepareProfessionRestartSettlement(task,context,view,batch,balances,1001,receipt,settled,blocker);
+    };
+    assert(recover(restarted,recoveredSnapshot));
+    assert(settled.task.phase==Phase::Completed && settled.task.context==restarted &&
+        settled.task.checkpoint.data==task.checkpoint.data && settled.task.id==task.id &&
+        settled.task.revision==task.revision+1 && task.context.boot=="test_boot");
+    assert(settled.plan.statements[1].find("AND phase='verifying'")!=std::string::npos &&
+        settled.plan.statements[1].find("o.state IN ('intent','reconciling')")!=std::string::npos);
+    auto recoveryFail=[&](const WorldContext& context,const ProfessionSnapshot& view) {
+        assert(!recover(context,view) && !blocker.empty() && settled.plan.statements.empty() && settled.claims.empty());
+    };
+    recoveryFail(restarted,snapshot); // Old worker snapshot cannot be reused.
+    auto wrongContext=restarted;wrongContext.actor=704;recoveryFail(wrongContext,recoveredSnapshot);
+    wrongContext=restarted;wrongContext.boot=task.context.boot;recoveryFail(wrongContext,recoveredSnapshot);
+    wrongContext=restarted;wrongContext.boot="";recoveryFail(wrongContext,recoveredSnapshot);
+    wrongContext=restarted;wrongContext.actorGeneration=0;recoveryFail(wrongContext,recoveredSnapshot);
+    wrongContext=restarted;wrongContext.mapGeneration=0;recoveryFail(wrongContext,recoveredSnapshot);
+    wrongContext=restarted;wrongContext.policyRevision=0;recoveryFail(wrongContext,recoveredSnapshot);
+    wrongContext=restarted;wrongContext.session="group:3";recoveryFail(wrongContext,recoveredSnapshot);
+    wrongContext=restarted;wrongContext.sessionRevision=1;recoveryFail(wrongContext,recoveredSnapshot);
+    auto uncertain=recoveredSnapshot;uncertain.unresolvedOperation=true;recoveryFail(restarted,uncertain);
+    uncertain=recoveredSnapshot;uncertain.attempts.clear();recoveryFail(restarted,uncertain);
+    uncertain=recoveredSnapshot;uncertain.attempts[0].nativeEffectVerified=false;recoveryFail(restarted,uncertain);
+    auto restored=task;restored.context.boot.clear();restored.context.actorGeneration=restored.context.mapGeneration=0;
+    assert(PrepareProfessionRestartSettlement(restored,restarted,recoveredSnapshot,batch,balances,1001,receipt,settled,blocker));
+    restored.context.actorGeneration=1;
+    assert(!PrepareProfessionRestartSettlement(restored,restarted,recoveredSnapshot,batch,balances,1001,receipt,settled,blocker));
     auto fail=[&](const Task& owner,const ProfessionSnapshot& view,const UnsettledClaimBatch& rows,
         const std::vector<NativeResourceBalance>& native){assert(!prepare(owner,view,rows,native));
         assert(!blocker.empty() && settled.plan.statements.empty() && settled.claims.empty());};

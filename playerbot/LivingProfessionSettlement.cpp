@@ -120,4 +120,24 @@ bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& sn
     }
     result=std::move(prepared);blocker.clear();return true;
 }
+bool PrepareProfessionRestartSettlement(const Task& saved,const WorldContext& current,
+    const ProfessionSnapshot& snapshot,const UnsettledClaimBatch& batch,
+    const std::vector<NativeResourceBalance>& balances,uint64_t nowMs,const std::string& receipt,
+    ProfessionSettlement& result,std::string& blocker) {
+    result={};
+    if (saved.context.actor!=saved.actor || current.actor!=saved.actor ||
+        saved.context.boot==current.boot || !IsUuid(current.boot) ||
+        (saved.context.boot.empty() && (saved.context.actorGeneration || saved.context.mapGeneration)) ||
+        !current.actorGeneration || !current.mapGeneration || !current.policyRevision ||
+        (current.session.empty() ? current.sessionRevision!=0 : current.sessionRevision==0)) {
+        blocker="profession_restart_context_not_revalidated";return false;
+    }
+    // The loader deliberately restores no boot or native epochs. Their absence
+    // is expected and never itself grants authority. Only the native context
+    // changes; accepted intent, task ID, revision and
+    // exact saved operation history stay unchanged. Settlement still performs
+    // compare-and-swap against the original persisted revision and checkpoint.
+    auto rebound=saved;rebound.context=current;
+    return PrepareProfessionSettlement(rebound,snapshot,batch,balances,nowMs,receipt,result,blocker);
+}
 }

@@ -89,6 +89,10 @@ public:
     // stock itself; callers cannot submit a fabricated completion snapshot.
     LivingActivity::AdmissionResult SettleProfessionJob(uint32_t actor,const std::string& task,
         uint64_t expectedRevision,const std::string& receipt);
+    // Same finite settlement after a realm restart. Reinspect actual native
+    // context, saved proof and stock; never restart an uncertain operation.
+    LivingActivity::AdmissionResult ReconcileProfessionCompletion(uint32_t actor,const std::string& task,
+        uint64_t expectedRevision,const std::string& receipt);
     struct TaskGrant {
         LivingActivity::AuthorityResult authority;
         LivingActivity::Task task;
@@ -121,6 +125,8 @@ private:
     struct State;
     std::unique_ptr<State> state;
     void RefreshPermission(uint32_t guid, uint64_t actorEpoch);
+    LivingActivity::AdmissionResult SettleProfessionJobImpl(uint32_t actor,const std::string& task,
+        uint64_t expectedRevision,const std::string& receipt,bool restartRecovery);
     bool CollectNativeCraft();
     LivingActivity::DispatchResult FinalizeNativeOperation(const std::string& operation,Player& actor,
         LivingActivity::NativeObservation observation,std::vector<LivingActivity::VerifiedItemGain> gains,
@@ -133,6 +139,7 @@ private:
     void RunIsolatedPetFixture();
     void RunIsolatedVendorFixture();
     void RunIsolatedCraftFixture();
+    void RunIsolatedProfessionRecoveryFixture();
 #endif
 };
 #define sLivingActivityCoordinator LivingActivityCoordinator::instance()

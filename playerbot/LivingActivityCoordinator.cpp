@@ -237,6 +237,15 @@ struct LivingActivityCoordinator::State {
         std::string blocker;
         boost::property_tree::ptree checks,selection,grants,snapshot;
     } craftFixture;
+    struct ProfessionRecoveryFixture {
+        Task beforeTask;
+        CraftFrame before,after;
+        std::vector<ResourceClaim> claims;
+        std::string receipt,operation,blocker;
+        unsigned step=0;
+        uint64_t deadline=0;
+        boost::property_tree::ptree checks;
+    } professionRecoveryFixture;
     bool vendorFixtureFaults = false;
     uint32_t vendorFixtureCountBefore = 0;
     float vendorFixtureX = 0, vendorFixtureY = 0, vendorFixtureZ = 0, vendorFixtureO = 0;
@@ -848,6 +857,7 @@ LivingActivityCoordinator& LivingActivityCoordinator::instance() {
 #include "../tests/realm/ActivityPetFixture.inc"
 #include "../tests/realm/ActivityVendorFixture.inc"
 #include "../tests/realm/ActivityCraftFixture.inc"
+#include "../tests/realm/ActivityProfessionRecoveryFixture.inc"
 #endif
 
 LivingActivityCoordinator::LivingActivityCoordinator() : state(new State) {
@@ -1490,6 +1500,14 @@ AdmissionResult LivingActivityCoordinator::SubmitResourceReservation(const Reser
 
 AdmissionResult LivingActivityCoordinator::SettleProfessionJob(uint32_t actor,const std::string& id,
     uint64_t expectedRevision,const std::string& receipt) {
+    return SettleProfessionJobImpl(actor,id,expectedRevision,receipt,false);
+}
+AdmissionResult LivingActivityCoordinator::ReconcileProfessionCompletion(uint32_t actor,const std::string& id,
+    uint64_t expectedRevision,const std::string& receipt) {
+    return SettleProfessionJobImpl(actor,id,expectedRevision,receipt,true);
+}
+AdmissionResult LivingActivityCoordinator::SettleProfessionJobImpl(uint32_t actor,const std::string& id,
+    uint64_t expectedRevision,const std::string& receipt,bool restartRecovery) {
     AdmissionResult result;result.task=id;result.revision=expectedRevision+1;
     auto reject=[&](AdmissionCode code,const std::string& reason="") {
         result.code=code;result.blocker=reason.empty() ? Name(code) : reason;return result;
@@ -1504,8 +1522,12 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJob(uint32_t actor,co
     if (saved==state->cache.end() || saved->second.actor!=actor ||
         id!=SourceId(saved->second.source,saved->second.sourceKey)) return reject(AdmissionCode::InvalidRequest);
     Player* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
-    if (!bot || !bot->GetPlayerbotAI() || !(saved->second.context==ReadNativeContext(*bot,state->policyRevision,state->boot)))
+    if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || bot->IsBeingTeleported())
         return reject(AdmissionCode::StaleContext);
+    RefreshPermission(actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    if (!current.actorGeneration || !current.mapGeneration ||
+        (!restartRecovery && !(saved->second.context==current))) return reject(AdmissionCode::StaleContext);
     for (const auto& pending : state->pending) {
         if (pending.admissionReceipt==receipt) {
             if (pending.task.id==id && pending.task.revision==expectedRevision+1 &&
@@ -1520,6 +1542,8 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJob(uint32_t actor,co
         acknowledged->second==receipt && (saved->second.checkpoint.step=="profession_settling" ||
         saved->second.checkpoint.step=="profession_completed")) return reject(AdmissionCode::Saved);
     if (saved->second.revision!=expectedRevision) return reject(AdmissionCode::StaleRevision);
+    if (restartRecovery && saved->second.context.boot==current.boot)
+        return reject(AdmissionCode::StaleContext,"profession_restart_already_rebound");
     for (const auto& operation : state->operations)
         if (operation.second.request.transition.task.actor==actor)
             return reject(AdmissionCode::ReconciliationRequired,"native_operation_pending");
@@ -1528,7 +1552,13 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJob(uint32_t actor,co
     const auto owned=state->authority.Read(actor);
     if (!owned.operation.empty()) return reject(AdmissionCode::ReconciliationRequired,"atomic_operation_pending");
     ProfessionSnapshot snapshot;UnsettledClaimBatch batch;std::string blocker;
-    if (!ReadProfessionSnapshot(actor,id,expectedRevision,snapshot,blocker)) return reject(AdmissionCode::NotReady,blocker);
+    if (restartRecovery) {
+        ProfessionHistory history;
+        if (!ReadProfessionHistory(actor,id,expectedRevision,history,blocker)) return reject(AdmissionCode::NotReady,blocker);
+        auto rebound=saved->second;rebound.context=current;
+        if (!InspectNativeProfessionSnapshot(*bot,rebound,history,NowMs(),snapshot,blocker))
+            return reject(AdmissionCode::ReconciliationRequired,blocker);
+    } else if (!ReadProfessionSnapshot(actor,id,expectedRevision,snapshot,blocker)) return reject(AdmissionCode::NotReady,blocker);
     if (!state->resources.ReadUnsettled(id,batch,blocker)) return reject(AdmissionCode::ReconciliationRequired,blocker);
     try {
         const auto balances=NativeClaimBalances(*bot,batch.claims,false);
@@ -1538,7 +1568,10 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJob(uint32_t actor,co
                 return reject(AdmissionCode::ReconciliationRequired,"profession_settlement_native_backing_uncertain");
         }
         ProfessionSettlement settlement;
-        if (!PrepareProfessionSettlement(saved->second,snapshot,batch,balances,NowMs(),receipt,settlement,blocker))
+        const bool prepared=restartRecovery ?
+            PrepareProfessionRestartSettlement(saved->second,current,snapshot,batch,balances,NowMs(),receipt,settlement,blocker) :
+            PrepareProfessionSettlement(saved->second,snapshot,batch,balances,NowMs(),receipt,settlement,blocker);
+        if (!prepared)
             return reject(AdmissionCode::ReconciliationRequired,blocker);
         State::Pending write;write.task=std::move(settlement.task);write.plan=std::move(settlement.plan);
         write.admissionReceipt=receipt;write.claims=std::move(settlement.claims);

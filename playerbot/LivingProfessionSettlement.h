@@ -17,5 +17,13 @@ namespace LivingActivity {
     bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& snapshot,
         const UnsettledClaimBatch& batch,const std::vector<NativeResourceBalance>& balances,
         uint64_t nowMs,const std::string& receipt,ProfessionSettlement& result,std::string& blocker);
+    // Restart recovery of an ALREADY proven skill goal, not permission to cast
+    // or reacquire a movement lease. The caller must inspect the live actor and
+    // native possessions under fresh context; all existing receipt/claim SQL
+    // guards remain mandatory. Uncertain effects cannot enter this path.
+    bool PrepareProfessionRestartSettlement(const Task& saved,const WorldContext& current,
+        const ProfessionSnapshot& snapshot,const UnsettledClaimBatch& batch,
+        const std::vector<NativeResourceBalance>& balances,uint64_t nowMs,const std::string& receipt,
+        ProfessionSettlement& result,std::string& blocker);
 }
 #endif

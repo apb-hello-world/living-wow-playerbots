@@ -72,9 +72,16 @@ static void ProfessionSettlementDatabase(Connection& db) {
     assert(book.InstallReceipt({demands.begin(),demands.begin()+16})==ClaimInstall::Installed);
     assert(book.InstallReceipt({demands.begin()+16,demands.end()})==ClaimInstall::Installed);
     assert(book.ReadUnsettled(task.id,batch,blocker) && !batch.complete && batch.claims.size()==16);
-    assert(PrepareProfessionSettlement(task,view,batch,remaining,1001,rid(5),settlement,blocker));
+    // Persisted tasks restore without resumable boot/actor/map authority. The
+    // same saved proof supports bounded settlement only after native rebind.
+    auto restored=task;restored.context.boot.clear();restored.context.actorGeneration=restored.context.mapGeneration=0;
+    WorldContext current=task.context;current.boot="ff2efbdf-f0ec-4539-b840-299847974001";
+    current.actorGeneration=19;current.mapGeneration=27;current.policyRevision=3;
+    auto revalidated=view;revalidated.context=current;
+    assert(PrepareProfessionRestartSettlement(restored,current,revalidated,batch,remaining,1001,rid(5),settlement,blocker));
     assert(settlement.task.phase==Phase::Verifying);
     assert(db.Write(settlement.plan));assert(db.Write(settlement.plan));
+    assert(db.Scalar("SELECT policy_revision FROM living_activity_task WHERE task_id="+SqlValue(task.id))=="3");
     const auto first=settlement;task=settlement.task;
     assert(book.InstallReceipt(settlement.claims)==ClaimInstall::Installed);
     assert(book.ReadUnsettled(task.id,batch,blocker) && batch.complete && batch.claims.size()==3);
