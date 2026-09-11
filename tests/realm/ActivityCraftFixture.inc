@@ -257,6 +257,9 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                         bot->GetItemCount(765,true)==fixture.bankTotal && claim->itemGuid==fixture.bankGuid &&
                         claim->quantity==fixture.bankCount && claim->state=="held","ordinary_bank_runner_preserved_item_and_claim");
                     fixture.inheritedInputs.push_back(claim->id);
+                    ProfessionJob job;std::string blocker;
+                    require(DecodeProfessionJob(request.task.checkpoint.data,job,blocker) &&
+                        ReadNativeCraftFrame(*bot,job,fixture.before,blocker),"craft_frame_refreshed_after_verified_bank_move");
                     const auto count=state->nativeDispatches;
                     NativeBankQuote quote;NativeBankWithdrawal adapter(quote);
                     require(!DispatchSavedOperation(fixture.bankOperation,{},adapter).executed && state->nativeDispatches==count,
@@ -434,12 +437,12 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             for (const auto& input : operation.consumption) {
                 const auto* claim=state->resources.Inspect(input.before.id);
                 if (interrupted) {
-                    require(claim && claim->state=="held" && claim->revision==1,"interrupted_craft_inputs_not_consumed");
+                    require(claim && claim->state=="held" && claim->revision==input.before.revision,"interrupted_craft_inputs_not_consumed");
                     auto released=*claim;released.state="released";++released.revision;
                     fixture.reservation.changes.push_back({released,claim->revision});
                 } else {
                     const auto remaining=input.before.quantity-input.used;
-                    require(claim && claim->state==(remaining ? "held" : "consumed") && claim->revision==2 &&
+                    require(claim && claim->state==(remaining ? "held" : "consumed") && claim->revision==input.before.revision+1 &&
                         claim->quantity==(remaining ? remaining : input.used),"craft_input_consumed_once_in_saved_receipt");
                     if (remaining) {
                         auto released=*claim;released.state="released";++released.revision;
