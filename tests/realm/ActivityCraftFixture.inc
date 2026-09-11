@@ -120,7 +120,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                     if (!MatchNativeProfessionRecipe(next,native,blocker)) {skipped("skill_goal_not_useful");continue;}
                 }
                 if (!ReadNativeCraftFrame(*candidate,next,frame,blocker)) {skipped("inventory_snapshot");continue;}
-                unsigned missing=0;bool eligible=true;
+                unsigned missing=0,missingStacks=0;bool eligible=true,capacity=true;
                 for (const auto& reagent : next.reagents) {
                     unsigned stacks=0,owned=0;
                     for (const auto& stack : frame.stacks) if (stack.entry==reagent.entry) {
@@ -130,9 +130,27 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                     }
                     if (stacks>1 || sGuildSupplies.ReservedEntry(binding.first,reagent.entry)) eligible=false;
                     missing+=owned>=reagent.perAttempt ? 0 : reagent.perAttempt-owned;
+                    const auto required=settling && reagent.entry==3371 ? 5u : reagent.perAttempt;
+                    if (supplied && owned<required) {
+                        ItemPosCountVec destinations;
+                        capacity&=candidate->CanStoreNewItem(NULL_BAG,NULL_SLOT,destinations,reagent.entry,required-owned)==EQUIP_ERR_OK;
+                        if (!owned) ++missingStacks;
+                    }
                 }
                 if (!eligible) {skipped("protected_or_mixed_input");continue;}
                 if (!supplied && missing) {skipped("missing_owned_material");continue;}
+                // Test prerequisites must fit together, not just individually.
+                // Leave one normal slot for the output; never discard inventory
+                // to manufacture fixture capacity. Real full-bag handling is a
+                // separate workflow gate, not this bank-transfer scenario.
+                unsigned freeSlots=0;
+                for (uint8_t slot=INVENTORY_SLOT_ITEM_START;slot<INVENTORY_SLOT_ITEM_END;++slot)
+                    if (!candidate->GetItemByPos(INVENTORY_SLOT_BAG_0,slot)) ++freeSlots;
+                for (uint8_t bag=INVENTORY_SLOT_BAG_START;bag<INVENTORY_SLOT_BAG_END;++bag)
+                    if (const auto* container=static_cast<Bag*>(candidate->GetItemByPos(INVENTORY_SLOT_BAG_0,bag)))
+                        if (container->GetProto()->Class==ITEM_CLASS_CONTAINER && container->GetProto()->SubClass==ITEM_SUBCLASS_CONTAINER)
+                            freeSlots+=container->GetFreeSlots();
+                if (!capacity || freeSlots<missingStacks+1) {skipped("fixture_prerequisite_capacity");continue;}
                 if (missing<bestMissing) {selected=candidate;job=next;bestMissing=missing;}
             }
             if (!selected) {
