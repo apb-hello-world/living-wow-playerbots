@@ -122,7 +122,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 }
                 if (mailed && (candidate->GetMapId()!=1 || candidate->GetTeam()!=HORDE ||
                     candidate->GetItemCount(765,false)>1 || candidate->GetItemCount(765,true)!=candidate->GetItemCount(765,false) ||
-                    candidate->m_mailsUpdated || candidate->GetMailSize())) {
+                    candidate->m_mailsUpdated || candidate->GetMailSize()>256)) {
                     skipped("mail_fixture_map_existing_stock_or_mail");continue;
                 }
                 ProfessionJob next;next.recipe=2329;next.skill=SKILL_ALCHEMY;
@@ -146,6 +146,12 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                             sPlayerbotActionBroker.IsItemReserved(stack.guid)) eligible=false;
                     }
                     if (stacks>1 || sGuildSupplies.ReservedEntry(binding.first,reagent.entry)) eligible=false;
+                    // Unrelated letters remain owned and untouched. Only an
+                    // existing matching attachment would make this explicit
+                    // fixture link ambiguous, just as in the real demand read.
+                    if (mailed) for (auto it=candidate->GetMailBegin();it!=candidate->GetMailEnd();++it)
+                        for (const auto& attachment : (*it)->items)
+                            if (attachment.item_template==reagent.entry) eligible=false;
                     missing+=owned>=reagent.perAttempt ? 0 : reagent.perAttempt-owned;
                     const auto required=settling && reagent.entry==3371 ? 5u : reagent.perAttempt;
                     if (supplied && owned<required) {
