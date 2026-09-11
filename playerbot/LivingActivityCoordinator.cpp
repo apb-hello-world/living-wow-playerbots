@@ -229,6 +229,7 @@ struct LivingActivityCoordinator::State {
     float vendorFixtureX = 0, vendorFixtureY = 0, vendorFixtureZ = 0, vendorFixtureO = 0;
     bool vendorFixturePositionChanged = false;
     std::string vendorFixtureBlocker;
+    boost::property_tree::ptree vendorFixtureSelection;
     std::atomic<uint64_t> petFixtureCaster{0}, petFixtureTarget{0};
     std::atomic<uint32_t> petFixtureDamagePackets{0}, petFixtureDamage{0};
     boost::property_tree::ptree petFixtureCandidates;

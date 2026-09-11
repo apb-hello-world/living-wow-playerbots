@@ -51,6 +51,7 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
         report.put("native_money_before",quote.moneyBefore); report.put("native_price",quote.copper);
         report.put("entry",quote.entry); report.put("purchased_quantity",quote.quantity);
         report.put("native_count_before",state->vendorFixtureCountBefore);
+        report.add_child("selection_rejections",state->vendorFixtureSelection);
         report.put("fault_injection_requested",state->vendorFixtureFaults);
         if (state->vendorFixtureFaults) {
             report.put("native_save_attempts",state->nativeSaveFixtureAttempts);
@@ -85,18 +86,34 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
             // Explicit fixture content from this copied TBC database. Resolve
             // its actual spawn and validate native service/faction/stock later.
             const auto* spawn=sObjectMgr.GetCreatureData(46560);
-            require(spawn && spawn->id==4229 && spawn->mapid==1,"fixture_service_spawn_exists");
+            if (!spawn || spawn->id!=4229 || spawn->mapid!=1)
+                throw std::runtime_error("fixture_service_spawn_missing");
+            // One bounded current snapshot, not one repeated check/history row
+            // per second. Guild membership alone is not a service commitment:
+            // native reservations and the actual executor still validate it.
+            state->vendorFixtureSelection.clear();
+            auto skipped=[&](const char* reason) {
+                state->vendorFixtureSelection.put(reason,state->vendorFixtureSelection.get<unsigned>(reason,0)+1);
+            };
             for (const auto& binding : state->bindings) {
                 auto* bot=sRandomPlayerbotMgr.GetPlayerBot(binding.first);
-                if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || bot->GetMapId()!=spawn->mapid ||
-                    bot->GetTeam()!=ALLIANCE || NativeSafety(bot) || bot->GetGroup() || bot->GetGuildId() ||
-                    bot->GetTradeData() || bot->GetMoney()<20 || !bot->HasSpell(2329) ||
-                    bot->GetItemCount(3371,true) || sPlayerbotActionBroker.ReservedCopper(bot->GetGUIDLow()) ||
-                    state->authority.Read(binding.first).lease.actor) continue;
+                if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) {skipped("native_actor_unavailable");continue;}
+                if (bot->GetMapId()!=spawn->mapid || bot->GetTeam()!=ALLIANCE) {skipped("service_map_or_faction");continue;}
+                if (NativeSafety(bot)) {skipped("native_safety");continue;}
+                if (bot->GetGroup() || bot->GetTradeData() || state->authority.Read(binding.first).lease.actor) {
+                    skipped("existing_commitment");continue;
+                }
+                if (bot->GetMoney()<20 || sPlayerbotActionBroker.ReservedCopper(bot->GetGUIDLow())) {
+                    skipped("money_or_reserved_trade");continue;
+                }
+                if (!bot->HasSpell(2329)) {skipped("required_recipe_not_known");continue;}
+                if (bot->GetItemCount(3371,true)) {skipped("required_material_already_owned");continue;}
                 ProfessionJob job;job.recipe=2329;job.skill=SKILL_ALCHEMY;
                 job.purpose=ProfessionPurpose::Intermediate;job.outputQuantity=1;job.attemptLimit=1;
                 const auto native=InspectNativeProfessionRecipe(*bot,job);
-                if (!native.blocker.empty() || native.operation!=ProfessionOperation::CreateItem) continue;
+                if (!native.blocker.empty() || native.operation!=ProfessionOperation::CreateItem) {
+                    skipped("native_recipe_prerequisite");continue;
+                }
                 job.outputEntry=native.outputEntry;job.reagents=native.reagents;job.initialSkill=native.skillValue;
                 request.task.source="profession_job";request.task.sourceKey="isolated_vendor_v1:"+state->boot;
                 request.task.id=request.task.root=SourceId(request.task.source,request.task.sourceKey);
