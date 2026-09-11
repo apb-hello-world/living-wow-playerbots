@@ -44,9 +44,33 @@ namespace LivingActivity {
     }
     // Inspects the actual native spell, known-spell record, target and CheckCast.
     // No talent change, role inference, synthetic spell or rotation selection.
-    constexpr uint32_t SpellEffectMask(bool inventoryFreeDirectHeal) {
+    constexpr uint32_t SpellEffectMask(bool inventoryFreeNativeSpell) {
         // Native casting can face the target and interrupt an existing move.
-        return Mask(Effect::Spell) | Mask(Effect::Movement) | (inventoryFreeDirectHeal ? 0 : Mask(Effect::Inventory));
+        return Mask(Effect::Spell) | Mask(Effect::Movement) | (inventoryFreeNativeSpell ? 0 : Mask(Effect::Inventory));
+    }
+    template<class NativeSpell, class Predicate>
+    bool HasOnlyNativeEffects(const NativeSpell& spell, Predicate allowed) {
+        bool present = false;
+        for (const auto effect : spell.Effect) {
+            if (!effect) continue;
+            if (!allowed(effect)) return false;
+            present = true;
+        }
+        return present;
+    }
+    template<class NativeSpell, class Predicate>
+    bool HasOnlyNativeAuras(const NativeSpell& spell, Predicate allowed) {
+        for (const auto aura : spell.EffectApplyAuraName) if (aura && !allowed(aura)) return false;
+        return true;
+    }
+    template<class NativeSpell, class Predicate, class AuraPredicate>
+    bool InventoryFreeNativeSpell(const NativeSpell& spell, bool known, bool itemCast,
+        bool equipmentOrAmmunition, Predicate allowed, AuraPredicate allowedAura) {
+        if (!known || itemCast || equipmentOrAmmunition || !HasOnlyNativeEffects(spell, allowed) ||
+            !HasOnlyNativeAuras(spell, allowedAura)) return false;
+        for (const auto trigger : spell.EffectTriggerSpell) if (trigger) return false;
+        for (const auto reagent : spell.Reagent) if (reagent > 0) return false;
+        return true;
     }
     template<class NativeSpell>
     bool InventoryFreeDirectHeal(const NativeSpell& spell, bool known, bool itemCast, uint32_t heal, uint32_t maxHeal) {
@@ -60,8 +84,8 @@ namespace LivingActivity {
         for (const auto reagent : spell.Reagent) if (reagent > 0) return false;
         return healing;
     }
-    // Conservative default. Only a known, direct, reagent-free native heal can
-    // shed the inventory effect; unclassified spells retain it.
+    // Only known, classified, reagent/trigger/equipment-free native effects can
+    // shed inventory authority. Unknown effects and item/ammunition casts retain it.
     Effects NativeSpellEffects(PlayerbotAI& ai, uint32_t spell, bool itemCast = false);
     NativePermit NativeSpellPermit(PlayerbotAI& ai, uint32_t spell, Unit* target, Item* item = nullptr);
     // The owner's spellbook is not a pet spellbook. This validates the actual

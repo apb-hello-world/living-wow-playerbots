@@ -10,6 +10,81 @@
 
 namespace LivingActivity {
     namespace {
+        bool NativeSupportEffect(uint32_t effect) {
+            switch (effect) {
+                case SPELL_EFFECT_APPLY_AURA: // Includes native shields, buffs and learned forms.
+                case SPELL_EFFECT_APPLY_AREA_AURA_PARTY:
+                case SPELL_EFFECT_DISPEL:
+                case SPELL_EFFECT_DISPEL_MECHANIC:
+                case SPELL_EFFECT_ENERGIZE:
+                case SPELL_EFFECT_HEAL:
+                case SPELL_EFFECT_HEAL_MAX_HEALTH:
+                    return true;
+                default: return false;
+            }
+        }
+        bool NativeResourceFreeEffect(uint32_t effect) {
+            return effect == SPELL_EFFECT_SCHOOL_DAMAGE || NativeSupportEffect(effect);
+        }
+        bool NativeResourceFreeAura(uint32_t aura) {
+            // APPLY_AURA alone is not a resource classification: Drain Soul can
+            // create an item and mount/possession/script auras change commitments.
+            // Unknown, triggered, dummy and item-producing auras stay managed.
+            switch (aura) {
+                case SPELL_AURA_PERIODIC_DAMAGE:
+                case SPELL_AURA_PERIODIC_HEAL:
+                case SPELL_AURA_PERIODIC_ENERGIZE:
+                case SPELL_AURA_PERIODIC_LEECH:
+                case SPELL_AURA_MOD_ATTACKSPEED:
+                case SPELL_AURA_MOD_THREAT:
+                case SPELL_AURA_MOD_DAMAGE_DONE:
+                case SPELL_AURA_MOD_DAMAGE_TAKEN:
+                case SPELL_AURA_DAMAGE_SHIELD:
+                case SPELL_AURA_MOD_STEALTH:
+                case SPELL_AURA_MOD_STEALTH_DETECT:
+                case SPELL_AURA_MOD_INVISIBILITY:
+                case SPELL_AURA_MOD_INVISIBILITY_DETECTION:
+                case SPELL_AURA_MOD_RESISTANCE:
+                case SPELL_AURA_MOD_STAT:
+                case SPELL_AURA_MOD_INCREASE_SPEED:
+                case SPELL_AURA_MOD_DECREASE_SPEED:
+                case SPELL_AURA_MOD_INCREASE_HEALTH:
+                case SPELL_AURA_MOD_INCREASE_ENERGY:
+                case SPELL_AURA_MOD_SHAPESHIFT:
+                case SPELL_AURA_EFFECT_IMMUNITY:
+                case SPELL_AURA_STATE_IMMUNITY:
+                case SPELL_AURA_SCHOOL_IMMUNITY:
+                case SPELL_AURA_DAMAGE_IMMUNITY:
+                case SPELL_AURA_DISPEL_IMMUNITY:
+                case SPELL_AURA_MOD_PARRY_PERCENT:
+                case SPELL_AURA_MOD_DODGE_PERCENT:
+                case SPELL_AURA_MOD_BLOCK_PERCENT:
+                case SPELL_AURA_MOD_CRIT_PERCENT:
+                case SPELL_AURA_MOD_HIT_CHANCE:
+                case SPELL_AURA_MOD_SPELL_HIT_CHANCE:
+                case SPELL_AURA_MOD_SPELL_CRIT_CHANCE:
+                case SPELL_AURA_MOD_INCREASE_SWIM_SPEED:
+                case SPELL_AURA_SCHOOL_ABSORB:
+                case SPELL_AURA_MANA_SHIELD:
+                case SPELL_AURA_MECHANIC_IMMUNITY:
+                case SPELL_AURA_MOD_ATTACK_POWER:
+                case SPELL_AURA_MOD_RANGED_ATTACK_POWER:
+                case SPELL_AURA_MOD_DAMAGE_PERCENT_DONE:
+                case SPELL_AURA_MOD_PERCENT_STAT:
+                case SPELL_AURA_WATER_BREATHING:
+                case SPELL_AURA_WATER_WALK:
+                case SPELL_AURA_FEATHER_FALL:
+                case SPELL_AURA_SAFE_FALL:
+                case SPELL_AURA_MOD_REGEN:
+                case SPELL_AURA_MOD_POWER_REGEN:
+                case SPELL_AURA_MOD_REGEN_DURING_COMBAT:
+                case SPELL_AURA_MOD_HEALING:
+                case SPELL_AURA_MOD_HEALING_PCT:
+                case SPELL_AURA_MOD_TOTAL_STAT_PERCENTAGE:
+                    return true;
+                default: return false;
+            }
+        }
         bool NativePartyEngaged(Player& actor, Unit& enemy) {
             if (!actor.IsInWorld() || !enemy.IsInWorld() || actor.GetMapId() != enemy.GetMapId() ||
                 actor.GetInstanceId() != enemy.GetInstanceId()) return false;
@@ -64,9 +139,10 @@ namespace LivingActivity {
         const auto* info = spell ? sServerFacade.LookupSpellInfo(spell) : nullptr;
         auto* actor = ai.GetBot();
         const bool known = actor && (actor->HasSpell(spell) || (actor->GetPet() && actor->GetPet()->HasSpell(spell)));
-        const bool freeHeal = info && actor && InventoryFreeDirectHeal(*info, known,
-            itemCast, SPELL_EFFECT_HEAL, SPELL_EFFECT_HEAL_MAX_HEALTH);
-        return {SpellEffectMask(freeHeal), Lane::Managed, true};
+        const bool inventoryFree = info && actor && InventoryFreeNativeSpell(*info, known, itemCast,
+            info->EquippedItemClass >= 0 || info->DmgClass == SPELL_DAMAGE_CLASS_RANGED,
+            NativeResourceFreeEffect, NativeResourceFreeAura);
+        return {SpellEffectMask(inventoryFree), Lane::Managed, true};
     }
     NativePermit NativeEngagedAttackPermit(PlayerbotAI& ai, Unit* target) {
         auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Combat,
@@ -89,11 +165,15 @@ namespace LivingActivity {
         if (!permit.world.actor) return {};
         Player* actor = ai.GetBot();
         const auto* info = spell ? sServerFacade.LookupSpellInfo(spell) : nullptr;
-        if (!actor || !target || !info) return {};
+        if (!actor || !target || !info || IsPassiveSpell(info)) return {};
+        if (target->GetTypeId() == TYPEID_PLAYER && static_cast<Player*>(target)->IsBeingTeleported()) return {};
         const bool known = actor->HasSpell(spell);
         const bool healing = ReadyForNativeHealing(*actor, *target, known,
             PlayerbotAI::IsHealSpell(info), sServerFacade.IsFriendlyTo(actor, target));
-        if (!healing && !ReadyForNativeOffense(*actor, *target, known, IsPositiveSpell(info),
+        const bool support = ReadyForNativeHealing(*actor, *target, known,
+            IsPositiveSpell(info) && HasOnlyNativeEffects(*info, NativeSupportEffect) &&
+                HasOnlyNativeAuras(*info, NativeResourceFreeAura), sServerFacade.IsFriendlyTo(actor, target));
+        if (!healing && !support && !ReadyForNativeOffense(*actor, *target, known, IsPositiveSpell(info),
             sServerFacade.IsHostileTo(actor, target), NativePartyEngaged(*actor, *target))) return {};
         // Combat/healing is not permission to spend another obligation's stock.
         // Read only native bag identities plus the immutable acknowledged/pending
@@ -118,7 +198,7 @@ namespace LivingActivity {
         // Ordinary native cast checks retain reagent, mana, range, cooldown,
         // stance and target requirements. They do not execute the spell.
         if (!ai.CanCastSpell(spell, target, uint8((1u << MAX_EFFECT_INDEX) - 1), true, item)) return {};
-        permit.lane = healing ? Lane::Healing : Lane::Combat;
+        permit.lane = healing || support ? Lane::Healing : Lane::Combat;
         permit.validated = permit.world.actor == actor->GetGUIDLow();
         return permit;
     }
@@ -137,9 +217,12 @@ namespace LivingActivity {
             static_cast<Player*>(target)->IsBeingTeleported())) return {};
         const bool healing = ReadyForNativeHealing(*actor, *target, true,
             PlayerbotAI::IsHealSpell(info), sServerFacade.IsFriendlyTo(pet, target));
+        const bool support = ReadyForNativeHealing(*actor, *target, true,
+            IsPositiveSpell(info) && HasOnlyNativeEffects(*info, NativeSupportEffect) &&
+                HasOnlyNativeAuras(*info, NativeResourceFreeAura), sServerFacade.IsFriendlyTo(pet, target));
         const bool offense = ReadyForNativeOffense(*actor, *target, true, IsPositiveSpell(info),
             sServerFacade.IsHostileTo(pet, target), NativePartyEngaged(*actor, *target));
-        if (!healing && !offense) return {};
+        if (!healing && !support && !offense) return {};
         if (sServerFacade.GetDistance2d(actor, target) > sPlayerbotAIConfig.sightDistance) return {};
         // No owner-stock exception for a pet ability. Such a native requirement
         // needs an explicit resource adapter, not the owner's spellbook check.
@@ -165,7 +248,7 @@ namespace LivingActivity {
                 break;
             default: return {};
         }
-        permit.lane = healing ? Lane::Healing : Lane::Combat;
+        permit.lane = healing || support ? Lane::Healing : Lane::Combat;
         permit.validated = permit.world.actor == actor->GetGUIDLow();
         return permit;
     }

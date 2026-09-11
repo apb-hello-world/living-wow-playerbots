@@ -19,7 +19,7 @@ namespace {
         int GetPlayerVote(unsigned guid) const { assert(guid == 497); return vote; }
     };
     struct NativeSpell {
-        uint32_t Effect[3]{}, EffectTriggerSpell[3]{};
+        uint32_t Effect[3]{}, EffectTriggerSpell[3]{}, EffectApplyAuraName[3]{};
         int32_t Reagent[8]{};
     };
 }
@@ -37,6 +37,32 @@ int main() {
     direct.Effect[2] = 24; assert(!InventoryFreeDirectHeal(direct, true, false, 10, 67)); direct.Effect[2] = 0;
     direct.EffectTriggerSpell[1] = 1; assert(!InventoryFreeDirectHeal(direct, true, false, 10, 67)); direct.EffectTriggerSpell[1] = 0;
     direct.Effect[0] = 67; assert(InventoryFreeDirectHeal(direct, true, false, 10, 67));
+    const auto supportOrDamage = [](uint32_t effect) { return effect == 6 || effect == 2 || effect == 10; };
+    const auto knownAura = [](uint32_t aura) { return aura == 69 || aura == 36; };
+    NativeSpell nativeSupport;
+    assert(!HasOnlyNativeEffects(nativeSupport, supportOrDamage));
+    nativeSupport.Effect[0] = 6; // Native aura/shield/form, not a talent/build mutation.
+    nativeSupport.EffectApplyAuraName[0] = 69;
+    assert(InventoryFreeNativeSpell(nativeSupport, true, false, false, supportOrDamage, knownAura));
+    assert(!InventoryFreeNativeSpell(nativeSupport, false, false, false, supportOrDamage, knownAura));
+    assert(!InventoryFreeNativeSpell(nativeSupport, true, true, false, supportOrDamage, knownAura));
+    assert(!InventoryFreeNativeSpell(nativeSupport, true, false, true, supportOrDamage, knownAura));
+    nativeSupport.Reagent[7] = 1;
+    assert(!InventoryFreeNativeSpell(nativeSupport, true, false, false, supportOrDamage, knownAura)); nativeSupport.Reagent[7] = 0;
+    nativeSupport.EffectTriggerSpell[2] = 1;
+    assert(!InventoryFreeNativeSpell(nativeSupport, true, false, false, supportOrDamage, knownAura)); nativeSupport.EffectTriggerSpell[2] = 0;
+    nativeSupport.Effect[1] = 24; // Item creation never inherits a support exception.
+    assert(!HasOnlyNativeEffects(nativeSupport, supportOrDamage));
+    assert(!InventoryFreeNativeSpell(nativeSupport, true, false, false, supportOrDamage, knownAura));
+    nativeSupport.Effect[1] = 2;
+    assert(InventoryFreeNativeSpell(nativeSupport, true, false, false, supportOrDamage, knownAura));
+    for (auto aura : {4u, 42u, 78u, 86u, 128u, 999u}) { // Dummy, proc, mount, item, possession, unknown.
+        nativeSupport.EffectApplyAuraName[0] = aura;
+        assert(!HasOnlyNativeAuras(nativeSupport, knownAura));
+        assert(!InventoryFreeNativeSpell(nativeSupport, true, false, false, supportOrDamage, knownAura));
+    }
+    nativeSupport.EffectApplyAuraName[0] = 36;
+    assert(InventoryFreeNativeSpell(nativeSupport, true, false, false, supportOrDamage, knownAura));
     NativePlayer player; NativeRoll roll;
     assert(ReadyForNativeLootVote(player, &roll, 7, false));
     assert(!ReadyForNativeLootVote(player, &roll, 7, true));
