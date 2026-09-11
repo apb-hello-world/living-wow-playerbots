@@ -46,11 +46,12 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const bool banked=suite=="activity-profession-bank-v1";
     const bool checkpoint=suite=="activity-profession-mail-checkpoint-v1";
     const bool resumed=suite=="activity-profession-mail-resume-v1";
-    const bool mailed=suite=="activity-profession-mail-v1" || checkpoint || resumed;
-    const bool automatic=paid || resumed;
+    const bool serviceTravel=suite=="activity-profession-mail-travel-v1";
+    const bool mailed=suite=="activity-profession-mail-v1" || checkpoint || resumed || serviceTravel;
+    const bool automatic=paid || resumed || serviceTravel;
     const bool settling=suite=="activity-profession-settlement-v1" || paid || banked || mailed;
     const bool supplied=suite=="activity-craft-supplied-v1" || interrupted || settling;
-    if (!fixture.deadline) fixture.deadline=NowMs()+120000;
+    if (!fixture.deadline) fixture.deadline=NowMs()+(serviceTravel ? 180000 : 120000);
     auto emit=[&](bool passed,const std::string& failure) {
         if (passed) fixture.blocker.clear();
         boost::property_tree::ptree report;
@@ -67,6 +68,13 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         report.put("paid_workflow_proof",passed && paid);report.put("profession_job_completion_proof",passed && settling && !checkpoint);report.put("travel_proof",false);
         report.put("ordinary_profession_runner",automatic);
         report.put("restart_preparation_proof",passed && resumed);
+        report.put("local_service_walk_proof",passed && serviceTravel && fixture.travelArrived && fixture.travelConflictChecked);
+        report.put("route_or_transport_proof",false);
+        if(serviceTravel) {
+            report.put("fixture_initial_distance",fixture.travelInitialDistance);
+            report.put("walk_samples",fixture.travelSamples);report.put("walk_mailbox",fixture.travelMailbox);
+            report.add_child("walk_trace",fixture.travelTrace);
+        }
         report.put("process_crash_proof",false);
         report.put("checkpoint_boot",resumed && request.task.sourceKey.find("isolated_craft_v1:")==0 ?
             request.task.sourceKey.substr(std::string("isolated_craft_v1:").size()) : "");
@@ -466,17 +474,58 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 ReservationRequest reservation;reservation.transition=request;reservation.transition.expectedRevision=request.task.revision;
                 ++reservation.transition.task.revision;reservation.transition.receipt=NewId();reservation.transition.task.updatedAtMs=NowMs();
                 reservation.authorization=grant.action;reservation.changes.push_back({claim,0});
-                if (checkpoint) {
-                    reservation.transition.task.checkpoint.step="profession_resume_checkpoint";
+                if (checkpoint || serviceTravel) {
+                    if(checkpoint) reservation.transition.task.checkpoint.step="profession_resume_checkpoint";
                     for (const auto& item : fixture.before.stacks) if (item.entry==2449 || item.entry==3371) {
                         auto owned=claim;owned.id=NewId();owned.itemGuid=item.guid;owned.itemEntry=item.entry;
                         owned.quantity=item.entry==3371 ? 5u : 1u;owned.location="bags";owned.nativeReference=0;
                         reservation.changes.push_back({owned,0});
+                        if(serviceTravel) fixture.inheritedInputs.push_back(owned.id);
                     }
                     require(reservation.changes.size()==3,"checkpoint_protects_mail_and_both_remaining_reagents");
                 }
                 require(SubmitResourceReservation(reservation,reserve).code==AdmissionCode::Pending,"exact_fixture_mail_link_saved");
                 fixture.mailClaim=claim.id;followRunnerWrite();if (checkpoint) fixture.step=12;return;
+            }
+            if(serviceTravel && !fixture.travelPositioned) {
+                fixture.travelMailbox=NativeNearbyMailbox(*bot);
+                auto* mailbox=bot->GetPlayerbotAI()->GetGameObject(ObjectGuid(fixture.travelMailbox));
+                require(mailbox,"walk_fixture_real_mailbox");
+                bool reachable=false;float x=0,y=0,z=0;
+                for(unsigned attempt=0;attempt<12 && !reachable;++attempt) {
+                    x=mailbox->GetPositionX();y=mailbox->GetPositionY();z=mailbox->GetPositionZ();
+                    reachable=bot->GetMap()->GetReachableRandomPointOnGround(x,y,z,40.0f,false) &&
+                        std::hypot(x-mailbox->GetPositionX(),y-mailbox->GetPositionY())>=25.0f;
+                }
+                require(reachable,"walk_fixture_safe_outside_service_start");
+                fixture.travelX=x;fixture.travelY=y;fixture.travelZ=z;
+                fixture.travelInitialDistance=std::hypot(x-mailbox->GetPositionX(),y-mailbox->GetPositionY());
+                fixture.travelPositioned=true;
+                fixture.travelSampleAt=NowMs();
+                // Setup only: the measured walk starts on the following tick.
+                // No teleport or fixture movement occurs after that boundary.
+                bot->NearTeleportTo(x,y,z,0);return;
+            }
+            if(serviceTravel && !fixture.travelArrived) {
+                if(!fixture.travelStarted) {
+                    require(!NativeNearbyMailbox(*bot),"saved_job_starts_outside_native_mailbox_range");
+                    fixture.travelStarted=true;
+                }
+                require(!NativeSafety(bot) && bot->GetMapId()==request.task.context.map,
+                    "walk_has_no_transfer_transport_or_safety_bypass");
+                const float moved=std::hypot(bot->GetPositionX()-fixture.travelX,bot->GetPositionY()-fixture.travelY);
+                require(moved<=12.0f*float(NowMs()-fixture.travelSampleAt)/1000.0f+1.0f,
+                    "walk_uses_bounded_native_motion_not_relocation");
+                fixture.travelSampleAt=NowMs();
+                if(moved>0.2f) ++fixture.travelSamples;
+                fixture.travelX=bot->GetPositionX();fixture.travelY=bot->GetPositionY();fixture.travelZ=bot->GetPositionZ();
+                boost::property_tree::ptree sample;sample.put("at_ms",NowMs());sample.put("x",fixture.travelX);
+                sample.put("y",fixture.travelY);sample.put("z",fixture.travelZ);sample.put("revision",request.task.revision);
+                sample.put("step",request.task.checkpoint.step);fixture.travelTrace.push_back({"",sample});
+                if(NativeNearbyMailbox(*bot)==fixture.travelMailbox && request.task.phase==Phase::Preparing) {
+                    require(fixture.travelSamples>=3 && fixture.travelConflictChecked,"same_saved_job_walked_to_real_mailbox");
+                    fixture.travelArrived=true;
+                }
             }
             const auto* claim=state->resources.Inspect(fixture.mailClaim);
             if (claim && claim->location=="bags" && saved->second.phase==Phase::Verifying && !DefersNativeSave(request.task.actor)) {
@@ -484,13 +533,15 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 require(item && item->GetCount()==fixture.mailCount && !bot->GetMItem(fixture.mailGuid) &&
                     claim->nativeReference==0 && claim->itemGuid==fixture.mailGuid && claim->quantity==fixture.mailCount &&
                     claim->state=="held" && bot->GetMoney()==fixture.before.money,"ordinary_mail_runner_preserves_item_claim_and_money");
-                if (!resumed) fixture.inheritedInputs.push_back(claim->id);ProfessionJob job;std::string blocker;
+                if (!resumed && std::find(fixture.inheritedInputs.begin(),fixture.inheritedInputs.end(),claim->id)==fixture.inheritedInputs.end())
+                    fixture.inheritedInputs.push_back(claim->id);
+                ProfessionJob job;std::string blocker;
                 require(DecodeProfessionJob(request.task.checkpoint.data,job,blocker) &&
                     ReadNativeCraftFrame(*bot,job,fixture.before,blocker),"craft_frame_refreshed_after_verified_mail_collection");
                 const auto count=state->nativeDispatches;NativeMailCollection adapter({});
                 require(!DispatchSavedOperation(fixture.mailOperation,{},adapter).executed && state->nativeDispatches==count,
                     "duplicate_mail_dispatch_does_not_collect_again");
-                if (resumed) {
+                if (resumed || serviceTravel) {
                     fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
                     if (!followRunnerWrite()) return; // History is deliberately asynchronous and revision-bound.
                     require(request.task.phase==Phase::Preparing,"resumed_runner_prepares_after_collection");
@@ -498,6 +549,16 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 fixture.step=2;return;
             }
             fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+            if(serviceTravel && !fixture.travelConflictChecked && request.task.phase==Phase::Traveling) {
+                const auto monotonic=uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+                const auto owner=state->authority.Inspect(request.task.actor,monotonic);
+                if(owner.code==AuthorityCode::Allowed && owner.lease.rootTask==request.task.id) {
+                    require(!PermitEffects(*bot->GetPlayerbotAI(),{Mask(Effect::Movement)|Mask(Effect::TravelTarget),Lane::Managed,true},
+                        "isolated_unowned_service_target"),"unscoped_autonomous_target_cannot_replace_service_owner");
+                    fixture.travelConflictChecked=true;
+                }
+            }
             for (const auto& pending : state->operations) if (pending.second.request.transition.task.id==request.task.id &&
                 pending.second.request.kind=="mail_collect") fixture.mailOperation=pending.first;
             followRunnerWrite();return;
@@ -552,7 +613,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(NextProfessionStep(request.task,prepared).step==ProfessionStep::Execute &&
                 prepared.attempts.empty() && prepared.outputPerAttempt==1,
                 "craft_initial_native_snapshot_selects_exact_ready_attempt");
-            if (resumed) {fixture.inputs=fixture.inheritedInputs;fixture.step=3;return;}
+            if (resumed || serviceTravel) {fixture.inputs=fixture.inheritedInputs;fixture.step=3;return;}
             if (paid) {
                 fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
                 if (!followRunnerWrite()) return;

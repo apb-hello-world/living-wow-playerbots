@@ -4,6 +4,7 @@
 #include "Common.h"
 #include "LivingActivity.h"
 #include "LivingActivityWorkClock.h"
+#include "LivingServiceTravel.h"
 
 #include <chrono>
 #include <future>
@@ -22,6 +23,10 @@ public:
     uint32 RecipeMaterialQuantity(uint32 characterGuid, uint32 itemEntry) const;
     bool AllowsServiceAction(uint32 guid, const std::string& action) const;
     bool IsAuctionPostingEnabled() const { return policy.mode == "active" && policy.posting; }
+    // Trusted finite service step; no inventory operation or synthetic access.
+    // Reads the acknowledged saved root and acquires its existing authority.
+    LivingActivity::ServiceTravelResult ReachSavedService(uint32 actor,const std::string& task,
+        uint64 revision,LivingActivity::ServiceDestination service);
 
 private:
     struct Policy
@@ -63,16 +68,23 @@ private:
     {
         LivingActivity::ActivityLease lease;
         LivingActivity::WorkClock work;
+        LivingActivity::Task managedTask;
+        LivingActivity::ActionContext action;
+        LivingActivity::ActivityLease searchLease;
+        uint64 searchRevision=0,ticket=0,initialActiveMs=0;
         std::string goal;
         uint32 purpose=0, started=0, progress=0, nextMove=0, attempts=0;
         float distance=1e30f;
-        bool requesting=false, local=false;
+        bool requesting=false, local=false,ready=false,routeOwned=false,routeInitialized=false;
     };
     std::map<uint32, ServiceTrip> serviceTrips;
+    uint64 serviceSequence=0;
     std::map<uint32, uint32> serviceRetry;
     std::map<uint32, uint32> mailPrepAttempts;
     bool PrepareRecipeMail(Player* bot, uint32 entry, const std::string& goal, std::string& blocker);
     void ReachRecipeService(Player* bot, uint32 purpose, const std::string& goal, std::string& blocker);
+    LivingActivity::ServiceTravelResult DriveRecipeService(Player* bot,uint32 purpose,
+        const std::string& goal,const LivingActivity::Task* saved);
     void ReleaseRecipeService(uint32 guid, const std::string& reason);
     void PauseRecipeService(uint32 guid, const std::string& reason);
     std::map<uint32, std::string> lastBlockers;

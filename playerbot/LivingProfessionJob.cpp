@@ -279,7 +279,9 @@ namespace LivingActivity {
         }
         if (!snapshot.capacity) return stop(ProfessionStep::PrepareCapacity, "profession_capacity_required");
         if (withdraw) {
-            if (!snapshot.bankAccess) return stop(ProfessionStep::Defer, "profession_banked_material_inaccessible");
+            // Banked native stock exists; absence of a nearby banker is a
+            // service prerequisite, not missing or inaccessible inventory.
+            if (!snapshot.bankAccess) return stop(ProfessionStep::ReachBank, "profession_banker_travel_required");
             decision.step = ProfessionStep::Withdraw; decision.quantities = std::move(bank); return decision;
         }
         if (collect) { decision.step = ProfessionStep::Collect; decision.quantities = std::move(mail); return decision; }

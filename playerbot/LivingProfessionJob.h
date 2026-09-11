@@ -60,7 +60,7 @@ namespace LivingActivity {
     // still acquire the root's authority for every selected service step.
     enum class ProfessionStep {
         Reconcile, Pause, Defer, PrepareCapacity, Withdraw, Collect, Purchase,
-        WaitForDelivery, PrepareTools, ReachStation, Execute, Finalize
+        WaitForDelivery, PrepareTools, ReachStation, Execute, Finalize, ReachBank
     };
     struct ProfessionStock {
         uint32_t entry = 0;

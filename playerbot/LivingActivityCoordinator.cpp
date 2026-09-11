@@ -28,6 +28,7 @@
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
+#include "PlayerbotOrganicEconomy.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/uuid/name_generator.hpp>
@@ -286,6 +287,11 @@ struct LivingActivityCoordinator::State {
         std::string resumeReceipt;
         std::vector<ResourceClaim> resumeClaims;
         bool mailCollectedAtResume=false,mailLookupStarted=false,mailLookupReady=false;
+        bool travelPositioned=false,travelStarted=false,travelArrived=false,travelConflictChecked=false;
+        uint64_t travelMailbox=0,travelSampleAt=0;
+        uint32_t travelSamples=0;
+        float travelX=0,travelY=0,travelZ=0,travelInitialDistance=0;
+        boost::property_tree::ptree travelTrace;
         boost::property_tree::ptree originalCheckpoint;
         boost::property_tree::ptree checks,selection,grants,snapshot;
     } craftFixture;
@@ -1488,6 +1494,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     auto advance=[&](Phase phase) {
         TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
         ++request.task.revision;request.task.phase=phase;request.task.updatedAtMs=NowMs();request.receipt=NewId();
+        if(phase==Phase::Preparing || phase==Phase::Traveling) {
+            request.task.checkpoint.blocker.clear();request.task.retryAtMs=0;
+        }
         return stop(SubmitTask(request).blocker);
     };
     if (saved->phase==Phase::Queued) return advance(Phase::Preparing);
@@ -1496,14 +1505,61 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     const auto next=NextProfessionStep(*saved,snapshot);
     if (next.step==ProfessionStep::Finalize)
         return stop(SettleProfessionJob(actor,id,saved->revision,NewId()).blocker);
+    auto beginService=[&](ServiceDestination service) {
+        if(saved->phase==Phase::Verifying) return advance(Phase::Preparing);
+        if(saved->phase!=Phase::Preparing)
+            return stop("profession_service_preparation_required");
+        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
+        ++request.task.revision;request.task.phase=Phase::Traveling;request.task.updatedAtMs=NowMs();request.receipt=NewId();
+        request.task.checkpoint.step=ServiceStep(service);request.task.checkpoint.blocker.clear();
+        return stop(SubmitTask(request).blocker);
+    };
+    ServiceDestination service;
+    if(ParseServiceStep(saved->checkpoint.step,service)) {
+        if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred) {
+            if(!snapshot.safe) return stop("profession_safety_pause");
+            if(!snapshot.retryReady) return stop("profession_retry_not_due");
+            return advance(Phase::Reconciling);
+        }
+        if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
+        if(saved->phase==Phase::Preparing) return beginService(service);
+        if(saved->phase==Phase::Traveling) {
+            const auto route=sPlayerbotOrganicEconomy.ReachSavedService(actor,id,saved->revision,service);
+            const bool paused=route.blocker=="recipe_service_safety_pause";
+            // At most one bounded checkpoint per 30s of active work, plus real
+            // arrival/pause/backoff transitions. No per-tick database writes.
+            if(route.arrived || route.retryAtMs || paused ||
+                (route.activeElapsedMs>=saved->checkpoint.activeElapsedMs &&
+                 route.activeElapsedMs-saved->checkpoint.activeElapsedMs>=30000)) {
+                TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
+                ++request.task.revision;request.task.updatedAtMs=NowMs();request.receipt=NewId();
+                request.task.phase=route.arrived?Phase::Preparing:route.retryAtMs?Phase::Deferred:paused?Phase::Paused:Phase::Traveling;
+                request.task.checkpoint.activeElapsedMs=std::max(saved->checkpoint.activeElapsedMs,route.activeElapsedMs);
+                request.task.retryAtMs=route.retryAtMs;
+                request.task.checkpoint.blocker=paused || route.retryAtMs ? route.blocker : "";
+                if(route.arrived) {
+                    request.task.checkpoint.step="profession_prepare";
+                    request.task.checkpoint.lastProgressAtMs=request.task.updatedAtMs;
+                }
+                return stop(SubmitTask(request).blocker);
+            }
+            return stop(route.blocker);
+        }
+    }
+    if(next.step==ProfessionStep::ReachBank) return beginService(ServiceDestination::PersonalBank);
+    if(next.step==ProfessionStep::ReachStation) return beginService(ServiceDestination::CraftingStation);
     if (next.step==ProfessionStep::Collect && !next.quantities.empty()) {
         if (saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
         if (saved->phase!=Phase::Preparing) return stop("profession_mail_preparation_required");
         UnsettledClaimBatch batch;
         if (!ReadTaskClaims(actor,id,saved->revision,batch,blocker)) return stop(blocker);
         for (const auto& claim : batch.claims) if (ValidMailTransfer(claim) && claim.itemEntry==next.quantities.front().entry) {
+            if(!bot->IsStopped()) return beginService(ServiceDestination::Mailbox);
             NativeMailQuote quote;
-            if (!PlanNativeMailCollection(*bot,*saved,claim,quote,blocker)) return stop(blocker);
+            if (!PlanNativeMailCollection(*bot,*saved,claim,quote,blocker)) {
+                if(blocker=="profession_mailbox_travel_required") return beginService(ServiceDestination::Mailbox);
+                return stop(blocker);
+            }
             const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_mail_preparation");
             if (!grant.Permitted()) return stop(grant.blocker);
             OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
@@ -1520,7 +1576,10 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if (saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
         if (saved->phase!=Phase::Preparing) return stop("profession_bank_preparation_required");
         NativeBankQuote quote;
-        if (!PlanNativeBankWithdrawal(*bot,*saved,next.quantities.front(),quote,blocker)) return stop(blocker);
+        if (!PlanNativeBankWithdrawal(*bot,*saved,next.quantities.front(),quote,blocker)) {
+            if(blocker=="profession_banker_travel_required") return beginService(ServiceDestination::PersonalBank);
+            return stop(blocker);
+        }
         UnsettledClaimBatch batch;
         if (!state->resources.ReadUnsettled(id,batch,blocker) || !batch.complete)
             return stop(blocker.empty()?"profession_bank_claims_not_complete":blocker);

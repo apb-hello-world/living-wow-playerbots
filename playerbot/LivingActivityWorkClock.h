@@ -10,6 +10,7 @@ namespace LivingActivity {
     // Safety/admission waits and the first resumed sample consume nothing.
     class WorkClock {
     public:
+        explicit WorkClock(uint64_t initialActiveMs=0) : active(initialActiveMs),progress(initialActiveMs) {}
         void Observe(uint64_t monotonicMs, bool authorized) {
             if (running && authorized && monotonicMs >= sampled)
                 active += std::min(monotonicMs-sampled,std::numeric_limits<uint64_t>::max()-active);

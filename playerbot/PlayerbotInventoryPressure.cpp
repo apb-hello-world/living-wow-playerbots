@@ -1,5 +1,6 @@
 #include "botpch.h"
 #include "PlayerbotInventoryPressure.h"
+#include "LivingActivityCoordinator.h"
 
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
@@ -21,7 +22,11 @@ LivingWowItemDisposition PlayerbotInventoryPressure::Classify(Player* bot, Item*
     if (!bot || !item || !bot->GetPlayerbotAI())
         return LivingWowItemDisposition::Keep;
 
-    if (sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
+    const auto reservations=sLivingActivityCoordinator.ResourceReservations().Inspect();
+    // A mixed/uncertain stack is not a capacity candidate. Never count it as
+    // disposable while waiting for an identity-safe split or claim restore.
+    if (!reservations || reservations->UnreservedItem(bot->GetGUIDLow(),item->GetGUIDLow(),item->GetEntry(),item->GetCount())!=item->GetCount() ||
+        sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
         sGuildSupplies.Reserved(item->GetGUIDLow()) ||
         sGuildSupplies.ReservedEntry(bot->GetGUIDLow(),item->GetEntry()))
     {

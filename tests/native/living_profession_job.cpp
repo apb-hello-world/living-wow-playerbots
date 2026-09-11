@@ -197,7 +197,8 @@ int main() {
     auto next=NextProfessionStep(saved,changed);
     assert(next.step==ProfessionStep::Withdraw && next.quantities[0].perAttempt==2);
     changed.bankAccess=false;
-    assert(NextProfessionStep(saved,changed).blocker=="profession_banked_material_inaccessible");
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::ReachBank);
+    assert(NextProfessionStep(saved,changed).blocker=="profession_banker_travel_required");
     changed=snapshot; changed.stock={{2934,1,0,0,2,true}};
     next=NextProfessionStep(saved,changed);
     assert(next.step==ProfessionStep::Collect && next.quantities[0].perAttempt==2);
