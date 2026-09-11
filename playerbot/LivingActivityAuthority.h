@@ -66,9 +66,11 @@ namespace LivingActivity {
             const Task* task = nullptr, const ActionContext* action = nullptr,
             const NativePermit* permit = nullptr) const;
         size_t Size() const { return actors.size(); }
+        // Structural validation for value-only journal/callback identities.
+        // This does not inspect current ownership or grant any native effect.
+        static bool ContextValid(const WorldContext& context);
     private:
         using Actor = AuthoritySnapshot;
-        static bool ContextValid(const WorldContext& context);
         static bool Matches(const ActivityLease& left, const ActivityLease& right);
         static bool Executable(const Task& task);
         static bool SameDefinition(const Task& left, const Task& right);
