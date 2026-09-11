@@ -24,7 +24,7 @@ namespace LivingActivity {
         for (const auto& reagent : job.reagents) stock.emplace(reagent.entry,ProfessionStock{reagent.entry});
         unsigned scanned=0; std::set<uint32_t> seen;
         for (unsigned bank=0;bank!=2;++bank) {
-            for (Item* item : actor.GetPlayerbotAI()->InventoryParseItems("inventory",bank ?
+            for (Item* item : actor.GetPlayerbotAI()->InventoryParseItems("all",bank ?
                 IterateItemsMask::ITERATE_ITEMS_IN_BANK : IterateItemsMask::ITERATE_ITEMS_IN_BAGS)) {
                 if (++scanned>256) return reject("profession_inventory_snapshot_limit");
                 if (!item || !stock.count(item->GetEntry())) continue;

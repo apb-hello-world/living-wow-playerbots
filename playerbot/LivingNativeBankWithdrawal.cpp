@@ -78,7 +78,7 @@ bool PlanNativeBankWithdrawal(Player& actor,const Task& task,const ProfessionRea
     const auto reagent=std::find_if(job.reagents.begin(),job.reagents.end(),[&](const auto& r){return r.entry==need.entry;});
     if (reagent==job.reagents.end() || !need.perAttempt || need.perAttempt>reagent->perAttempt)
         return reject("profession_bank_exact_demand_required");
-    for (auto* item : actor.GetPlayerbotAI()->InventoryParseItems("inventory",IterateItemsMask::ITERATE_ITEMS_IN_BANK)) {
+    for (auto* item : actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BANK)) {
         if (!item || item->GetEntry()!=need.entry || ProtectedLegacy(actor,*item)) continue;
         uint32_t available=0;
         if (!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,

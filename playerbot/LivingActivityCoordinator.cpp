@@ -108,7 +108,9 @@ namespace {
         }
         for (const auto& service : {std::make_pair(bags,IterateItemsMask::ITERATE_ITEMS_IN_BAGS),
                                    std::make_pair(bank,IterateItemsMask::ITERATE_ITEMS_IN_BANK)}) if (service.first)
-            for (Item* item : bot.GetPlayerbotAI()->InventoryParseItems("inventory",service.second)) {
+            // "inventory" is the parser's bags-only selector, even with a
+            // bank mask. "all" applies this explicit native location mask.
+            for (Item* item : bot.GetPlayerbotAI()->InventoryParseItems("all",service.second)) {
                 if (!item || (admission && (sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
                     sGuildSupplies.ReservedEntry(actor,item->GetEntry())))) continue;
                 const std::string location=service.second == IterateItemsMask::ITERATE_ITEMS_IN_BAGS ? "bags" : "bank";

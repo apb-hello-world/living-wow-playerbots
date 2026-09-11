@@ -267,6 +267,11 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                     advance(Phase::Preparing);fixture.step=2;return;
                 }
             }
+            const auto nativeBank=bot->GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BANK);
+            require(std::any_of(nativeBank.begin(),nativeBank.end(),[&](const Item* item) {
+                return item && item->GetGUIDLow()==fixture.bankGuid && item->GetEntry()==765 &&
+                    item->GetCount()==fixture.bankCount && Player::IsBankPos(item->GetBagSlot(),item->GetSlot());
+            }),"native_bank_mask_reads_actual_banked_stack");
             fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
             for (const auto& pending : state->operations) if (pending.second.request.transition.task.id==request.task.id &&
                 pending.second.request.kind=="bank_withdraw") {
