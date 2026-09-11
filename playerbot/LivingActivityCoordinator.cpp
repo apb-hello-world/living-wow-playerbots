@@ -17,6 +17,8 @@
 #include "LivingProfessionSettlement.h"
 #include "LivingProfessionAttempt.h"
 #include "LivingNativeCraftCapture.h"
+#include "LivingNativeBankWithdrawal.h"
+#include "LivingActivityTransfer.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
 #include "LivingProfessionDemand.h"
 #endif
@@ -48,9 +50,19 @@ namespace {
                 const auto& claim=change.after;
                 const auto need=std::find_if(job.reagents.begin(),job.reagents.end(),[&](const auto& r){return r.entry==claim.itemEntry;});
                 if (change.expectedRevision || claim.revision!=1 || claim.actor!=actor.GetGUIDLow() ||
-                    claim.task!=request.transition.task.root || claim.state!="held" || claim.location!="bags" ||
-                    !claim.itemGuid || claim.copper || claim.nativeReference || need==job.reagents.end() || claim.quantity!=need->perAttempt) {
+                    claim.task!=request.transition.task.root || claim.state!="held" ||
+                    (claim.location!="bags" && claim.location!="bank") ||
+                    !claim.itemGuid || claim.copper || claim.nativeReference || need==job.reagents.end() ||
+                    (claim.location=="bags" && claim.quantity!=need->perAttempt)) {
                     blocker="profession_material_reservation_mismatch";return false;
+                }
+                if (claim.location=="bank") {
+                    auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,claim.itemGuid));
+                    if (!item || item->GetEntry()!=claim.itemEntry || item->GetCount()!=claim.quantity ||
+                        !Player::IsBankPos(item->GetBagSlot(),item->GetSlot()) ||
+                        actor.GetItemCount(claim.itemEntry,false)>=need->perAttempt) {
+                        blocker="profession_bank_reservation_mismatch";return false;
+                    }
                 }
             }
             blocker.clear();return !request.changes.empty();
@@ -111,6 +123,7 @@ namespace {
     std::vector<NativeResourceBalance> NativeConsumptionBalances(Player& bot,const OperationRequest& request,bool admission=true) {
         std::vector<ResourceClaim> claims;
         for (const auto& use : request.consumption) claims.push_back(use.before);
+        if (!request.bankTransfer.id.empty()) claims.push_back(request.bankTransfer);
         return NativeClaimBalances(bot,claims,admission);
     }
     std::vector<NativeItemStack> NativeGainStacks(Player& bot,const ItemGainSpec& spec) {
@@ -254,6 +267,8 @@ struct LivingActivityCoordinator::State {
         unsigned step=0,launches=0;
         uint64_t deadline=0;
         std::string blocker;
+        std::string bankOperation,bankClaim;
+        uint32_t bankGuid=0,bankCount=0,bankTotal=0;
         boost::property_tree::ptree checks,selection,grants,snapshot;
     } craftFixture;
     struct ProfessionRecoveryFixture {
@@ -280,6 +295,7 @@ struct LivingActivityCoordinator::State {
     uint64_t policyRevision = 0, epoch = 0, nextPolicy = 0, nextWork = 0, nextLog = 0;
     unsigned batch = 32, loadBatch = 64, maxCache = 20000;
     bool ioPending = false, schemaReady = false, loaded = false;
+    bool schemaInspected = false, schemaAbsent = false;
     std::atomic<bool> purchaseLedgerReady{false};
     struct BudgetRead {
         std::string task, operation, blocker="purchase_budget_queued";
@@ -603,6 +619,21 @@ struct LivingActivityCoordinator::State {
     }
     void Probe() {
         ioPending = true;
+        if (!schemaInspected || schemaAbsent) {
+            // An absent old schema permits the legacy path. Query failure or
+            // partial migration must fail closed, including during Off startup.
+            const char* presence="SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() "
+                "AND table_name IN ('living_activity_schema','living_activity_task','living_activity_transition',"
+                "'living_activity_operation','living_activity_claim')";
+            if (!CharacterDatabase.AsyncQuery([this](QueryResult* result) {
+                ioPending=false;schemaInspected=result!=nullptr;
+                schemaAbsent=result && result->Fetch()[0].GetUInt32()==0;
+                blocker=!result ? "activity_schema_presence_unavailable" : schemaAbsent ?
+                    "legacy_schema_no_saved_activity" : "schema_verification_pending";
+                nextWork=NowMs()+(!result || schemaAbsent ? 60000 : 1000);
+            },presence)) {ioPending=false;nextWork=NowMs()+60000;}
+            return;
+        }
         // Explicit required columns plus version; querying a version row alone
         // would accept a partially applied schema. The empty task table is valid.
         const std::string sql = "SELECT version,(SELECT COUNT(*) FROM information_schema.columns "
@@ -822,7 +853,9 @@ struct LivingActivityCoordinator::State {
                     QuarantineIncoming(error); continue;
                 }
                 // Active tasks are never downgraded or executed by this observer.
-                if (task.mode == Mode::Active) { Remember(task); blocker = "active_task_requires_executor"; }
+                if (task.mode == Mode::Active || effective==Mode::Off) {
+                    Remember(task); blocker = effective==Mode::Off ? "saved_owner_execution_paused" : "active_task_requires_executor";
+                }
                 else {
                     auto resumed = AfterRestart(task, NowMs());
                     std::string code = "restart_revalidation";
@@ -839,6 +872,9 @@ struct LivingActivityCoordinator::State {
                 }
                 loadCursor = row.id;
             } else {
+                // An import response may arrive after a policy change. These
+                // are unaccepted candidates; do not create new tasks while Off.
+                if (effective==Mode::Off) {incoming.pop_front();continue;}
                 task.source = row.source; task.sourceKey = row.key;
                 task.id = task.root = SourceId(task.source, task.sourceKey);
                 task.actor = task.context.actor = row.actor;
@@ -929,11 +965,12 @@ void LivingActivityCoordinator::Update() {
     RunIsolatedBoundaryFixture();
 #endif
     if (std::chrono::steady_clock::now() >= deadline) return;
-    if (state->effective != Mode::Off && !state->ioPending && !state->incomingClaims.empty()) {
+    if (state->schemaReady && !state->ioPending && !state->incomingClaims.empty()) {
         state->DecodeClaims(deadline); return;
     }
     ObservationQueue queues;
     queues.enabled = state->effective != Mode::Off; queues.ioPending = state->ioPending;
+    queues.restoreOwnership=true;queues.claimsLoaded=state->claimsEnumerated;
     queues.due = now >= state->nextWork; queues.schemaReady = state->schemaReady; queues.loaded = state->loaded;
     queues.cached = state->cache.size() + state->quarantined.size() + state->pending.size();
     queues.pending = std::count_if(state->pending.begin(),state->pending.end(),[now](const State::Pending& p){return p.retry.dueAtMs <= now;});
@@ -965,6 +1002,7 @@ void LivingActivityCoordinator::Update() {
         case ObservationWork::Probe: state->Probe(); break;
         case ObservationWork::Flush: state->Flush(deadline); break;
         case ObservationWork::Load: state->Load(); break;
+        case ObservationWork::RestoreClaims: state->LoadClaims(); break;
         case ObservationWork::Import:
             if (!state->claimsEnumerated) state->LoadClaims();
             else state->Import();
@@ -980,6 +1018,8 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("boot",state->boot);
     p.put("policy_revision", state->policyRevision); p.put("blocker", state->blocker);
     p.put("cached_tasks", state->cache.size()); p.put("pending_writes", state->pending.size());
+    p.put("ownership_schema_inspected",state->schemaInspected);p.put("ownership_schema_absent",state->schemaAbsent);
+    p.put("ownership_restore_ready",state->schemaReady && state->loaded && state->incoming.empty());
     p.put("receipt_count", state->acknowledged); p.put("persistence_failures", state->persistenceFailures);
     p.put("retained_transitions", state->transitionCount);
     p.put("pending_decode", state->incoming.size()); p.put("maximum_dispatch_us", state->maximumDispatchUs);
@@ -1321,7 +1361,11 @@ bool LivingActivityCoordinator::ReadProfessionSnapshot(uint32_t actor,const std:
     return InspectNativeProfessionSnapshot(*bot,*saved,history,NowMs(),snapshot,blocker);
 }
 bool LivingActivityCoordinator::ProfessionStoreReady() const {
-    return OnWorldThread() && state->schemaReady && state->loaded && state->effective!=Mode::Off;
+    return OnWorldThread() && state->schemaReady && state->loaded && state->incoming.empty();
+}
+EconomyOwnershipProjection LivingActivityCoordinator::ProfessionOwnershipProjection() const {
+    if (!OnWorldThread()) return EconomyOwnershipProjection::Pending;
+    return EconomyOwnershipState(state->schemaInspected,state->schemaAbsent,state->schemaReady);
 }
 bool LivingActivityCoordinator::ProfessionAdmissionsEnabled() const {
     // Isolated finite-operation tests temporarily enable effect checks while
@@ -1387,8 +1431,17 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if (!EffectEnforcementEnabled()) return stop("execution_disabled");
     for (const auto& write : state->pending) if (write.task.actor==actor) return stop("profession_transition_pending");
     for (const auto& row : state->operations) if (row.second.request.transition.task.actor==actor) {
-        if (row.second.request.transition.task.id!=id || row.second.request.kind!="profession_craft") return stop("profession_operation_requires_reconciliation");
+        if (row.second.request.transition.task.id!=id) return stop("profession_operation_requires_reconciliation");
         if (row.second.dispatched || !row.second.ready) return stop("profession_native_result_pending");
+        if (row.second.request.kind=="bank_withdraw") {
+            NativeBankQuote quote;
+            if (!DecodeNativeBankQuote(row.second.request.beforeState,quote)) return stop("profession_bank_intent_invalid");
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_bank_withdraw");
+            if (!grant.Permitted()) return stop(grant.blocker);
+            NativeBankWithdrawal adapter(quote);
+            return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
+        if (row.second.request.kind!="profession_craft") return stop("profession_operation_requires_reconciliation");
         return stop(DispatchProfessionAttempt(actor,row.first).admission.blocker);
     }
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
@@ -1410,6 +1463,38 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     const auto next=NextProfessionStep(*saved,snapshot);
     if (next.step==ProfessionStep::Finalize)
         return stop(SettleProfessionJob(actor,id,saved->revision,NewId()).blocker);
+    if (next.step==ProfessionStep::Withdraw && !next.quantities.empty()) {
+        if (saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
+        if (saved->phase!=Phase::Preparing) return stop("profession_bank_preparation_required");
+        NativeBankQuote quote;
+        if (!PlanNativeBankWithdrawal(*bot,*saved,next.quantities.front(),quote,blocker)) return stop(blocker);
+        UnsettledClaimBatch batch;
+        if (!state->resources.ReadUnsettled(id,batch,blocker) || !batch.complete)
+            return stop(blocker.empty()?"profession_bank_claims_not_complete":blocker);
+        ResourceClaim claim;
+        for (const auto& held : batch.claims) if (held.itemGuid==quote.guid) {
+            if (!claim.id.empty() || !ValidBankTransfer(held) || held.quantity!=quote.quantity)
+                return stop("profession_bank_claims_require_reconciliation");
+            claim=held;
+        }
+        const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_bank_preparation");
+        if (!grant.Permitted()) return stop(grant.blocker);
+        if (claim.id.empty()) {
+            claim.id=NewId();claim.task=id;claim.actor=actor;claim.itemGuid=quote.guid;claim.itemEntry=quote.entry;
+            claim.quantity=quote.quantity;claim.location="bank";claim.state="held";
+            ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+            ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+            request.authorization=grant.action;request.changes.push_back({claim,0});
+            ProfessionMaterialReservationAdapter adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
+        }
+        OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+        ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+        request.transition.task.checkpoint.step="profession_bank_withdraw";request.transition.task.updatedAtMs=NowMs();
+        request.transition.receipt=NewId();request.authorization=grant.action;
+        request.kind="bank_withdraw";request.effects=Mask(Effect::Inventory);request.persistence=NativePersistence::Inventory;
+        request.beforeState=EncodeNativeBankQuote(quote);request.bankTransfer=claim;
+        NativeBankWithdrawal adapter(quote);return stop(SubmitOperationIntent(request,adapter).blocker);
+    }
     if (next.step!=ProfessionStep::Execute) return stop(next.blocker.empty()?"profession_service_adapter_required":next.blocker);
     if (saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
     if (saved->phase!=Phase::Preparing) return stop("profession_preparation_requires_reconciliation");
@@ -1942,7 +2027,10 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
     if (next.id != SourceId(next.source, next.sourceKey) || request.kind != adapter.OperationKind() ||
         request.effects != adapter.OperationEffects() || request.persistence != adapter.PersistencePolicy())
         return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
-    if ((request.effects & (Mask(Effect::Money)|Mask(Effect::Inventory))) &&
+    const bool bankTransfer=adapter.SupportsBankTransfer() && ValidBankTransfer(request.bankTransfer) &&
+        request.kind=="bank_withdraw" && request.effects==Mask(Effect::Inventory) &&
+        request.persistence==NativePersistence::Inventory && request.consumption.empty() && request.itemGain.Empty();
+    if (!bankTransfer && (request.effects & (Mask(Effect::Money)|Mask(Effect::Inventory))) &&
         (!adapter.SupportsClaimedConsumption() || request.consumption.empty() || request.persistence == NativePersistence::JournalOnly))
         return reject(AdmissionCode::InvalidRequest,"resource_effect_adapter_not_supported");
     if (!request.itemGain.Empty() && (!adapter.SupportsItemGain() || !ValidItemGainSpec(request.itemGain)))
@@ -2017,7 +2105,8 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     if (request.kind != adapter.OperationKind() || request.effects != adapter.OperationEffects() ||
         request.persistence != adapter.PersistencePolicy() ||
         (!request.itemGain.Empty() && !adapter.SupportsItemGain()) ||
-        (!request.consumption.empty() && !adapter.SupportsClaimedConsumption()))
+        (!request.consumption.empty() && !adapter.SupportsClaimedConsumption()) ||
+        (!request.bankTransfer.id.empty() && !adapter.SupportsBankTransfer()))
         return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
     const auto saved = state->cache.find(intended.id);
     Player* bot = sRandomPlayerbotMgr.GetPlayerBot(intended.actor);
@@ -2198,7 +2287,12 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     WritePlan plan; std::vector<ClaimReceiptChange> changes;
     std::string gainReservation;
     try {
-        if (proof.state == OperationState::Verified && !request.itemGain.Empty()) {
+        if (proof.state == OperationState::Verified && !request.bankTransfer.id.empty()) {
+            auto moved=BankTransferWrite(after,saved->second.revision,proof,receipt,observation.afterState,request.bankTransfer);
+            // Same GUID and amount: the existing protection remains effective
+            // through location change, SQL retry and acknowledgement loss.
+            plan=std::move(moved.journal);changes=std::move(moved.changes);
+        } else if (proof.state == OperationState::Verified && !request.itemGain.Empty()) {
             auto acquired=AcquiredOperationWrite(after,saved->second.revision,proof,receipt,observation.afterState,
                 request.consumption,request.itemGain,nativeGains);
             const auto acquiredClaims=ItemGainClaims(after,id,request.itemGain,nativeGains);

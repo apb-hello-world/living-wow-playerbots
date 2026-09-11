@@ -5,6 +5,7 @@
 #include "LivingActivityResources.h"
 #include "LivingActivityClaimConsumption.h"
 #include "LivingActivityOperations.h"
+#include "LivingActivityTransfer.h"
 #include "LivingActivityClaimCodec.h"
 #include "LivingActivityReceipts.h"
 #include "LivingPurchaseBudget.h"
@@ -534,6 +535,41 @@ int main() {
     assert(!history.Begin(historyTask,db.History(historyTask),historyBlocker) && historyBlocker=="profession_history_attempt_limit_exceeded");
     assert(db.Execute("ROLLBACK"));
     {Connection restarted;assert(restarted.History(historyTask)==db.History(historyTask));}
+    {
+        // Transfer journal metadata, not game-item fixtures. A native adapter
+        // must separately prove the physical bank -> bags move in its save.
+        const auto rid=[](unsigned n){return std::string("ff2efbdf-f0ec-4539-b840-29984797810")+std::to_string(n);};
+        Task bank;bank.id=bank.root="637bd562-36d2-5b01-bc01-e2d831c49fe2";
+        bank.actor=bank.context.actor=904;bank.source="bank_service";bank.sourceKey="native_transfer_fixture";
+        bank.mode=Mode::Active;bank.phase=Phase::Queued;bank.kind=Kind::Maintenance;
+        bank.createdAtMs=bank.updatedAtMs=1000;
+        assert(db.Write(TaskWrite(bank,0,rid(0),"fixture_created")));
+        bank.phase=Phase::Preparing;++bank.revision;
+        assert(db.Write(TaskWrite(bank,1,rid(1),"fixture_preparing")));
+        ResourceClaim item;item.id=rid(2);item.task=bank.id;item.actor=904;item.itemGuid=9876;
+        item.itemEntry=765;item.quantity=5;item.location="bank";item.state="held";
+        ++bank.revision;
+        assert(db.Write(ResourceReservationWrite(bank,2,rid(3),{{item,0}},{{904,9876,765,5,0,"bank"}})));
+        OperationRequest request;request.transition.task=bank;request.transition.expectedRevision=bank.revision;
+        ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;request.transition.receipt=rid(4);
+        request.kind="bank_withdraw";request.effects=Mask(Effect::Inventory);request.persistence=NativePersistence::Inventory;
+        request.bankTransfer=item;
+        assert(db.Write(OperationRequestWrite(request)));
+        bank=request.transition.task;++bank.revision;bank.phase=Phase::Verifying;
+        OperationResult result;result.id=rid(4);result.task=bank.id;result.taskRevision=request.transition.task.revision;
+        result.kind="bank_withdraw";result.state=OperationState::Verified;result.nativeReference="bank_item:9876";
+        result.evidence="native_bank_stack_relocated";
+        const auto moved=BankTransferWrite(bank,request.transition.task.revision,result,rid(5),"{}",item);
+        assert(!db.Write(moved.journal,true));
+        assert(db.Scalar("SELECT location FROM living_activity_claim WHERE claim_id="+SqlValue(item.id))=="bank");
+        const auto exact=db.Scalar("SELECT before_state FROM living_activity_operation WHERE operation_id="+SqlValue(result.id));
+        assert(db.Execute("UPDATE living_activity_operation SET before_state=JSON_SET(before_state,'$.native.transfer.quantity',6) WHERE operation_id="+SqlValue(result.id)));
+        assert(!db.Write(moved.journal));
+        assert(db.Execute("UPDATE living_activity_operation SET before_state="+SqlValue(exact)+" WHERE operation_id="+SqlValue(result.id)));
+        assert(db.Write(moved.journal));assert(db.Write(moved.journal));
+        assert(db.Scalar("SELECT CONCAT(location,':',state,':',quantity,':',revision) FROM living_activity_claim WHERE claim_id="+SqlValue(item.id))=="bags:held:5:2");
+        assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE item_guid=9876")=="1");
+    }
     ProfessionSettlementDatabase(db);
     // Execute the exact production projection/expiry SQL, including old-schema
     // compatibility and a newer speculative row with the same recipe label.

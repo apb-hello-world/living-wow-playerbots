@@ -1,8 +1,14 @@
 #include "LivingProfessionJob.h"
 #include "LivingActivityRequests.h"
+#include "LivingProfessionEconomy.h"
 #include <cassert>
 using namespace LivingActivity;
 int main() {
+    assert(EconomyOwnershipState(false,false,false)==EconomyOwnershipProjection::Pending);
+    assert(EconomyOwnershipState(true,false,false)==EconomyOwnershipProjection::Pending); // Partial schema is not absence.
+    assert(EconomyOwnershipState(false,true,false)==EconomyOwnershipProjection::Pending); // Failed probe cannot permit legacy.
+    assert(EconomyOwnershipState(true,true,false)==EconomyOwnershipProjection::LegacyOnly);
+    assert(EconomyOwnershipState(true,false,true)==EconomyOwnershipProjection::Managed);
     {
         uint32_t recipe=0;
         assert(EconomyProfessionSourceKey(0).empty());

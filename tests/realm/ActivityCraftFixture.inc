@@ -38,7 +38,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     const bool interrupted=suite=="activity-craft-interrupted-v1";
     const bool paid=suite=="activity-profession-paid-v1";
-    const bool settling=suite=="activity-profession-settlement-v1" || paid;
+    const bool banked=suite=="activity-profession-bank-v1";
+    const bool settling=suite=="activity-profession-settlement-v1" || paid || banked;
     const bool supplied=suite=="activity-craft-supplied-v1" || interrupted || settling;
     if (!fixture.deadline) fixture.deadline=NowMs()+120000;
     auto emit=[&](bool passed,const std::string& failure) {
@@ -56,6 +57,12 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         } // An uncollected sample is unknown, not zero gold/skill.
         report.put("paid_workflow_proof",passed && paid);report.put("profession_job_completion_proof",passed && settling);report.put("travel_proof",false);
         report.put("ordinary_profession_runner",paid);
+        if (banked) {
+            report.put("ordinary_bank_runner",true);report.put("bank_operation",fixture.bankOperation);
+            report.put("bank_claim",fixture.bankClaim);report.put("bank_guid",fixture.bankGuid);
+            report.put("bank_quantity",fixture.bankCount);report.put("bank_total_before",fixture.bankTotal);
+            report.put("bank_service_positioning_fixture",true);
+        }
         if (paid) {
             report.put("vendor_operation",state->operationFixtureRequest.transition.receipt);
             report.put("vendor_dispatches",state->operationFixtureCalls);
@@ -97,6 +104,10 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 if (candidate->GetGroup() || candidate->GetTradeData() || DefersNativeSave(binding.first) ||
                     state->authority.Read(binding.first).lease.actor) {skipped("existing_commitment");continue;}
                 if (!candidate->HasSpell(2329)) {skipped("recipe_not_known");continue;}
+                if (banked && (candidate->GetMapId()!=1 || candidate->GetItemCount(765,false)>1 ||
+                    candidate->GetItemCount(765,true)!=candidate->GetItemCount(765,false))) {
+                    skipped("bank_fixture_map_or_existing_stock");continue;
+                }
                 ProfessionJob next;next.recipe=2329;next.skill=SKILL_ALCHEMY;
                 next.purpose=settling ? ProfessionPurpose::SkillGain : ProfessionPurpose::Intermediate;
                 next.outputQuantity=1;next.attemptLimit=1;
@@ -124,7 +135,24 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 if (!supplied && missing) {skipped("missing_owned_material");continue;}
                 if (missing<bestMissing) {selected=candidate;job=next;bestMissing=missing;}
             }
-            if (!selected) {fixture.blocker="no_safe_known_recipe_actor_with_eligible_materials";return;}
+            if (!selected) {
+                if (banked && !state->supportFixtureLookupStarted) {
+                    state->supportFixtureLookupStarted=true;
+                    CharacterDatabase.AsyncQuery([this](QueryResult* rows) {
+                        MANGOS_ASSERT(OnWorldThread());RequireIsolatedNativeFixtureEnvironment();
+                        if (!rows || state->fixtureFinished || sWorld.GetActiveAndQueuedSessionCount() ||
+                            sRandomPlayerbotMgr.GetAllBots().size()>=49) return;
+                        do {const auto* f=rows->Fetch();if (!sPlayerbotAIConfig.IsInRandomAccountList(f[1].GetUInt32())) continue;
+                            state->supportFixtureRequestedActor=f[0].GetUInt32();sRandomPlayerbotMgr.AddRandomBot(f[0].GetUInt32());break;
+                        } while(rows->NextRow());
+                    },"SELECT c.guid,c.account FROM characters c JOIN character_spell s ON s.guid=c.guid AND s.spell=2329 AND s.disabled=0 "
+                        "JOIN character_skills k ON k.guid=c.guid AND k.skill=171 AND k.value BETWEEN 1 AND 9 "
+                        "WHERE c.online=0 AND c.map=1 AND NOT EXISTS(SELECT 1 FROM group_member g WHERE g.memberGuid=c.guid) "
+                        "AND NOT EXISTS(SELECT 1 FROM living_activity_task t WHERE t.actor_guid=c.guid AND t.mode='active' "
+                        "AND t.phase NOT IN ('completed','cancelled','failed')) ORDER BY c.guid LIMIT 4");
+                }
+                fixture.blocker="no_safe_known_recipe_actor_with_eligible_materials";return;
+            }
             // Test-only hold; native Unit/Spell updates continue. No grant or
             // role/profession rewrite can occur in a production image.
             state->gameplayFixtureActor.store(selected->GetGUIDLow(),std::memory_order_release);
@@ -155,7 +183,16 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             request.task.createdAtMs=request.task.updatedAtMs=NowMs();request.receipt=NewId();
             request.task.checkpoint.step="profession_prepare";request.task.checkpoint.data=EncodeProfessionJob(job);
             require(ReadNativeCraftFrame(*selected,job,fixture.before,fixture.blocker),"fixture_before_native_frame");
-            selected->SaveToDB();return;
+            selected->SaveToDB();
+            if (banked) {
+                // Explicit copied fixture positioning, not autonomous travel.
+                const auto spawnId=selected->GetTeam()==ALLIANCE ? 46223u : 6598u;
+                const auto entry=selected->GetTeam()==ALLIANCE ? 4155u : 3309u;
+                const auto* spawn=sObjectMgr.GetCreatureData(spawnId);
+                require(spawn && spawn->id==entry && spawn->mapid==selected->GetMapId(),"bank_fixture_valid_native_spawn");
+                selected->NearTeleportTo(spawn->posX,spawn->posY,spawn->posZ,spawn->orientation);
+            }
+            return;
         }
         auto* bot=sRandomPlayerbotMgr.GetPlayerBot(request.task.actor);
         if (!bot || !bot->IsInWorld() || bot->IsBeingTeleported()) {fixture.blocker="native_fixture_actor_transfer";return;}
@@ -163,9 +200,14 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         struct Restore {State& state;bool original;~Restore(){state.enforceEffects.store(original,std::memory_order_release);}} restore{*state,original};
         NativeCraftOperation craft;CraftFixtureReservation reserve;const auto effects=craft.OperationEffects();
         if (!fixture.step) {
+            if (banked) {
+                if (!NativeNearbyBanker(*bot)) {fixture.blocker="bank_fixture_native_arrival_pending";return;}
+                request.task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
+            }
             require(SubmitTask(request).code==AdmissionCode::Pending,"craft_task_admitted");fixture.step=1;return;
         }
         const auto saved=state->cache.find(request.task.id);require(saved!=state->cache.end(),"craft_task_receipt_present");
+        if (fixture.step==10) request.task=saved->second; // Journal-driven bank substep; exact task identity stays fixed.
         if (fixture.step==5) {
             if (saved->second.phase==Phase::Executing) {fixture.blocker="native_cast_or_receipt_pending";return;}
             require(saved->second.phase==Phase::Verifying && !DefersNativeSave(bot->GetGUIDLow()) &&
@@ -191,7 +233,43 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 if (!followRunnerWrite()) return;
                 require(request.task.phase==Phase::Preparing,"paid_runner_resumes_preparation_after_purchase");
             } else advance(Phase::Preparing);
-            fixture.step=2;return;
+            fixture.step=banked ? 10 : 2;return;
+        }
+        if (fixture.step==10) {
+            if (!fixture.bankGuid) {
+                auto items=bot->GetPlayerbotAI()->InventoryParseItems("765",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+                require(items.size()==1,"bank_fixture_one_owned_herb_stack");auto* item=*items.begin();
+                require(item && item->GetEntry()==765 && !state->resources.Protection().ProtectedItem(request.task.actor,item->GetGUIDLow(),765),
+                    "bank_fixture_stock_not_reserved");
+                ItemPosCountVec destinations;uint8_t affected=0;
+                require(bot->CanBankItem(NULL_BAG,NULL_SLOT,destinations,item,false,affected)==EQUIP_ERR_OK && destinations.size()==1,
+                    "bank_fixture_native_deposit_capacity");
+                fixture.bankGuid=item->GetGUIDLow();fixture.bankCount=item->GetCount();fixture.bankTotal=bot->GetItemCount(765,true);
+                bot->RemoveItem(item->GetBagSlot(),item->GetSlot(),true);bot->BankItem(destinations,item,true);bot->SaveToDB();
+                require(bot->GetItemCount(765,false)==0 && bot->GetItemCount(765,true)==fixture.bankTotal,
+                    "bank_fixture_only_relocated_owned_herbs");return;
+            }
+            if (!fixture.bankClaim.empty()) {
+                const auto* claim=state->resources.Inspect(fixture.bankClaim);
+                if (claim && claim->location=="bags" && saved->second.phase==Phase::Verifying && !DefersNativeSave(request.task.actor)) {
+                    auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,fixture.bankGuid));
+                    require(item && !Player::IsBankPos(item->GetBagSlot(),item->GetSlot()) && item->GetCount()==fixture.bankCount &&
+                        bot->GetItemCount(765,true)==fixture.bankTotal && claim->itemGuid==fixture.bankGuid &&
+                        claim->quantity==fixture.bankCount && claim->state=="held","ordinary_bank_runner_preserved_item_and_claim");
+                    fixture.inheritedInputs.push_back(claim->id);
+                    const auto count=state->nativeDispatches;
+                    NativeBankQuote quote;NativeBankWithdrawal adapter(quote);
+                    require(!DispatchSavedOperation(fixture.bankOperation,{},adapter).executed && state->nativeDispatches==count,
+                        "bank_duplicate_dispatch_does_not_move_again");
+                    advance(Phase::Preparing);fixture.step=2;return;
+                }
+            }
+            fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+            for (const auto& pending : state->operations) if (pending.second.request.transition.task.id==request.task.id &&
+                pending.second.request.kind=="bank_withdraw") {
+                fixture.bankOperation=pending.first;fixture.bankClaim=pending.second.request.bankTransfer.id;
+            }
+            followRunnerWrite();return;
         }
         if (fixture.step==2) {
             ProfessionSnapshot prepared;

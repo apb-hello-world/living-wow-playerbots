@@ -1,4 +1,5 @@
 #include "LivingActivityOperations.h"
+#include "LivingActivityTransfer.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <tuple>
@@ -14,6 +15,14 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if (!request.bankTransfer.id.empty()) {
+                const auto& c=request.bankTransfer;
+                if (!request.consumption.empty() || !request.itemGain.Empty() || request.kind!="bank_withdraw" ||
+                    request.effects!=Mask(Effect::Inventory) || request.persistence!=NativePersistence::Inventory ||
+                    c.actor!=request.transition.task.actor || c.task!=request.transition.task.root)
+                    throw std::invalid_argument("Bank transfer contract mismatch");
+                return "{\"native\":"+request.beforeState+",\"transfer\":"+BankTransferIdentity(c)+'}';
+            }
             if (request.consumption.empty()) return request.beforeState;
             for (const auto& use : request.consumption) {
                 const auto& c=use.before; const auto& task=request.transition.task;
@@ -73,10 +82,21 @@ namespace LivingActivity {
     bool ValidateOperationResources(const OperationRequest& request, const ResourceClaimBook& claims,
         const std::vector<NativeResourceBalance>& balances, std::string& blocker) {
         auto reject=[&](const char* code) { blocker=code; return false; };
-        if (request.consumption.empty()) { blocker.clear(); return true; }
+        if (request.consumption.empty() && request.bankTransfer.id.empty()) { blocker.clear(); return true; }
         if (!claims.Protection().ready) return reject("resource_protection_unavailable");
         try { NativeBefore(request); }
         catch (const std::exception&) { return reject("invalid_claimed_consumption"); }
+        if (!request.bankTransfer.id.empty()) {
+            const auto& before=request.bankTransfer;const auto* saved=claims.Inspect(before.id);
+            if (!saved || !SameResourceClaim(*saved,before)) return reject("acknowledged_transfer_claim_changed");
+            if (balances.size()!=1 || balances[0].actor!=before.actor || balances[0].itemGuid!=before.itemGuid ||
+                balances[0].itemEntry!=before.itemEntry || balances[0].quantity!=before.quantity ||
+                balances[0].location!="bank" || balances[0].copper) return reject("whole_bank_stack_required");
+            uint32_t available=0;
+            if (!claims.AvailableToTask(before.task,balances[0],available) || available!=before.quantity)
+                return reject("bank_stack_has_other_commitments");
+            blocker.clear();return true;
+        }
         for (const auto& use : request.consumption) {
             const auto& before=use.before;
             const auto* saved=claims.Inspect(before.id);

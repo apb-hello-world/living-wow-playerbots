@@ -1,4 +1,7 @@
 #include "LivingActivityOperations.h"
+#include "LivingActivityTransfer.h"
+#include <boost/property_tree/json_parser.hpp>
+#include <sstream>
 #include <cassert>
 using namespace LivingActivity;
 int main() {
@@ -117,4 +120,40 @@ int main() {
     request.consumption.front().used=2;
     assert(VerifyConsumedNativeResources(request,stack,{{saved.actor,45,2880,3,0,"bags"}},reason));
     assert(!VerifyConsumedNativeResources(request,stack,{},reason));
+    {
+        auto transfer=request;transfer.consumption.clear();transfer.kind="bank_withdraw";
+        transfer.effects=Mask(Effect::Inventory);transfer.persistence=NativePersistence::Inventory;
+        transfer.bankTransfer=claim;transfer.bankTransfer.location="bank";
+        ResourceClaimBook bank;assert(bank.RestoreBatch({transfer.bankTransfer})==ClaimInstall::Installed);
+        assert(bank.FinishRestore());
+        const std::vector<NativeResourceBalance> source={{saved.actor,45,2880,5,0,"bank"}};
+        assert(valid(transfer,saved));
+        assert(ValidateOperationResources(transfer,bank,source,reason));
+        assert(!ValidateOperationResources(transfer,bank,stack,reason));
+        auto altered=transfer;altered.bankTransfer.quantity=4;
+        assert(!ValidateOperationResources(altered,bank,source,reason));
+        altered=transfer;altered.consumption=request.consumption;assert(!valid(altered,saved));
+        altered=transfer;altered.itemGain={2880,5};assert(!valid(altered,saved));
+        altered=transfer;altered.bankTransfer.location="bags";assert(!valid(altered,saved));
+        altered=transfer;altered.bankTransfer.actor++;assert(!valid(altered,saved));
+        altered=transfer;altered.persistence=NativePersistence::JournalOnly;assert(!valid(altered,saved));
+        boost::property_tree::ptree identity;std::istringstream json(BankTransferIdentity(transfer.bankTransfer));
+        boost::property_tree::read_json(json,identity);
+        assert(identity.get<std::string>("claim")==claim.id && identity.get<unsigned>("quantity")==5);
+        auto verified=transfer.transition.task;++verified.revision;verified.phase=Phase::Verifying;
+        OperationResult moved; moved.id=transfer.transition.receipt;moved.task=saved.id;
+        moved.taskRevision=transfer.transition.task.revision;moved.kind="bank_withdraw";
+        moved.state=OperationState::Verified;moved.nativeReference="bank_item:45";moved.evidence="native_bank_stack_relocated";
+        auto write=BankTransferWrite(verified,transfer.transition.task.revision,moved,
+            "ff2efbdf-f0ec-4539-b840-299847970c07","{}",transfer.bankTransfer);
+        assert(write.changes.size()==1 && write.changes[0].after.id==claim.id &&
+            write.changes[0].after.itemGuid==45 && write.changes[0].after.quantity==5 &&
+            write.changes[0].after.location=="bags" && write.changes[0].after.state=="held");
+        assert(bank.InstallReceipt(write.changes)==ClaimInstall::Installed);
+        assert(bank.InstallReceipt(write.changes)==ClaimInstall::Duplicate);
+        assert(bank.Protection().ProtectedItem(saved.actor,45,2880)==5);
+        assert(!ValidateOperationResources(transfer,bank,source,reason)); // No repeated transfer after receipt.
+        ResourceClaimBook restarted;assert(restarted.RestoreBatch({write.changes[0].after})==ClaimInstall::Installed);
+        assert(restarted.FinishRestore());assert(restarted.Inspect(claim.id)->location=="bags");
+    }
 }

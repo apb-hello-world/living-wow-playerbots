@@ -17,6 +17,7 @@ namespace LivingActivity {
         NativePersistence persistence = NativePersistence::JournalOnly;
         std::vector<ClaimConsumption> consumption;
         ItemGainSpec itemGain; // Exact output bound into intent before purchase.
+        ResourceClaim bankTransfer; // Same GUID/quantity, bank -> bags; never consumption.
     };
     struct NativeObservation {
         OperationState state = OperationState::Reconciling;
@@ -33,6 +34,7 @@ namespace LivingActivity {
         // are not disguised as consumption or inferred from an effect bit.
         virtual bool SupportsClaimedConsumption() const { return false; }
         virtual bool SupportsItemGain() const { return false; }
+        virtual bool SupportsBankTransfer() const { return false; }
         virtual NativePersistence PersistencePolicy() const { return NativePersistence::JournalOnly; }
         // Compiled native after-state predicate, checked in the SAME transaction
         // as the native save and journal. No player/model SQL enters this API.

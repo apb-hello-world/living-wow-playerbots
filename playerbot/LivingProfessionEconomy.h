@@ -2,6 +2,14 @@
 #include <cstdint>
 #include <string>
 namespace LivingActivity {
+enum class EconomyOwnershipProjection { Pending, LegacyOnly, Managed };
+// Mode is deliberately absent: disabling execution does not erase ownership.
+// A failed/partial schema check is not evidence that no saved owner exists.
+inline EconomyOwnershipProjection EconomyOwnershipState(bool inspected,bool absent,bool verified) {
+    if (verified) return EconomyOwnershipProjection::Managed;
+    if (inspected && absent) return EconomyOwnershipProjection::LegacyOnly;
+    return EconomyOwnershipProjection::Pending;
+}
 // Shared by the real legacy projection and MariaDB integration tests. A saved
 // accepted owner survives candidate expiry; no recipe-label lookup can replace it.
 inline std::string EconomyProfessionProfilesQuery(bool managed) {

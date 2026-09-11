@@ -35,6 +35,39 @@ namespace {
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if (requested && std::string(requested)=="activity-off-ownership-v1") {
+        RequireIsolatedNativeFixtureEnvironment();
+        if (state->fixtureFinished || NowMs()<state->fixtureNext) return;
+        state->fixtureNext=NowMs()+1000;
+        // Read-only restart proof: do not toggle enforcement, submit work,
+        // manufacture a claim, or write a task just to exercise Off mode.
+        if (sWorld.GetActiveAndQueuedSessionCount() || state->ioPending ||
+            !state->loaded || !state->incoming.empty() || !state->claimsEnumerated ||
+            !state->incomingClaims.empty()) return;
+        state->fixtureFinished=true;
+        boost::property_tree::ptree report,accepted;
+        report.put("suite","activity-off-ownership-v1");report.put("boot",state->boot);
+        report.put("test_only",true);report.put("native_humans",0);
+        for (const auto& row : state->cache) {
+            const auto& task=row.second;
+            if (task.mode!=Mode::Active || !task.accepted || Terminal(task.phase)) continue;
+            boost::property_tree::ptree entry;entry.put("task",task.id);entry.put("revision",task.revision);
+            entry.put("actor",task.actor);entry.put("phase",Name(task.phase));accepted.push_back({"",entry});
+        }
+        const bool passed=state->desired=="off" && state->effective==Mode::Off &&
+            !state->enforceEffects.load(std::memory_order_acquire) &&
+            ProfessionOwnershipProjection()==EconomyOwnershipProjection::Managed && ProfessionStoreReady() &&
+            state->resources.Protection().ready && state->resources.Size() && !accepted.empty() &&
+            !state->taskAdmissions && !state->nativeDispatches && !state->acknowledged &&
+            !state->invalidRecords && !state->invalidClaims && state->pending.empty();
+        report.put("outcome",passed ? "passed" : "failed");report.add_child("accepted",accepted);
+        boost::property_tree::ptree status;std::istringstream input(StatusJson());
+        boost::property_tree::read_json(input,status);report.add_child("status",status);
+        std::ofstream evidence("/isolated/evidence/activity-off-ownership-"+state->boot+".json");
+        evidence<<Json(report);evidence.close();
+        if (!evidence) sLog.outError("Living isolated Off ownership evidence write failed");
+        sLog.outString("Living isolated fixture: %s",Json(report).c_str());return;
+    }
     if (requested && std::string(requested)=="activity-profession-recover-v1") {
         RunIsolatedProfessionRecoveryFixture();return;
     }
@@ -44,7 +77,8 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
         return;
     }
     if (requested && (std::string(requested)=="activity-craft-v1" || std::string(requested)=="activity-craft-supplied-v1" ||
-        std::string(requested)=="activity-craft-interrupted-v1" || std::string(requested)=="activity-profession-settlement-v1")) {
+        std::string(requested)=="activity-craft-interrupted-v1" || std::string(requested)=="activity-profession-settlement-v1" ||
+        std::string(requested)=="activity-profession-bank-v1")) {
         RunIsolatedCraftFixture();return;
     }
     if (requested && (std::string(requested) == "activity-vendor-v1" || std::string(requested) == "activity-vendor-failure-v1")) {

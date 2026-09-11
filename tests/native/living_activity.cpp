@@ -41,6 +41,27 @@ int main() {
     ObservationQueue queue;
     assert(NextObservationWork(queue) == ObservationWork::Wait);
     {
+        ObservationQueue off;
+        off.restoreOwnership=off.due=true;off.claimsLoaded=false;
+        assert(NextObservationWork(off)==ObservationWork::Probe);
+        off.schemaReady=true;off.retained=off.historyLimit; // Read-only load is not outbox admission.
+        assert(NextObservationWork(off)==ObservationWork::Load);
+        off.incoming=2;
+        assert(NextObservationWork(off)==ObservationWork::Decode);
+        off.incoming=0;off.loaded=true;
+        assert(NextObservationWork(off)==ObservationWork::RestoreClaims);
+        off.claimsLoaded=true;off.pending=2; // No speculative import or uncommitted task write.
+        assert(NextObservationWork(off)==ObservationWork::Wait);
+        off.nativeOutcomes=1;
+        assert(NextObservationWork(off)==ObservationWork::Flush);
+        off.ioPending=true;
+        assert(NextObservationWork(off)==ObservationWork::Wait);
+        off.ioPending=false;off.nativeOutcomes=0;off.loaded=false;off.due=false;
+        assert(NextObservationWork(off)==ObservationWork::Wait);
+        off.due=true;off.cached=off.cacheLimit;
+        assert(NextObservationWork(off)==ObservationWork::CachePressure);
+    }
+    {
         ObservationQueue stopped;
         stopped.schemaReady=true;stopped.pending=1;stopped.nativeOutcomes=1;
         stopped.retained=stopped.historyLimit; // Already admitted result has reserved capacity.

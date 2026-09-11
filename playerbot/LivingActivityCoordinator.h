@@ -12,6 +12,7 @@
 #include "LivingActivityAcquisition.h"
 #include "LivingPurchaseBudget.h"
 #include "LivingProfessionEvidence.h"
+#include "LivingProfessionEconomy.h"
 #include <optional>
 class PlayerbotAI;
 class WorldPacket;
@@ -86,6 +87,7 @@ public:
     bool ReadProfessionSnapshot(uint32_t actor,const std::string& task,uint64_t revision,
         LivingActivity::ProfessionSnapshot& snapshot,std::string& blocker);
     bool ProfessionStoreReady() const;
+    LivingActivity::EconomyOwnershipProjection ProfessionOwnershipProjection() const;
     bool ProfessionAdmissionsEnabled() const;
     bool OwnsEconomyProfession(uint32_t actor,uint64_t goalRow) const;
     LivingActivity::AdmissionResult AdmitEconomyProfession(uint32_t actor,uint64_t goalRow,const std::string& capability);

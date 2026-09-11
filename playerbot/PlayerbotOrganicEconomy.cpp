@@ -303,7 +303,9 @@ PlayerbotOrganicEconomy::Policy PlayerbotOrganicEconomy::LoadPolicy()
 std::map<uint32, PlayerbotOrganicEconomy::Profile> PlayerbotOrganicEconomy::LoadProfiles()
 {
     std::map<uint32, Profile> profiles;
-    const bool managed=sLivingActivityCoordinator.ProfessionStoreReady();
+    const auto ownership=sLivingActivityCoordinator.ProfessionOwnershipProjection();
+    if (ownership==LivingActivity::EconomyOwnershipProjection::Pending) return this->profiles;
+    const bool managed=ownership==LivingActivity::EconomyOwnershipProjection::Managed;
     const auto query=LivingActivity::EconomyProfessionProfilesQuery(managed);
     std::unique_ptr<QueryResult> result = CharacterDatabase.Query(query.c_str());
     if (result)
@@ -900,6 +902,9 @@ bool PlayerbotOrganicEconomy::ExecuteGoal(Player* bot, Profile& profile,
     }
     if (goalType == "profession_skill_up" && currentPolicy.careers)
     {
+        if (sLivingActivityCoordinator.ProfessionOwnershipProjection()==LivingActivity::EconomyOwnershipProjection::Pending) {
+            failureReason="profession_ownership_snapshot_pending";return false;
+        }
         // Once handed over, even disabling execution cannot return this job to
         // legacy casting or purchases. Only its saved native owner may advance.
         const bool owned=!profile.managedTask.empty() || sLivingActivityCoordinator.OwnsEconomyProfession(bot->GetGUIDLow(),profile.goalRow);
@@ -1188,6 +1193,8 @@ void PlayerbotOrganicEconomy::ProcessActiveGoals(const Policy& currentPolicy,
 void PlayerbotOrganicEconomy::ApplyPlans(const std::string& response, const Policy& currentPolicy)
 {
     if (response.empty()) return;
+    const auto ownership=sLivingActivityCoordinator.ProfessionOwnershipProjection();
+    if (ownership==LivingActivity::EconomyOwnershipProjection::Pending) return;
     boost::property_tree::ptree root;
     std::istringstream input(response);
     try { boost::property_tree::read_json(input, root); }
@@ -1225,7 +1232,7 @@ void PlayerbotOrganicEconomy::ApplyPlans(const std::string& response, const Poli
             active->second.currentGoalState == "active" &&
             PreserveCraftResult(attempt->second.goal, active->second.currentGoalId, attempt->second.started, uint32(time(nullptr))))
             continue; // Inspect the in-flight result before replacing its goal.
-        CharacterDatabase.Execute(LivingActivity::EconomyProfessionExpiryQuery(guid,sLivingActivityCoordinator.ProfessionStoreReady()).c_str());
+        CharacterDatabase.Execute(LivingActivity::EconomyProfessionExpiryQuery(guid,ownership==LivingActivity::EconomyOwnershipProjection::Managed).c_str());
         CharacterDatabase.PExecute(
             "INSERT INTO organic_economy_goal (character_guid,goal_type,capability_ref,state,utility,source,authoritative_payload,expires_at) "
             "VALUES ('%u','%s','%s','%s',0,'%s','{}',DATE_ADD(NOW(),INTERVAL 1 HOUR))",

@@ -5,6 +5,7 @@
 #include "LivingActivityNativeContext.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingServiceExecution.h"
+#include "LivingNativeBankWithdrawal.h"
 #include "Grids/GridNotifiers.h"
 #include "Grids/GridNotifiersImpl.h"
 #include "Grids/CellImpl.h"
@@ -72,12 +73,13 @@ namespace LivingActivity {
                 snapshot.atStation=focus!=nullptr; // Native spawn/distance check, no stored pointer.
             }
         } else if (snapshot.blocker.empty()) snapshot.blocker=nativeBlocker;
-        // These paths are not connected to the native executor yet. State that
-        // explicitly instead of misreporting zero stock, bank denial or transit.
+        snapshot.bankAccess=NativeNearbyBanker(actor)!=0;
+        // Unknown sourcing still remains explicit. Owned bank stock now enters
+        // its real service step, without granting remote access or new items.
         for (size_t i=0;i<job.reagents.size() && snapshot.blocker.empty();++i) {
             const auto& have=snapshot.stock[i];
             if (have.bag>=job.reagents[i].perAttempt) continue;
-            snapshot.blocker=have.bank ? "profession_bank_withdrawal_adapter_required" : "profession_material_sources_not_planned";
+            if (!have.bank) snapshot.blocker="profession_material_sources_not_planned";
         }
         // Completion evidence is evaluated before readiness blockers by the
         // finite policy. A successful receipt must not cause another craft just
