@@ -1,4 +1,5 @@
 #include "LivingActivity.h"
+#include "LivingActivityJournal.h"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -167,7 +168,7 @@ namespace LivingActivity
         for (unsigned char c : value) { result += digits[c >> 4]; result += digits[c & 15]; }
         return result + "'";
     }
-    static WritePlan MakeTaskWrite(const Task& task, uint64_t expected, const std::string& receipt,
+    WritePlan Detail::TaskTransitionWrite(const Task& task, uint64_t expected, const std::string& receipt,
         const std::string& code, const std::string& extra) {
         std::string error;
         if (!Validate(task, error) || task.revision != expected + 1 || !IsUuid(receipt) || !IsToken(code))
@@ -229,7 +230,7 @@ namespace LivingActivity
         if (task.phase == Phase::Executing || task.phase == Phase::Verifying)
             throw std::invalid_argument("Execution and verification require a native operation journal");
         if (dependentFingerprint.size() > 8192) throw std::invalid_argument("Dependent receipt fingerprint too large");
-        auto plan = MakeTaskWrite(task, expected, receipt, code, dependentFingerprint);
+        auto plan = Detail::TaskTransitionWrite(task, expected, receipt, code, dependentFingerprint);
         if (expected && (task.phase == Phase::Preparing || task.phase == Phase::Traveling || Terminal(task.phase))) {
             // An old intent cannot be bypassed by changing the same root or a
             // sibling step back to ordinary preparation. Keep accepted work,
@@ -276,7 +277,7 @@ namespace LivingActivity
         const std::string& kind, const std::string& before) {
         if (!expected || task.phase != Phase::Executing || task.mode != Mode::Active ||
             !IsToken(kind, 48) || before.size() > 8192) throw std::invalid_argument("Invalid operation intent");
-        auto plan = MakeTaskWrite(task, expected, op, "operation_intent", kind + ':' + before);
+        auto plan = Detail::TaskTransitionWrite(task, expected, op, "operation_intent", kind + ':' + before);
         plan.statements.front() += " AND mode='active' AND phase IN ('preparing','traveling') "
             "AND NOT EXISTS (SELECT 1 FROM living_activity_operation o JOIN living_activity_task ot ON ot.task_id=o.task_id "
             "WHERE ot.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))";
@@ -309,7 +310,7 @@ namespace LivingActivity
         const std::string operationWhere = "o.operation_id=" + SqlValue(outcome.id) +
             " AND o.task_id=living_activity_task.task_id AND o.task_revision=" + Number(outcome.taskRevision) +
             " AND o.kind=" + SqlValue(outcome.kind) + " AND o.state IN ('intent','reconciling')";
-        auto plan = MakeTaskWrite(task, expected, receipt,
+        auto plan = Detail::TaskTransitionWrite(task, expected, receipt,
             verified ? "operation_verified" : uncertain ? "operation_uncertain" : "operation_rejected",
             SqlValue(outcome.id) + ':' + Number(outcome.taskRevision) + ':' + SqlValue(outcome.kind) + ':' +
             SqlValue(outcome.nativeReference) + ':' + SqlValue(outcome.evidence) + ':' + SqlValue(after));

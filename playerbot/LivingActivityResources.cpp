@@ -80,6 +80,14 @@ namespace LivingActivity {
         const auto found = records.find(id); return found == records.end() ? nullptr : &found->second;
     }
     void ResourceClaimBook::IndexAcknowledged(const ResourceClaim& claim,bool add) {
+        if (!TerminalClaim(claim)) {
+            if (add) unsettledByTask[claim.task].insert(claim.id);
+            else {
+                const auto found=unsettledByTask.find(claim.task);
+                if (found==unsettledByTask.end() || !found->second.erase(claim.id)) std::terminate();
+                if (found->second.empty()) unsettledByTask.erase(found);
+            }
+        }
         if (!ProtectsResources(claim)) return;
         if (claim.quantity || claim.location=="money")
             Add(acknowledgedProtected,RootItemKey{claim.task,claim.actor,claim.itemGuid,claim.itemEntry},
@@ -88,6 +96,25 @@ namespace LivingActivity {
             (claim.location!="bags" && claim.location!="bank" && claim.location!="money")) return;
         Add(acknowledgedOwned,OwnedKey{claim.task,claim.actor,claim.itemGuid,claim.itemEntry,claim.location},
             claim.copper+claim.quantity,add);
+    }
+    bool ResourceClaimBook::ReadUnsettled(const std::string& task,UnsettledClaimBatch& batch,std::string& blocker) const {
+        batch={};
+        auto reject=[&](const char* reason){blocker=reason;return false;};
+        if (!protection.ready) return reject("resource_claim_projection_unavailable");
+        if (!IsUuid(task)) return reject("resource_claim_task_invalid");
+        for (const auto& reservation : pending)
+            if (!reservation.second.changes.empty() && reservation.second.changes.front().after.task==task)
+                return reject("resource_claim_reservation_pending");
+        batch.bookRevision=protection.revision;
+        const auto found=unsettledByTask.find(task);
+        if (found!=unsettledByTask.end()) {
+            for (const auto& id : found->second) {
+                if (batch.claims.size()==16) break;
+                batch.claims.push_back(records.at(id));
+            }
+            batch.complete=found->second.size()==batch.claims.size();
+        } else batch.complete=true;
+        blocker.clear();return true;
     }
     bool ResourceClaimBook::AvailableToTask(const std::string& task,const NativeResourceBalance& native,uint32_t& available) const {
         available=0;

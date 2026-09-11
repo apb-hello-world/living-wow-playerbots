@@ -16,6 +16,46 @@ static ResourceClaim ItemClaim(const std::string& suffix, uint32_t guid, uint64_
 }
 int main() {
     {
+        ResourceClaimBook indexed;
+        UnsettledClaimBatch batch;std::string blocker;
+        const auto root=ItemClaim("01",1,1).task;
+        assert(!indexed.ReadUnsettled(root,batch,blocker) && !batch.complete && batch.claims.empty());
+        std::vector<ResourceClaim> rows;
+        for (unsigned i=0;i<17;++i) {
+            auto row=ItemClaim(std::to_string(10+i),1000+i,1);rows.push_back(row);
+        }
+        rows[0].state="proposed";rows[0].itemGuid=0;
+        rows[1].state="reconciling";rows[1].itemGuid=0;
+        rows[2].state="in_transfer";rows[2].location="mail";rows[2].nativeReference=123;
+        auto other=ItemClaim("88",2000,1);other.task="637bd562-36d2-5b01-bc01-e2d831c49f39";
+        rows.push_back(other);
+        auto terminal=ItemClaim("89",2001,1);terminal.state="released";rows.push_back(terminal);
+        assert(indexed.RestoreBatch(rows)==ClaimInstall::Installed && indexed.FinishRestore());
+        assert(indexed.ReadUnsettled(root,batch,blocker) && !batch.complete && batch.claims.size()==16);
+        assert(batch.claims[0].state=="proposed" && batch.claims[1].state=="reconciling" &&
+            batch.claims[2].state=="in_transfer");
+        const auto before=batch.bookRevision;
+        auto released=rows[0];released.state="released";++released.revision;
+        assert(indexed.InstallReceipt({{released,1}})==ClaimInstall::Installed);
+        assert(indexed.ReadUnsettled(root,batch,blocker) && batch.complete && batch.claims.size()==16 &&
+            batch.bookRevision>before && batch.claims.front().id==rows[1].id);
+        auto consumed=rows[3];consumed.state="consumed";++consumed.revision;
+        assert(indexed.InstallReceipt({{consumed,1}})==ClaimInstall::Installed);
+        assert(indexed.ReadUnsettled(root,batch,blocker) && batch.complete && batch.claims.size()==15);
+        assert(indexed.InstallReceipt({{consumed,1}})==ClaimInstall::Duplicate);
+        assert(indexed.ReadUnsettled(root,batch,blocker) && batch.claims.size()==15);
+        auto pending=ItemClaim("90",3000,2);pending.itemEntry=765;const auto receipt=ItemClaim("91",0,1).id;
+        assert(indexed.ReservePending(receipt,{{pending,0}},{{497,3000,765,2,0,"bags"}})==ClaimInstall::Installed);
+        assert(!indexed.ReadUnsettled(root,batch,blocker) && !batch.complete && batch.claims.empty() &&
+            blocker=="resource_claim_reservation_pending");
+        assert(indexed.ReadUnsettled(other.task,batch,blocker) && batch.complete && batch.claims.size()==1);
+        assert(indexed.CommitReservation(receipt)==ClaimInstall::Installed);
+        assert(indexed.ReadUnsettled(root,batch,blocker) && batch.complete && batch.claims.size()==16);
+        assert(!indexed.ReadUnsettled("not-a-task",batch,blocker) && !batch.complete && batch.claims.empty());
+        indexed.BlockProjection();
+        assert(!indexed.ReadUnsettled(root,batch,blocker) && !batch.complete && batch.claims.empty());
+    }
+    {
         ResourceClaimBook ownership;
         auto mine=ItemClaim("90",800,4), other=ItemClaim("91",800,3);
         other.task="637bd562-36d2-5b01-bc01-e2d831c49f39";

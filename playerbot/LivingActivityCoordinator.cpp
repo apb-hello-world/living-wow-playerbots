@@ -14,6 +14,7 @@
 #include "LivingActivityNativeContext.h"
 #include "LivingActivityCommitments.h"
 #include "LivingProfessionNative.h"
+#include "LivingProfessionSettlement.h"
 #include "LivingNativeCraftCapture.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
 #include "LivingProfessionDemand.h"
@@ -1484,6 +1485,68 @@ AdmissionResult LivingActivityCoordinator::SubmitResourceReservation(const Reser
     ReleaseTaskLease(state->authority.Read(next.actor).lease);
     state->nextWork=0;
     return reject(AdmissionCode::Pending);
+}
+
+AdmissionResult LivingActivityCoordinator::SettleProfessionJob(uint32_t actor,const std::string& id,
+    uint64_t expectedRevision,const std::string& receipt) {
+    AdmissionResult result;result.task=id;result.revision=expectedRevision+1;
+    auto reject=[&](AdmissionCode code,const std::string& reason="") {
+        result.code=code;result.blocker=reason.empty() ? Name(code) : reason;return result;
+    };
+    if (!OnWorldThread() || !state->enforceEffects.load(std::memory_order_acquire)) return reject(AdmissionCode::Disabled);
+    if (!actor || !IsUuid(id) || !IsUuid(receipt) || !expectedRevision ||
+        expectedRevision>=std::numeric_limits<uint64_t>::max()-1) return reject(AdmissionCode::InvalidRequest);
+    if (!state->schemaReady || !state->loaded || !state->incoming.empty() || !state->resources.Protection().ready)
+        return reject(AdmissionCode::NotReady);
+    if (state->operationDispatching || DefersNativeSave(actor)) return reject(AdmissionCode::Backpressure,"native_save_pending");
+    const auto saved=state->cache.find(id);
+    if (saved==state->cache.end() || saved->second.actor!=actor ||
+        id!=SourceId(saved->second.source,saved->second.sourceKey)) return reject(AdmissionCode::InvalidRequest);
+    Player* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if (!bot || !bot->GetPlayerbotAI() || !(saved->second.context==ReadNativeContext(*bot,state->policyRevision,state->boot)))
+        return reject(AdmissionCode::StaleContext);
+    for (const auto& pending : state->pending) {
+        if (pending.admissionReceipt==receipt) {
+            if (pending.task.id==id && pending.task.revision==expectedRevision+1 &&
+                (pending.task.checkpoint.step=="profession_settling" || pending.task.checkpoint.step=="profession_completed"))
+                return reject(AdmissionCode::Pending);
+            return reject(AdmissionCode::InvalidRequest,"receipt_identity_reused");
+        }
+        if (pending.task.actor==actor) return reject(AdmissionCode::ConflictingWrite);
+    }
+    const auto acknowledged=state->admissionReceipts.find(id);
+    if (saved->second.revision==expectedRevision+1 && acknowledged!=state->admissionReceipts.end() &&
+        acknowledged->second==receipt && (saved->second.checkpoint.step=="profession_settling" ||
+        saved->second.checkpoint.step=="profession_completed")) return reject(AdmissionCode::Saved);
+    if (saved->second.revision!=expectedRevision) return reject(AdmissionCode::StaleRevision);
+    for (const auto& operation : state->operations)
+        if (operation.second.request.transition.task.actor==actor)
+            return reject(AdmissionCode::ReconciliationRequired,"native_operation_pending");
+    if (state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+        return reject(AdmissionCode::Backpressure);
+    const auto owned=state->authority.Read(actor);
+    if (!owned.operation.empty()) return reject(AdmissionCode::ReconciliationRequired,"atomic_operation_pending");
+    ProfessionSnapshot snapshot;UnsettledClaimBatch batch;std::string blocker;
+    if (!ReadProfessionSnapshot(actor,id,expectedRevision,snapshot,blocker)) return reject(AdmissionCode::NotReady,blocker);
+    if (!state->resources.ReadUnsettled(id,batch,blocker)) return reject(AdmissionCode::ReconciliationRequired,blocker);
+    try {
+        const auto balances=NativeClaimBalances(*bot,batch.claims,false);
+        for (const auto& native : balances) {
+            uint32_t available=0;
+            if (!state->resources.AvailableToTask(id,native,available))
+                return reject(AdmissionCode::ReconciliationRequired,"profession_settlement_native_backing_uncertain");
+        }
+        ProfessionSettlement settlement;
+        if (!PrepareProfessionSettlement(saved->second,snapshot,batch,balances,NowMs(),receipt,settlement,blocker))
+            return reject(AdmissionCode::ReconciliationRequired,blocker);
+        State::Pending write;write.task=std::move(settlement.task);write.plan=std::move(settlement.plan);
+        write.admissionReceipt=receipt;write.claims=std::move(settlement.claims);
+        state->pending.push_back(std::move(write));
+    } catch (const std::exception&) {return reject(AdmissionCode::InvalidRequest,"profession_settlement_not_queued");}
+    // Existing protection is retained until the exact receipt is acknowledged.
+    // No new inventory reservation, timer, movement owner or native effect.
+    if (owned.lease.rootTask==id) ReleaseTaskLease(owned.lease);
+    state->nextWork=0;return reject(AdmissionCode::Pending);
 }
 
 AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request) {

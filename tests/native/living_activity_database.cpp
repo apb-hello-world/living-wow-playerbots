@@ -9,6 +9,8 @@
 #include "LivingActivityReceipts.h"
 #include "LivingPurchaseBudget.h"
 #include "LivingProfessionEvidence.h"
+#include "LivingProfessionSettlement.h"
+#include "fixtures/CraftEvidence.h"
 #include <mysql.h>
 #include <cassert>
 #include <cstdlib>
@@ -89,6 +91,7 @@ public:
         return ReceiptPresent(plan);
     }
 };
+#include "fixtures/ProfessionSettlementDatabase.inc"
 int main() {
     Connection db;
     Task task; task.id = task.root = Id; task.actor = task.context.actor = 497;
@@ -530,5 +533,6 @@ int main() {
     assert(!history.Begin(historyTask,db.History(historyTask),historyBlocker) && historyBlocker=="profession_history_attempt_limit_exceeded");
     assert(db.Execute("ROLLBACK"));
     {Connection restarted;assert(restarted.History(historyTask)==db.History(historyTask));}
-    std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget and bounded profession history; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
+    ProfessionSettlementDatabase(db);
+    std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history and skill-job settlement; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

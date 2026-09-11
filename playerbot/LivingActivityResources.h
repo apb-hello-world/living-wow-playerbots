@@ -3,6 +3,7 @@
 #include "LivingActivity.h"
 #include "LivingActivityResourceView.h"
 #include <map>
+#include <set>
 #include <utility>
 #include <tuple>
 
@@ -14,6 +15,11 @@ namespace LivingActivity {
     struct ClaimReceiptChange {
         ResourceClaim after;
         uint64_t expectedRevision = 0;
+    };
+    struct UnsettledClaimBatch {
+        uint64_t bookRevision=0;
+        bool complete=false;
+        std::vector<ResourceClaim> claims; // At most one existing 16-claim batch.
     };
     enum class ClaimInstall { Installed, Duplicate, Invalid, Stale, Capacity, NotReady };
 
@@ -76,6 +82,11 @@ namespace LivingActivity {
         // remain protected. This does not authorize consumption or a transfer.
         // False means ambiguous/unreconciled ownership, NOT zero stock to buy.
         bool AvailableToTask(const std::string& task,const NativeResourceBalance& native,uint32_t& available) const;
+        // Indexed, acknowledged root obligations, including proposals and
+        // transfers. A bounded first batch, NOT a completion/consumption grant.
+        // Call again after a saved settlement; never assume a truncated batch
+        // contains every claim. Pending reservations fail closed.
+        bool ReadUnsettled(const std::string& task,UnsettledClaimBatch& batch,std::string& blocker) const;
     private:
         void Index(const ResourceClaim& claim, bool add);
         void IndexAcknowledged(const ResourceClaim& claim,bool add);
@@ -94,6 +105,7 @@ namespace LivingActivity {
         std::map<OwnedKey,uint64_t> acknowledgedOwned; // Updated only with saved receipts, not pending holds.
         using RootItemKey=std::tuple<std::string,uint32_t,uint32_t,uint32_t>;
         std::map<RootItemKey,uint64_t> acknowledgedProtected;
+        std::map<std::string,std::set<std::string>> unsettledByTask;
         ResourceProtection protection;
         ResourcePublisher publisher;
     };
