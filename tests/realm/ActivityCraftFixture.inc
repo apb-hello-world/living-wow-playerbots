@@ -488,6 +488,13 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 fixture.mailClaim=claim.id;followRunnerWrite();if (checkpoint) fixture.step=12;return;
             }
             if(serviceTravel && !fixture.travelPositioned) {
+                for(const auto& id:fixture.inheritedInputs) {
+                    const auto* held=state->resources.Inspect(id);
+                    auto* item=held ? bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,held->itemGuid)) : nullptr;
+                    bool protectedStack=false;
+                    require(item && sPlayerbotInventoryPressure.Classify(bot,item,&protectedStack)==LivingWowItemDisposition::Keep &&
+                        protectedStack,"native_capacity_classifier_preserves_saved_job_materials");
+                }
                 fixture.travelMailbox=NativeNearbyMailbox(*bot);
                 auto* mailbox=bot->GetPlayerbotAI()->GetGameObject(ObjectGuid(fixture.travelMailbox));
                 require(mailbox,"walk_fixture_real_mailbox");

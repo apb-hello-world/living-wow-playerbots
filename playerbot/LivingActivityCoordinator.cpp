@@ -24,6 +24,7 @@
 #include "LivingActivityTransfer.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
 #include "LivingProfessionDemand.h"
+#include "PlayerbotInventoryPressure.h"
 #endif
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotActionBroker.h"
