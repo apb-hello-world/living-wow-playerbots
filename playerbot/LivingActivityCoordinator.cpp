@@ -231,6 +231,7 @@ struct LivingActivityCoordinator::State {
         ReservationRequest reservation;
         OperationRequest operation;
         CraftFrame before,after;
+        std::vector<std::string> inheritedInputs,inputs;
         unsigned step=0,launches=0;
         uint64_t deadline=0;
         std::string blocker;

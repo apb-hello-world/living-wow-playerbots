@@ -8,7 +8,9 @@ namespace {
         explicit VendorFixtureReservation(const NativeVendorQuote& quote) : quote(quote) {}
         bool ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& blocker) override {
             const auto& task=request.transition.task;
-            bool valid=IsProfessionJob(task) && task.sourceKey.find("isolated_vendor_v1:")==0 &&
+            bool valid=IsProfessionJob(task) && (task.sourceKey.find("isolated_vendor_v1:")==0 ||
+                (task.sourceKey.find("isolated_craft_v1:")==0 &&
+                 std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE"))=="activity-profession-paid-v1")) &&
                 actor.GetGUIDLow()==quote.actor && !request.changes.empty();
             for (const auto& change : request.changes) {
                 const auto& claim=change.after;
@@ -27,6 +29,7 @@ namespace {
 void LivingActivityCoordinator::RunIsolatedVendorFixture() {
     MANGOS_ASSERT(OnWorldThread());
     RequireIsolatedNativeFixtureEnvironment();
+    const bool paid=std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE"))=="activity-profession-paid-v1";
     state->vendorFixtureFaults=std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE"))=="activity-vendor-failure-v1";
     if (state->fixtureFinished || NowMs()<state->fixtureNext) return;
     state->fixtureNext=NowMs()+1000;
@@ -39,15 +42,18 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
     auto& quote=state->vendorFixtureQuote;
     auto emit=[&](bool passed,const std::string& reason) {
         boost::property_tree::ptree report;
-        report.put("suite",state->vendorFixtureFaults ? "activity-vendor-failure-v1" : "activity-vendor-v1"); report.put("boot",state->boot);
+        report.put("suite",paid ? "activity-profession-paid-v1" : state->vendorFixtureFaults ? "activity-vendor-failure-v1" : "activity-vendor-v1"); report.put("boot",state->boot);
         report.put("test_only",true); report.put("outcome",passed ? "passed" : "failed");
         report.put("failure",reason); report.put("last_blocker",state->vendorFixtureBlocker);
         report.put("fixture_step",state->admissionFixtureStep);
         report.put("actor",request.task.actor); report.put("task",request.task.id);
         report.put("operation",operation.transition.receipt); report.put("native_dispatches",state->operationFixtureCalls);
         report.put("general_execution_enabled",false); report.put("paid_crafting_completion_proof",false);
-        report.put("travel_proof",false); report.put("gold_granted",0); report.put("items_granted",0);
+        unsigned suppliedItems=0;
+        for (const auto& grant : state->craftFixture.grants) suppliedItems+=grant.second.get<unsigned>("quantity");
+        report.put("travel_proof",false); report.put("gold_granted",0); report.put("items_granted",suppliedItems);
         report.put("spell_grants",0); report.put("fixture_position_changes",state->vendorFixturePositionChanged ? 1 : 0);
+        report.add_child("fixture_material_grants",state->craftFixture.grants);
         report.put("native_money_before",quote.moneyBefore); report.put("native_price",quote.copper);
         report.put("entry",quote.entry); report.put("purchased_quantity",quote.quantity);
         report.put("native_count_before",state->vendorFixtureCountBefore);
@@ -109,13 +115,31 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
                 if (!bot->HasSpell(2329)) {skipped("required_recipe_not_known");continue;}
                 if (bot->GetItemCount(3371,true)) {skipped("required_material_already_owned");continue;}
                 ProfessionJob job;job.recipe=2329;job.skill=SKILL_ALCHEMY;
-                job.purpose=ProfessionPurpose::Intermediate;job.outputQuantity=1;job.attemptLimit=1;
+                job.purpose=paid ? ProfessionPurpose::SkillGain : ProfessionPurpose::Intermediate;
+                job.outputQuantity=1;job.attemptLimit=1;
                 const auto native=InspectNativeProfessionRecipe(*bot,job);
                 if (!native.blocker.empty() || native.operation!=ProfessionOperation::CreateItem) {
                     skipped("native_recipe_prerequisite");continue;
                 }
                 job.outputEntry=native.outputEntry;job.reagents=native.reagents;job.initialSkill=native.skillValue;
-                request.task.source="profession_job";request.task.sourceKey="isolated_vendor_v1:"+state->boot;
+                if (paid) {
+                    job.targetSkill=native.skillValue+1;std::string blocker;CraftFrame frame;
+                    if (!MatchNativeProfessionRecipe(job,native,blocker) || !ReadNativeCraftFrame(*bot,job,frame,blocker)) {
+                        skipped("skill_goal_or_inventory_unavailable");continue;
+                    }
+                    bool protectedInput=false;
+                    for (const auto& reagent : job.reagents) {
+                        unsigned stacks=0;
+                        for (const auto& item : frame.stacks) if (item.entry==reagent.entry) {
+                            ++stacks;protectedInput|=state->resources.Protection().ProtectedItem(binding.first,item.guid,item.entry)!=0 ||
+                                sPlayerbotActionBroker.IsItemReserved(item.guid);
+                        }
+                        protectedInput|=stacks>1 || sGuildSupplies.ReservedEntry(binding.first,reagent.entry)!=0;
+                    }
+                    if (protectedInput) {skipped("protected_or_mixed_input");continue;}
+                }
+                request.task.source="profession_job";
+                request.task.sourceKey=(paid ? "isolated_craft_v1:" : "isolated_vendor_v1:")+state->boot;
                 request.task.id=request.task.root=SourceId(request.task.source,request.task.sourceKey);
                 request.task.actor=binding.first;request.task.kind=Kind::Profession;request.task.accepted=true;
                 request.task.priority=Priority::Delivery;request.task.mode=Mode::Active;request.task.phase=Phase::Queued;
@@ -143,6 +167,25 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
             const auto* material=sObjectMgr.GetItemPrototype(3371);
             require(material && material->BuyCount,"fixture_native_vendor_material_exists");
             if (!InspectNativeVendorQuote(*bot,vendor,3371,material->BuyCount,quote,state->vendorFixtureBlocker)) return;
+            if (paid) {
+                ProfessionJob job;std::string blocker;
+                require(DecodeProfessionJob(request.task.checkpoint.data,job,blocker),"paid_job_recipe_decoded");
+                for (const auto& reagent : job.reagents) {
+                    if (reagent.entry==3371) continue; // Must really be bought, never supplied.
+                    const auto owned=bot->GetItemCount(reagent.entry,false);
+                    if (owned>=reagent.perAttempt) continue;
+                    const auto missing=reagent.perAttempt-owned;
+                    require((reagent.entry==765 || reagent.entry==2449) && missing==1,"paid_fixture_only_supplies_missing_herbs");
+                    ItemPosCountVec destinations;
+                    require(bot->CanStoreNewItem(NULL_BAG,NULL_SLOT,destinations,reagent.entry,missing)==EQUIP_ERR_OK,
+                        "paid_fixture_herb_capacity");
+                    auto* added=bot->StoreNewItem(destinations,reagent.entry,true);
+                    boost::property_tree::ptree grant;grant.put("entry",reagent.entry);grant.put("quantity",missing);
+                    grant.put("count_before",owned);grant.put("count_after",bot->GetItemCount(reagent.entry,false));
+                    grant.put("native_item",added ? added->GetGUIDLow() : 0);state->craftFixture.grants.push_back({"",grant});
+                    require(added && bot->GetItemCount(reagent.entry,false)==owned+missing,"paid_fixture_herb_supplied_natively");
+                }
+            }
             request.task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
             state->vendorFixtureCountBefore=bot->GetItemCount(3371,false);bot->SaveToDB();
             const auto admitted=SubmitTask(request);state->vendorFixtureBlocker=admitted.blocker;
@@ -240,8 +283,21 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
                     claim->itemGuid==stack.guid && claim->quantity<=stack.count,"saved_acquisition_matches_native_stack");
                 acquired+=claim->quantity;auto released=*claim;released.state="released";++released.revision;
                 state->reservationFixtureRequest.changes.push_back({released,claim->revision});
+                if (paid) state->craftFixture.inheritedInputs.push_back(claim->id);
             }
             require(acquired==quote.quantity,"all_native_purchase_units_have_saved_claims");
+            if (paid) {
+                require(state->craftFixture.inheritedInputs.size()==1 && quote.entry==3371 && quote.quantity==5,
+                    "paid_purchase_has_one_exact_native_bundle_claim");
+                auto& craft=state->craftFixture;ProfessionJob job;std::string blocker;
+                require(DecodeProfessionJob(request.task.checkpoint.data,job,blocker) &&
+                    ReadNativeCraftFrame(*bot,job,craft.before,blocker),"paid_craft_handoff_reads_purchased_native_goods");
+                // Same accepted job, same acquired claim, no cancellation or
+                // release. The ordinary craft adapter consumes one real vial.
+                craft.request=request;craft.step=1;craft.deadline=0;
+                require(craft.before.money==quote.moneyBefore-quote.copper,"paid_job_retains_actual_purchase_cost");
+                state->admissionFixtureStep=9;return;
+            }
             advance(Phase::Preparing);state->admissionFixtureStep=6;return;
         }
         if (state->admissionFixtureStep==6) {

@@ -1,8 +1,9 @@
 // Copied realm only. Real known Alchemy recipe, ordinary timed native cast,
 // exact native input/output and SQL receipt. The explicitly supplied variant
-// may supply only missing reagents and records every grant. Neither variant
-// proves autonomous procurement, travel or a paid workflow. The separate
-// settlement variant alone proves one supplied skill-job's native completion.
+// may supply only missing reagents and records every grant. The settlement
+// variant proves a supplied skill-job. The paid variant reuses the real vendor
+// adapter before this same craft/settlement path; only herbs may be supplied.
+// Neither fixture proves autonomous travel or auction/mail procurement.
 namespace {
     class CraftFixtureReservation final : public NativeReservationAdapter {
     public:
@@ -36,7 +37,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     auto& fixture=state->craftFixture;auto& request=fixture.request;auto& operation=fixture.operation;
     const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     const bool interrupted=suite=="activity-craft-interrupted-v1";
-    const bool settling=suite=="activity-profession-settlement-v1";
+    const bool paid=suite=="activity-profession-paid-v1";
+    const bool settling=suite=="activity-profession-settlement-v1" || paid;
     const bool supplied=suite=="activity-craft-supplied-v1" || interrupted || settling;
     if (!fixture.deadline) fixture.deadline=NowMs()+120000;
     auto emit=[&](bool passed,const std::string& failure) {
@@ -52,7 +54,21 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         if (fixture.after.actor) {
             report.put("native_money_after",fixture.after.money);report.put("skill_after",fixture.after.skill);
         } // An uncollected sample is unknown, not zero gold/skill.
-        report.put("paid_workflow_proof",false);report.put("profession_job_completion_proof",passed && settling);report.put("travel_proof",false);
+        report.put("paid_workflow_proof",passed && paid);report.put("profession_job_completion_proof",passed && settling);report.put("travel_proof",false);
+        if (paid) {
+            report.put("vendor_operation",state->operationFixtureRequest.transition.receipt);
+            report.put("vendor_dispatches",state->operationFixtureCalls);
+            report.put("native_price",state->vendorFixtureQuote.copper);
+            report.put("money_before_purchase",state->vendorFixtureQuote.moneyBefore);
+            report.put("purchased_entry",state->vendorFixtureQuote.entry);
+            report.put("purchased_quantity",state->vendorFixtureQuote.quantity);
+            report.add_child("vendor_checks",state->admissionFixtureChecks);
+            auto* bot=sRandomPlayerbotMgr.GetPlayerBot(request.task.actor);
+            if (bot && state->vendorFixturePositionChanged && bot->IsInWorld() && !NativeSafety(bot) && !DefersNativeSave(bot->GetGUIDLow())) {
+                bot->NearTeleportTo(state->vendorFixtureX,state->vendorFixtureY,state->vendorFixtureZ,state->vendorFixtureO);
+                report.put("fixture_position_restored",true);
+            } else report.put("fixture_position_restored",false);
+        }
         report.put("settlement_receipt",settling ? request.receipt : "");
         report.put("gold_grants",0);report.put("spell_grants",0);report.put("skill_grants",0);
         report.put("general_execution_enabled",false);report.add_child("fixture_material_grants",fixture.grants);
@@ -175,11 +191,24 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             reservation.authorization=grant.action;ProfessionJob job;std::string blocker;
             require(DecodeProfessionJob(request.task.checkpoint.data,job,blocker),"craft_saved_job_decoded");
             for (const auto& reagent : job.reagents) for (const auto& item : fixture.before.stacks) if (item.entry==reagent.entry) {
+                const ResourceClaim* inherited=nullptr;
+                for (const auto& id : fixture.inheritedInputs) {
+                    const auto* existing=state->resources.Inspect(id);
+                    require(existing && existing->state=="held" && existing->task==request.task.root &&
+                        existing->actor==request.task.actor,"paid_input_still_owned_by_same_root");
+                    if (existing->itemGuid==item.guid && existing->itemEntry==reagent.entry) {
+                        require(!inherited && existing->quantity>=reagent.perAttempt && existing->quantity<=item.count,
+                            "paid_input_exact_native_claim_not_replaced");
+                        inherited=existing;
+                    }
+                }
+                if (inherited) {fixture.inputs.push_back(inherited->id);continue;}
                 ResourceClaim claim;claim.id=NewId();claim.task=request.task.root;claim.actor=request.task.actor;
                 claim.itemGuid=item.guid;claim.itemEntry=item.entry;
                 claim.quantity=settling && reagent.entry==3371 ? 5u : reagent.perAttempt;
                 claim.location="bags";claim.state="held";
                 reservation.changes.push_back({claim,0});
+                fixture.inputs.push_back(claim.id);
             }
             require(SubmitResourceReservation(reservation,reserve).code==AdmissionCode::Pending,"craft_exact_inputs_reserved");
             request=reservation.transition;fixture.step=3;return;
@@ -194,8 +223,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             operation.beforeState="{\"recipe\":2329,\"skill\":"+std::to_string(fixture.before.skill)+",\"money\":"+std::to_string(fixture.before.money)+'}';
             ProfessionJob job;std::string blocker;require(DecodeProfessionJob(request.task.checkpoint.data,job,blocker),"craft_intent_job_decoded");
             operation.itemGain={job.outputEntry,1};
-            for (const auto& change : fixture.reservation.changes) {
-                const auto* claim=state->resources.Inspect(change.after.id);require(claim && claim->state=="held","craft_input_claim_saved");
+            for (const auto& id : fixture.inputs) {
+                const auto* claim=state->resources.Inspect(id);require(claim && claim->state=="held","craft_input_claim_saved");
                 require(claim->quantity<=10,"craft_bounded_fixture_input_claim");
                 const auto need=std::find_if(job.reagents.begin(),job.reagents.end(),[&](const auto& r){return r.entry==claim->itemEntry;});
                 require(need!=job.reagents.end() && need->perAttempt<=claim->quantity,"craft_claim_matches_exact_recipe_consumption");

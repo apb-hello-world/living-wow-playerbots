@@ -35,6 +35,11 @@ namespace {
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if (requested && std::string(requested)=="activity-profession-paid-v1") {
+        if (state->craftFixture.request.task.actor) RunIsolatedCraftFixture();
+        else RunIsolatedVendorFixture();
+        return;
+    }
     if (requested && (std::string(requested)=="activity-craft-v1" || std::string(requested)=="activity-craft-supplied-v1" ||
         std::string(requested)=="activity-craft-interrupted-v1" || std::string(requested)=="activity-profession-settlement-v1")) {
         RunIsolatedCraftFixture();return;
