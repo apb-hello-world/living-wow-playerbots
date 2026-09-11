@@ -16,7 +16,8 @@ namespace {
                 bool input=false;
                 for (const auto& reagent : job.reagents)
                     input|=claim.itemEntry==reagent.entry && claim.quantity==reagent.perAttempt;
-                valid=valid && ((claim.state=="held" && input) || (claim.state=="released" && claim.itemEntry==job.outputEntry));
+                valid=valid && ((claim.state=="held" && input) ||
+                    (claim.state=="released" && (input || claim.itemEntry==job.outputEntry)));
                 if (!valid) {blocker="isolated_craft_claim_mismatch";return false;}
             }
             blocker.clear();return !request.changes.empty();
@@ -30,11 +31,14 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     if (sWorld.GetActiveAndQueuedSessionCount() || !state->loaded || state->ioPending ||
         !state->pending.empty() || !state->incoming.empty() || !state->resources.Protection().ready) return;
     auto& fixture=state->craftFixture;auto& request=fixture.request;auto& operation=fixture.operation;
-    const bool supplied=std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE"))=="activity-craft-supplied-v1";
+    const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    const bool interrupted=suite=="activity-craft-interrupted-v1";
+    const bool supplied=suite=="activity-craft-supplied-v1" || interrupted;
     if (!fixture.deadline) fixture.deadline=NowMs()+120000;
     auto emit=[&](bool passed,const std::string& failure) {
         boost::property_tree::ptree report;
-        report.put("suite",supplied ? "activity-craft-supplied-v1" : "activity-craft-v1");report.put("boot",state->boot);
+        report.put("suite",suite);report.put("boot",state->boot);
+        report.put("expected_operation_outcome",interrupted ? "rejected_without_effect" : "verified");
         report.put("test_only",true);report.put("outcome",passed ? "passed" : "failed");report.put("failure",failure);
         report.put("step",fixture.step);report.put("blocker",fixture.blocker);report.put("actor",request.task.actor);
         report.put("task",request.task.id);report.put("operation",operation.transition.receipt);report.put("native_launches",fixture.launches);
@@ -183,24 +187,43 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(result.executed && !result.outcomeQueued && fixture.launches==1,"craft_native_cast_started_not_completed");
             require(!CharacterDatabase.HasOpenTransaction() && DefersNativeSave(bot->GetGUIDLow()),"craft_no_cross_tick_transaction_and_save_held");
             require(!DispatchSavedOperation(operation.transition.receipt,grant,craft).executed,"craft_pending_cast_not_replayed");
+            if (interrupted) {
+                const auto& pending=state->operations.at(operation.transition.receipt);
+                require(pending.craft && pending.craft->Capture()->Phase()==CraftCapturePhase::Casting &&
+                    bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
+                    bot->GetCurrentSpell(CURRENT_GENERIC_SPELL)->m_spellInfo->Id==2329,
+                    "craft_interruption_targets_actual_pending_native_spell");
+                // Fault injection only: use native cancellation before resource
+                // effects. No simulated success, combat flag clearing, or SQL edit.
+                bot->InterruptSpell(CURRENT_GENERIC_SPELL,false);
+                const auto cancelled=pending.craft->Capture()->ReadFinished();
+                require(cancelled && cancelled->nativeFinished && !cancelled->nativeSucceeded &&
+                    !cancelled->effectEntered && !cancelled->createdCalls,
+                    "craft_native_interruption_observed_without_effect");
+            }
             fixture.step=5;return;
         }
         if (fixture.step==5) {
             ProfessionJob job;std::string blocker;require(DecodeProfessionJob(request.task.checkpoint.data,job,blocker),"craft_result_job_decoded");
             require(ReadNativeCraftFrame(*bot,job,fixture.after,blocker),"craft_after_native_frame");
             require(fixture.before.money==fixture.after.money,"craft_money_conserved");
+            fixture.reservation.changes.clear();unsigned gained=0;
+            if (interrupted) require(SameCraftFrame(fixture.before,fixture.after),"interrupted_craft_inventory_skill_and_money_unchanged");
             for (const auto& input : operation.consumption) {
                 const auto* claim=state->resources.Inspect(input.before.id);
-                require(claim && claim->state=="consumed" && claim->revision==2,"craft_input_consumed_once_in_saved_receipt");
+                if (interrupted) {
+                    require(claim && claim->state=="held" && claim->revision==1,"interrupted_craft_inputs_not_consumed");
+                    auto released=*claim;released.state="released";++released.revision;
+                    fixture.reservation.changes.push_back({released,claim->revision});
+                } else require(claim && claim->state=="consumed" && claim->revision==2,"craft_input_consumed_once_in_saved_receipt");
             }
-            fixture.reservation.changes.clear();unsigned gained=0;
             for (const auto& stack : NativeGainStacks(*bot,operation.itemGain)) {
                 const auto* claim=state->resources.Inspect(ItemGainClaimId(operation.transition.receipt,stack.guid));
                 if (!claim) continue;
                 require(claim->state=="held" && claim->quantity<=stack.count,"craft_output_saved_and_claimed");gained+=claim->quantity;
                 auto released=*claim;released.state="released";++released.revision;fixture.reservation.changes.push_back({released,claim->revision});
             }
-            require(gained==1,"craft_exact_native_output_claimed");
+            require(gained==(interrupted ? 0u : 1u),"craft_exact_native_output_claimed");
             require(!DispatchSavedOperation(operation.transition.receipt,{},craft).executed,"craft_saved_operation_not_replayed");
             advance(Phase::Preparing);fixture.step=6;return;
         }
