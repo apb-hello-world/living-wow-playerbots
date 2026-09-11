@@ -707,9 +707,14 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
         if(now>=trip.nextMove) {
             trip.nextMove=now+5;
             float x=service->GetPositionX(),y=service->GetPositionY(),z=service->GetPositionZ();
-            if(bot->GetMap()->GetReachableRandomPointOnGround(x,y,z,1.0f,false)) {
-                if(saved) {RecipeServiceMovement movement(ai);movement.To(WorldPosition(bot->GetMapId(),x,y,z,0));}
-                else bot->GetMotionMaster()->MovePoint(240,x,y,z);
+            if(saved) {
+                // A mailbox's centre may be inside solid collision geometry.
+                // Use the native contact point and normal pathfinder, not a ray
+                // cast beginning inside the object or an unchecked MovePoint.
+                service->GetContactPoint(bot,x,y,z,1.0f);
+                RecipeServiceMovement movement(ai);movement.To(WorldPosition(bot->GetMapId(),x,y,z,0));
+            } else if(bot->GetMap()->GetReachableRandomPointOnGround(x,y,z,1.0f,false)) {
+                bot->GetMotionMaster()->MovePoint(240,x,y,z);
             }
         }
         result.blocker="recipe_approaching_service";

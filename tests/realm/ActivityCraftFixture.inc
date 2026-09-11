@@ -45,8 +45,9 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const bool paid=suite=="activity-profession-paid-v1";
     const bool banked=suite=="activity-profession-bank-v1";
     const bool checkpoint=suite=="activity-profession-mail-checkpoint-v1";
-    const bool resumed=suite=="activity-profession-mail-resume-v1";
-    const bool serviceTravel=suite=="activity-profession-mail-travel-v1";
+    const bool travelRetry=suite=="activity-profession-mail-travel-resume-v1";
+    const bool resumed=suite=="activity-profession-mail-resume-v1" || travelRetry;
+    const bool serviceTravel=suite=="activity-profession-mail-travel-v1" || travelRetry;
     const bool mailed=suite=="activity-profession-mail-v1" || checkpoint || resumed || serviceTravel;
     const bool automatic=paid || resumed || serviceTravel;
     const bool settling=suite=="activity-profession-settlement-v1" || paid || banked || mailed;
@@ -67,7 +68,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         } // An uncollected sample is unknown, not zero gold/skill.
         report.put("paid_workflow_proof",passed && paid);report.put("profession_job_completion_proof",passed && settling && !checkpoint);report.put("travel_proof",false);
         report.put("ordinary_profession_runner",automatic);
-        report.put("restart_preparation_proof",passed && resumed);
+        report.put("restart_preparation_proof",passed && resumed && !travelRetry);
+        report.put("continued_failed_setup",travelRetry);
         report.put("local_service_walk_proof",passed && serviceTravel && fixture.travelArrived && fixture.travelConflictChecked);
         report.put("route_or_transport_proof",false);
         if(serviceTravel) {
@@ -141,12 +143,23 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             for (const auto& row : state->cache) if (row.second.source=="profession_job" &&
                 row.second.sourceKey.find("isolated_craft_v1:")==0 && row.second.context.boot!=state->boot &&
                 row.second.mode==Mode::Active && row.second.accepted &&
-                ((row.second.phase==Phase::Preparing && row.second.checkpoint.step=="profession_resume_checkpoint") ||
-                 (row.second.phase==Phase::Verifying && row.second.checkpoint.step=="profession_mail_collect"))) {
+                ((row.second.phase==Phase::Preparing && row.second.checkpoint.step==(travelRetry ? "profession_prepare" : "profession_resume_checkpoint")) ||
+                 (!travelRetry && row.second.phase==Phase::Verifying && row.second.checkpoint.step=="profession_mail_collect"))) {
+                if(travelRetry) {
+                    const auto boot=row.second.sourceKey.substr(std::string("isolated_craft_v1:").size());
+                    if(!IsUuid(boot)) continue;
+                    boost::property_tree::ptree original;
+                    try {
+                        std::ifstream file("/isolated/evidence/activity-craft-"+boot+".json");
+                        boost::property_tree::read_json(file,original);
+                    } catch(const std::exception&) {continue;}
+                    if(original.get<std::string>("suite","")!="activity-profession-mail-travel-v1" ||
+                        original.get<std::string>("outcome","")!="failed" ||
+                        original.get<std::string>("failure","")!="walk_fixture_safe_outside_service_start") continue;
+                }
                 require(!prior,"only_one_marked_restart_checkpoint");prior=&row.second;
             }
             if (!prior) {fixture.blocker="restart_fixture_saved_checkpoint_unavailable";return;}
-            state->gameplayFixtureActor.store(prior->actor,std::memory_order_release);
             auto* actor=sRandomPlayerbotMgr.GetPlayerBot(prior->actor);
             if (!actor) {
                 if (!state->supportFixtureRequestedActor && sRandomPlayerbotMgr.GetAllBots().size()<49) {
@@ -158,6 +171,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 actor->GetTradeData() || actor->GetMap()->IsDungeon() || DefersNativeSave(prior->actor)) {
                 fixture.blocker="restart_fixture_actor_safety_pending";return;
             }
+            state->gameplayFixtureActor.store(prior->actor,std::memory_order_release);
             require(actor->GetTeam()==HORDE && actor->GetMapId()<=1,"restart_native_actor_on_supported_continent");
             UnsettledClaimBatch batch;ProfessionJob job;
             require(state->resources.ReadUnsettled(prior->id,batch,fixture.blocker) && batch.complete && batch.claims.size()==3,
@@ -167,7 +181,14 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(IsUuid(checkpointBoot),"restart_checkpoint_boot_is_bounded");
             std::ifstream originalFile("/isolated/evidence/activity-craft-"+checkpointBoot+".json");
             boost::property_tree::read_json(originalFile,fixture.originalCheckpoint);
-            require(fixture.originalCheckpoint.get<std::string>("outcome")=="checkpoint" &&
+            const bool originalValid=travelRetry ?
+                fixture.originalCheckpoint.get<std::string>("suite")=="activity-profession-mail-travel-v1" &&
+                fixture.originalCheckpoint.get<std::string>("outcome")=="failed" &&
+                fixture.originalCheckpoint.get<std::string>("failure")=="walk_fixture_safe_outside_service_start" &&
+                fixture.originalCheckpoint.get<unsigned>("native_launches")==0 &&
+                fixture.originalCheckpoint.get<std::string>("mail_operation").empty() :
+                fixture.originalCheckpoint.get<std::string>("outcome")=="checkpoint";
+            require(originalValid &&
                 fixture.originalCheckpoint.get<std::string>("task")==prior->id &&
                 fixture.originalCheckpoint.get<uint32_t>("actor")==prior->actor,"restart_original_checkpoint_receipt_retained");
             fixture.mailCollectedAtResume=prior->phase==Phase::Verifying;
@@ -181,6 +202,9 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                     fixture.mailId=uint32_t(claim.nativeReference);
                 }
             }
+            if(travelRetry) require(fixture.mailGuid==fixture.originalCheckpoint.get<uint32_t>("mail_guid") &&
+                fixture.mailId==fixture.originalCheckpoint.get<uint32_t>("mail_id") &&
+                fixture.mailClaim==fixture.originalCheckpoint.get<std::string>("mail_claim"),"retry_keeps_failed_setup_exact_attachment_and_claim");
             if (fixture.mailCollectedAtResume) {
                 require(fixture.mailClaim.empty(),"restart_verified_collection_is_not_still_in_mail");
                 fixture.mailClaim=fixture.originalCheckpoint.get<std::string>("mail_claim");
@@ -490,6 +514,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             if(serviceTravel && !fixture.travelPositioned) {
                 for(const auto& id:fixture.inheritedInputs) {
                     const auto* held=state->resources.Inspect(id);
+                    if(held && held->location=="mail") continue;
                     auto* item=held ? bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,held->itemGuid)) : nullptr;
                     bool protectedStack=false;
                     require(item && sPlayerbotInventoryPressure.Classify(bot,item,&protectedStack)==LivingWowItemDisposition::Keep &&
@@ -498,11 +523,16 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 fixture.travelMailbox=NativeNearbyMailbox(*bot);
                 auto* mailbox=bot->GetPlayerbotAI()->GetGameObject(ObjectGuid(fixture.travelMailbox));
                 require(mailbox,"walk_fixture_real_mailbox");
-                bool reachable=false;float x=0,y=0,z=0;
-                for(unsigned attempt=0;attempt<12 && !reachable;++attempt) {
-                    x=mailbox->GetPositionX();y=mailbox->GetPositionY();z=mailbox->GetPositionZ();
-                    reachable=bot->GetMap()->GetReachableRandomPointOnGround(x,y,z,40.0f,false) &&
-                        std::hypot(x-mailbox->GetPositionX(),y-mailbox->GetPositionY())>=25.0f;
+                bool reachable=false;float x=0,y=0,z=0;float closest=90.0f;
+                for(const auto guid:bot->GetPlayerbotAI()->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("nearest npcs no los")->Get()) {
+                    auto* npc=bot->GetPlayerbotAI()->GetUnit(guid);
+                    if(!npc || !npc->IsAlive() || npc->GetMap()!=bot->GetMap() || sServerFacade.IsHostileTo(npc,bot)) continue;
+                    const float distance=std::hypot(npc->GetPositionX()-mailbox->GetPositionX(),npc->GetPositionY()-mailbox->GetPositionY());
+                    if(distance<30.0f || distance>=closest) continue;
+                    PathFinder path(bot);path.calculate(npc->GetPositionX(),npc->GetPositionY(),npc->GetPositionZ(),false);
+                    const auto type=path.getPathType();
+                    if(!(type&PATHFIND_NORMAL) || type&(PATHFIND_NOPATH|PATHFIND_SHORTCUT|PATHFIND_INCOMPLETE|PATHFIND_NOT_USING_PATH)) continue;
+                    x=npc->GetPositionX();y=npc->GetPositionY();z=npc->GetPositionZ();closest=distance;reachable=true;
                 }
                 require(reachable,"walk_fixture_safe_outside_service_start");
                 fixture.travelX=x;fixture.travelY=y;fixture.travelZ=z;
