@@ -69,4 +69,135 @@ int main() {
     link.entry=2318; assert(!MatchesProfessionMaterial(saved,link)); link.entry=2934;
     link.nativeReference=0; assert(!MatchesProfessionMaterial(saved,link)); link.nativeReference=7001;
     link.operation=""; assert(!MatchesProfessionMaterial(saved,link));
+
+    ProfessionSnapshot snapshot; snapshot.task=saved.id; snapshot.revision=saved.revision;
+    snapshot.context=saved.context; snapshot.complete=true; snapshot.unresolvedOperation=false;
+    snapshot.safe=snapshot.knownRecipe=snapshot.useful=snapshot.capacity=true;
+    snapshot.retryReady=true;
+    snapshot.bankAccess=snapshot.tools=snapshot.atStation=true; snapshot.skill=1;
+    snapshot.stock={{2934,3,0,0,0,false}};
+    assert(NextProfessionStep(saved,snapshot).step==ProfessionStep::Execute);
+    auto changed=snapshot; changed.complete=false;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed=snapshot; ++changed.revision;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed=snapshot; ++changed.context.mapGeneration;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed=snapshot; changed.unresolvedOperation=true;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed=snapshot; changed.safe=false;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Pause);
+    changed=snapshot; changed.retryReady=false;
+    assert(NextProfessionStep(saved,changed).blocker=="profession_retry_not_due");
+    changed=snapshot; changed.knownRecipe=false;
+    assert(NextProfessionStep(saved,changed).blocker=="profession_recipe_not_known");
+    changed=snapshot; changed.skill=2;
+    assert(NextProfessionStep(saved,changed).blocker=="profession_target_met_without_job_proof");
+    changed=snapshot; changed.useful=false;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Defer);
+    changed=snapshot; changed.capacity=false;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::PrepareCapacity);
+    changed=snapshot; changed.tools=false;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::PrepareTools);
+    changed=snapshot; changed.atStation=false;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::ReachStation);
+
+    changed=snapshot; changed.stock={{2934,1,2,0,0,true}};
+    auto next=NextProfessionStep(saved,changed);
+    assert(next.step==ProfessionStep::Withdraw && next.quantities[0].perAttempt==2);
+    changed.bankAccess=false;
+    assert(NextProfessionStep(saved,changed).blocker=="profession_banked_material_inaccessible");
+    changed=snapshot; changed.stock={{2934,1,0,0,2,true}};
+    next=NextProfessionStep(saved,changed);
+    assert(next.step==ProfessionStep::Collect && next.quantities[0].perAttempt==2);
+    changed.capacity=false;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::PrepareCapacity);
+    changed=snapshot; changed.stock={{2934,1,0,2,0,true}};
+    // Repeated planning does not buy the already-paid reagent again or expire
+    // the accepted identity. These are decision tests, not native purchases.
+    for (unsigned refresh=0;refresh<100;++refresh)
+        assert(NextProfessionStep(saved,changed).step==ProfessionStep::WaitForDelivery);
+    changed.stock[0].paidInTransit=1;
+    next=NextProfessionStep(saved,changed);
+    assert(next.step==ProfessionStep::Purchase && next.quantities[0].perAttempt==1);
+    changed.stock[0].sourceAvailable=false;
+    assert(NextProfessionStep(saved,changed).blocker=="profession_material_source_unavailable");
+    changed.stock[0].entry=2318;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+
+    auto mixed=job; mixed.reagents={{2934,3},{4289,1}};
+    auto mixedTask=saved; mixedTask.checkpoint.data=EncodeProfessionJob(mixed);
+    changed=snapshot; changed.stock={{2934,1,0,0,0,true},{4289,0,0,0,0,false}};
+    assert(NextProfessionStep(mixedTask,changed).blocker=="profession_material_source_unavailable");
+    changed.stock[0]={2934,3,0,0,0,true}; changed.stock[1].paidInTransit=1;
+    assert(NextProfessionStep(mixedTask,changed).step==ProfessionStep::WaitForDelivery);
+    changed.stock[1].paidInTransit=0; changed.stock[1].delivered=1;
+    assert(NextProfessionStep(mixedTask,changed).step==ProfessionStep::Collect);
+    changed.stock[1].delivered=0; changed.stock[1].bag=1;
+    assert(NextProfessionStep(mixedTask,changed).step==ProfessionStep::Execute);
+
+    ProfessionCraftProof proof;
+    proof.receipt.id="65c7e527-cb15-4d63-966a-199af209c4fb";
+    proof.receipt.task=saved.id; proof.receipt.taskRevision=saved.revision;
+    proof.receipt.kind="profession_craft"; proof.receipt.state=OperationState::Verified;
+    proof.receipt.nativeReference="spell:2881:fixture-cast"; proof.receipt.evidence="native_craft_effect";
+    proof.recipe=2881; proof.consumed=job.reagents; proof.produced={{2318,1}};
+    proof.skillBefore=1; proof.skillAfter=2; proof.committed=proof.nativeEffectVerified=true;
+    changed=snapshot; changed.attempts={proof}; changed.skill=2;
+    next=NextProfessionStep(saved,changed);
+    assert(next.step==ProfessionStep::Finalize && next.verifiedAttempts==1 && next.verifiedOutput==1);
+    assert(saved.phase==Phase::Queued); // A decision never mutates/persists completion.
+    changed.attempts[0].committed=false;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed.attempts={proof,proof};
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed.attempts={proof}; changed.attempts[0].recipe=9060;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed.attempts={proof}; changed.attempts[0].receipt.state=OperationState::Reconciling;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed.attempts={proof}; changed.attempts[0].consumed[0].perAttempt=2;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed.attempts={proof}; changed.attempts[0].produced={{2319,1}};
+    assert(NextProfessionStep(saved,changed).blocker=="profession_expected_output_missing");
+    changed.attempts={proof}; changed.attempts[0].nativeEffectVerified=false;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed=snapshot; proof.skillAfter=1; changed.attempts={proof};
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Execute); // Real craft, no skill-up yet.
+    auto bounded=job; bounded.attemptLimit=1;
+    auto boundedTask=saved; boundedTask.checkpoint.data=EncodeProfessionJob(bounded);
+    assert(NextProfessionStep(boundedTask,changed).blocker=="profession_attempt_limit");
+    auto outputJob=job; outputJob.purpose=ProfessionPurpose::RequestedItem; outputJob.targetSkill=0;
+    auto outputTask=saved; outputTask.checkpoint.data=EncodeProfessionJob(outputJob);
+    assert(NextProfessionStep(outputTask,changed).step==ProfessionStep::Finalize); // Skill not requested.
+    outputJob.outputQuantity=2; outputTask.checkpoint.data=EncodeProfessionJob(outputJob);
+    assert(NextProfessionStep(outputTask,changed).step==ProfessionStep::Execute);
+    auto second=proof; second.receipt.id="8fa5315c-4c08-48b2-b4db-af5a481dcf30";
+    changed.attempts.push_back(second);
+    assert(NextProfessionStep(outputTask,changed).step==ProfessionStep::Reconcile);
+    ++outputTask.revision; ++changed.revision; ++changed.attempts[1].receipt.taskRevision;
+    assert(NextProfessionStep(outputTask,changed).step==ProfessionStep::Finalize);
+
+    auto itemJob=job; itemJob.operation=ProfessionOperation::EnchantItem; itemJob.subjectItem=123;
+    itemJob.outputEntry=itemJob.outputQuantity=itemJob.targetSkill=0;
+    itemJob.purpose=ProfessionPurpose::Equipment;
+    auto itemTask=saved; itemTask.checkpoint.data=EncodeProfessionJob(itemJob);
+    auto itemProof=proof; itemProof.subjectItem=123; itemProof.produced.clear();
+    changed=snapshot; changed.attempts={itemProof};
+    assert(NextProfessionStep(itemTask,changed).step==ProfessionStep::Finalize);
+    changed.attempts[0].subjectItem=124;
+    assert(NextProfessionStep(itemTask,changed).step==ProfessionStep::Reconcile);
+    itemJob.operation=ProfessionOperation::DisenchantItem; itemJob.reagents.clear();
+    itemTask.checkpoint.data=EncodeProfessionJob(itemJob);
+    changed.stock.clear(); itemProof.consumed.clear(); changed.attempts={itemProof};
+    assert(NextProfessionStep(itemTask,changed).blocker=="disenchant_output_proof_missing");
+    changed.attempts[0].produced={{10940,2}};
+    assert(NextProfessionStep(itemTask,changed).step==ProfessionStep::Finalize);
+
+    // Loading the same accepted job after restart cannot turn pending mail into
+    // a new recipe/purchase. A fresh acknowledged context is required first.
+    restored=AfterRestart(saved,1000000000);
+    changed=snapshot; changed.stock={{2934,0,0,3,0,true}};
+    assert(NextProfessionStep(restored,changed).step==ProfessionStep::Reconcile);
+    changed.revision=restored.revision; changed.context=restored.context;
+    assert(NextProfessionStep(restored,changed).step==ProfessionStep::WaitForDelivery);
 }

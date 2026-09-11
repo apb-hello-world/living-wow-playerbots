@@ -139,7 +139,8 @@ namespace LivingActivity {
         const auto* info = spell ? sServerFacade.LookupSpellInfo(spell) : nullptr;
         auto* actor = ai.GetBot();
         const bool known = actor && (actor->HasSpell(spell) || (actor->GetPet() && actor->GetPet()->HasSpell(spell)));
-        const bool inventoryFree = info && actor && InventoryFreeNativeSpell(*info, known, itemCast,
+        const bool inventoryFree = info && actor && InventoryFreeNativeSpell(*info, known,
+            itemCast || (info->Targets & (TARGET_FLAG_ITEM | TARGET_FLAG_TRADE_ITEM)),
             info->EquippedItemClass >= 0 || info->DmgClass == SPELL_DAMAGE_CLASS_RANGED,
             NativeResourceFreeEffect, NativeResourceFreeAura);
         return {SpellEffectMask(inventoryFree), Lane::Managed, true};

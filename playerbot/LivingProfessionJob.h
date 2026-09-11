@@ -36,5 +36,47 @@ namespace LivingActivity {
     // Checks identity only; the native order/receipt must independently verify.
     // A reagent appearing in a mailbox is never sufficient to infer its recipe.
     bool MatchesProfessionMaterial(const Task& task, const ProfessionMaterialLink& link);
+
+    // Finite profession decisions, not another scheduler. A world-thread
+    // adapter supplies a fresh native/acknowledged-journal snapshot; callers
+    // still acquire the root's authority for every selected service step.
+    enum class ProfessionStep {
+        Reconcile, Pause, Defer, PrepareCapacity, Withdraw, Collect, Purchase,
+        WaitForDelivery, PrepareTools, ReachStation, Execute, Finalize
+    };
+    struct ProfessionStock {
+        uint32_t entry = 0;
+        // Disjoint locations. Bag/bank counts exclude other jobs' protection.
+        // Incoming counts require an exact paid-order link, not matching mail.
+        uint32_t bag = 0, bank = 0, paidInTransit = 0, delivered = 0;
+        bool sourceAvailable = false;
+    };
+    struct ProfessionCraftProof {
+        OperationResult receipt;
+        uint32_t recipe = 0, subjectItem = 0;
+        std::vector<ProfessionReagent> consumed, produced; // perAttempt = actual quantity
+        uint32_t skillBefore = 0, skillAfter = 0;
+        bool committed = false, nativeEffectVerified = false;
+    };
+    struct ProfessionSnapshot {
+        std::string task;
+        uint64_t revision = 0;
+        WorldContext context;
+        bool complete = false, unresolvedOperation = true, safe = false;
+        bool retryReady = false; // Existing due queue/backoff, not a new profession timer.
+        bool knownRecipe = false, useful = false, capacity = false;
+        bool bankAccess = false, tools = false, atStation = false;
+        uint32_t skill = 0;
+        std::vector<ProfessionStock> stock;
+        std::vector<ProfessionCraftProof> attempts;
+    };
+    struct ProfessionDecision {
+        ProfessionStep step = ProfessionStep::Reconcile;
+        std::string blocker;
+        std::vector<ProfessionReagent> quantities;
+        uint32_t verifiedAttempts = 0;
+        uint64_t verifiedOutput = 0;
+    };
+    ProfessionDecision NextProfessionStep(const Task& task, const ProfessionSnapshot& snapshot);
 }
 #endif

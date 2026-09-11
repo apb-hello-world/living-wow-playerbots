@@ -1,4 +1,5 @@
 #include "LivingProfessionJob.h"
+#include <algorithm>
 #include <boost/property_tree/json_parser.hpp>
 #include <limits>
 #include <set>
@@ -118,5 +119,116 @@ namespace LivingActivity {
             link.recipe != job.recipe || !IsUuid(link.operation) || !link.nativeReference || !link.quantity) return false;
         for (const auto& reagent : job.reagents) if (reagent.entry == link.entry) return true;
         return false;
+    }
+
+    ProfessionDecision NextProfessionStep(const Task& task, const ProfessionSnapshot& snapshot) {
+        ProfessionDecision decision;
+        auto stop = [&](ProfessionStep step, const char* blocker) {
+            decision.step = step; decision.blocker = blocker; decision.quantities.clear(); return decision;
+        };
+        ProfessionJob job;
+        std::string blocker;
+        if (!task.accepted || !IsUuid(task.id) || !task.actor || !IsProfessionJob(task) ||
+            !ValidateProfessionTask(task, blocker) || !DecodeProfessionJob(task.checkpoint.data, job, blocker))
+            return stop(ProfessionStep::Reconcile, "invalid_profession_task");
+        if (!snapshot.complete || snapshot.task != task.id || snapshot.revision != task.revision ||
+            !(snapshot.context == task.context))
+            return stop(ProfessionStep::Reconcile, "profession_snapshot_not_current");
+        if (Terminal(task.phase)) return stop(ProfessionStep::Defer, "profession_task_terminal");
+        if (snapshot.unresolvedOperation) return stop(ProfessionStep::Reconcile, "profession_operation_unresolved");
+        if (snapshot.stock.size() != job.reagents.size() || snapshot.attempts.size() > job.attemptLimit)
+            return stop(ProfessionStep::Reconcile, "profession_snapshot_inconsistent");
+        for (size_t i = 0; i < job.reagents.size(); ++i)
+            if (snapshot.stock[i].entry != job.reagents[i].entry)
+                return stop(ProfessionStep::Reconcile, "profession_stock_identity_mismatch");
+
+        // Only exact, saved native receipts count. Inventory totals, a changed
+        // skill flag, elapsed time and a planner's replaced goal are not proof.
+        std::set<std::string> operations;
+        bool earnedSkillTarget = false;
+        uint64_t previousRevision = 0;
+        for (const auto& attempt : snapshot.attempts) {
+            const auto& receipt = attempt.receipt;
+            if (!attempt.committed || !IsUuid(receipt.id) || !operations.insert(receipt.id).second ||
+                receipt.task != task.id || receipt.taskRevision <= previousRevision || receipt.taskRevision > task.revision ||
+                receipt.kind != "profession_craft" || attempt.recipe != job.recipe ||
+                attempt.subjectItem != job.subjectItem || !IsToken(receipt.evidence) ||
+                receipt.state == OperationState::Intent || receipt.state == OperationState::Reconciling)
+                return stop(ProfessionStep::Reconcile, "profession_attempt_not_reconciled");
+            previousRevision = receipt.taskRevision;
+            if (receipt.state == OperationState::Rejected) {
+                if (attempt.nativeEffectVerified || !attempt.consumed.empty() || !attempt.produced.empty() ||
+                    attempt.skillBefore != attempt.skillAfter)
+                    return stop(ProfessionStep::Reconcile, "rejected_profession_effect_observed");
+                continue;
+            }
+            if (receipt.state != OperationState::Verified || receipt.nativeReference.empty() ||
+                !attempt.nativeEffectVerified || attempt.consumed != job.reagents ||
+                attempt.skillAfter < attempt.skillBefore || attempt.produced.size() > 16)
+                return stop(ProfessionStep::Reconcile, "profession_native_proof_mismatch");
+            uint32_t previous = 0;
+            bool expectedOutput = false;
+            for (const auto& output : attempt.produced) {
+                if (!output.entry || output.entry <= previous || !output.perAttempt)
+                    return stop(ProfessionStep::Reconcile, "profession_output_proof_invalid");
+                previous = output.entry;
+                if (output.entry == job.outputEntry) {
+                    decision.verifiedOutput += output.perAttempt; expectedOutput = true;
+                }
+            }
+            if ((job.operation == ProfessionOperation::CreateItem || job.operation == ProfessionOperation::TransformMaterial) &&
+                !expectedOutput) return stop(ProfessionStep::Reconcile, "profession_expected_output_missing");
+            if (job.operation == ProfessionOperation::EnchantItem && !attempt.produced.empty())
+                return stop(ProfessionStep::Reconcile, "enchant_produced_unexpected_items");
+            if (job.operation == ProfessionOperation::DisenchantItem && attempt.produced.empty())
+                return stop(ProfessionStep::Reconcile, "disenchant_output_proof_missing");
+            ++decision.verifiedAttempts;
+            earnedSkillTarget |= attempt.skillAfter > attempt.skillBefore && attempt.skillAfter >= job.targetSkill;
+        }
+        const bool fixedOutput = job.operation == ProfessionOperation::CreateItem || job.operation == ProfessionOperation::TransformMaterial;
+        if (job.purpose == ProfessionPurpose::SkillGain ? earnedSkillTarget :
+            (fixedOutput ? decision.verifiedOutput >= job.outputQuantity : decision.verifiedAttempts > 0))
+            // Finalize is NOT completed: the executor must settle claims, surplus
+            // orders and remaining possessions through their native receipts.
+            return stop(ProfessionStep::Finalize, "verified_profession_goal_requires_settlement");
+        if (!snapshot.safe) return stop(ProfessionStep::Pause, "profession_safety_pause");
+        if (!snapshot.retryReady) return stop(ProfessionStep::Defer, "profession_retry_not_due");
+        if (!snapshot.knownRecipe) return stop(ProfessionStep::Defer, "profession_recipe_not_known");
+        if (snapshot.attempts.size() >= job.attemptLimit)
+            return stop(ProfessionStep::Defer, "profession_attempt_limit");
+        if (job.purpose == ProfessionPurpose::SkillGain && snapshot.skill >= job.targetSkill)
+            return stop(ProfessionStep::Defer, "profession_target_met_without_job_proof");
+        if (!snapshot.useful) return stop(ProfessionStep::Defer, "profession_recipe_no_longer_useful");
+
+        bool withdraw = false, collect = false, incoming = false, unavailable = false;
+        std::vector<ProfessionReagent> bank, mail, buy;
+        for (size_t i = 0; i < job.reagents.size(); ++i) {
+            const auto& need = job.reagents[i]; const auto& stock = snapshot.stock[i];
+            uint32_t missing = need.perAttempt > stock.bag ? need.perAttempt - stock.bag : 0;
+            const auto takeBank = std::min(missing, stock.bank);
+            if (takeBank) { bank.push_back({need.entry,takeBank}); withdraw = true; missing -= takeBank; }
+            const auto takeMail = std::min(missing, stock.delivered);
+            if (takeMail) { mail.push_back({need.entry,takeMail}); collect = true; missing -= takeMail; }
+            const auto expected = std::min(missing, stock.paidInTransit);
+            if (expected) { incoming = true; missing -= expected; }
+            if (missing) {
+                if (stock.sourceAvailable) buy.push_back({need.entry,missing});
+                else unavailable = true;
+            }
+        }
+        if (!snapshot.capacity) return stop(ProfessionStep::PrepareCapacity, "profession_capacity_required");
+        if (withdraw) {
+            if (!snapshot.bankAccess) return stop(ProfessionStep::Defer, "profession_banked_material_inaccessible");
+            decision.step = ProfessionStep::Withdraw; decision.quantities = std::move(bank); return decision;
+        }
+        if (collect) { decision.step = ProfessionStep::Collect; decision.quantities = std::move(mail); return decision; }
+        // Do not buy a partial speculative kit while a required reagent has no
+        // valid source. Already paid/owned resources remain attached to this job.
+        if (unavailable) return stop(ProfessionStep::Defer, "profession_material_source_unavailable");
+        if (!buy.empty()) { decision.step = ProfessionStep::Purchase; decision.quantities = std::move(buy); return decision; }
+        if (incoming) return stop(ProfessionStep::WaitForDelivery, "profession_paid_material_in_transit");
+        if (!snapshot.tools) return stop(ProfessionStep::PrepareTools, "profession_tool_required");
+        if (!snapshot.atStation) return stop(ProfessionStep::ReachStation, "profession_station_required");
+        return stop(ProfessionStep::Execute, "profession_native_attempt_ready");
     }
 }

@@ -2,6 +2,7 @@
 #include "playerbot/playerbot.h"
 #include "ItemForSpellValue.h"
 #include "playerbot/ServerFacade.h"
+#include "playerbot/LivingActivityGameplay.h"
 
 using namespace ai;
 
@@ -22,6 +23,13 @@ Item* ItemForSpellValue::Calculate()
     SpellEntry const *spellInfo = sServerFacade.LookupSpellInfo(spellid );
     if (!spellInfo)
         return NULL;
+
+    // This value is also consulted by ordinary heal/buff/damage casts. The
+    // old trader-first lookup could supply a traded item even for a known
+    // resource-free spell. Keep actual item resolution consistent with the
+    // native effect contract; explicit item casts are supplied by their caller.
+    if (!(LivingActivity::NativeSpellEffects(*ai, spellid).mask & LivingActivity::Mask(LivingActivity::Effect::Inventory)))
+        return nullptr;
 
     Item* itemForSpell = NULL;
     Player* trader = bot->GetTrader();
