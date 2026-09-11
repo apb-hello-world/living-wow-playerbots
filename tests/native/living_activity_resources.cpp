@@ -292,6 +292,22 @@ int main() {
     assert(rejects({{transferred,0}},{}));
     task.phase = Phase::Executing;
     assert(rejects({{leather,0}},{balance}));
+    task.phase=Phase::Preparing;
+    auto mailClaim=leather;mailClaim.location="mail";mailClaim.nativeReference=612;
+    auto mailBalance=balance;mailBalance.location="mail";mailBalance.nativeReference=612;
+    assert(!rejects({{mailClaim,0}},{mailBalance}));
+    ResourceClaimBook mailBook;assert(mailBook.FinishRestore());
+    assert(mailBook.ReservePending(receipt,{{mailClaim,0}},{mailBalance})==ClaimInstall::Installed);
+    auto wrongReference=mailBalance;++wrongReference.nativeReference;
+    assert(rejects({{mailClaim,0}},{wrongReference}));
+    assert(mailBook.ReservePending(receipt,{{mailClaim,0}},{wrongReference})==ClaimInstall::Invalid);
+    assert(mailBook.CommitReservation(receipt)==ClaimInstall::Installed);
+    uint32_t available=0;
+    assert(mailBook.AvailableToTask(mailClaim.task,mailBalance,available) && available==mailBalance.quantity);
+    assert(!mailBook.AvailableToTask(mailClaim.task,wrongReference,available));
+    assert(!mailBook.AvailableToTask(mailClaim.task,balance,available));
+    mailBalance.nativeReference=0;assert(rejects({{mailClaim,0}},{mailBalance}));
+    mailBalance.nativeReference=uint64_t(UINT32_MAX)+1;assert(rejects({{mailClaim,0}},{mailBalance}));
     const std::string payload = "{\"id\":\"ff2efbdf-f0ec-4539-b840-299847970c01\","
         "\"task\":\"637bd562-36d2-5b01-bc01-e2d831c49f38\",\"actor\":497,\"item_guid\":81,"
         "\"item_entry\":2934,\"quantity\":6,\"copper\":0,\"location\":\"bags\",\"reference\":0,"

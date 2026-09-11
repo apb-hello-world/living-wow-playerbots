@@ -123,21 +123,21 @@ int main() {
     {
         auto transfer=request;transfer.consumption.clear();transfer.kind="bank_withdraw";
         transfer.effects=Mask(Effect::Inventory);transfer.persistence=NativePersistence::Inventory;
-        transfer.bankTransfer=claim;transfer.bankTransfer.location="bank";
-        ResourceClaimBook bank;assert(bank.RestoreBatch({transfer.bankTransfer})==ClaimInstall::Installed);
+        transfer.itemTransfer=claim;transfer.itemTransfer.location="bank";
+        ResourceClaimBook bank;assert(bank.RestoreBatch({transfer.itemTransfer})==ClaimInstall::Installed);
         assert(bank.FinishRestore());
         const std::vector<NativeResourceBalance> source={{saved.actor,45,2880,5,0,"bank"}};
         assert(valid(transfer,saved));
         assert(ValidateOperationResources(transfer,bank,source,reason));
         assert(!ValidateOperationResources(transfer,bank,stack,reason));
-        auto altered=transfer;altered.bankTransfer.quantity=4;
+        auto altered=transfer;altered.itemTransfer.quantity=4;
         assert(!ValidateOperationResources(altered,bank,source,reason));
         altered=transfer;altered.consumption=request.consumption;assert(!valid(altered,saved));
         altered=transfer;altered.itemGain={2880,5};assert(!valid(altered,saved));
-        altered=transfer;altered.bankTransfer.location="bags";assert(!valid(altered,saved));
-        altered=transfer;altered.bankTransfer.actor++;assert(!valid(altered,saved));
+        altered=transfer;altered.itemTransfer.location="bags";assert(!valid(altered,saved));
+        altered=transfer;altered.itemTransfer.actor++;assert(!valid(altered,saved));
         altered=transfer;altered.persistence=NativePersistence::JournalOnly;assert(!valid(altered,saved));
-        boost::property_tree::ptree identity;std::istringstream json(BankTransferIdentity(transfer.bankTransfer));
+        boost::property_tree::ptree identity;std::istringstream json(BankTransferIdentity(transfer.itemTransfer));
         boost::property_tree::read_json(json,identity);
         assert(identity.get<std::string>("claim")==claim.id && identity.get<unsigned>("quantity")==5);
         auto verified=transfer.transition.task;++verified.revision;verified.phase=Phase::Verifying;
@@ -145,7 +145,7 @@ int main() {
         moved.taskRevision=transfer.transition.task.revision;moved.kind="bank_withdraw";
         moved.state=OperationState::Verified;moved.nativeReference="bank_item:45";moved.evidence="native_bank_stack_relocated";
         auto write=BankTransferWrite(verified,transfer.transition.task.revision,moved,
-            "ff2efbdf-f0ec-4539-b840-299847970c07","{}",transfer.bankTransfer);
+            "ff2efbdf-f0ec-4539-b840-299847970c07","{}",transfer.itemTransfer);
         assert(write.changes.size()==1 && write.changes[0].after.id==claim.id &&
             write.changes[0].after.itemGuid==45 && write.changes[0].after.quantity==5 &&
             write.changes[0].after.location=="bags" && write.changes[0].after.state=="held");
@@ -155,5 +155,24 @@ int main() {
         assert(!ValidateOperationResources(transfer,bank,source,reason)); // No repeated transfer after receipt.
         ResourceClaimBook restarted;assert(restarted.RestoreBatch({write.changes[0].after})==ClaimInstall::Installed);
         assert(restarted.FinishRestore());assert(restarted.Inspect(claim.id)->location=="bags");
+        // Mail carries its exact envelope reference until the atomic transfer.
+        // A matching item entry in another envelope never satisfies the intent.
+        transfer.kind="mail_collect";transfer.itemTransfer.location="mail";transfer.itemTransfer.nativeReference=1234;
+        ResourceClaimBook mail;assert(mail.RestoreBatch({transfer.itemTransfer})==ClaimInstall::Installed && mail.FinishRestore());
+        const std::vector<NativeResourceBalance> attached={{saved.actor,45,2880,5,0,"mail",1234}};
+        assert(valid(transfer,saved) && ValidateOperationResources(transfer,mail,attached,reason));
+        auto wrongMail=attached;wrongMail[0].nativeReference=1235;
+        assert(!ValidateOperationResources(transfer,mail,wrongMail,reason));
+        altered=transfer;altered.kind="bank_withdraw";assert(!valid(altered,saved));
+        altered=transfer;altered.itemTransfer.nativeReference=0;assert(!valid(altered,saved));
+        moved.kind="mail_collect";moved.nativeReference="mail:1234:item:45";moved.evidence="native_mail_attachment_collected";
+        const auto mailWrite=ItemTransferWrite(verified,transfer.transition.task.revision,moved,
+            "ff2efbdf-f0ec-4539-b840-299847970c08","{}",transfer.itemTransfer);
+        assert(mailWrite.changes[0].after.nativeReference==0 && mailWrite.changes[0].after.location=="bags");
+        assert(mail.InstallReceipt(mailWrite.changes)==ClaimInstall::Installed);
+        assert(mail.InstallReceipt(mailWrite.changes)==ClaimInstall::Duplicate);
+        assert(!ValidateOperationResources(transfer,mail,attached,reason));
+        ResourceClaimBook afterRestart;assert(afterRestart.RestoreBatch({mailWrite.changes[0].after})==ClaimInstall::Installed);
+        assert(afterRestart.FinishRestore() && afterRestart.Inspect(claim.id)->nativeReference==0);
     }
 }

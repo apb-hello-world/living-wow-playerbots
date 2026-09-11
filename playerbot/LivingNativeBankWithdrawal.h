@@ -19,7 +19,7 @@ public:
     explicit NativeBankWithdrawal(NativeBankQuote quote):quote(std::move(quote)) {}
     const char* OperationKind() const override {return "bank_withdraw";}
     uint32_t OperationEffects() const override {return Mask(Effect::Inventory);}
-    bool SupportsBankTransfer() const override {return true;}
+    bool SupportsItemTransfer() const override {return true;}
     NativePersistence PersistencePolicy() const override {return NativePersistence::Inventory;}
     bool ValidateNative(Player& actor,const OperationRequest& request,std::string& blocker) override;
     NativeObservation ExecuteNative(Player& actor,const OperationRequest& request) override;

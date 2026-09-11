@@ -92,9 +92,9 @@ namespace LivingActivity {
         if (claim.quantity || claim.location=="money")
             Add(acknowledgedProtected,RootItemKey{claim.task,claim.actor,claim.itemGuid,claim.itemEntry},
                 claim.quantity+claim.copper,add);
-        if (claim.state!="held" || claim.nativeReference ||
-            (claim.location!="bags" && claim.location!="bank" && claim.location!="money")) return;
-        Add(acknowledgedOwned,OwnedKey{claim.task,claim.actor,claim.itemGuid,claim.itemEntry,claim.location},
+        if (claim.state!="held" || !ValidNativeResourceBalance({claim.actor,claim.itemGuid,claim.itemEntry,
+                uint32_t(claim.quantity),uint32_t(claim.copper),claim.location,claim.nativeReference})) return;
+        Add(acknowledgedOwned,OwnedKey{claim.task,claim.actor,claim.itemGuid,claim.itemEntry,claim.location,claim.nativeReference},
             claim.copper+claim.quantity,add);
     }
     bool ResourceClaimBook::ReadUnsettled(const std::string& task,UnsettledClaimBatch& batch,std::string& blocker) const {
@@ -118,14 +118,12 @@ namespace LivingActivity {
     }
     bool ResourceClaimBook::AvailableToTask(const std::string& task,const NativeResourceBalance& native,uint32_t& available) const {
         available=0;
-        if (!protection.ready || !IsUuid(task) || !native.actor ||
-            (native.location=="money" ? (native.itemGuid || native.itemEntry || native.quantity) :
-                (!native.itemGuid || !native.itemEntry || native.copper || (native.location!="bags" && native.location!="bank"))))
+        if (!protection.ready || !IsUuid(task) || !ValidNativeResourceBalance(native))
             return false;
         const uint64_t actual=uint64_t(native.copper)+native.quantity;
         const uint64_t protectedAmount=native.location=="money" ? protection.ProtectedMoney(native.actor) :
             protection.ProtectedItem(native.actor,native.itemGuid,native.itemEntry);
-        const auto owned=Lookup(acknowledgedOwned,OwnedKey{task,native.actor,native.itemGuid,native.itemEntry,native.location});
+        const auto owned=Lookup(acknowledgedOwned,OwnedKey{task,native.actor,native.itemGuid,native.itemEntry,native.location,native.nativeReference});
         auto rootProtected=Lookup(acknowledgedProtected,RootItemKey{task,native.actor,native.itemGuid,native.itemEntry});
         if (native.itemGuid) rootProtected+=Lookup(acknowledgedProtected,RootItemKey{task,native.actor,0,native.itemEntry});
         // A root's received mail / moved bank stack with an old saved location
@@ -199,8 +197,8 @@ namespace LivingActivity {
                 !SameResourceClaim(old.changes[i].after,changes[i].after)) return ClaimInstall::Invalid;
             for (size_t i=0;i<balances.size();++i) {
                 const auto& a=old.balances[i]; const auto& b=balances[i];
-                if (std::tie(a.actor,a.itemGuid,a.itemEntry,a.quantity,a.copper,a.location) !=
-                    std::tie(b.actor,b.itemGuid,b.itemEntry,b.quantity,b.copper,b.location)) return ClaimInstall::Invalid;
+                if (std::tie(a.actor,a.itemGuid,a.itemEntry,a.quantity,a.copper,a.location,a.nativeReference) !=
+                    std::tie(b.actor,b.itemGuid,b.itemEntry,b.quantity,b.copper,b.location,b.nativeReference)) return ClaimInstall::Invalid;
             }
             return ClaimInstall::Duplicate;
         }
@@ -209,8 +207,7 @@ namespace LivingActivity {
         const auto actor = changes.front().after.actor;
         const auto task = changes.front().after.task;
         for (const auto& b : balances) {
-            if (b.actor != actor || (b.location == "money" ? (b.itemGuid || b.itemEntry || b.quantity) :
-                (!b.itemGuid || !b.itemEntry || b.copper || (b.location != "bags" && b.location != "bank"))) ||
+            if (b.actor != actor || !ValidNativeResourceBalance(b) ||
                 !limits.emplace(b.itemGuid,b).second) return ClaimInstall::Invalid;
         }
         std::set<std::string> ids;
@@ -238,8 +235,8 @@ namespace LivingActivity {
             if (after.state == "proposed" && (after.itemGuid || after.nativeReference)) return ClaimInstall::Invalid;
             if (after.state != "held") continue; // Pending release still protects the acknowledged quantity.
             const auto limit = limits.find(after.itemGuid);
-            if (after.nativeReference || limit == limits.end() || limit->second.itemEntry != after.itemEntry ||
-                limit->second.location != after.location) return ClaimInstall::Invalid;
+            if (limit == limits.end() || limit->second.itemEntry != after.itemEntry ||
+                limit->second.location != after.location || limit->second.nativeReference!=after.nativeReference) return ClaimInstall::Invalid;
             const uint64_t oldAmount = before && ProtectsResources(*before) ? before->quantity+before->copper : 0;
             const uint64_t newAmount = after.quantity+after.copper;
             if (newAmount > oldAmount) {

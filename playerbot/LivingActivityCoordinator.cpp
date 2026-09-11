@@ -18,6 +18,8 @@
 #include "LivingProfessionAttempt.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingNativeBankWithdrawal.h"
+#include "LivingNativeMailCollection.h"
+#include "Mails/Mail.h"
 #include "LivingActivityTransfer.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
 #include "LivingProfessionDemand.h"
@@ -118,6 +120,12 @@ namespace {
                     claim.itemEntry == item->GetEntry() && claim.location == location)
                     owned.emplace(item->GetGUIDLow(),NativeResourceBalance{actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,location});
             }
+        for (const auto& claim : claims) if (claim.state=="held" && claim.location=="mail") {
+            NativeResourceBalance balance;
+            if (ReadNativeMailBalance(bot,claim,balance) && (!admission ||
+                (!sPlayerbotActionBroker.IsItemReserved(claim.itemGuid) && !sGuildSupplies.ReservedEntry(actor,claim.itemEntry))))
+                owned.emplace(claim.itemGuid,balance);
+        }
         std::vector<NativeResourceBalance> result;
         for (const auto& row : owned) result.push_back(row.second);
         return result;
@@ -125,7 +133,7 @@ namespace {
     std::vector<NativeResourceBalance> NativeConsumptionBalances(Player& bot,const OperationRequest& request,bool admission=true) {
         std::vector<ResourceClaim> claims;
         for (const auto& use : request.consumption) claims.push_back(use.before);
-        if (!request.bankTransfer.id.empty()) claims.push_back(request.bankTransfer);
+        if (!request.itemTransfer.id.empty()) claims.push_back(request.itemTransfer);
         return NativeClaimBalances(bot,claims,admission);
     }
     std::vector<NativeItemStack> NativeGainStacks(Player& bot,const ItemGainSpec& spec) {
@@ -271,6 +279,8 @@ struct LivingActivityCoordinator::State {
         std::string blocker;
         std::string bankOperation,bankClaim;
         uint32_t bankGuid=0,bankCount=0,bankTotal=0;
+        std::string mailOperation,mailClaim;
+        uint32_t mailId=0,mailGuid=0,mailCount=0;
         boost::property_tree::ptree checks,selection,grants,snapshot;
     } craftFixture;
     struct ProfessionRecoveryFixture {
@@ -1282,6 +1292,16 @@ bool LivingActivityCoordinator::TaskResourceAvailability(const std::string& id,u
 bool LivingActivityCoordinator::PurchaseLedgerReady() const {
     return state->purchaseLedgerReady.load(std::memory_order_acquire);
 }
+bool LivingActivityCoordinator::ReadTaskClaims(uint32_t actor,const std::string& id,uint64_t revision,
+    UnsettledClaimBatch& claims,std::string& blocker) const {
+    claims={};const auto task=ReadSavedTask(id);
+    if (!task || task->actor!=actor || task->revision!=revision || Terminal(task->phase)) {
+        blocker="resource_demand_task_changed";return false;
+    }
+    if (!state->resources.ReadUnsettled(task->root,claims,blocker)) return false;
+    if (!claims.complete) {blocker="resource_demand_claim_batch_incomplete";return false;}
+    blocker.clear();return true;
+}
 bool LivingActivityCoordinator::ReadPurchaseBudget(uint32_t actor,const std::string& task,uint64_t revision,
     const std::string& operation,PurchaseSpend& spend,std::string& blocker) {
     spend={};
@@ -1443,6 +1463,14 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             NativeBankWithdrawal adapter(quote);
             return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
         }
+        if (row.second.request.kind=="mail_collect") {
+            NativeMailQuote quote;
+            if (!DecodeNativeMailQuote(row.second.request.beforeState,quote)) return stop("profession_mail_intent_invalid");
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_mail_collect");
+            if (!grant.Permitted()) return stop(grant.blocker);
+            NativeMailCollection adapter(quote);
+            return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
         if (row.second.request.kind!="profession_craft") return stop("profession_operation_requires_reconciliation");
         return stop(DispatchProfessionAttempt(actor,row.first).admission.blocker);
     }
@@ -1465,6 +1493,26 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     const auto next=NextProfessionStep(*saved,snapshot);
     if (next.step==ProfessionStep::Finalize)
         return stop(SettleProfessionJob(actor,id,saved->revision,NewId()).blocker);
+    if (next.step==ProfessionStep::Collect && !next.quantities.empty()) {
+        if (saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
+        if (saved->phase!=Phase::Preparing) return stop("profession_mail_preparation_required");
+        UnsettledClaimBatch batch;
+        if (!ReadTaskClaims(actor,id,saved->revision,batch,blocker)) return stop(blocker);
+        for (const auto& claim : batch.claims) if (ValidMailTransfer(claim) && claim.itemEntry==next.quantities.front().entry) {
+            NativeMailQuote quote;
+            if (!PlanNativeMailCollection(*bot,*saved,claim,quote,blocker)) return stop(blocker);
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_mail_preparation");
+            if (!grant.Permitted()) return stop(grant.blocker);
+            OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+            ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+            request.transition.task.checkpoint.step="profession_mail_collect";request.transition.task.updatedAtMs=NowMs();
+            request.transition.receipt=NewId();request.authorization=grant.action;
+            request.kind="mail_collect";request.effects=Mask(Effect::Inventory);request.persistence=NativePersistence::Inventory;
+            request.beforeState=EncodeNativeMailQuote(quote);request.itemTransfer=claim;
+            NativeMailCollection adapter(quote);return stop(SubmitOperationIntent(request,adapter).blocker);
+        }
+        return stop("profession_mail_link_requires_reconciliation");
+    }
     if (next.step==ProfessionStep::Withdraw && !next.quantities.empty()) {
         if (saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
         if (saved->phase!=Phase::Preparing) return stop("profession_bank_preparation_required");
@@ -1494,7 +1542,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         request.transition.task.checkpoint.step="profession_bank_withdraw";request.transition.task.updatedAtMs=NowMs();
         request.transition.receipt=NewId();request.authorization=grant.action;
         request.kind="bank_withdraw";request.effects=Mask(Effect::Inventory);request.persistence=NativePersistence::Inventory;
-        request.beforeState=EncodeNativeBankQuote(quote);request.bankTransfer=claim;
+        request.beforeState=EncodeNativeBankQuote(quote);request.itemTransfer=claim;
         NativeBankWithdrawal adapter(quote);return stop(SubmitOperationIntent(request,adapter).blocker);
     }
     if (next.step!=ProfessionStep::Execute) return stop(next.blocker.empty()?"profession_service_adapter_required":next.blocker);
@@ -2029,10 +2077,10 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
     if (next.id != SourceId(next.source, next.sourceKey) || request.kind != adapter.OperationKind() ||
         request.effects != adapter.OperationEffects() || request.persistence != adapter.PersistencePolicy())
         return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
-    const bool bankTransfer=adapter.SupportsBankTransfer() && ValidBankTransfer(request.bankTransfer) &&
-        request.kind=="bank_withdraw" && request.effects==Mask(Effect::Inventory) &&
+    const bool itemTransfer=adapter.SupportsItemTransfer() && ValidItemTransfer(request.itemTransfer) &&
+        request.kind==ItemTransferKind(request.itemTransfer) && request.effects==Mask(Effect::Inventory) &&
         request.persistence==NativePersistence::Inventory && request.consumption.empty() && request.itemGain.Empty();
-    if (!bankTransfer && (request.effects & (Mask(Effect::Money)|Mask(Effect::Inventory))) &&
+    if (!itemTransfer && (request.effects & (Mask(Effect::Money)|Mask(Effect::Inventory))) &&
         (!adapter.SupportsClaimedConsumption() || request.consumption.empty() || request.persistence == NativePersistence::JournalOnly))
         return reject(AdmissionCode::InvalidRequest,"resource_effect_adapter_not_supported");
     if (!request.itemGain.Empty() && (!adapter.SupportsItemGain() || !ValidItemGainSpec(request.itemGain)))
@@ -2108,7 +2156,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         request.persistence != adapter.PersistencePolicy() ||
         (!request.itemGain.Empty() && !adapter.SupportsItemGain()) ||
         (!request.consumption.empty() && !adapter.SupportsClaimedConsumption()) ||
-        (!request.bankTransfer.id.empty() && !adapter.SupportsBankTransfer()))
+        (!request.itemTransfer.id.empty() && !adapter.SupportsItemTransfer()))
         return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
     const auto saved = state->cache.find(intended.id);
     Player* bot = sRandomPlayerbotMgr.GetPlayerBot(intended.actor);
@@ -2289,8 +2337,8 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     WritePlan plan; std::vector<ClaimReceiptChange> changes;
     std::string gainReservation;
     try {
-        if (proof.state == OperationState::Verified && !request.bankTransfer.id.empty()) {
-            auto moved=BankTransferWrite(after,saved->second.revision,proof,receipt,observation.afterState,request.bankTransfer);
+        if (proof.state == OperationState::Verified && !request.itemTransfer.id.empty()) {
+            auto moved=ItemTransferWrite(after,saved->second.revision,proof,receipt,observation.afterState,request.itemTransfer);
             // Same GUID and amount: the existing protection remains effective
             // through location change, SQL retry and acknowledgement loss.
             plan=std::move(moved.journal);changes=std::move(moved.changes);

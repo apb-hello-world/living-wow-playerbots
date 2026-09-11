@@ -553,7 +553,7 @@ int main() {
         OperationRequest request;request.transition.task=bank;request.transition.expectedRevision=bank.revision;
         ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;request.transition.receipt=rid(4);
         request.kind="bank_withdraw";request.effects=Mask(Effect::Inventory);request.persistence=NativePersistence::Inventory;
-        request.bankTransfer=item;
+        request.itemTransfer=item;
         assert(db.Write(OperationRequestWrite(request)));
         bank=request.transition.task;++bank.revision;bank.phase=Phase::Verifying;
         OperationResult result;result.id=rid(4);result.task=bank.id;result.taskRevision=request.transition.task.revision;
@@ -569,6 +569,38 @@ int main() {
         assert(db.Write(moved.journal));assert(db.Write(moved.journal));
         assert(db.Scalar("SELECT CONCAT(location,':',state,':',quantity,':',revision) FROM living_activity_claim WHERE claim_id="+SqlValue(item.id))=="bags:held:5:2");
         assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE item_guid=9876")=="1");
+    }
+    {
+        // Exact mail envelope binding and rollback at the real MariaDB journal
+        // boundary. Physical mail/inventory proof is a separate realm fixture.
+        const auto rid=[](unsigned n){return std::string("ff2efbdf-f0ec-4539-b840-29984797811")+std::to_string(n);};
+        Task task;task.id=task.root="637bd562-36d2-5b01-bc01-e2d831c49fe3";
+        task.actor=task.context.actor=905;task.source="mail_service";task.sourceKey="native_mail_transfer_fixture";
+        task.mode=Mode::Active;task.phase=Phase::Queued;task.kind=Kind::Maintenance;task.createdAtMs=task.updatedAtMs=1000;
+        assert(db.Write(TaskWrite(task,0,rid(0),"fixture_created")));
+        task.phase=Phase::Preparing;++task.revision;assert(db.Write(TaskWrite(task,1,rid(1),"fixture_preparing")));
+        ResourceClaim item;item.id=rid(2);item.task=task.id;item.actor=905;item.itemGuid=9877;
+        item.itemEntry=765;item.quantity=5;item.location="mail";item.nativeReference=1234;item.state="held";
+        ++task.revision;
+        assert(db.Write(ResourceReservationWrite(task,2,rid(3),{{item,0}},{{905,9877,765,5,0,"mail",1234}})));
+        OperationRequest request;request.transition.task=task;request.transition.expectedRevision=task.revision;
+        ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;request.transition.receipt=rid(4);
+        request.kind="mail_collect";request.effects=Mask(Effect::Inventory);request.persistence=NativePersistence::Inventory;request.itemTransfer=item;
+        assert(db.Write(OperationRequestWrite(request)));
+        task=request.transition.task;++task.revision;task.phase=Phase::Verifying;
+        OperationResult result;result.id=rid(4);result.task=task.id;result.taskRevision=request.transition.task.revision;
+        result.kind="mail_collect";result.state=OperationState::Verified;result.nativeReference="mail:1234:item:9877";
+        result.evidence="native_mail_attachment_collected";
+        const auto moved=ItemTransferWrite(task,request.transition.task.revision,result,rid(5),"{}",item);
+        assert(!db.Write(moved.journal,true));
+        assert(db.Scalar("SELECT CONCAT(location,':',native_reference) FROM living_activity_claim WHERE claim_id="+SqlValue(item.id))=="mail:1234");
+        const auto exact=db.Scalar("SELECT before_state FROM living_activity_operation WHERE operation_id="+SqlValue(result.id));
+        assert(db.Execute("UPDATE living_activity_operation SET before_state=JSON_SET(before_state,'$.native.transfer.mail',1235) WHERE operation_id="+SqlValue(result.id)));
+        assert(!db.Write(moved.journal));
+        assert(db.Execute("UPDATE living_activity_operation SET before_state="+SqlValue(exact)+" WHERE operation_id="+SqlValue(result.id)));
+        assert(db.Write(moved.journal) && db.Write(moved.journal));
+        assert(db.Scalar("SELECT CONCAT(location,':',native_reference,':',state,':',quantity,':',revision) FROM living_activity_claim WHERE claim_id="+SqlValue(item.id))=="bags:0:held:5:2");
+        assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE item_guid=9877")=="1");
     }
     ProfessionSettlementDatabase(db);
     // Execute the exact production projection/expiry SQL, including old-schema

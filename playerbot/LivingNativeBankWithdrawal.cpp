@@ -95,7 +95,7 @@ bool PlanNativeBankWithdrawal(Player& actor,const Task& task,const ProfessionRea
 }
 bool NativeBankWithdrawal::ValidateNative(Player& actor,const OperationRequest& r,std::string& blocker) {
     auto reject=[&](const char* why){blocker=why;return false;};
-    const auto& c=r.bankTransfer;
+    const auto& c=r.itemTransfer;
     if (!SafeBankActor(actor)) return reject("profession_bank_safety_pause");
     if (!ValidBankTransfer(c) || c.actor!=actor.GetGUIDLow() || c.actor!=quote.actor ||
         c.task!=r.transition.task.root || c.itemGuid!=quote.guid || c.itemEntry!=quote.entry || c.quantity!=quote.quantity ||

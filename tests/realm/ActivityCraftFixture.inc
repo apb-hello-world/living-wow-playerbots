@@ -3,7 +3,9 @@
 // may supply only missing reagents and records every grant. The settlement
 // variant proves a supplied skill-job. The paid variant reuses the real vendor
 // adapter before this same craft/settlement path; only herbs may be supplied.
-// Neither fixture proves autonomous travel or auction/mail procurement.
+// The mail variant moves a logged fixture item into an ordinary native delayed
+// letter, explicitly links it, then tests collection through the same job.
+// These fixtures do not prove autonomous travel or paid auction procurement.
 namespace {
     class CraftFixtureReservation final : public NativeReservationAdapter {
     public:
@@ -13,8 +15,11 @@ namespace {
                 !DecodeProfessionJob(request.transition.task.checkpoint.data,job,blocker)) return false;
             for (const auto& change : request.changes) {
                 const auto& claim=change.after;
+                const bool mail=std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE"))=="activity-profession-mail-v1" &&
+                    ValidMailTransfer(claim);
+                NativeResourceBalance balance;
                 bool valid=claim.actor==actor.GetGUIDLow() && claim.task==request.transition.task.root &&
-                    claim.location=="bags" && claim.itemGuid && !claim.copper;
+                    (claim.location=="bags" || (mail && ReadNativeMailBalance(actor,claim,balance))) && claim.itemGuid && !claim.copper;
                 bool input=false;
                 for (const auto& reagent : job.reagents)
                     input|=claim.itemEntry==reagent.entry && (claim.quantity==reagent.perAttempt ||
@@ -39,7 +44,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const bool interrupted=suite=="activity-craft-interrupted-v1";
     const bool paid=suite=="activity-profession-paid-v1";
     const bool banked=suite=="activity-profession-bank-v1";
-    const bool settling=suite=="activity-profession-settlement-v1" || paid || banked;
+    const bool mailed=suite=="activity-profession-mail-v1";
+    const bool settling=suite=="activity-profession-settlement-v1" || paid || banked || mailed;
     const bool supplied=suite=="activity-craft-supplied-v1" || interrupted || settling;
     if (!fixture.deadline) fixture.deadline=NowMs()+120000;
     auto emit=[&](bool passed,const std::string& failure) {
@@ -62,6 +68,12 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             report.put("bank_claim",fixture.bankClaim);report.put("bank_guid",fixture.bankGuid);
             report.put("bank_quantity",fixture.bankCount);report.put("bank_total_before",fixture.bankTotal);
             report.put("bank_service_positioning_fixture",true);
+        }
+        if (mailed) {
+            report.put("ordinary_mail_runner",true);report.put("mail_operation",fixture.mailOperation);
+            report.put("mail_claim",fixture.mailClaim);report.put("mail_id",fixture.mailId);
+            report.put("mail_guid",fixture.mailGuid);report.put("mail_quantity",fixture.mailCount);
+            report.put("mail_link_and_service_positioning_fixture",true);
         }
         if (paid) {
             report.put("vendor_operation",state->operationFixtureRequest.transition.receipt);
@@ -107,6 +119,11 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 if (banked && (candidate->GetMapId()!=1 || candidate->GetItemCount(765,false)>1 ||
                     candidate->GetItemCount(765,true)!=candidate->GetItemCount(765,false))) {
                     skipped("bank_fixture_map_or_existing_stock");continue;
+                }
+                if (mailed && (candidate->GetMapId()!=1 || candidate->GetTeam()!=HORDE ||
+                    candidate->GetItemCount(765,false)>1 || candidate->GetItemCount(765,true)!=candidate->GetItemCount(765,false) ||
+                    candidate->m_mailsUpdated || candidate->GetMailSize())) {
+                    skipped("mail_fixture_map_existing_stock_or_mail");continue;
                 }
                 ProfessionJob next;next.recipe=2329;next.skill=SKILL_ALCHEMY;
                 next.purpose=settling ? ProfessionPurpose::SkillGain : ProfessionPurpose::Intermediate;
@@ -154,7 +171,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 if (missing<bestMissing) {selected=candidate;job=next;bestMissing=missing;}
             }
             if (!selected) {
-                if (banked && !state->supportFixtureLookupStarted) {
+                if ((banked || mailed) && !state->supportFixtureLookupStarted) {
                     state->supportFixtureLookupStarted=true;
                     CharacterDatabase.AsyncQuery([this](QueryResult* rows) {
                         MANGOS_ASSERT(OnWorldThread());RequireIsolatedNativeFixtureEnvironment();
@@ -210,6 +227,11 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 require(spawn && spawn->id==entry && spawn->mapid==selected->GetMapId(),"bank_fixture_valid_native_spawn");
                 selected->NearTeleportTo(spawn->posX,spawn->posY,spawn->posZ,spawn->orientation);
             }
+            if (mailed) {
+                const auto* spawn=sObjectMgr.GetGOData(10107);
+                require(spawn && spawn->id==173221 && spawn->mapid==selected->GetMapId(),"mail_fixture_valid_native_spawn");
+                selected->NearTeleportTo(spawn->posX,spawn->posY,spawn->posZ,spawn->orientation);
+            }
             return;
         }
         auto* bot=sRandomPlayerbotMgr.GetPlayerBot(request.task.actor);
@@ -222,10 +244,14 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 if (!NativeNearbyBanker(*bot)) {fixture.blocker="bank_fixture_native_arrival_pending";return;}
                 request.task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
             }
+            if (mailed) {
+                if (!NativeNearbyMailbox(*bot)) {fixture.blocker="mail_fixture_native_arrival_pending";return;}
+                request.task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
+            }
             require(SubmitTask(request).code==AdmissionCode::Pending,"craft_task_admitted");fixture.step=1;return;
         }
         const auto saved=state->cache.find(request.task.id);require(saved!=state->cache.end(),"craft_task_receipt_present");
-        if (fixture.step==10) request.task=saved->second; // Journal-driven bank substep; exact task identity stays fixed.
+        if (fixture.step==10 || fixture.step==11) request.task=saved->second; // Journal-driven service substep, same root.
         if (fixture.step==5) {
             if (saved->second.phase==Phase::Executing) {fixture.blocker="native_cast_or_receipt_pending";return;}
             require(saved->second.phase==Phase::Verifying && !DefersNativeSave(bot->GetGUIDLow()) &&
@@ -251,7 +277,66 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 if (!followRunnerWrite()) return;
                 require(request.task.phase==Phase::Preparing,"paid_runner_resumes_preparation_after_purchase");
             } else advance(Phase::Preparing);
-            fixture.step=banked ? 10 : 2;return;
+            fixture.step=banked ? 10 : mailed ? 11 : 2;return;
+        }
+        if (fixture.step==11) {
+            if (!fixture.mailGuid) {
+                auto items=bot->GetPlayerbotAI()->InventoryParseItems("765",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+                require(items.size()==1,"mail_fixture_one_owned_herb_stack");auto* item=*items.begin();
+                require(item && item->GetEntry()==765 && !state->resources.Protection().ProtectedItem(request.task.actor,item->GetGUIDLow(),765),
+                    "mail_fixture_stock_not_reserved");
+                fixture.mailGuid=item->GetGUIDLow();fixture.mailCount=item->GetCount();
+                require(CharacterDatabase.BeginTransaction(),"mail_fixture_setup_transaction");
+                bot->MoveItemFromInventory(item->GetBagSlot(),item->GetSlot(),true);
+                item->DeleteFromInventoryDB();item->SaveToDB();bot->SaveInventoryAndGoldToDB();
+                require(CharacterDatabase.CommitTransactionDirect(),"mail_fixture_inventory_setup_saved");
+                MailDraft draft("Isolated profession collection fixture");draft.AddItem(item);
+                draft.SendMailTo(MailReceiver(bot),MailSender(bot),MAIL_CHECK_MASK_NONE,10);
+                require(!CharacterDatabase.HasOpenTransaction(),"native_mail_fixture_setup_queued");
+                for (auto it=bot->GetMailBegin();it!=bot->GetMailEnd();++it)
+                    for (const auto& attachment : (*it)->items) if (attachment.item_guid==fixture.mailGuid) fixture.mailId=(*it)->messageID;
+                require(fixture.mailId && bot->GetMItem(fixture.mailGuid) && bot->GetItemCount(765,false)==0,
+                    "native_mail_setup_only_relocated_owned_herbs");return;
+            }
+            if (fixture.mailClaim.empty()) {
+                ResourceClaim claim;claim.id=NewId();claim.task=request.task.root;claim.actor=request.task.actor;
+                claim.itemGuid=fixture.mailGuid;claim.itemEntry=765;claim.quantity=fixture.mailCount;
+                claim.location="mail";claim.nativeReference=fixture.mailId;claim.state="held";
+                NativeMailQuote quote;
+                require(!PlanNativeMailCollection(*bot,request.task,claim,quote,fixture.blocker) &&
+                    fixture.blocker=="profession_mail_delivery_pending","undelivered_attachment_cannot_be_collected");
+                auto* nativeMail=bot->GetMail(fixture.mailId);nativeMail->COD=10;
+                const bool codRejected=!PlanNativeMailCollection(*bot,request.task,claim,quote,fixture.blocker) &&
+                    fixture.blocker=="profession_cod_material_requires_explicit_acceptance";
+                nativeMail->COD=0;require(codRejected,"cod_mail_cannot_spend_money_implicitly");
+                NativeResourceBalance balance;auto wrong=claim;++wrong.nativeReference;
+                require(!ReadNativeMailBalance(*bot,wrong,balance),"wrong_envelope_cannot_claim_attachment");
+                const auto grant=AcquireSavedTask(request.task.id,request.task.revision,Mask(Effect::Inventory),60000,"isolated_mail_link");
+                require(grant.Permitted(),"mail_claim_authority");
+                ReservationRequest reservation;reservation.transition=request;reservation.transition.expectedRevision=request.task.revision;
+                ++reservation.transition.task.revision;reservation.transition.receipt=NewId();reservation.transition.task.updatedAtMs=NowMs();
+                reservation.authorization=grant.action;reservation.changes.push_back({claim,0});
+                require(SubmitResourceReservation(reservation,reserve).code==AdmissionCode::Pending,"exact_fixture_mail_link_saved");
+                fixture.mailClaim=claim.id;followRunnerWrite();return;
+            }
+            const auto* claim=state->resources.Inspect(fixture.mailClaim);
+            if (claim && claim->location=="bags" && saved->second.phase==Phase::Verifying && !DefersNativeSave(request.task.actor)) {
+                auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,fixture.mailGuid));
+                require(item && item->GetCount()==fixture.mailCount && !bot->GetMItem(fixture.mailGuid) &&
+                    claim->nativeReference==0 && claim->itemGuid==fixture.mailGuid && claim->quantity==fixture.mailCount &&
+                    claim->state=="held" && bot->GetMoney()==fixture.before.money,"ordinary_mail_runner_preserves_item_claim_and_money");
+                fixture.inheritedInputs.push_back(claim->id);ProfessionJob job;std::string blocker;
+                require(DecodeProfessionJob(request.task.checkpoint.data,job,blocker) &&
+                    ReadNativeCraftFrame(*bot,job,fixture.before,blocker),"craft_frame_refreshed_after_verified_mail_collection");
+                const auto count=state->nativeDispatches;NativeMailCollection adapter({});
+                require(!DispatchSavedOperation(fixture.mailOperation,{},adapter).executed && state->nativeDispatches==count,
+                    "duplicate_mail_dispatch_does_not_collect_again");
+                advance(Phase::Preparing);fixture.step=2;return;
+            }
+            fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+            for (const auto& pending : state->operations) if (pending.second.request.transition.task.id==request.task.id &&
+                pending.second.request.kind=="mail_collect") fixture.mailOperation=pending.first;
+            followRunnerWrite();return;
         }
         if (fixture.step==10) {
             if (!fixture.bankGuid) {
@@ -293,7 +378,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
             for (const auto& pending : state->operations) if (pending.second.request.transition.task.id==request.task.id &&
                 pending.second.request.kind=="bank_withdraw") {
-                fixture.bankOperation=pending.first;fixture.bankClaim=pending.second.request.bankTransfer.id;
+                fixture.bankOperation=pending.first;fixture.bankClaim=pending.second.request.itemTransfer.id;
             }
             followRunnerWrite();return;
         }

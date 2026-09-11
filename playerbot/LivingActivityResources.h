@@ -28,7 +28,15 @@ namespace LivingActivity {
     struct NativeResourceBalance {
         uint32_t actor = 0, itemGuid = 0, itemEntry = 0, quantity = 0, copper = 0;
         std::string location;
+        uint64_t nativeReference = 0; // Mail ID for an exact native attachment; zero for bags/bank/money.
     };
+    inline bool ValidNativeResourceBalance(const NativeResourceBalance& b) {
+        if (!b.actor) return false;
+        if (b.location=="money") return !b.itemGuid && !b.itemEntry && !b.quantity && !b.nativeReference;
+        return b.itemGuid && b.itemEntry && !b.copper &&
+            ((b.location=="mail" && b.nativeReference && b.nativeReference<=UINT32_MAX) ||
+             ((b.location=="bags" || b.location=="bank") && !b.nativeReference));
+    }
     // Preparation-only reservation/release. No transfer, consumption, native
     // effect or completion can be written through this path. The coordinator
     // must validate actual possession and protect pending quantities before
@@ -101,7 +109,7 @@ namespace LivingActivity {
         size_t capacity;
         bool restoreFailed = false;
         std::map<std::string, ResourceClaim> records;
-        using OwnedKey=std::tuple<std::string,uint32_t,uint32_t,uint32_t,std::string>;
+        using OwnedKey=std::tuple<std::string,uint32_t,uint32_t,uint32_t,std::string,uint64_t>;
         std::map<OwnedKey,uint64_t> acknowledgedOwned; // Updated only with saved receipts, not pending holds.
         using RootItemKey=std::tuple<std::string,uint32_t,uint32_t,uint32_t>;
         std::map<RootItemKey,uint64_t> acknowledgedProtected;

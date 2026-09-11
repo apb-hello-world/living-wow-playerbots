@@ -74,6 +74,8 @@ public:
     std::optional<LivingActivity::Task> ReadSavedTask(const std::string& id) const;
     bool TaskResourceAvailability(const std::string& task,uint64_t revision,
         const LivingActivity::NativeResourceBalance& native,uint32_t& available,std::string& blocker) const;
+    bool ReadTaskClaims(uint32_t actor,const std::string& task,uint64_t revision,
+        LivingActivity::UnsettledClaimBatch& claims,std::string& blocker) const;
     bool PurchaseLedgerReady() const;
     // Due-queued read of the common native spend ledger. This is NOT authority
     // to buy; the compiled adapter still validates its saved task, claims,

@@ -1,6 +1,8 @@
 #include "botpch.h"
 #include "LivingProfessionDemand.h"
 #include "LivingActivityCoordinator.h"
+#include "LivingNativeMailCollection.h"
+#include "LivingActivityTransfer.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
@@ -48,13 +50,34 @@ namespace LivingActivity {
         // The pinned core loads mail and attachment metadata before completing
         // login. Undelivered native attachments are present, not bag contents.
         if (actor.GetMailSize()>256) return reject("profession_mail_snapshot_limit");
+        UnsettledClaimBatch claims;
+        if (!sLivingActivityCoordinator.ReadTaskClaims(saved.actor,saved.id,saved.revision,claims,demand.blocker)) return false;
+        std::map<uint32_t,ResourceClaim> incoming;
+        for (const auto& claim : claims.claims) if (claim.location=="mail") {
+            NativeResourceBalance balance;
+            if (!ValidMailTransfer(claim) || !ReadNativeMailBalance(actor,claim,balance) ||
+                !stock.count(claim.itemEntry) || !incoming.emplace(claim.itemGuid,claim).second)
+                return reject("profession_mail_claim_requires_reconciliation",claim.nativeReference);
+        }
         for (auto it=actor.GetMailBegin();it!=actor.GetMailEnd();++it) {
             const auto* mail=*it;
             if (!mail || mail->state==MAIL_STATE_DELETED || mail->expire_time<=time(nullptr)) continue;
-            for (const auto& attachment : mail->items) if (stock.count(attachment.item_template))
-                return reject(mail->COD ? "profession_cod_material_requires_explicit_acceptance" :
-                    "profession_incoming_material_requires_reconciliation",mail->messageID);
+            for (const auto& attachment : mail->items) if (stock.count(attachment.item_template)) {
+                if (mail->COD) return reject("profession_cod_material_requires_explicit_acceptance",mail->messageID);
+                const auto found=incoming.find(attachment.item_guid);
+                if (found==incoming.end() || found->second.nativeReference!=mail->messageID)
+                    return reject("profession_incoming_material_requires_reconciliation",mail->messageID);
+                NativeResourceBalance balance;uint32_t available=0;
+                if (!ReadNativeMailBalance(actor,found->second,balance) ||
+                    !sLivingActivityCoordinator.TaskResourceAvailability(saved.id,saved.revision,balance,available,demand.blocker))
+                    return false;
+                if (available!=found->second.quantity) return reject("profession_mail_claim_requires_reconciliation",mail->messageID);
+                auto& count=mail->deliver_time<=time(nullptr) ? stock.at(attachment.item_template).delivered : stock.at(attachment.item_template).paidInTransit;
+                if (uint64_t(count)+available>UINT32_MAX) return reject("profession_stock_overflow");
+                count+=available;incoming.erase(found);
+            }
         }
+        if (!incoming.empty()) return reject("profession_mail_claim_requires_reconciliation");
         // Native standing bids are an existing commitment too. This bounded
         // inspection uses the same market mutex; it does not scan the DB or
         // turn an unwon auction into received materials.

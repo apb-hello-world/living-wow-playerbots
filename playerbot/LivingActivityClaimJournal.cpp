@@ -32,14 +32,13 @@ namespace LivingActivity {
         std::map<uint32_t, NativeResourceBalance> limits;
         std::string fingerprint, excluded;
         for (const auto& balance : balances) {
-            if (balance.actor != task.actor ||
-                (balance.location == "money" ? (balance.itemGuid || balance.itemEntry || balance.quantity) :
-                    (!balance.itemGuid || !balance.itemEntry || balance.copper ||
-                     (balance.location != "bags" && balance.location != "bank"))) ||
+            if (balance.actor != task.actor || !ValidNativeResourceBalance(balance) ||
                 !limits.emplace(balance.itemGuid,balance).second)
                 throw std::invalid_argument("Invalid native reservation balance");
             fingerprint += "balance:" + Number(balance.actor) + ':' + Number(balance.itemGuid) + ':' +
                 Number(balance.itemEntry) + ':' + Number(balance.quantity) + ':' + Number(balance.copper) + ':' + balance.location + '|';
+            // Keep historical bag/bank/money operation fingerprints unchanged.
+            if (balance.nativeReference) fingerprint += "native_ref:"+Number(balance.nativeReference)+'|';
         }
         std::map<uint32_t,uint64_t> requested;
         for (const auto& change : changes) {
@@ -55,8 +54,8 @@ namespace LivingActivity {
             for (const auto& field : Fields(claim)) fingerprint += field.first + '=' + field.second + '|';
             if (claim.state == "held") {
                 const auto balance = limits.find(claim.itemGuid);
-                if (claim.nativeReference || balance == limits.end() || balance->second.itemEntry != claim.itemEntry ||
-                    balance->second.location != claim.location)
+                if (balance == limits.end() || balance->second.itemEntry != claim.itemEntry ||
+                    balance->second.location != claim.location || balance->second.nativeReference!=claim.nativeReference)
                     throw std::invalid_argument("Held reservation requires an owned native balance");
                 requested[claim.itemGuid] += claim.copper ? claim.copper : claim.quantity;
             } else if (claim.state == "proposed" && (claim.itemGuid || claim.nativeReference))
