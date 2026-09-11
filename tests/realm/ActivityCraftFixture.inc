@@ -120,7 +120,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                     candidate->GetItemCount(765,true)!=candidate->GetItemCount(765,false))) {
                     skipped("bank_fixture_map_or_existing_stock");continue;
                 }
-                if (mailed && (candidate->GetMapId()!=1 || candidate->GetTeam()!=HORDE ||
+                if (mailed && (candidate->GetMapId()>1 || candidate->GetTeam()!=HORDE ||
                     candidate->GetItemCount(765,false)>1 || candidate->GetItemCount(765,true)!=candidate->GetItemCount(765,false) ||
                     candidate->m_mailsUpdated || candidate->GetMailSize()>256)) {
                     skipped("mail_fixture_map_existing_stock_or_mail");continue;
@@ -234,8 +234,14 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 selected->NearTeleportTo(spawn->posX,spawn->posY,spawn->posZ,spawn->orientation);
             }
             if (mailed) {
-                const auto* spawn=sObjectMgr.GetGOData(10107);
-                require(spawn && spawn->id==173221 && spawn->mapid==selected->GetMapId(),"mail_fixture_valid_native_spawn");
+                // Ordinary movement may put the eligible bot on either
+                // continent while the journal is loading. Use a verified
+                // Horde mailbox on its current continent (Brill/Orgrimmar),
+                // never transfer maps or relax the native service checks.
+                const auto spawnId=selected->GetMapId()==0 ? 44775u : 10107u;
+                const auto entry=selected->GetMapId()==0 ? 143990u : 173221u;
+                const auto* spawn=sObjectMgr.GetGOData(spawnId);
+                require(spawn && spawn->id==entry && spawn->mapid==selected->GetMapId(),"mail_fixture_valid_native_spawn");
                 selected->NearTeleportTo(spawn->posX,spawn->posY,spawn->posZ,spawn->orientation);
             }
             return;
