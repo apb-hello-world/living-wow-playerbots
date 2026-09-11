@@ -40,6 +40,25 @@ int main() {
     assert(!SameLease({}, {}));
     ObservationQueue queue;
     assert(NextObservationWork(queue) == ObservationWork::Wait);
+    {
+        ObservationQueue stopped;
+        stopped.schemaReady=true;stopped.pending=1;stopped.nativeOutcomes=1;
+        stopped.retained=stopped.historyLimit; // Already admitted result has reserved capacity.
+        assert(!stopped.enabled && !stopped.due);
+        assert(NextObservationWork(stopped)==ObservationWork::Flush);
+        stopped.ioPending=true;
+        assert(NextObservationWork(stopped)==ObservationWork::Wait);
+        stopped.ioPending=false;stopped.nativeOutcomes=0;
+        assert(NextObservationWork(stopped)==ObservationWork::Wait); // No new task work while off.
+        stopped.nativeOutcomes=1;stopped.pending=0;
+        assert(NextObservationWork(stopped)==ObservationWork::Wait); // Retry deadline has not arrived.
+        stopped.pending=stopped.nativeOutcomes=17;
+        assert(NextObservationWork(stopped)==ObservationWork::Wait); // Cannot invent unbounded reserved slots.
+        stopped.pending=stopped.nativeOutcomes=16;
+        assert(NextObservationWork(stopped)==ObservationWork::Flush);
+        stopped.schemaReady=false;
+        assert(NextObservationWork(stopped)==ObservationWork::Wait);
+    }
     queue.enabled = queue.due = true;
     assert(NextObservationWork(queue) == ObservationWork::Probe);
     queue.schemaReady = true;

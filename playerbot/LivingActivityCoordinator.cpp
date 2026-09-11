@@ -824,6 +824,9 @@ void LivingActivityCoordinator::Update() {
     queues.due = now >= state->nextWork; queues.schemaReady = state->schemaReady; queues.loaded = state->loaded;
     queues.cached = state->cache.size() + state->quarantined.size() + state->pending.size();
     queues.pending = std::count_if(state->pending.begin(),state->pending.end(),[now](const State::Pending& p){return p.retry.dueAtMs <= now;});
+    queues.nativeOutcomes=std::count_if(state->pending.begin(),state->pending.end(),[now](const State::Pending& p){
+        return p.operationOutcome && p.retry.dueAtMs<=now;
+    });
     queues.incoming = state->incoming.size();
     queues.cacheLimit = state->maxCache; queues.retained = state->transitionCount;
     const auto work = NextObservationWork(queues);

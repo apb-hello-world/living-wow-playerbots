@@ -12,10 +12,19 @@ namespace LivingActivity {
         // pending counts writes whose OWN retry deadline has arrived. due is
         // the background import/load clock; it must not postpone those writes.
         size_t cached = 0, pending = 0, incoming = 0, cacheLimit = 20000;
+        // Due outcomes from the already bounded sixteen-operation admission
+        // book. Their evidence/save slots were reserved before native effects.
+        // Disabling NEW work must not strand those effects or actor-save holds.
+        size_t nativeOutcomes = 0;
         uint64_t retained = 0, historyLimit = 200000;
     };
     inline ObservationWork NextObservationWork(const ObservationQueue& q) {
-        if (!q.enabled || q.ioPending) return ObservationWork::Wait;
+        if (q.ioPending) return ObservationWork::Wait;
+        // Admission/history pressure stops new work, not reserved completion
+        // receipts. No decoding, loading, import, or native dispatch is enabled.
+        if (q.schemaReady && q.nativeOutcomes && q.nativeOutcomes<=16 && q.nativeOutcomes<=q.pending)
+            return ObservationWork::Flush;
+        if (!q.enabled) return ObservationWork::Wait;
         if (!q.schemaReady) return q.due ? ObservationWork::Probe : ObservationWork::Wait;
         // Flush already decoded rows before requesting more cache space. A full
         // pending batch must not deadlock behind its own admission capacity.
