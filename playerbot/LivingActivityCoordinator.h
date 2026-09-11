@@ -105,6 +105,7 @@ private:
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     void RunIsolatedGameplayFixture();
     void RunIsolatedCombatFixture();
+    void RunIsolatedPetFixture();
 #endif
 };
 #define sLivingActivityCoordinator LivingActivityCoordinator::instance()

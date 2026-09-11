@@ -8,6 +8,23 @@ bool LivingActivityCoordinator::IsolatedGameplayActor(uint32_t actor) const {
 
 void LivingActivityCoordinator::ObserveIsolatedGameplayPacket(PlayerbotAI& ai, const WorldPacket& packet) {
     if (!IsolatedGameplayActor(ai.GetBot()->GetGUIDLow())) return;
+    if (packet.GetOpcode() == SMSG_SPELLNONMELEEDAMAGELOG &&
+        state->petFixtureCaster.load(std::memory_order_acquire)) {
+        // Pinned native Unit::SendSpellNonMeleeDamageLog: packed target/caster,
+        // spell and damage. Only the synchronous command's exact pair counts.
+        try {
+            WorldPacket copy(packet); copy.rpos(0);
+            ObjectGuid target, caster; uint32 spell, amount;
+            copy >> target.ReadAsPacked() >> caster.ReadAsPacked() >> spell >> amount;
+            if (caster.GetRawValue() == state->petFixtureCaster.load(std::memory_order_acquire) &&
+                target.GetRawValue() == state->petFixtureTarget.load(std::memory_order_acquire) &&
+                spell == state->gameplayFixtureSpell.load(std::memory_order_acquire)) {
+                state->petFixtureDamagePackets.fetch_add(1, std::memory_order_acq_rel);
+                state->petFixtureDamage.fetch_add(amount, std::memory_order_acq_rel);
+            }
+        } catch (...) { /* A malformed packet cannot become positive proof. */ }
+        return;
+    }
     if (packet.GetOpcode() != SMSG_SPELLHEALLOG && packet.GetOpcode() != SMSG_SPELL_FAILURE &&
         packet.GetOpcode() != SMSG_CAST_RESULT) return;
     // Pinned TBC Unit::SendHealSpellLog writes packed victim, packed caster,
@@ -156,6 +173,7 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         auto* ai = bot ? bot->GetPlayerbotAI() : nullptr;
         if (support && (!bot || bot->getClass() != CLASS_DRUID)) continue;
         const auto roster = bot ? NativePartyProtection(*bot) : PartyProtection::Unresolved;
+        boost::property_tree::ptree formSpells;
         std::string unavailable;
         if (!ai || !bot->IsInWorld()) unavailable="native_actor_not_ready";
         else if (support ? (roster != PartyProtection::None && roster != PartyProtection::BotOnly) : bot->GetGroup()!=nullptr)
@@ -174,6 +192,7 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
             if (!state->supportFixtureCandidates.get_child_optional(key) && state->supportFixtureCandidates.size() >= 50) return;
             boost::property_tree::ptree detail;
             detail.put("reason",reason); detail.put("roster",Name(roster)); detail.put("observed_at_ms",NowMs());
+            if (!formSpells.empty()) detail.add_child("known_form_validation", formSpells);
             if (ai && bot->IsInWorld()) {
                 detail.put("native_safety",NativeSafety(bot)); detail.put("stopped",bot->IsStopped());
                 detail.put("native_form",uint32(bot->GetShapeshiftForm())); detail.put("mana",bot->GetPower(POWER_MANA));
@@ -193,6 +212,19 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
                 other = other || (spell->Effect[i] && spell->Effect[i] != (support ? SPELL_EFFECT_APPLY_AURA : SPELL_EFFECT_HEAL));
             }
             for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i) reagent = reagent || spell->Reagent[i] > 0;
+            if (support && form && formSpells.size() < 8) {
+                boost::property_tree::ptree detail;
+                detail.put("effect_mask", NativeSpellEffects(*ai, known.first).mask);
+                detail.put("permit_validated", NativeSpellPermit(*ai, known.first, bot).validated);
+                detail.put("native_positive_spell", IsPositiveSpell(spell));
+                SpellCastResult result = SPELL_FAILED_NOT_KNOWN;
+                detail.put("ai_cast_possible", ai->CanCastSpell(known.first, bot, uint8((1u << MAX_EFFECT_INDEX)-1),
+                    true, nullptr, false, false, false, &result));
+                detail.put("ai_cast_result", uint32(result));
+                Spell probe(bot, spell, false); probe.m_targets.setUnitTarget(bot);
+                detail.put("native_check_cast", uint32(probe.CheckCast(true)));
+                formSpells.put_child(std::to_string(known.first), detail);
+            }
             if ((support ? (form && !bot->HasAura(known.first)) : directHeal) && !other && !reagent && spell->powerType == POWER_MANA &&
                 (spell->manaCost || spell->ManaCostPercentage) && NativeSpellEffects(*ai, known.first).mask == SpellEffectMask(true) &&
                 NativeSpellPermit(*ai, known.first, bot).validated) {

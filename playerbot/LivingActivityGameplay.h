@@ -63,6 +63,22 @@ namespace LivingActivity {
         for (const auto aura : spell.EffectApplyAuraName) if (aura && !allowed(aura)) return false;
         return true;
     }
+    template<class NativeSpell>
+    bool AuditedTbcCatFormPeriodicNoop(const NativeSpell& spell) {
+        // Pinned CMaNGOS SpellAuras.cpp: SPELLFAMILY_DRUID / case 768 returns
+        // without triggering anything. Match the native record, not merely an
+        // APPLY_AURA or a zero trigger: other zero-trigger auras run scripts.
+        // Native enum values: DRUID=7, APPLY_AURA=6, SHAPESHIFT=36,
+        // MECHANIC_IMMUNITY=77, PERIODIC_TRIGGER=23, FORM_CAT=1.
+        if (spell.Id != 768 || spell.SpellFamilyName != 7 ||
+            spell.Effect[0] != 6 || spell.Effect[1] != 6 || spell.Effect[2] != 6 ||
+            spell.EffectApplyAuraName[0] != 36 || spell.EffectApplyAuraName[1] != 77 ||
+            spell.EffectApplyAuraName[2] != 23 || spell.EffectMiscValue[0] != 1) return false;
+        for (const auto trigger : spell.EffectTriggerSpell) if (trigger) return false;
+        for (const auto item : spell.EffectItemType) if (item) return false;
+        for (const auto reagent : spell.Reagent) if (reagent > 0) return false;
+        return true;
+    }
     template<class NativeSpell, class Predicate, class AuraPredicate>
     bool InventoryFreeNativeSpell(const NativeSpell& spell, bool known, bool itemCast,
         bool equipmentOrAmmunition, Predicate allowed, AuraPredicate allowedAura) {

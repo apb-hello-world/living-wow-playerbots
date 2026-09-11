@@ -105,6 +105,10 @@ namespace LivingActivity {
             }
             return false;
         }
+        bool NativeResourceFreeSpellAura(const SpellEntry& spell, uint32_t aura) {
+            return NativeResourceFreeAura(aura) ||
+                (aura == SPELL_AURA_PERIODIC_TRIGGER_SPELL && AuditedTbcCatFormPeriodicNoop(spell));
+        }
         bool NativeMemberEngaged(Player& actor, Unit& member) {
             auto validEnemy = [&](Unit* enemy) {
                 return enemy && enemy->IsInWorld() && enemy->IsAlive() &&
@@ -142,7 +146,7 @@ namespace LivingActivity {
         const bool inventoryFree = info && actor && InventoryFreeNativeSpell(*info, known,
             itemCast || (info->Targets & (TARGET_FLAG_ITEM | TARGET_FLAG_TRADE_ITEM)),
             info->EquippedItemClass >= 0 || info->DmgClass == SPELL_DAMAGE_CLASS_RANGED,
-            NativeResourceFreeEffect, NativeResourceFreeAura);
+            NativeResourceFreeEffect, [&](uint32_t aura) { return NativeResourceFreeSpellAura(*info, aura); });
         return {SpellEffectMask(inventoryFree), Lane::Managed, true};
     }
     NativePermit NativeEngagedAttackPermit(PlayerbotAI& ai, Unit* target) {
@@ -173,7 +177,8 @@ namespace LivingActivity {
             PlayerbotAI::IsHealSpell(info), sServerFacade.IsFriendlyTo(actor, target));
         const bool support = ReadyForNativeHealing(*actor, *target, known,
             IsPositiveSpell(info) && HasOnlyNativeEffects(*info, NativeSupportEffect) &&
-                HasOnlyNativeAuras(*info, NativeResourceFreeAura), sServerFacade.IsFriendlyTo(actor, target));
+                HasOnlyNativeAuras(*info, [&](uint32_t aura) { return NativeResourceFreeSpellAura(*info, aura); }),
+            sServerFacade.IsFriendlyTo(actor, target));
         if (!healing && !support && !ReadyForNativeOffense(*actor, *target, known, IsPositiveSpell(info),
             sServerFacade.IsHostileTo(actor, target), NativePartyEngaged(*actor, *target))) return {};
         // Combat/healing is not permission to spend another obligation's stock.
@@ -220,7 +225,8 @@ namespace LivingActivity {
             PlayerbotAI::IsHealSpell(info), sServerFacade.IsFriendlyTo(pet, target));
         const bool support = ReadyForNativeHealing(*actor, *target, true,
             IsPositiveSpell(info) && HasOnlyNativeEffects(*info, NativeSupportEffect) &&
-                HasOnlyNativeAuras(*info, NativeResourceFreeAura), sServerFacade.IsFriendlyTo(pet, target));
+                HasOnlyNativeAuras(*info, [&](uint32_t aura) { return NativeResourceFreeSpellAura(*info, aura); }),
+            sServerFacade.IsFriendlyTo(pet, target));
         const bool offense = ReadyForNativeOffense(*actor, *target, true, IsPositiveSpell(info),
             sServerFacade.IsHostileTo(pet, target), NativePartyEngaged(*actor, *target));
         if (!healing && !support && !offense) return {};

@@ -190,6 +190,10 @@ struct LivingActivityCoordinator::State {
     uint64_t gameplayNextSample = 0;
     boost::property_tree::ptree gameplayTrace;
     uint64_t combatFixtureDeadline = 0;
+    uint64_t petFixtureDeadline = 0;
+    std::atomic<uint64_t> petFixtureCaster{0}, petFixtureTarget{0};
+    std::atomic<uint32_t> petFixtureDamagePackets{0}, petFixtureDamage{0};
+    boost::property_tree::ptree petFixtureCandidates;
 #endif
     Mode effective = Mode::Off;
     std::string desired = "off", blocker = "not_enabled", loadCursor;
@@ -614,6 +618,7 @@ LivingActivityCoordinator& LivingActivityCoordinator::instance() {
 #include "../tests/realm/ActivityAdmissionFixture.inc"
 #include "../tests/realm/ActivityGameplayFixture.inc"
 #include "../tests/realm/ActivityCombatFixture.inc"
+#include "../tests/realm/ActivityPetFixture.inc"
 #endif
 
 LivingActivityCoordinator::LivingActivityCoordinator() : state(new State) {

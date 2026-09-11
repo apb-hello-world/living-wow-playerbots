@@ -20,6 +20,8 @@ namespace {
     };
     struct NativeSpell {
         uint32_t Effect[3]{}, EffectTriggerSpell[3]{}, EffectApplyAuraName[3]{};
+        uint32_t Id = 0, SpellFamilyName = 0, EffectItemType[3]{};
+        int32_t EffectMiscValue[3]{};
         int32_t Reagent[8]{};
     };
 }
@@ -63,6 +65,30 @@ int main() {
     }
     nativeSupport.EffectApplyAuraName[0] = 36;
     assert(InventoryFreeNativeSpell(nativeSupport, true, false, false, supportOrDamage, knownAura));
+    NativeSpell cat;
+    cat.Id = 768; cat.SpellFamilyName = 7; cat.EffectMiscValue[0] = 1;
+    cat.Effect[0] = cat.Effect[1] = cat.Effect[2] = 6;
+    cat.EffectApplyAuraName[0] = 36; cat.EffectApplyAuraName[1] = 77; cat.EffectApplyAuraName[2] = 23;
+    const auto catAura = [&](uint32_t aura) {
+        return knownAura(aura) || aura == 77 || (aura == 23 && AuditedTbcCatFormPeriodicNoop(cat));
+    };
+    assert(AuditedTbcCatFormPeriodicNoop(cat));
+    assert(!InventoryFreeNativeSpell(cat, true, false, false, supportOrDamage, knownAura));
+    assert(InventoryFreeNativeSpell(cat, true, false, false, supportOrDamage, catAura));
+    assert(HasOnlyNativeAuras(cat, catAura));
+    assert(!InventoryFreeNativeSpell(cat, false, false, false, supportOrDamage, catAura));
+    assert(!InventoryFreeNativeSpell(cat, true, true, false, supportOrDamage, catAura));
+    assert(!InventoryFreeNativeSpell(cat, true, false, true, supportOrDamage, catAura));
+    auto rejectedCat = [&](NativeSpell changed) { assert(!AuditedTbcCatFormPeriodicNoop(changed)); };
+    auto changed = cat; changed.Id = 22842; rejectedCat(changed);
+    changed = cat; changed.SpellFamilyName = 0; rejectedCat(changed);
+    changed = cat; changed.EffectMiscValue[0] = 5; rejectedCat(changed);
+    changed = cat; changed.Effect[2] = 24; rejectedCat(changed);
+    changed = cat; changed.EffectApplyAuraName[1] = 4; rejectedCat(changed);
+    changed = cat; changed.EffectApplyAuraName[2] = 78; rejectedCat(changed);
+    changed = cat; changed.EffectTriggerSpell[2] = 3025; rejectedCat(changed);
+    changed = cat; changed.EffectItemType[2] = 17056; rejectedCat(changed);
+    changed = cat; changed.Reagent[7] = 17056; rejectedCat(changed);
     NativePlayer player; NativeRoll roll;
     assert(ReadyForNativeLootVote(player, &roll, 7, false));
     assert(!ReadyForNativeLootVote(player, &roll, 7, true));
