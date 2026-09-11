@@ -3,7 +3,7 @@
 using namespace LivingActivity;
 int main() {
     Task saved; saved.id = saved.root = "637bd562-36d2-5b01-bc01-e2d831c49f38";
-    saved.actor = saved.context.actor = 497; saved.source = "profession_job"; saved.sourceKey = "497:2881:41";
+    saved.actor = saved.context.actor = 497; saved.source = "service_job"; saved.sourceKey = "497:2881:41";
     saved.context.boot = "ff2efbdf-f0ec-4539-b840-299847970c00";
     saved.context.actorGeneration = saved.context.mapGeneration = saved.context.policyRevision = 1;
     saved.mode = Mode::Active; saved.phase = Phase::Preparing;

@@ -1,4 +1,5 @@
 #include "LivingActivityRequests.h"
+#include "LivingProfessionJob.h"
 #include <cassert>
 #include <limits>
 using namespace LivingActivity;
@@ -12,6 +13,9 @@ static TaskRequest Request() {
     task.context.actorGeneration = 7; task.context.mapGeneration = 3; task.context.boot = Receipt;
     task.mode = Mode::Active; task.phase = Phase::Queued;
     task.createdAtMs = task.updatedAtMs = 1000; task.checkpoint.step = "materials";
+    ProfessionJob job; job.recipe=2881; job.skill=165; job.outputEntry=2318; job.outputQuantity=1;
+    job.initialSkill=1; job.targetSkill=2; job.reagents={{2934,3}};
+    task.checkpoint.data=EncodeProfessionJob(job);
     return request;
 }
 int main() {
@@ -90,6 +94,7 @@ int main() {
     assert(saved.id == Id && saved.accepted);
     auto root = Request().task; root.phase = Phase::Preparing;
     auto child = Request(); child.task.id = Receipt; child.task.root = child.task.parent = root.id;
+    child.task.source = "service_step"; // The child carries service parameters, not another root recipe.
     child.task.sourceKey += ":bank_prerequisite"; child.rootRevision = root.revision;
     child.task.checkpoint.data = "{\"_root_revision\":1,\"service\":\"bank\"}";
     assert(ValidateTaskRequest(child, nullptr, current, reason) == AdmissionCode::StaleRevision);
