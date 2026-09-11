@@ -30,9 +30,15 @@ namespace {
     }
 }
 
+#include "ActivityProfessionFixture.inc"
+
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if (requested && std::string(requested) == "activity-profession-v1") {
+        RequireIsolatedNativeFixtureEnvironment();
+        RunIsolatedProfessionFixture(*state); return;
+    }
     if (requested && (std::string(requested) == "activity-gameplay-v1" || std::string(requested) == "activity-support-v1")) {
         RunIsolatedGameplayFixture(); return;
     }

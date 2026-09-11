@@ -92,6 +92,29 @@ namespace LivingActivity {
     bool IsProfessionJob(const Task& task) {
         return task.source == "profession_job" || task.checkpoint.step.compare(0, 11, "profession_") == 0;
     }
+    bool MatchNativeProfessionRecipe(const ProfessionJob& job, const NativeProfessionRecipe& native,
+        std::string& blocker) {
+        auto reject = [&](const char* reason) { blocker = reason; return false; };
+        if (!ValidateProfessionJob(job, blocker)) return false;
+        if (!native.blocker.empty()) { blocker = native.blocker; return false; }
+        if (!native.known || native.recipe != job.recipe) return reject("profession_recipe_not_known");
+        if (!native.skillValue || !native.skillMaximum || native.skill != job.skill)
+            return reject("profession_recipe_skill_mismatch");
+        const bool creates = job.operation == ProfessionOperation::CreateItem || job.operation == ProfessionOperation::TransformMaterial;
+        if ((creates && native.operation != ProfessionOperation::CreateItem) ||
+            (!creates && native.operation != job.operation)) return reject("profession_native_operation_mismatch");
+        if (job.reagents != native.reagents) return reject("profession_native_reagents_mismatch");
+        if (creates && (!native.outputEntry || job.outputEntry != native.outputEntry))
+            return reject("profession_native_output_mismatch");
+        if (creates && native.reagents.empty()) return reject("profession_native_material_input_required");
+        if (!creates && !native.subjectOwned) return reject("profession_subject_not_owned");
+        if (job.purpose == ProfessionPurpose::SkillGain) {
+            if (job.initialSkill != native.skillValue) return reject("profession_initial_skill_changed");
+            if (job.targetSkill > native.skillMaximum) return reject("profession_native_skill_cap");
+            if (!native.greyAt || native.skillValue >= native.greyAt) return reject("profession_recipe_has_no_skill_gain");
+        }
+        blocker.clear(); return true;
+    }
     bool ValidateProfessionTask(const Task& task, std::string& blocker) {
         if (!IsProfessionJob(task)) { blocker.clear(); return true; }
         ProfessionJob job;

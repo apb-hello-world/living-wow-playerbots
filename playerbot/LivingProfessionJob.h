@@ -28,6 +28,19 @@ namespace LivingActivity {
     bool ValidateProfessionTask(const Task& task, std::string& blocker);
     bool PreserveProfessionIntent(const Task& before, const Task& after, std::string& blocker);
 
+    // Value-only native recipe facts. Produced synchronously from the native
+    // spellbook, skill-line records and owned subject item; never from a model.
+    struct NativeProfessionRecipe {
+        uint32_t recipe = 0, skill = 0, skillValue = 0, skillMaximum = 0, greyAt = 0;
+        uint32_t outputEntry = 0;
+        ProfessionOperation operation = ProfessionOperation::CreateItem;
+        std::vector<ProfessionReagent> reagents;
+        bool known = false, subjectOwned = false;
+        std::string blocker = "native_profession_recipe_not_inspected";
+    };
+    bool MatchNativeProfessionRecipe(const ProfessionJob& job, const NativeProfessionRecipe& native,
+        std::string& blocker);
+
     struct ProfessionMaterialLink {
         std::string task, operation;
         uint32_t actor = 0, recipe = 0, entry = 0, quantity = 0;

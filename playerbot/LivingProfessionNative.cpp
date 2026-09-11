@@ -1,0 +1,82 @@
+#include "playerbot/playerbot.h"
+#include "LivingProfessionNative.h"
+#include "LivingProfessionPlan.h"
+#include "ServerFacade.h"
+#include "Spells/SpellMgr.h"
+#include <map>
+
+namespace LivingActivity {
+    NativeProfessionRecipe InspectNativeProfessionRecipe(Player& actor, const ProfessionJob& job) {
+        NativeProfessionRecipe result;
+        auto reject = [&](const char* blocker) { result.blocker = blocker; return result; };
+        if (!actor.IsInWorld() || actor.IsBeingTeleported()) return reject("profession_native_actor_unavailable");
+        const auto known = actor.GetSpellMap().find(job.recipe);
+        const auto* spell = sServerFacade.LookupSpellInfo(job.recipe);
+        if (!spell || known == actor.GetSpellMap().end() || known->second.state == PLAYERSPELL_REMOVED ||
+            known->second.disabled || IsPassiveSpell(spell)) return reject("profession_recipe_not_known");
+        result.recipe = spell->Id; result.known = true;
+        // Primary careers and existing secondary professions remain distinct.
+        if (!LivingProfessions::Primary(job.skill) && job.skill != SKILL_COOKING &&
+            job.skill != SKILL_FIRST_AID && job.skill != SKILL_FISHING)
+            return reject("profession_native_skill_unsupported");
+        const auto bounds = sSpellMgr.GetSkillLineAbilityMapBoundsBySpellId(spell->Id);
+        for (auto it = bounds.first; it != bounds.second; ++it) {
+            const auto* line = it->second;
+            if (!line || line->skillId != job.skill) continue;
+            result.skill = line->skillId;
+            result.greyAt = std::max(result.greyAt, uint32(line->max_value));
+        }
+        if (!result.skill) return reject("profession_recipe_skill_mismatch");
+        result.skillValue = actor.GetSkillValuePure(result.skill);
+        result.skillMaximum = actor.GetSkillMaxPure(result.skill);
+        if (!result.skillValue || !result.skillMaximum) return reject("profession_native_skill_not_learned");
+        bool creates = false, enchants = false, disenchants = false;
+        for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i) {
+            if (!spell->Effect[i]) continue;
+            // Unknown scripted/transformation effects need a focused executor,
+            // not a guess based on the recipe name or a matching reagent.
+            if (spell->EffectTriggerSpell[i]) return reject("profession_native_trigger_unsupported");
+            switch (spell->Effect[i]) {
+                case SPELL_EFFECT_CREATE_ITEM:
+                    if (!spell->EffectItemType[i] || !sObjectMgr.GetItemPrototype(spell->EffectItemType[i]))
+                        return reject("profession_native_output_unavailable");
+                    if (result.outputEntry && result.outputEntry != spell->EffectItemType[i])
+                        return reject("profession_multiple_native_outputs_unsupported");
+                    creates = true; result.outputEntry = spell->EffectItemType[i]; break;
+                case SPELL_EFFECT_ENCHANT_ITEM:
+                case SPELL_EFFECT_ENCHANT_ITEM_TEMPORARY:
+                    enchants = true; break;
+                case SPELL_EFFECT_DISENCHANT:
+                    disenchants = true; break;
+                default: return reject("profession_native_effect_unsupported");
+            }
+        }
+        if (unsigned(creates) + unsigned(enchants) + unsigned(disenchants) != 1)
+            return reject("profession_native_operation_unsupported");
+        result.operation = creates ? ProfessionOperation::CreateItem :
+            enchants ? ProfessionOperation::EnchantItem : ProfessionOperation::DisenchantItem;
+        std::map<uint32_t, uint64_t> ingredients;
+        for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i) {
+            if (spell->Reagent[i] <= 0) continue;
+            if (!spell->ReagentCount[i] || !sObjectMgr.GetItemPrototype(spell->Reagent[i]))
+                return reject("profession_native_reagent_unavailable");
+            ingredients[uint32_t(spell->Reagent[i])] += spell->ReagentCount[i];
+        }
+        for (const auto& ingredient : ingredients) {
+            if (ingredient.second > 10000) return reject("profession_native_reagent_quantity_unsupported");
+            result.reagents.push_back({ingredient.first, uint32_t(ingredient.second)});
+        }
+        if (job.subjectItem) {
+            const auto* subject = actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM, job.subjectItem));
+            result.subjectOwned = subject && subject->GetOwnerGuid() == actor.GetObjectGuid();
+        }
+        result.blocker.clear(); return result;
+    }
+    bool ValidateNativeProfessionTask(Player& actor, const Task& task, std::string& blocker) {
+        if (!IsProfessionJob(task)) { blocker.clear(); return true; }
+        if (actor.GetGUIDLow() != task.actor) { blocker = "profession_native_actor_mismatch"; return false; }
+        ProfessionJob job;
+        if (!ValidateProfessionTask(task, blocker) || !DecodeProfessionJob(task.checkpoint.data, job, blocker)) return false;
+        return MatchNativeProfessionRecipe(job, InspectNativeProfessionRecipe(actor, job), blocker);
+    }
+}

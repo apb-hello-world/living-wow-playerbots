@@ -13,6 +13,7 @@
 #include "LivingActivityScope.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingActivityCommitments.h"
+#include "LivingProfessionNative.h"
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
@@ -191,6 +192,7 @@ struct LivingActivityCoordinator::State {
     boost::property_tree::ptree gameplayTrace;
     uint64_t combatFixtureDeadline = 0;
     uint64_t petFixtureDeadline = 0;
+    uint64_t professionFixtureDeadline = 0;
     std::atomic<uint64_t> petFixtureCaster{0}, petFixtureTarget{0};
     std::atomic<uint32_t> petFixtureDamagePackets{0}, petFixtureDamage{0};
     boost::property_tree::ptree petFixtureCandidates;
@@ -1171,6 +1173,12 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
         parent == state->cache.end() ? nullptr : &parent->second);
     if (valid != AdmissionCode::Pending) return reject(valid, reason);
     if (task.mode != Mode::Active) return reject(AdmissionCode::InvalidRequest, "managed_task_requires_active_mode");
+    // Check first admission only. Later cancellation/deferral/reconciliation
+    // must remain possible if a recipe becomes obsolete or a subject changes.
+    // Repeated requests share the saved receipt above, not a second job.
+    if ((saved == state->cache.end() || (!saved->second.accepted && task.accepted)) &&
+        !ValidateNativeProfessionTask(*bot, task, reason))
+        return reject(AdmissionCode::InvalidRequest, reason);
     if (state->pending.size() >= state->batch ||
         (saved == state->cache.end() && state->cache.size() + state->pending.size() + state->quarantined.size() >= state->maxCache) ||
         state->transitionCount + state->pending.size() >= 200000)
