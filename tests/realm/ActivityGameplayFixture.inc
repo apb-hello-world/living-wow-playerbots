@@ -1,6 +1,6 @@
 // Built only into a marked copied realm. Native spell progression continues;
 // only one bot's competing AI decisions are held for at most fifteen seconds.
-// A known direct heal is used, with no learned spells, talents or item grants.
+// A known direct heal or learned druid form is used. No spell/talent/item grant.
 // Fixture health setup/restoration is NOT organic gameplay/economy evidence.
 bool LivingActivityCoordinator::IsolatedGameplayActor(uint32_t actor) const {
     return actor && state->gameplayFixtureActor.load(std::memory_order_acquire) == actor;
@@ -42,6 +42,8 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
     MANGOS_ASSERT(OnWorldThread());
     if (state->fixtureFinished) return;
     RequireIsolatedNativeFixtureEnvironment();
+    const std::string suite = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    const bool support = suite == "activity-support-v1";
     const uint32 actor = state->gameplayFixtureActor.load(std::memory_order_acquire);
     auto finish = [&](bool passed, const std::string& failure) {
         const uint32 selected = state->gameplayFixtureActor.load(std::memory_order_acquire);
@@ -49,9 +51,14 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         auto* ai = bot ? bot->GetPlayerbotAI() : nullptr;
         const uint32 spell = state->gameplayFixtureSpell.load(std::memory_order_acquire);
         boost::property_tree::ptree report;
-        report.put("suite", "activity-gameplay-v1"); report.put("boot", state->boot);
-        report.put("test_only", true); report.put("fixture_health_setup", selected != 0);
-        report.put("actor", selected); report.put("known_healing_spell", spell);
+        report.put("suite", suite); report.put("boot", state->boot);
+        report.put("test_only", true); report.put("fixture_health_setup", selected != 0 && !support);
+        report.put("actor", selected); report.put(support ? "known_form_spell" : "known_healing_spell", spell);
+        if (support) {
+            report.put("native_form_aura", bot && bot->HasAura(spell));
+            report.put("native_form",bot ? uint32(bot->GetShapeshiftForm()) : 0);
+            report.put("fixture_existing_aura_removed",false); // Selected only absent forms.
+        }
         report.put("native_heal_packets", state->gameplayHealPackets.load(std::memory_order_acquire));
         report.put("native_heal_amount", state->gameplayHealAmount.load(std::memory_order_acquire));
         report.put("simulated_pending_atomic_receipt", !state->gameplayAtomicFixture.empty());
@@ -67,6 +74,11 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         if (bot && ai && ai->GetActivityActorEpoch() == state->gameplayContext.actorGeneration) {
             if (const auto* cast = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
                 if (cast->m_spellInfo->Id == spell) bot->InterruptSpell(CURRENT_GENERIC_SPELL, false);
+            if (support) {
+                bot->RemoveAurasDueToSpell(spell); // Only the fixture's previously absent form.
+                bot->SetPower(POWER_RAGE,state->gameplayOriginalRage);
+                bot->SetPower(POWER_ENERGY,state->gameplayOriginalEnergy);
+            }
             bot->SetHealth(state->gameplayOriginalHealth);
             bot->SetPower(POWER_MANA, state->gameplayOriginalMana);
             bot->SetSelectionGuid(state->gameplayOriginalSelection);
@@ -74,6 +86,9 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
             restored = bot->GetHealth() == state->gameplayOriginalHealth &&
                 bot->GetPower(POWER_MANA) == state->gameplayOriginalMana &&
                 bot->GetMoney() == state->gameplayOriginalMoney;
+            if (support) restored = restored && bot->GetShapeshiftForm() == FORM_NONE && !bot->HasAura(spell) &&
+                bot->GetPower(POWER_RAGE) == state->gameplayOriginalRage &&
+                bot->GetPower(POWER_ENERGY) == state->gameplayOriginalEnergy;
         }
         if (state->gameplayLease.actor) {
             if (!state->gameplayAtomicFixture.empty())
@@ -88,7 +103,8 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         report.put("outcome", passed && restored ? "passed" : "failed"); report.put("failure", failure);
         report.put("native_inventory_operations", 0); report.put("persistent_task_completions", 0);
         report.put("general_execution_enabled", state->enforceEffects.load(std::memory_order_acquire));
-        std::ofstream evidence("/isolated/evidence/activity-gameplay-" + state->boot + ".json");
+        std::ofstream evidence("/isolated/evidence/" + (support ? std::string("activity-support-") : std::string("activity-gameplay-")) +
+            state->boot + ".json");
         evidence << Json(report); evidence.close();
         if (!evidence) sLog.outError("Living isolated gameplay evidence write failed");
         sLog.outString("Living isolated fixture: %s", Json(report).c_str());
@@ -107,18 +123,22 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
             sample.put("health", bot->GetHealth()); sample.put("mana", bot->GetPower(POWER_MANA));
             sample.put("stopped", bot->IsStopped());
             sample.put("movement_type", bot->GetMotionMaster()->GetCurrentMovementGeneratorType());
+            if (support) sample.put("native_form",uint32(bot->GetShapeshiftForm()));
             if (const auto* cast = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL)) {
                 sample.put("spell", cast->m_spellInfo->Id); sample.put("state", cast->getState());
                 sample.put("casted_ms", cast->GetCastedTime());
             } else sample.put("spell", 0);
             state->gameplayTrace.push_back({"", sample});
         }
-        if (state->gameplayHealPackets.load(std::memory_order_acquire) == 1 &&
-            !bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) && bot->GetHealth() > state->gameplaySetupHealth &&
+        const bool effectObserved = support ?
+            (bot->HasAura(state->gameplayFixtureSpell.load(std::memory_order_acquire)) && bot->GetShapeshiftForm() != FORM_NONE) :
+            (state->gameplayHealPackets.load(std::memory_order_acquire) == 1 && bot->GetHealth() > state->gameplaySetupHealth);
+        if (effectObserved && !bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
             state->gameplayMinimumMana < state->gameplayOriginalMana) {
             finish(true, ""); return;
         }
-        if (NowMs() > state->gameplayDeadline) finish(false, "native_healing_result_not_observed");
+        if (NowMs() > state->gameplayDeadline)
+            finish(false, support ? "native_form_result_not_observed" : "native_healing_result_not_observed");
         return;
     }
     if (sWorld.GetActiveAndQueuedSessionCount() || !state->loaded || state->ioPending ||
@@ -126,7 +146,7 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
     state->fixtureNext = NowMs() + 1000;
     if (!state->gameplayDeadline) state->gameplayDeadline = NowMs() + 60000;
     if (NowMs() > state->gameplayDeadline) {
-        finish(false, "no_safely_available_native_healer"); return;
+        finish(false, support ? "no_safely_available_native_form_caster" : "no_safely_available_native_healer"); return;
     }
     for (auto& binding : state->bindings) {
         auto* bot = sRandomPlayerbotMgr.GetPlayerBot(binding.first);
@@ -135,18 +155,20 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
             bot->IsMounted() || bot->getStandState() != UNIT_STAND_STATE_STAND ||
             bot->IsNonMeleeSpellCasted(true) || bot->GetHealth() < 4 ||
             state->authority.Read(binding.first).lease.actor) continue;
+        if (support && (bot->getClass() != CLASS_DRUID || bot->GetShapeshiftForm() != FORM_NONE)) continue;
         uint32 spellId = 0;
         for (const auto& known : bot->GetSpellMap()) {
             if (known.second.state == PLAYERSPELL_REMOVED || known.second.disabled) continue;
             const auto* spell = sServerFacade.LookupSpellInfo(known.first);
             if (!spell) continue;
-            bool directHeal = false, other = false, reagent = false;
+            bool directHeal = false, form = false, other = false, reagent = false;
             for (uint8 i = 0; i < MAX_EFFECT_INDEX; ++i) {
                 directHeal = directHeal || spell->Effect[i] == SPELL_EFFECT_HEAL;
-                other = other || (spell->Effect[i] && spell->Effect[i] != SPELL_EFFECT_HEAL);
+                form = form || (spell->Effect[i] == SPELL_EFFECT_APPLY_AURA && spell->EffectApplyAuraName[i] == SPELL_AURA_MOD_SHAPESHIFT);
+                other = other || (spell->Effect[i] && spell->Effect[i] != (support ? SPELL_EFFECT_APPLY_AURA : SPELL_EFFECT_HEAL));
             }
             for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i) reagent = reagent || spell->Reagent[i] > 0;
-            if (directHeal && !other && !reagent && spell->powerType == POWER_MANA &&
+            if ((support ? (form && !bot->HasAura(known.first)) : directHeal) && !other && !reagent && spell->powerType == POWER_MANA &&
                 (spell->manaCost || spell->ManaCostPercentage) && NativeSpellEffects(*ai, known.first).mask == SpellEffectMask(true) &&
                 NativeSpellPermit(*ai, known.first, bot).validated) {
                 spellId = known.first; break;
@@ -157,7 +179,8 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         Task task; task.id = task.root = NewId(); task.actor = binding.first; task.context = current;
         task.source = "isolated_gameplay_fixture"; task.sourceKey = state->boot;
         task.mode = Mode::Active; task.phase = Phase::Traveling; task.kind = Kind::Maintenance;
-        task.priority = Priority::Optional; task.checkpoint.step = "native_heal_with_other_owner";
+        task.priority = Priority::Optional;
+        task.checkpoint.step = support ? "native_form_with_other_owner" : "native_heal_with_other_owner";
         task.createdAtMs = task.updatedAtMs = NowMs();
         const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -166,8 +189,10 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         if (!grant.Granted()) continue;
         binding.second.publisher.Publish(state->authority.Read(binding.first));
         state->gameplayContext = current; state->gameplayLease = grant.lease;
-        state->gameplayOriginalHealth = bot->GetHealth(); state->gameplaySetupHealth = bot->GetHealth() / 2;
+        state->gameplayOriginalHealth = bot->GetHealth(); state->gameplaySetupHealth = support ? bot->GetHealth() : bot->GetHealth() / 2;
         state->gameplayOriginalMana = bot->GetPower(POWER_MANA); state->gameplayOriginalMoney = bot->GetMoney();
+        state->gameplayOriginalRage = bot->GetPower(POWER_RAGE);
+        state->gameplayOriginalEnergy = bot->GetPower(POWER_ENERGY);
         state->gameplayMinimumMana = state->gameplayOriginalMana;
         state->gameplayOriginalSelection = bot->GetSelectionGuid(); state->gameplayOriginalDelay = ai->aiInternalUpdateDelay;
         state->gameplayDeadline = NowMs() + 15000;
@@ -189,7 +214,7 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
             try { started = ai->CastSpell(spellId, bot); }
             catch (...) { started = false; }
         }
-        if (!started) finish(false, "native_healing_cast_rejected");
+        if (!started) finish(false, support ? "native_form_cast_rejected" : "native_healing_cast_rejected");
         return;
     }
 }

@@ -176,6 +176,7 @@ struct LivingActivityCoordinator::State {
     std::atomic<uint32_t> gameplayHealPackets{0}, gameplayHealAmount{0};
     std::atomic<uint32_t> gameplayCastFailure{0}, gameplayCastResult{0};
     uint32_t gameplayOriginalHealth = 0, gameplayOriginalMana = 0, gameplaySetupHealth = 0;
+    uint32_t gameplayOriginalRage = 0, gameplayOriginalEnergy = 0;
     uint32_t gameplayOriginalDelay = 0;
     uint64_t gameplayOriginalMoney = 0, gameplayDeadline = 0;
     ObjectGuid gameplayOriginalSelection;
