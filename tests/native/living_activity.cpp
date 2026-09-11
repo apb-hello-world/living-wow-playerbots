@@ -59,6 +59,30 @@ int main() {
     assert(queue.pending == 32 && queue.incoming == 64); // Backpressure never drops evidence.
     queue.pending = queue.retained = 0; queue.cached = queue.cacheLimit;
     assert(NextObservationWork(queue) == ObservationWork::CachePressure);
+    // A quiet import rotation sets its next check sixty seconds ahead. That
+    // must not stretch native-save retries of 5/10/30 seconds to one minute each.
+    ObservationQueue retryQueue;
+    retryQueue.enabled = retryQueue.schemaReady = retryQueue.loaded = true;
+    ReceiptRetry receiptRetry;
+    uint64_t retryNow = 1000;
+    for (const uint64_t delay : {5000,10000,30000}) {
+        receiptRetry.Missed(retryNow);
+        assert(receiptRetry.dueAtMs == retryNow + delay);
+        retryQueue.due = false; retryQueue.pending = 0;
+        assert(NextObservationWork(retryQueue) == ObservationWork::Wait);
+        retryNow = receiptRetry.dueAtMs;
+        retryQueue.pending = 1;
+        assert(NextObservationWork(retryQueue) == ObservationWork::Flush);
+        retryQueue.ioPending = true;
+        assert(NextObservationWork(retryQueue) == ObservationWork::Wait);
+        retryQueue.ioPending = false;
+    }
+    retryQueue.schemaReady = false;
+    assert(NextObservationWork(retryQueue) == ObservationWork::Wait);
+    retryQueue.schemaReady = true; retryQueue.retained = retryQueue.historyLimit;
+    assert(NextObservationWork(retryQueue) == ObservationWork::HistoryPressure);
+    retryQueue.enabled = false;
+    assert(NextObservationWork(retryQueue) == ObservationWork::Wait);
     unsigned family = 0, seen[4] = {};
     for (unsigned i = 0; i < 32; ++i) { ++seen[family]; family = NextImportFamily(family); }
     for (auto count : seen) assert(count == 8); // A perpetually busy producer cannot monopolize admission.

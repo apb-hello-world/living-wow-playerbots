@@ -9,17 +9,23 @@ namespace LivingActivity {
     enum class ObservationWork { Wait, Probe, Decode, Flush, Load, Import, CachePressure, HistoryPressure };
     struct ObservationQueue {
         bool enabled = false, ioPending = false, due = false, schemaReady = false, loaded = false;
+        // pending counts writes whose OWN retry deadline has arrived. due is
+        // the background import/load clock; it must not postpone those writes.
         size_t cached = 0, pending = 0, incoming = 0, cacheLimit = 20000;
         uint64_t retained = 0, historyLimit = 200000;
     };
     inline ObservationWork NextObservationWork(const ObservationQueue& q) {
-        if (!q.enabled || q.ioPending || !q.due) return ObservationWork::Wait;
-        if (!q.schemaReady) return ObservationWork::Probe;
+        if (!q.enabled || q.ioPending) return ObservationWork::Wait;
+        if (!q.schemaReady) return q.due ? ObservationWork::Probe : ObservationWork::Wait;
         // Flush already decoded rows before requesting more cache space. A full
         // pending batch must not deadlock behind its own admission capacity.
-        if (q.retained >= q.historyLimit || q.pending > q.historyLimit - q.retained)
-            return ObservationWork::HistoryPressure;
-        if (q.pending) return ObservationWork::Flush;
+        if (q.pending) {
+            if (q.retained >= q.historyLimit || q.pending > q.historyLimit - q.retained)
+                return ObservationWork::HistoryPressure;
+            return ObservationWork::Flush;
+        }
+        if (!q.due) return ObservationWork::Wait;
+        if (q.retained >= q.historyLimit) return ObservationWork::HistoryPressure;
         if (q.cached >= q.cacheLimit) return ObservationWork::CachePressure;
         if (q.incoming) return ObservationWork::Decode;
         return q.loaded ? ObservationWork::Import : ObservationWork::Load;

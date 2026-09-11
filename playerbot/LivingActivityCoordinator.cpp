@@ -374,6 +374,7 @@ struct LivingActivityCoordinator::State {
                 const bool rollback = status == NativeSaveStatus::NativeProofRejected || status == NativeSaveStatus::JournalProofRejected;
                 boost::property_tree::ptree check;
                 check.put("attempt",nativeSaveFixtureAttempts); check.put("status",Name(status));
+                check.put("observed_at_ms",NowMs());
                 const bool correct = healthy && (committed || rollback) &&
                     receipts.count({"isolated_native_wallet",gameplayOriginalMoney-(committed ? 1 : 0)}) &&
                     receipts.count({"isolated_claim_revision",committed ? 2 : 1}) &&
@@ -695,6 +696,7 @@ void LivingActivityCoordinator::Update() {
 std::string LivingActivityCoordinator::StatusJson() const {
     boost::property_tree::ptree p;
     p.put("contract_version", 1); p.put("desired_mode", state->desired); p.put("effective_mode", Name(state->effective));
+    p.put("boot",state->boot);
     p.put("policy_revision", state->policyRevision); p.put("blocker", state->blocker);
     p.put("cached_tasks", state->cache.size()); p.put("pending_writes", state->pending.size());
     p.put("receipt_count", state->acknowledged); p.put("persistence_failures", state->persistenceFailures);
