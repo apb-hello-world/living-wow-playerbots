@@ -285,6 +285,8 @@ struct LivingActivityCoordinator::State {
         Task resumeTask;
         std::string resumeReceipt;
         std::vector<ResourceClaim> resumeClaims;
+        bool mailCollectedAtResume=false,mailLookupStarted=false,mailLookupReady=false;
+        boost::property_tree::ptree originalCheckpoint;
         boost::property_tree::ptree checks,selection,grants,snapshot;
     } craftFixture;
     struct ProfessionRecoveryFixture {
