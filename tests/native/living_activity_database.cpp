@@ -94,6 +94,7 @@ public:
     }
 };
 #include "fixtures/ProfessionSettlementDatabase.inc"
+#include "fixtures/ProfessionResumeDatabase.inc"
 int main() {
     Connection db;
     Task task; task.id = task.root = Id; task.actor = task.context.actor = 497;
@@ -603,6 +604,7 @@ int main() {
         assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE item_guid=9877")=="1");
     }
     ProfessionSettlementDatabase(db);
+    ProfessionResumeDatabase(db);
     // Execute the exact production projection/expiry SQL, including old-schema
     // compatibility and a newer speculative row with the same recipe label.
     assert(db.Execute("CREATE TABLE characters(guid INT PRIMARY KEY,race INT)"));

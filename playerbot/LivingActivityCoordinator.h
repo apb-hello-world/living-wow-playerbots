@@ -108,6 +108,8 @@ public:
         uint64_t expectedRevision,const std::string& receipt);
     // Same finite settlement after a realm restart. Reinspect actual native
     // context, saved proof and stock; never restart an uncertain operation.
+    LivingActivity::AdmissionResult RevalidateProfessionPreparation(uint32_t actor,const std::string& task,
+        uint64_t expectedRevision,const std::string& receipt);
     LivingActivity::AdmissionResult ReconcileProfessionCompletion(uint32_t actor,const std::string& task,
         uint64_t expectedRevision,const std::string& receipt);
     struct TaskGrant {

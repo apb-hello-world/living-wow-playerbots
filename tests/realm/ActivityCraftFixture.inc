@@ -15,7 +15,7 @@ namespace {
                 !DecodeProfessionJob(request.transition.task.checkpoint.data,job,blocker)) return false;
             for (const auto& change : request.changes) {
                 const auto& claim=change.after;
-                const bool mail=std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE"))=="activity-profession-mail-v1" &&
+                const bool mail=std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE")).find("activity-profession-mail")==0 &&
                     ValidMailTransfer(claim);
                 NativeResourceBalance balance;
                 bool valid=claim.actor==actor.GetGUIDLow() && claim.task==request.transition.task.root &&
@@ -44,7 +44,10 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const bool interrupted=suite=="activity-craft-interrupted-v1";
     const bool paid=suite=="activity-profession-paid-v1";
     const bool banked=suite=="activity-profession-bank-v1";
-    const bool mailed=suite=="activity-profession-mail-v1";
+    const bool checkpoint=suite=="activity-profession-mail-checkpoint-v1";
+    const bool resumed=suite=="activity-profession-mail-resume-v1";
+    const bool mailed=suite=="activity-profession-mail-v1" || checkpoint || resumed;
+    const bool automatic=paid || resumed;
     const bool settling=suite=="activity-profession-settlement-v1" || paid || banked || mailed;
     const bool supplied=suite=="activity-craft-supplied-v1" || interrupted || settling;
     if (!fixture.deadline) fixture.deadline=NowMs()+120000;
@@ -53,7 +56,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         boost::property_tree::ptree report;
         report.put("suite",suite);report.put("boot",state->boot);
         report.put("expected_operation_outcome",interrupted ? "rejected_without_effect" : "verified");
-        report.put("test_only",true);report.put("outcome",passed ? "passed" : "failed");report.put("failure",failure);
+        report.put("test_only",true);report.put("outcome",passed ? (checkpoint ? "checkpoint" : "passed") : "failed");report.put("failure",failure);
         report.put("step",fixture.step);report.put("blocker",fixture.blocker);report.put("actor",request.task.actor);
         report.put("task",request.task.id);report.put("operation",operation.transition.receipt);report.put("native_launches",fixture.launches);
         report.put("recipe",2329);report.put("native_money_before",fixture.before.money);report.put("skill_before",fixture.before.skill);
@@ -61,8 +64,21 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         if (fixture.after.actor) {
             report.put("native_money_after",fixture.after.money);report.put("skill_after",fixture.after.skill);
         } // An uncollected sample is unknown, not zero gold/skill.
-        report.put("paid_workflow_proof",passed && paid);report.put("profession_job_completion_proof",passed && settling);report.put("travel_proof",false);
-        report.put("ordinary_profession_runner",paid);
+        report.put("paid_workflow_proof",passed && paid);report.put("profession_job_completion_proof",passed && settling && !checkpoint);report.put("travel_proof",false);
+        report.put("ordinary_profession_runner",automatic);
+        report.put("restart_preparation_proof",passed && resumed);
+        report.put("process_crash_proof",false);
+        report.put("checkpoint_boot",resumed && request.task.sourceKey.find("isolated_craft_v1:")==0 ?
+            request.task.sourceKey.substr(std::string("isolated_craft_v1:").size()) : "");
+        report.put("preparation_receipt",fixture.resumeReceipt);
+        report.put("preparation_revision_before",fixture.resumeTask.revision);
+        boost::property_tree::ptree retained;
+        for (const auto& c : fixture.resumeClaims) {
+            boost::property_tree::ptree row;row.put("claim",c.id);row.put("guid",c.itemGuid);row.put("entry",c.itemEntry);
+            row.put("quantity",c.quantity);row.put("location",c.location);row.put("native_reference",c.nativeReference);
+            row.put("revision",c.revision);retained.push_back({"",row});
+        }
+        report.add_child("checkpoint_claims",retained);
         if (banked) {
             report.put("ordinary_bank_runner",true);report.put("bank_operation",fixture.bankOperation);
             report.put("bank_claim",fixture.bankClaim);report.put("bank_guid",fixture.bankGuid);
@@ -98,7 +114,10 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         std::ofstream evidence("/isolated/evidence/activity-craft-"+state->boot+".json");evidence<<Json(report);evidence.close();
         if (!evidence) sLog.outError("Living isolated craft evidence write failed");
         sLog.outString("Living isolated fixture: %s",Json(report).c_str());
-        state->gameplayFixtureActor.store(0,std::memory_order_release);state->fixtureFinished=true;
+        // Checkpoint mode preserves the copied actor's hold until the operator
+        // performs the planned restart; it has not completed its obligation.
+        if (!passed || !checkpoint) state->gameplayFixtureActor.store(0,std::memory_order_release);
+        state->fixtureFinished=true;
     };
     auto require=[&](bool value,const char* name) {
         boost::property_tree::ptree check;check.put("case",name);check.put("passed",value);fixture.checks.push_back({"",check});
@@ -106,6 +125,51 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     };
     if (NowMs()>fixture.deadline) {emit(false,"fixture_deadline");return;}
     try {
+        if (resumed && !request.task.actor) {
+            const Task* prior=nullptr;
+            for (const auto& row : state->cache) if (row.second.source=="profession_job" &&
+                row.second.sourceKey.find("isolated_craft_v1:")==0 && row.second.context.boot!=state->boot &&
+                row.second.mode==Mode::Active && row.second.accepted && row.second.phase==Phase::Preparing &&
+                row.second.checkpoint.step=="profession_resume_checkpoint") {
+                require(!prior,"only_one_marked_restart_checkpoint");prior=&row.second;
+            }
+            if (!prior) {fixture.blocker="restart_fixture_saved_checkpoint_unavailable";return;}
+            state->gameplayFixtureActor.store(prior->actor,std::memory_order_release);
+            auto* actor=sRandomPlayerbotMgr.GetPlayerBot(prior->actor);
+            if (!actor) {
+                if (!state->supportFixtureRequestedActor && sRandomPlayerbotMgr.GetAllBots().size()<49) {
+                    state->supportFixtureRequestedActor=prior->actor;sRandomPlayerbotMgr.AddRandomBot(prior->actor);
+                }
+                fixture.blocker="restart_fixture_actor_login_pending";return;
+            }
+            if (!actor->GetPlayerbotAI() || !actor->IsInWorld() || NativeSafety(actor) || actor->GetGroup() ||
+                actor->GetTradeData() || actor->GetMap()->IsDungeon() || DefersNativeSave(prior->actor)) {
+                fixture.blocker="restart_fixture_actor_safety_pending";return;
+            }
+            require(actor->GetTeam()==HORDE && actor->GetMapId()<=1,"restart_native_actor_on_supported_continent");
+            UnsettledClaimBatch batch;ProfessionJob job;
+            require(state->resources.ReadUnsettled(prior->id,batch,fixture.blocker) && batch.complete && batch.claims.size()==3,
+                "restart_retains_three_exact_preparation_claims");
+            fixture.resumeClaims=batch.claims;fixture.resumeTask=*prior;request.task=*prior;
+            for (const auto& claim : batch.claims) {
+                require(claim.state=="held" && claim.task==prior->id && claim.actor==prior->actor,
+                    "restart_retains_claim_identity_and_owner");
+                fixture.inheritedInputs.push_back(claim.id);
+                if (claim.location=="mail") {
+                    require(fixture.mailClaim.empty() && ValidMailTransfer(claim),"restart_one_exact_native_mail_claim");
+                    fixture.mailClaim=claim.id;fixture.mailGuid=claim.itemGuid;fixture.mailCount=claim.quantity;
+                    fixture.mailId=uint32_t(claim.nativeReference);
+                }
+            }
+            require(!fixture.mailClaim.empty() && DecodeProfessionJob(prior->checkpoint.data,job,fixture.blocker) &&
+                ReadNativeCraftFrame(*actor,job,fixture.before,fixture.blocker),"restart_reads_existing_native_preparation_without_grants");
+            const auto* spawn=sObjectMgr.GetGOData(actor->GetMapId()==0 ? 44775u : 10107u);
+            require(spawn && spawn->mapid==actor->GetMapId() && (spawn->id==143990u || spawn->id==173221u),
+                "restart_fixture_valid_same_continent_mailbox");
+            actor->GetMotionMaster()->Clear();actor->StopMoving();
+            actor->NearTeleportTo(spawn->posX,spawn->posY,spawn->posZ,spawn->orientation);
+            fixture.step=13;return;
+        }
         if (!request.task.actor) {
             fixture.selection.clear();Player* selected=nullptr;ProfessionJob job;unsigned bestMissing=10000;
             auto skipped=[&](const char* reason){fixture.selection.put(reason,fixture.selection.get<unsigned>(reason,0)+1);};
@@ -283,6 +347,43 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             request.task.phase=phase;request.task.updatedAtMs=NowMs();
             require(SubmitTask(request).code==AdmissionCode::Pending,"craft_fixture_phase_queued");
         };
+        if (fixture.step==13) {
+            if (!NativeNearbyMailbox(*bot)) {fixture.blocker="restart_mailbox_arrival_pending";return;}
+            require(!AcquireSavedTask(request.task.id,request.task.revision,effects,60000,"isolated_restart_probe").Permitted(),
+                "restart_old_context_cannot_cast_or_collect");
+            if (fixture.resumeReceipt.empty()) fixture.resumeReceipt=NewId();
+            const auto result=RevalidateProfessionPreparation(request.task.actor,request.task.id,request.task.revision,fixture.resumeReceipt);
+            fixture.blocker=result.blocker;if (result.code==AdmissionCode::NotReady) return;
+            require(result.code==AdmissionCode::Pending,"restart_native_preparation_revalidation_queued");
+            require(RevalidateProfessionPreparation(request.task.actor,request.task.id,request.task.revision,fixture.resumeReceipt).code==
+                AdmissionCode::Pending,"restart_duplicate_preparation_shares_pending_receipt");
+            require(followRunnerWrite(),"restart_follows_same_job_revalidation");fixture.step=14;return;
+        }
+        if (fixture.step==14) {
+            require(saved->second.context.boot==state->boot && saved->second.revision==fixture.resumeTask.revision+1 &&
+                saved->second.checkpoint.data==fixture.resumeTask.checkpoint.data && saved->second.phase==Phase::Preparing,
+                "restart_same_job_and_intent_revalidated");
+            for (const auto& claim : fixture.resumeClaims) {
+                const auto* actual=state->resources.Inspect(claim.id);
+                require(actual && SameResourceClaim(*actual,claim),"restart_revalidation_preserves_exact_claims");
+            }
+            ProfessionJob job;CraftFrame current;
+            require(DecodeProfessionJob(request.task.checkpoint.data,job,fixture.blocker) &&
+                ReadNativeCraftFrame(*bot,job,current,fixture.blocker) && SameCraftFrame(fixture.before,current),
+                "restart_revalidation_does_not_change_items_gold_or_skill");
+            require(RevalidateProfessionPreparation(request.task.actor,request.task.id,fixture.resumeTask.revision,fixture.resumeReceipt).code==
+                AdmissionCode::Saved,"restart_revalidation_receipt_acknowledged_once");
+            fixture.step=11;return;
+        }
+        if (fixture.step==12) {
+            UnsettledClaimBatch batch;
+            require(checkpoint && saved->second.checkpoint.step=="profession_resume_checkpoint" &&
+                state->resources.ReadUnsettled(request.task.id,batch,fixture.blocker) && batch.complete && batch.claims.size()==3,
+                "restart_checkpoint_saved_with_all_three_claims");
+            fixture.resumeClaims=batch.claims;fixture.resumeTask=saved->second;
+            require(!fixture.launches && fixture.mailOperation.empty(),"checkpoint_has_not_collected_or_crafted");
+            emit(true,"");return;
+        }
         if (fixture.step==1) {
             if (paid) {
                 fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
@@ -328,8 +429,17 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 ReservationRequest reservation;reservation.transition=request;reservation.transition.expectedRevision=request.task.revision;
                 ++reservation.transition.task.revision;reservation.transition.receipt=NewId();reservation.transition.task.updatedAtMs=NowMs();
                 reservation.authorization=grant.action;reservation.changes.push_back({claim,0});
+                if (checkpoint) {
+                    reservation.transition.task.checkpoint.step="profession_resume_checkpoint";
+                    for (const auto& item : fixture.before.stacks) if (item.entry==2449 || item.entry==3371) {
+                        auto owned=claim;owned.id=NewId();owned.itemGuid=item.guid;owned.itemEntry=item.entry;
+                        owned.quantity=item.entry==3371 ? 5u : 1u;owned.location="bags";owned.nativeReference=0;
+                        reservation.changes.push_back({owned,0});
+                    }
+                    require(reservation.changes.size()==3,"checkpoint_protects_mail_and_both_remaining_reagents");
+                }
                 require(SubmitResourceReservation(reservation,reserve).code==AdmissionCode::Pending,"exact_fixture_mail_link_saved");
-                fixture.mailClaim=claim.id;followRunnerWrite();return;
+                fixture.mailClaim=claim.id;followRunnerWrite();if (checkpoint) fixture.step=12;return;
             }
             const auto* claim=state->resources.Inspect(fixture.mailClaim);
             if (claim && claim->location=="bags" && saved->second.phase==Phase::Verifying && !DefersNativeSave(request.task.actor)) {
@@ -337,13 +447,17 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 require(item && item->GetCount()==fixture.mailCount && !bot->GetMItem(fixture.mailGuid) &&
                     claim->nativeReference==0 && claim->itemGuid==fixture.mailGuid && claim->quantity==fixture.mailCount &&
                     claim->state=="held" && bot->GetMoney()==fixture.before.money,"ordinary_mail_runner_preserves_item_claim_and_money");
-                fixture.inheritedInputs.push_back(claim->id);ProfessionJob job;std::string blocker;
+                if (!resumed) fixture.inheritedInputs.push_back(claim->id);ProfessionJob job;std::string blocker;
                 require(DecodeProfessionJob(request.task.checkpoint.data,job,blocker) &&
                     ReadNativeCraftFrame(*bot,job,fixture.before,blocker),"craft_frame_refreshed_after_verified_mail_collection");
                 const auto count=state->nativeDispatches;NativeMailCollection adapter({});
                 require(!DispatchSavedOperation(fixture.mailOperation,{},adapter).executed && state->nativeDispatches==count,
                     "duplicate_mail_dispatch_does_not_collect_again");
-                advance(Phase::Preparing);fixture.step=2;return;
+                if (resumed) {
+                    fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+                    require(followRunnerWrite() && request.task.phase==Phase::Preparing,"resumed_runner_prepares_after_collection");
+                } else advance(Phase::Preparing);
+                fixture.step=2;return;
             }
             fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
             for (const auto& pending : state->operations) if (pending.second.request.transition.task.id==request.task.id &&
@@ -400,6 +514,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(NextProfessionStep(request.task,prepared).step==ProfessionStep::Execute &&
                 prepared.attempts.empty() && prepared.outputPerAttempt==1,
                 "craft_initial_native_snapshot_selects_exact_ready_attempt");
+            if (resumed) {fixture.inputs=fixture.inheritedInputs;fixture.step=3;return;}
             if (paid) {
                 fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
                 if (!followRunnerWrite()) return;
@@ -446,7 +561,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             request=reservation.transition;fixture.step=3;return;
         }
         if (fixture.step==3) {
-            if (paid) {
+            if (automatic) {
                 // Real coordinator owns the request shape and reads the saved
                 // recipe, current native frame and inherited purchase claim.
                 fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
@@ -489,7 +604,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             const auto grant=AcquireSavedTask(request.task.id,request.task.revision,effects,60000,"isolated_craft_fixture");
             require(grant.Permitted(),"craft_saved_execution_grant");
             DispatchResult result;
-            if (paid) {
+            if (automatic) {
                 const bool before=state->operations.at(operation.transition.receipt).dispatched;
                 fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
                 const auto& pending=state->operations.at(operation.transition.receipt);
@@ -498,7 +613,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             if (result.executed) ++fixture.launches;
             require(result.executed && !result.outcomeQueued && fixture.launches==1,"craft_native_cast_started_not_completed");
             require(!CharacterDatabase.HasOpenTransaction() && DefersNativeSave(bot->GetGUIDLow()),"craft_no_cross_tick_transaction_and_save_held");
-            require(!(paid ? DispatchProfessionAttempt(request.task.actor,operation.transition.receipt) :
+            require(!(automatic ? DispatchProfessionAttempt(request.task.actor,operation.transition.receipt) :
                 DispatchSavedOperation(operation.transition.receipt,grant,craft)).executed,"craft_pending_cast_not_replayed");
             require(!bot->GetPlayerbotAI()->HasSpellItems(2329,nullptr),"bound_native_craft_cannot_skip_real_reagents");
             if (interrupted) {
@@ -579,7 +694,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(gained==(interrupted ? 0u : 1u),"craft_exact_native_output_claimed");
             require(!DispatchSavedOperation(operation.transition.receipt,{},craft).executed,"craft_saved_operation_not_replayed");
             if (settling) {
-                if (paid) {
+                if (automatic) {
                     fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
                     require(followRunnerWrite() && request.task.phase==Phase::Completed,"profession_verified_job_settlement_queued");
                 } else {

@@ -15,6 +15,7 @@
 #include "LivingActivityCommitments.h"
 #include "LivingProfessionNative.h"
 #include "LivingProfessionSettlement.h"
+#include "LivingProfessionResume.h"
 #include "LivingProfessionAttempt.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingNativeBankWithdrawal.h"
@@ -281,6 +282,9 @@ struct LivingActivityCoordinator::State {
         uint32_t bankGuid=0,bankCount=0,bankTotal=0;
         std::string mailOperation,mailClaim;
         uint32_t mailId=0,mailGuid=0,mailCount=0;
+        Task resumeTask;
+        std::string resumeReceipt;
+        std::vector<ResourceClaim> resumeClaims;
         boost::property_tree::ptree checks,selection,grants,snapshot;
     } craftFixture;
     struct ProfessionRecoveryFixture {
@@ -1477,11 +1481,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
     if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) return stop("profession_native_actor_unavailable");
     const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
-    if (!(current==saved->context)) {
-        if (saved->phase==Phase::Verifying)
-            return stop(ReconcileProfessionCompletion(actor,id,saved->revision,NewId()).blocker);
-        return stop("profession_restart_preparation_requires_reconciliation");
-    }
+    if (!(current==saved->context))
+        return stop(RevalidateProfessionPreparation(actor,id,saved->revision,NewId()).blocker);
     auto advance=[&](Phase phase) {
         TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
         ++request.task.revision;request.task.phase=phase;request.task.updatedAtMs=NowMs();request.receipt=NewId();
@@ -1829,6 +1830,76 @@ AdmissionResult LivingActivityCoordinator::ReconcileProfessionCompletion(uint32_
     uint64_t expectedRevision,const std::string& receipt) {
     return SettleProfessionJobImpl(actor,id,expectedRevision,receipt,true);
 }
+AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint32_t actor,const std::string& id,
+    uint64_t expectedRevision,const std::string& receipt) {
+    AdmissionResult result;result.task=id;result.revision=expectedRevision+1;
+    auto reject=[&](AdmissionCode code,const std::string& reason="") {
+        result.code=code;result.blocker=reason.empty() ? Name(code) : reason;return result;
+    };
+    if (!OnWorldThread() || !EffectEnforcementEnabled()) return reject(AdmissionCode::Disabled);
+    if (!actor || !IsUuid(id) || !IsUuid(receipt) || !expectedRevision ||
+        expectedRevision>=std::numeric_limits<uint64_t>::max()-1) return reject(AdmissionCode::InvalidRequest);
+    if (!state->schemaReady || !state->loaded || !state->incoming.empty() || !state->resources.Protection().ready)
+        return reject(AdmissionCode::NotReady);
+    if (state->operationDispatching || DefersNativeSave(actor)) return reject(AdmissionCode::Backpressure,"native_save_pending");
+    const auto saved=state->cache.find(id);
+    if (saved==state->cache.end() || saved->second.actor!=actor ||
+        id!=SourceId(saved->second.source,saved->second.sourceKey)) return reject(AdmissionCode::InvalidRequest);
+    Player* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || bot->IsBeingTeleported())
+        return reject(AdmissionCode::StaleContext);
+    RefreshPermission(actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    for (const auto& pending : state->pending) {
+        if (pending.admissionReceipt==receipt) {
+            if (pending.task.id==id && pending.task.revision==expectedRevision+1 && pending.task.context==current &&
+                pending.task.checkpoint.step=="profession_prepare") return reject(AdmissionCode::Pending);
+            return reject(AdmissionCode::InvalidRequest,"receipt_identity_reused");
+        }
+        if (pending.task.actor==actor) return reject(AdmissionCode::ConflictingWrite);
+    }
+    const auto acknowledged=state->admissionReceipts.find(id);
+    if (saved->second.revision==expectedRevision+1 && acknowledged!=state->admissionReceipts.end() &&
+        acknowledged->second==receipt && saved->second.context==current &&
+        saved->second.checkpoint.step=="profession_prepare") return reject(AdmissionCode::Saved);
+    if (saved->second.revision!=expectedRevision) return reject(AdmissionCode::StaleRevision);
+    if (saved->second.context==current) return reject(AdmissionCode::StaleContext,"profession_context_already_rebound");
+    for (const auto& operation : state->operations)
+        if (operation.second.request.transition.task.actor==actor)
+            return reject(AdmissionCode::ReconciliationRequired,"native_operation_pending");
+    if (state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+        return reject(AdmissionCode::Backpressure);
+    const auto owned=state->authority.Read(actor);
+    if (!owned.operation.empty()) return reject(AdmissionCode::ReconciliationRequired,"atomic_operation_pending");
+    ProfessionHistory history;ProfessionSnapshot snapshot;UnsettledClaimBatch batch;std::string blocker;
+    if (!ReadProfessionHistory(actor,id,expectedRevision,history,blocker)) return reject(AdmissionCode::NotReady,blocker);
+    auto rebound=saved->second;rebound.context=current;
+    if (!InspectNativeProfessionSnapshot(*bot,rebound,history,NowMs(),snapshot,blocker))
+        return reject(AdmissionCode::ReconciliationRequired,blocker);
+    // Completed native work is settled from its receipts, never replayed as preparation.
+    if (NextProfessionStep(rebound,snapshot).step==ProfessionStep::Finalize)
+        return SettleProfessionJobImpl(actor,id,expectedRevision,receipt,true);
+    const auto partyBlocker=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+    if (*partyBlocker) return reject(AdmissionCode::ReconciliationRequired,partyBlocker);
+    if (!state->resources.ReadUnsettled(id,batch,blocker)) return reject(AdmissionCode::ReconciliationRequired,blocker);
+    try {
+        const auto balances=NativeClaimBalances(*bot,batch.claims);
+        for (const auto& native : balances) {
+            uint32_t available=0;
+            if (!state->resources.AvailableToTask(id,native,available))
+                return reject(AdmissionCode::ReconciliationRequired,"profession_resume_native_backing_uncertain");
+        }
+        ProfessionPreparation prepared;
+        if (!PrepareProfessionResumption(saved->second,current,snapshot,batch,balances,NowMs(),receipt,prepared,blocker))
+            return reject(AdmissionCode::ReconciliationRequired,blocker);
+        State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
+        write.admissionReceipt=receipt;state->pending.push_back(std::move(write));
+    } catch (const std::exception&) {return reject(AdmissionCode::InvalidRequest,"profession_resume_not_queued");}
+    // Rebinding grants no execution or travel authority; ordinary acquisition
+    // rechecks safety, party protection, priority and claims after acknowledgement.
+    if (owned.lease.rootTask==id) ReleaseTaskLease(owned.lease);
+    state->nextWork=0;return reject(AdmissionCode::Pending);
+}
 AdmissionResult LivingActivityCoordinator::SettleProfessionJobImpl(uint32_t actor,const std::string& id,
     uint64_t expectedRevision,const std::string& receipt,bool restartRecovery) {
     AdmissionResult result;result.task=id;result.revision=expectedRevision+1;
@@ -1865,7 +1936,7 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJobImpl(uint32_t acto
         acknowledged->second==receipt && (saved->second.checkpoint.step=="profession_settling" ||
         saved->second.checkpoint.step=="profession_completed")) return reject(AdmissionCode::Saved);
     if (saved->second.revision!=expectedRevision) return reject(AdmissionCode::StaleRevision);
-    if (restartRecovery && saved->second.context.boot==current.boot)
+    if (restartRecovery && saved->second.context==current)
         return reject(AdmissionCode::StaleContext,"profession_restart_already_rebound");
     for (const auto& operation : state->operations)
         if (operation.second.request.transition.task.actor==actor)

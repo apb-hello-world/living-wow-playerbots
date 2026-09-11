@@ -4,8 +4,10 @@
 using namespace LivingActivity;
 using namespace LivingActivityTest;
 #include "fixtures/ProfessionAttempt.inc"
+#include "fixtures/ProfessionResume.inc"
 int main() {
     TestProfessionAttemptPlan();
+    TestProfessionResumption();
     Task task;task.id=task.root="637bd562-36d2-5b01-bc01-e2d831c49f92";
     task.actor=task.context.actor=703;task.source="profession_job";task.sourceKey="settlement_fixture";
     task.mode=Mode::Active;task.phase=Phase::Verifying;task.kind=Kind::Profession;task.revision=5;
@@ -52,6 +54,12 @@ int main() {
         settled.task.revision==task.revision+1 && task.context.boot=="test_boot");
     assert(settled.plan.statements[1].find("AND phase='verifying'")!=std::string::npos &&
         settled.plan.statements[1].find("o.state IN ('intent','reconciling')")!=std::string::npos);
+    {
+        auto zoned=task;zoned.context=restarted;auto arrived=restarted;++arrived.mapGeneration;
+        auto fresh=recoveredSnapshot;fresh.context=arrived;
+        assert(PrepareProfessionRestartSettlement(zoned,arrived,fresh,batch,balances,1001,receipt,settled,blocker));
+        assert(settled.task.phase==Phase::Completed && settled.task.context==arrived);
+    }
     auto recoveryFail=[&](const WorldContext& context,const ProfessionSnapshot& view) {
         assert(!recover(context,view) && !blocker.empty() && settled.plan.statements.empty() && settled.claims.empty());
     };

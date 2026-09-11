@@ -126,7 +126,7 @@ bool PrepareProfessionRestartSettlement(const Task& saved,const WorldContext& cu
     ProfessionSettlement& result,std::string& blocker) {
     result={};
     if (saved.context.actor!=saved.actor || current.actor!=saved.actor ||
-        saved.context.boot==current.boot || !IsUuid(current.boot) ||
+        saved.context==current || !IsUuid(current.boot) || current.session.size()>120 ||
         (saved.context.boot.empty() && (saved.context.actorGeneration || saved.context.mapGeneration)) ||
         !current.actorGeneration || !current.mapGeneration || !current.policyRevision ||
         (current.session.empty() ? current.sessionRevision!=0 : current.sessionRevision==0)) {
