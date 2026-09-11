@@ -41,4 +41,12 @@ namespace LivingActivity {
             head->permit->validated && !(mask & ~head->permit->effects)) result.lane=head->permit->lane;
         return result; // The normal boundary still checks context, safety and effects.
     }
+    bool ExecutionScope::RequiresNativeSpellItems(uint32_t actor) {
+        if (!head || head->actor!=actor || head->depth>16 || !head->task || !head->action || head->permit)
+            return false;
+        const auto& task=*head->task;const auto& action=*head->action;
+        const auto required=Mask(Effect::Spell)|Mask(Effect::Inventory);
+        return task.mode==Mode::Active && task.accepted && task.phase==Phase::Executing &&
+            IsUuid(action.operation) && !(required&~action.permittedEffects) && Fresh(task,action,task.context);
+    }
 }

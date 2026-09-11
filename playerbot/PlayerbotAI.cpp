@@ -6044,6 +6044,15 @@ bool PlayerbotAI::IsHerb(const GameObject* go)
 
 bool PlayerbotAI::HasSpellItems(uint32 spellId, const Item* castItem) const
 {
+    // The core uses a true result to IGNORE item requirements, not merely to
+    // report inventory availability. Managed work must pay real reagent costs.
+    // Initial SpellStart runs under explicit operation attribution; a later
+    // timed CheckCast also recognizes its actual bound native Spell. Neither
+    // branch reads a guessed current activity owner or changes legacy cheats.
+    const auto* current=bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+    if (LivingActivity::ExecutionScope::RequiresNativeSpellItems(bot->GetGUIDLow()) ||
+        (current && current->m_spellInfo->Id==spellId && current->GetLivingCraftCast()))
+        return false;
     const SpellEntry* spellEntry = sSpellTemplate.LookupEntry<SpellEntry>(spellId);
     if (spellEntry)
     {

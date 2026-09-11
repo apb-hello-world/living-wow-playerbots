@@ -19,11 +19,13 @@ int main() {
     auto check = [&] { return ExecutionScope::Check(reader, movement, task.context, 200); };
     assert(check() == AuthorityCode::StaleLease);
     assert(ExecutionScope::MutationEffects(task.actor,Mask(Effect::Movement)).lane == Lane::Managed);
+    assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));
     {
         ExecutionScope scope(task, action);
         assert(check() == AuthorityCode::Allowed);
         assert(ExecutionScope::MutationEffects(task.actor,Mask(Effect::Movement)).lane == Lane::Managed);
         assert(ExecutionScope::Origin(task.actor) == "service_adapter");
+        assert(!ExecutionScope::RequiresNativeSpellItems(task.actor)); // Ordinary movement is unchanged.
         {
             EvaluationScope evaluation(true);
             assert(ExecutionScope::Origin(task.actor) == "eligibility_evaluation");
@@ -73,6 +75,7 @@ int main() {
     NativePermit native{task.context, Lane::Combat, Mask(Effect::Movement), 0, true};
     {
         ExecutionScope combat(native);
+        assert(!ExecutionScope::RequiresNativeSpellItems(task.actor)); // Preserve native combat policy.
         const auto nativeMovement=ExecutionScope::MutationEffects(task.actor,Mask(Effect::Movement));
         assert(nativeMovement.lane == Lane::Combat);
         assert(ExecutionScope::Check(reader,nativeMovement,task.context,200) == AuthorityCode::Allowed);
@@ -86,4 +89,31 @@ int main() {
         assert(ExecutionScope::Check(reader, {Mask(Effect::Movement), Lane::Combat, true}, task.context, 200) == AuthorityCode::Allowed);
         assert(check() == AuthorityCode::StaleLease); // A combat permit never grants service travel.
     }
+    task.phase=Phase::Executing;task.accepted=true;
+    action.operation="612e4d77-698d-4f93-bc18-6982eae3f49b";
+    action.permittedEffects=Mask(Effect::Spell)|Mask(Effect::Inventory);
+    {
+        ExecutionScope craft(task,action);
+        assert(ExecutionScope::RequiresNativeSpellItems(task.actor));
+        assert(!ExecutionScope::RequiresNativeSpellItems(task.actor+1));
+        std::thread otherThread([&]{assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));});otherThread.join();
+        {
+            ExecutionScope combat(native);
+            assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));
+        }
+        assert(ExecutionScope::RequiresNativeSpellItems(task.actor));
+        {
+            auto stale=action;++stale.revision;ExecutionScope wrong(task,stale);
+            assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));
+        }
+        {
+            auto other=task;other.actor=498;ExecutionScope foreign(other,action);
+            assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));
+        }
+        {
+            auto unsaved=action;unsaved.operation.clear();ExecutionScope noIntent(task,unsaved);
+            assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));
+        }
+    }
+    assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));
 }

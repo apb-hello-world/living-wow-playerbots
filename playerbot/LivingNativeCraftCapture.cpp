@@ -121,6 +121,8 @@ namespace LivingActivity {
             return reject("native_craft_current_authority_required");
         if (actor->GetTradeData() || actor->GetMap()->IsDungeon() || !actor->IsStopped() ||
             actor->CanNoReagentCast(spell.m_spellInfo)) return reject("native_craft_safe_resource_cast_required");
+        if (actor->GetPlayerbotAI()->HasSpellItems(job.recipe,nullptr))
+            return reject("native_craft_virtual_reagents_forbidden");
         const auto native=InspectNativeProfessionRecipe(*actor,job);auto currentJob=job;currentJob.initialSkill=native.skillValue;
         if (!MatchNativeProfessionRecipe(currentJob,native,blocker)) return false;
         if (job.purpose==ProfessionPurpose::SkillGain && native.skillValue>=job.targetSkill)

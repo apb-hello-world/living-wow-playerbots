@@ -38,6 +38,9 @@ namespace LivingActivity {
         // Attribute a direct native helper to the explicitly supplied top
         // scope only. Never infer permission from the actor's current owner.
         static Effects MutationEffects(uint32_t actor,uint32_t mask);
+        // Restriction only: explicit journaled spell operations may not use
+        // Playerbots' virtual-item shortcut. This never grants native execution.
+        static bool RequiresNativeSpellItems(uint32_t actor);
     private:
         static thread_local ExecutionScope* head;
         ExecutionScope* previous;

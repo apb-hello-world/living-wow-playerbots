@@ -42,8 +42,11 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         report.put("test_only",true);report.put("outcome",passed ? "passed" : "failed");report.put("failure",failure);
         report.put("step",fixture.step);report.put("blocker",fixture.blocker);report.put("actor",request.task.actor);
         report.put("task",request.task.id);report.put("operation",operation.transition.receipt);report.put("native_launches",fixture.launches);
-        report.put("recipe",2329);report.put("native_money_before",fixture.before.money);report.put("native_money_after",fixture.after.money);
-        report.put("skill_before",fixture.before.skill);report.put("skill_after",fixture.after.skill);
+        report.put("recipe",2329);report.put("native_money_before",fixture.before.money);report.put("skill_before",fixture.before.skill);
+        report.put("native_after_sampled",fixture.after.actor!=0);
+        if (fixture.after.actor) {
+            report.put("native_money_after",fixture.after.money);report.put("skill_after",fixture.after.skill);
+        } // An uncollected sample is unknown, not zero gold/skill.
         report.put("paid_workflow_proof",false);report.put("profession_job_completion_proof",false);report.put("travel_proof",false);
         report.put("gold_grants",0);report.put("spell_grants",0);report.put("skill_grants",0);
         report.put("general_execution_enabled",false);report.add_child("fixture_material_grants",fixture.grants);
@@ -187,6 +190,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(result.executed && !result.outcomeQueued && fixture.launches==1,"craft_native_cast_started_not_completed");
             require(!CharacterDatabase.HasOpenTransaction() && DefersNativeSave(bot->GetGUIDLow()),"craft_no_cross_tick_transaction_and_save_held");
             require(!DispatchSavedOperation(operation.transition.receipt,grant,craft).executed,"craft_pending_cast_not_replayed");
+            require(!bot->GetPlayerbotAI()->HasSpellItems(2329,nullptr),"bound_native_craft_cannot_skip_real_reagents");
             if (interrupted) {
                 const auto& pending=state->operations.at(operation.transition.receipt);
                 require(pending.craft && pending.craft->Capture()->Phase()==CraftCapturePhase::Casting &&
