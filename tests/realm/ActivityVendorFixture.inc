@@ -27,6 +27,7 @@ namespace {
 void LivingActivityCoordinator::RunIsolatedVendorFixture() {
     MANGOS_ASSERT(OnWorldThread());
     RequireIsolatedNativeFixtureEnvironment();
+    state->vendorFixtureFaults=std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE"))=="activity-vendor-failure-v1";
     if (state->fixtureFinished || NowMs()<state->fixtureNext) return;
     state->fixtureNext=NowMs()+1000;
     if (sWorld.GetActiveAndQueuedSessionCount()) return;
@@ -38,7 +39,7 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
     auto& quote=state->vendorFixtureQuote;
     auto emit=[&](bool passed,const std::string& reason) {
         boost::property_tree::ptree report;
-        report.put("suite","activity-vendor-v1"); report.put("boot",state->boot);
+        report.put("suite",state->vendorFixtureFaults ? "activity-vendor-failure-v1" : "activity-vendor-v1"); report.put("boot",state->boot);
         report.put("test_only",true); report.put("outcome",passed ? "passed" : "failed");
         report.put("failure",reason); report.put("last_blocker",state->vendorFixtureBlocker);
         report.put("fixture_step",state->admissionFixtureStep);
@@ -50,6 +51,12 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
         report.put("native_money_before",quote.moneyBefore); report.put("native_price",quote.copper);
         report.put("entry",quote.entry); report.put("purchased_quantity",quote.quantity);
         report.put("native_count_before",state->vendorFixtureCountBefore);
+        report.put("fault_injection_requested",state->vendorFixtureFaults);
+        if (state->vendorFixtureFaults) {
+            report.put("native_save_attempts",state->nativeSaveFixtureAttempts);
+            report.put("lost_acknowledgement_injected",state->nativeSaveFixtureLostAck);
+            report.add_child("native_save_checks",state->nativeSaveFixtureChecks);
+        }
         auto* bot=sRandomPlayerbotMgr.GetPlayerBot(request.task.actor);
         if (bot) {
             report.put("native_money_after",bot->GetMoney());
@@ -184,10 +191,23 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
             require(!DispatchSavedOperation(operation.transition.receipt,grant,purchase).executed,"pending_purchase_not_replayed");
             require(state->pending.size()==1 && state->pending.front().nativeSave &&
                 state->pending.front().task.phase==Phase::Verifying,"native_acquired_items_and_money_save_queued");
+            if (state->vendorFixtureFaults) {
+                require(state->vendorFixtureCountBefore==0,"failure_fixture_has_no_preexisting_material_stack");
+                state->pending.front().nativeSave->InjectIsolatedProofFailures();
+                require(DefersNativeSave(bot->GetGUIDLow()),"native_item_save_hold_prevents_later_save_overtaking");
+                bot->SaveToDB();
+            }
             request.task=state->pending.front().task;state->admissionFixtureStep=5;return;
         }
         if (state->admissionFixtureStep==5) {
             require(!DefersNativeSave(bot->GetGUIDLow()) && state->operations.empty(),"native_purchase_receipt_acknowledged");
+            if (state->vendorFixtureFaults) {
+                require(state->nativeSaveFixtureAttempts==4 && state->nativeSaveFixtureLostAck &&
+                    state->nativeSaveFixtureChecks.size()==4,"native_item_two_rollbacks_commit_and_lost_ack_reconciled");
+                for (const auto& check : state->nativeSaveFixtureChecks)
+                    require(check.second.get<bool>("native_money_claim_operation_and_receipt_agree") &&
+                        check.second.get<bool>("native_items_and_claims_agree"),"native_item_and_money_transactions_conserved_on_every_attempt");
+            }
             require(bot->GetMoney()==quote.moneyBefore-quote.copper &&
                 bot->GetItemCount(quote.entry,false)==state->vendorFixtureCountBefore+quote.quantity,"native_purchase_conserved");
             const auto* money=state->resources.Inspect(operation.consumption.front().before.id);

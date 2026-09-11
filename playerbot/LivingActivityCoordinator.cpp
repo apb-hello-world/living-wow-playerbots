@@ -224,6 +224,7 @@ struct LivingActivityCoordinator::State {
     uint64_t petFixtureDeadline = 0;
     uint64_t professionFixtureDeadline = 0;
     NativeVendorQuote vendorFixtureQuote;
+    bool vendorFixtureFaults = false;
     uint32_t vendorFixtureCountBefore = 0;
     float vendorFixtureX = 0, vendorFixtureY = 0, vendorFixtureZ = 0, vendorFixtureO = 0;
     bool vendorFixturePositionChanged = false;
@@ -397,13 +398,25 @@ struct LivingActivityCoordinator::State {
         query += " UNION ALL SELECT '',0"; // Healthy empty acknowledgement differs from query failure.
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
         if (nativeBatch && pending.front().operation == operationFixtureRequest.transition.receipt &&
-            operationFixtureRequest.kind == "isolated_wallet_consumption") {
+            (operationFixtureRequest.kind == "isolated_wallet_consumption" || vendorFixtureFaults)) {
             query += " UNION ALL SELECT 'isolated_native_wallet',money FROM characters WHERE guid=" +
                 std::to_string(pending.front().task.actor);
             query += " UNION ALL SELECT 'isolated_claim_revision',revision FROM living_activity_claim WHERE claim_id=" +
-                SqlValue(reservationFixtureRequest.changes.front().after.id);
+                SqlValue(operationFixtureRequest.consumption.front().before.id);
             query += " UNION ALL SELECT 'isolated_native_operation',CASE WHEN state='intent' THEN 1 WHEN state='verified' THEN 2 ELSE 0 END "
                 "FROM living_activity_operation WHERE operation_id=" + SqlValue(pending.front().operation);
+            if (vendorFixtureFaults) for (const auto& change : pending.front().claims) {
+                const auto& claim=change.after;
+                if (!claim.itemGuid || claim.state!="held") continue;
+                const auto suffix=std::to_string(claim.itemGuid);
+                query+=" UNION ALL SELECT 'isolated_native_item_"+suffix+"',COUNT(*) FROM character_inventory v "
+                    "JOIN item_instance i ON i.guid=v.item WHERE v.guid="+std::to_string(claim.actor)+
+                    " AND i.owner_guid="+std::to_string(claim.actor)+" AND v.item="+suffix+
+                    " AND i.itemEntry="+std::to_string(claim.itemEntry)+" AND i.count="+std::to_string(claim.quantity);
+                query+=" UNION ALL SELECT 'isolated_acquired_claim_"+suffix+"',COUNT(*) FROM living_activity_claim WHERE claim_id="+
+                    SqlValue(claim.id)+" AND state='held' AND revision=1 AND item_guid="+suffix+
+                    " AND quantity="+std::to_string(claim.quantity);
+            }
         }
 #endif
         ioPending = true;
@@ -418,7 +431,7 @@ struct LivingActivityCoordinator::State {
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
             if (count == 1 && !pending.empty() && pending.front().nativeSave &&
                 pending.front().operation == operationFixtureRequest.transition.receipt &&
-                operationFixtureRequest.kind == "isolated_wallet_consumption") {
+                (operationFixtureRequest.kind == "isolated_wallet_consumption" || vendorFixtureFaults)) {
                 const auto& write = pending.front();
                 const auto status = write.nativeSave->Status();
                 nativeSaveFixtureAttempts = write.nativeSave->Attempts();
@@ -427,12 +440,23 @@ struct LivingActivityCoordinator::State {
                 boost::property_tree::ptree check;
                 check.put("attempt",nativeSaveFixtureAttempts); check.put("status",Name(status));
                 check.put("observed_at_ms",NowMs());
+                const uint64_t originalMoney=vendorFixtureFaults ? vendorFixtureQuote.moneyBefore : gameplayOriginalMoney;
+                const uint64_t price=vendorFixtureFaults ? vendorFixtureQuote.copper : 1;
                 const bool correct = healthy && (committed || rollback) &&
-                    receipts.count({"isolated_native_wallet",gameplayOriginalMoney-(committed ? 1 : 0)}) &&
+                    receipts.count({"isolated_native_wallet",originalMoney-(committed ? price : 0)}) &&
                     receipts.count({"isolated_claim_revision",committed ? 2 : 1}) &&
                     receipts.count({"isolated_native_operation",committed ? 2 : 1}) &&
                     (bool(receipts.count({write.plan.task,write.plan.revision})) == committed);
                 check.put("native_money_claim_operation_and_receipt_agree",correct);
+                bool itemsCorrect=true;unsigned gains=0;
+                if (vendorFixtureFaults) for (const auto& change : write.claims) {
+                    const auto& claim=change.after;
+                    if (!claim.itemGuid || claim.state!="held") continue;
+                    ++gains;const auto suffix=std::to_string(claim.itemGuid);
+                    itemsCorrect=itemsCorrect && receipts.count({"isolated_native_item_"+suffix,committed ? 1 : 0}) &&
+                        receipts.count({"isolated_acquired_claim_"+suffix,committed ? 1 : 0});
+                }
+                check.put("native_items_and_claims_agree",itemsCorrect && (!vendorFixtureFaults || gains>0));
                 nativeSaveFixtureChecks.push_back({"",check});
                 if (status == NativeSaveStatus::Committed && !nativeSaveFixtureLostAck) {
                     // Lose only this test acknowledgement AFTER an actual native
