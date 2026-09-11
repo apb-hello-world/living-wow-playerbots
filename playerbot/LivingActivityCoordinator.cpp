@@ -259,6 +259,17 @@ struct LivingActivityCoordinator::State {
     };
     std::map<uint32_t,BudgetRead> purchaseBudgets; // At most 64 requested reads.
     uint64_t budgetReads=0, budgetFailures=0;
+    struct HistoryRead {
+        Task task;
+        ProfessionHistoryCursor cursor;
+        std::string blocker="profession_history_queued";
+        uint64_t generation=1, requestedAt=0, dueAt=0;
+        bool pending=false, decoding=false;
+    };
+    std::map<std::string,HistoryRead> professionHistory; // At most 64 requested reads.
+    std::string historyQueryCursor, historyDecodeCursor;
+    bool preferHistoryRead=true;
+    uint64_t historyReads=0, historyFailures=0, historyStaleReads=0;
     unsigned importFamily = 0;
     uint64_t acknowledged = 0, persistenceFailures = 0, invalidRecords = 0, transitionCount = 0;
     uint64_t maximumDispatchUs = 0, overBudgetUpdates = 0;
@@ -363,6 +374,14 @@ struct LivingActivityCoordinator::State {
     }
     void Remember(const Task& task) {
         cache[task.id] = task;
+        if (task.mode==Mode::Active) for (auto& row : professionHistory) {
+            auto& read=row.second;
+            // A dependent or different root may change this actor's unresolved
+            // operation guard. Invalidate only on acknowledged transitions.
+            if (read.task.actor!=task.actor) continue;
+            ++read.generation;read.cursor={};read.decoding=false;read.dueAt=NowMs();
+            read.blocker="profession_history_changed";
+        }
         const auto existing = preferred.find(task.actor);
         if (existing == preferred.end() || Before(task, cache.at(existing->second))) preferred[task.actor] = task.id;
     }
@@ -614,6 +633,69 @@ struct LivingActivityCoordinator::State {
         }
         return false;
     }
+    bool QueryProfessionHistory(uint64_t now) {
+        for (auto it=professionHistory.begin();it!=professionHistory.end();) {
+            if (!it->second.pending && now>it->second.requestedAt+30000) it=professionHistory.erase(it);
+            else ++it;
+        }
+        auto it=professionHistory.upper_bound(historyQueryCursor);
+        for (size_t count=0;count<professionHistory.size();++count) {
+            if (it==professionHistory.end()) it=professionHistory.begin();
+            auto& read=(it++)->second;
+            if (read.pending || read.decoding || !read.dueAt || read.dueAt>now) continue;
+            const auto saved=cache.find(read.task.id);
+            if (saved==cache.end() || saved->second.revision!=read.task.revision || saved->second.actor!=read.task.actor) {
+                read.dueAt=0;read.blocker="profession_history_task_changed";continue;
+            }
+            const auto id=read.task.id;const auto revision=read.task.revision,generation=read.generation;
+            std::string query;
+            try {query=ProfessionHistoryQuery(read.task);}
+            catch (const std::exception&) {read.dueAt=0;read.blocker="profession_history_task_invalid";++historyFailures;continue;}
+            historyQueryCursor=id;read.pending=true;ioPending=true;++historyReads;
+            if (!CharacterDatabase.AsyncQuery([this,id,revision,generation](QueryResult* result) {
+                ioPending=false;
+                const auto found=professionHistory.find(id);
+                if (found==professionHistory.end()) return;
+                auto& read=found->second;read.pending=false;
+                if (read.generation!=generation || read.task.revision!=revision) {++historyStaleReads;return;}
+                std::vector<ProfessionHistoryRow> rows;
+                if (result && result->GetFieldCount()==12) do {
+                    if (rows.size()==21) break;
+                    auto* fields=result->Fetch();ProfessionHistoryRow row;
+                    for (size_t i=0;i<row.size();++i) row[i]=fields[i].GetCppString();
+                    rows.push_back(std::move(row));
+                } while (result->NextRow());
+                // Only envelope/identity validation here. JSON/native resource
+                // proof is decoded one operation at a time in Update's budget.
+                if (!read.cursor.Begin(read.task,rows,read.blocker)) {
+                    ++historyFailures;read.dueAt=NowMs()+5000;return;
+                }
+                read.dueAt=0;read.decoding=!read.cursor.Result().complete;
+            },query.c_str())) {
+                ioPending=false;read.pending=false;read.dueAt=now+5000;
+                read.blocker="profession_history_queue_unavailable";++historyFailures;
+            }
+            return true;
+        }
+        return false;
+    }
+    void DecodeProfessionHistory(std::chrono::steady_clock::time_point deadline) {
+        if (std::chrono::steady_clock::now()>=deadline) return;
+        auto it=professionHistory.upper_bound(historyDecodeCursor);
+        for (size_t count=0;count<professionHistory.size();++count) {
+            if (it==professionHistory.end()) it=professionHistory.begin();
+            auto& read=(it++)->second;
+            if (!read.decoding) continue;
+            historyDecodeCursor=read.task.id;
+            if (!read.cursor.Advance(read.blocker)) {
+                // Saved malformed/unknown proof will not become valid by
+                // polling faster. Retain its reason until a transition changes
+                // the task (or a later explicit read after cache eviction).
+                read.decoding=false;read.dueAt=0;++historyFailures;
+            } else read.decoding=!read.cursor.Result().complete;
+            return;
+        }
+    }
     void Load() {
         const std::string projection = PersistedTaskProjection();
         const std::string sql = "SELECT * FROM (SELECT task_id," + projection + " payload FROM living_activity_task "
@@ -830,11 +912,17 @@ void LivingActivityCoordinator::Update() {
     queues.incoming = state->incoming.size();
     queues.cacheLimit = state->maxCache; queues.retained = state->transitionCount;
     const auto work = NextObservationWork(queues);
-    // Native receipt verification stays ahead of speculative budget reads.
-    // Reads run only when requested, using the same bounded DB queue as tasks.
+    // Native receipt verification stays ahead of read-only snapshots. Fairly
+    // alternate budget/history reads on the SAME bounded database queue.
     if (state->effective!=Mode::Off && !state->ioPending && state->schemaReady && state->loaded &&
         state->claimsEnumerated && state->incoming.empty() && state->incomingClaims.empty() &&
-        !queues.pending && state->QueryPurchaseBudget(now)) return;
+        !queues.pending) {
+        state->DecodeProfessionHistory(deadline);
+        if (std::chrono::steady_clock::now()>=deadline) return;
+        if (state->preferHistoryRead && state->QueryProfessionHistory(now)) {state->preferHistoryRead=false;return;}
+        if (state->QueryPurchaseBudget(now)) {state->preferHistoryRead=true;return;}
+        if (!state->preferHistoryRead && state->QueryProfessionHistory(now)) {state->preferHistoryRead=false;return;}
+    }
     if (work == ObservationWork::Wait) return;
     if (work == ObservationWork::Decode) {
         try { state->DecodeIncoming(deadline); }
@@ -873,6 +961,8 @@ std::string LivingActivityCoordinator::StatusJson() const {
         [](const auto& row){return row.second.craftAwaiting;}));
     p.put("purchase_budget_reads",state->budgetReads); p.put("purchase_budget_failures",state->budgetFailures);
     p.put("purchase_budget_cache",state->purchaseBudgets.size());
+    p.put("profession_history_reads",state->historyReads);p.put("profession_history_failures",state->historyFailures);
+    p.put("profession_history_stale_reads",state->historyStaleReads);p.put("profession_history_cache",state->professionHistory.size());
     p.put("unacknowledged_writes",std::count_if(state->pending.begin(),state->pending.end(),
         [](const State::Pending& write){return write.retry.failures != 0;}));
     p.put("cached_resource_claims", state->resources.Size());
@@ -976,6 +1066,17 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
             (pending.craftAwaiting ? "native_cast_completion_pending" : "result_receipt_pending") :
             pending.ready ? "ready_for_native_validation" : "intent_receipt_pending");
     }
+    boost::property_tree::ptree histories;
+    for (const auto& row : state->professionHistory) {
+        const auto& read=row.second;if (read.task.actor!=guid) continue;
+        boost::property_tree::ptree entry;const auto& history=read.cursor.Result();
+        entry.put("task",row.first);entry.put("revision",read.task.revision);entry.put("read_complete",history.complete);
+        entry.put("read_pending",read.pending);entry.put("decoding",read.decoding);
+        entry.put("unresolved_operation",history.unresolvedOperation);entry.put("saved_attempts",history.attempts.size());
+        entry.put("blocker",history.complete && history.unresolvedOperation ? "profession_history_operation_unresolved" : read.blocker);
+        entry.put("retry_at_ms",read.dueAt);histories.push_back({"",entry});
+    }
+    p.add_child("profession_history",histories);
     return Json(p);
 }
 
@@ -1141,6 +1242,42 @@ bool LivingActivityCoordinator::ReadPurchaseBudget(uint32_t actor,const std::str
     read.requestedAt=now;
     if (!read.spend.complete) { blocker=read.blocker; return false; }
     spend=read.spend; blocker.clear(); return true;
+}
+bool LivingActivityCoordinator::ReadProfessionHistory(uint32_t actor,const std::string& id,uint64_t revision,
+    ProfessionHistory& history,std::string& blocker) {
+    history={};
+    auto reject=[&](const char* why){blocker=why;return false;};
+    if (!OnWorldThread() || !state->schemaReady || !state->loaded || state->effective==Mode::Off)
+        return reject("profession_history_coordinator_unavailable");
+    const auto saved=state->cache.find(id);
+    if (!actor || saved==state->cache.end() || saved->second.actor!=actor || saved->second.revision!=revision ||
+        saved->second.mode!=Mode::Active || !IsProfessionJob(saved->second)) return reject("profession_history_task_changed");
+    for (const auto& write : state->pending) if (write.task.actor==actor && write.task.mode==Mode::Active)
+        return reject("profession_history_transition_pending");
+    const auto now=NowMs();auto found=state->professionHistory.find(id);
+    if (found==state->professionHistory.end()) {
+        if (state->professionHistory.size()>=64) {
+            for (auto it=state->professionHistory.begin();it!=state->professionHistory.end();) {
+                if (!it->second.pending && now>it->second.requestedAt+30000) it=state->professionHistory.erase(it);
+                else ++it;
+            }
+            if (state->professionHistory.size()>=64) return reject("profession_history_queue_full");
+        }
+        found=state->professionHistory.emplace(id,State::HistoryRead{}).first;
+    }
+    auto& read=found->second;read.requestedAt=now;
+    if (read.task.id!=id || read.task.revision!=revision) {
+        ++read.generation;read.task=saved->second;read.cursor={};read.decoding=false;read.dueAt=now;
+        read.blocker="profession_history_queued";
+    }
+    if (read.pending) return reject("profession_history_read_pending");
+    if (!read.cursor.Result().complete) {blocker=read.blocker.empty() ? "profession_history_decoding" : read.blocker;return false;}
+    history=read.cursor.Result();
+    // Admission may precede its acknowledged revision. A cached historical
+    // result cannot hide a newly admitted in-memory native operation.
+    for (const auto& operation : state->operations) if (operation.second.request.transition.task.actor==actor)
+        history.unresolvedOperation=true;
+    blocker=history.unresolvedOperation ? "profession_history_operation_unresolved" : "";return true;
 }
 
 bool LivingActivityCoordinator::EffectEnforcementEnabled() const {

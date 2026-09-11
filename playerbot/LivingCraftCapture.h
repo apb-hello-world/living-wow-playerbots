@@ -63,5 +63,9 @@ namespace LivingActivity {
     // do not interpret them as one create-item spell or silently discard extras.
     CraftVerification VerifyCraftCapture(const CraftIdentity& expected,
         const ProfessionJob& job, const CraftCaptureResult& observed, const ItemGainSpec& output);
+    // Pure physical conservation only. Does not claim native callback evidence,
+    // persistence, a current world context, or permission to repeat an action.
+    CraftVerification VerifyCraftResources(uint32_t actor, const ProfessionJob& job,
+        const CraftFrame& before, const CraftFrame& after, const ItemGainSpec& output);
 }
 #endif

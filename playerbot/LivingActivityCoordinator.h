@@ -11,6 +11,7 @@
 #include "LivingActivityReservations.h"
 #include "LivingActivityAcquisition.h"
 #include "LivingPurchaseBudget.h"
+#include "LivingProfessionEvidence.h"
 #include <optional>
 class PlayerbotAI;
 class WorldPacket;
@@ -78,6 +79,10 @@ public:
     // demand, quote and effect grant immediately before the native mutation.
     bool ReadPurchaseBudget(uint32_t actor,const std::string& task,uint64_t revision,
         const std::string& currentOperation,LivingActivity::PurchaseSpend& spend,std::string& blocker);
+    // Acknowledged, revision-bound craft history. Decoded incrementally through
+    // the existing world/DB queue; this neither grants a lease nor resumes work.
+    bool ReadProfessionHistory(uint32_t actor,const std::string& task,uint64_t revision,
+        LivingActivity::ProfessionHistory& history,std::string& blocker);
     struct TaskGrant {
         LivingActivity::AuthorityResult authority;
         LivingActivity::Task task;

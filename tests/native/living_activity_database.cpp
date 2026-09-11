@@ -8,6 +8,7 @@
 #include "LivingActivityClaimCodec.h"
 #include "LivingActivityReceipts.h"
 #include "LivingPurchaseBudget.h"
+#include "LivingProfessionEvidence.h"
 #include <mysql.h>
 #include <cassert>
 #include <cstdlib>
@@ -66,6 +67,16 @@ public:
         PurchaseSpend spend;
         DecodePurchaseSpend({row[0] ? row[0] : "",row[1] ? row[1] : "",row[2] ? row[2] : "",row[3] ? row[3] : ""},spend);
         mysql_free_result(result); return spend;
+    }
+    std::vector<ProfessionHistoryRow> History(const Task& task) {
+        if (!Execute(ProfessionHistoryQuery(task))) throw std::runtime_error(mysql_error(db));
+        MYSQL_RES* result=mysql_store_result(db);assert(result && mysql_num_fields(result)==12);
+        std::vector<ProfessionHistoryRow> rows;
+        while (const auto row=mysql_fetch_row(result)) {
+            ProfessionHistoryRow fields;for (size_t i=0;i<fields.size();++i) fields[i]=row[i] ? row[i] : "";
+            rows.push_back(std::move(fields));
+        }
+        mysql_free_result(result);return rows;
     }
     bool Write(const WritePlan& plan, bool injectFailure = false) {
         assert(Execute("START TRANSACTION"));
@@ -471,5 +482,53 @@ int main() {
     assert(db.Execute("ROLLBACK"));
     assert(db.Execute("UPDATE living_activity_operation SET state='verified',updated_at_ms=172000000 WHERE operation_id="+SqlValue(purchaseId)));
     { Connection restarted; assert(restarted.Budget(701,budgetNow).spentDay==60); }
-    std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims and shared vendor/AH budget; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
+    // Exercise the actual revision-bound history query. These rows deliberately
+    // contain no real craft proof, so even a 'verified' label cannot pass the
+    // same physical decoder used by the game.
+    Task historyTask=consuming;historyTask.id=historyTask.root="637bd562-36d2-5b01-bc01-e2d831c49f91";
+    historyTask.actor=historyTask.context.actor=702;historyTask.source="profession_job";
+    historyTask.sourceKey="history_query_fixture";historyTask.kind=Kind::Profession;
+    historyTask.phase=Phase::Queued;historyTask.revision=1;
+    ProfessionJob historyJob;historyJob.recipe=2329;historyJob.skill=171;historyJob.initialSkill=1;historyJob.targetSkill=2;
+    historyJob.outputEntry=2454;historyJob.outputQuantity=1;historyJob.attemptLimit=1;historyJob.reagents={{765,1},{2449,1},{3371,1}};
+    historyTask.checkpoint.data=EncodeProfessionJob(historyJob);
+    assert(db.Write(TaskWrite(historyTask,0,"ff2efbdf-f0ec-4539-b840-299847971010","fixture_created")));
+    ProfessionHistoryCursor history;std::string historyBlocker;
+    assert(history.Begin(historyTask,db.History(historyTask),historyBlocker));
+    assert(history.Result().complete && !history.Result().unresolvedOperation && history.Result().attempts.empty());
+    auto missing=historyTask;++missing.revision;
+    assert(db.History(missing).empty());missing=historyTask;++missing.actor;
+    assert(db.History(missing).empty());
+    historyTask.phase=Phase::Preparing;++historyTask.revision;
+    assert(db.Write(TaskWrite(historyTask,1,"ff2efbdf-f0ec-4539-b840-299847971011","fixture_preparing")));
+    historyTask.phase=Phase::Executing;++historyTask.revision;
+    const std::string historyOp="ff2efbdf-f0ec-4539-b840-299847971012";
+    assert(db.Write(OperationIntentWrite(historyTask,2,historyOp,"profession_craft","{}")));
+    assert(history.Begin(historyTask,db.History(historyTask),historyBlocker) && history.Advance(historyBlocker));
+    assert(history.Result().complete && history.Result().unresolvedOperation && history.Result().attempts.empty());
+    OperationResult fakeCraft;fakeCraft.id=historyOp;fakeCraft.task=historyTask.id;fakeCraft.taskRevision=3;
+    fakeCraft.kind="profession_craft";fakeCraft.state=OperationState::Verified;
+    fakeCraft.nativeReference="spell:2329:operation:"+historyOp;fakeCraft.evidence="native_craft_consumption_output_and_skill_observed";
+    historyTask.phase=Phase::Verifying;++historyTask.revision;
+    assert(db.Write(OperationOutcomeWrite(historyTask,3,fakeCraft,"ff2efbdf-f0ec-4539-b840-299847971013","{}")));
+    assert(history.Begin(historyTask,db.History(historyTask),historyBlocker) && !history.Advance(historyBlocker));
+    assert(!history.Result().complete && history.Result().attempts.empty());
+    // Another accepted root's uncertain purchase blocks this actor, not just
+    // operations with the same recipe or task ID. No physical item is edited.
+    assert(db.Execute("START TRANSACTION"));
+    assert(db.Execute("UPDATE living_activity_task SET actor_guid=702 WHERE task_id="+SqlValue(purchase.id)));
+    assert(db.Execute("UPDATE living_activity_operation SET state='reconciling' WHERE operation_id="+SqlValue(purchaseId)));
+    assert(db.History(historyTask).front()[2]=="1");
+    assert(db.Execute("ROLLBACK"));
+    assert(db.History(historyTask).front()[2]=="0");
+    // Overflow returns limit+1, never a silently truncated successful history.
+    assert(db.Execute("START TRANSACTION"));
+    assert(db.Execute("INSERT INTO living_activity_operation SELECT 'ff2efbdf-f0ec-4539-b840-299847971014',"
+        "task_id,task_revision+1,kind,request_hash,state,native_reference,before_state,after_state,evidence_code,created_at_ms,updated_at_ms "
+        "FROM living_activity_operation WHERE operation_id="+SqlValue(historyOp)));
+    assert(db.History(historyTask).size()==2);
+    assert(!history.Begin(historyTask,db.History(historyTask),historyBlocker) && historyBlocker=="profession_history_attempt_limit_exceeded");
+    assert(db.Execute("ROLLBACK"));
+    {Connection restarted;assert(restarted.History(historyTask)==db.History(historyTask));}
+    std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget and bounded profession history; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

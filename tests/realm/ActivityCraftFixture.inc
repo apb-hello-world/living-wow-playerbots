@@ -36,6 +36,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const bool supplied=suite=="activity-craft-supplied-v1" || interrupted;
     if (!fixture.deadline) fixture.deadline=NowMs()+120000;
     auto emit=[&](bool passed,const std::string& failure) {
+        if (passed) fixture.blocker.clear();
         boost::property_tree::ptree report;
         report.put("suite",suite);report.put("boot",state->boot);
         report.put("expected_operation_outcome",interrupted ? "rejected_without_effect" : "verified");
@@ -208,6 +209,14 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             fixture.step=5;return;
         }
         if (fixture.step==5) {
+            ProfessionHistory history;
+            if (!ReadProfessionHistory(request.task.actor,request.task.id,request.task.revision,history,fixture.blocker)) return;
+            require(history.complete && !history.unresolvedOperation && history.attempts.size()==1,
+                "craft_saved_history_read_and_decoded_through_bounded_queue");
+            const auto& proof=history.attempts.front();
+            require(proof.committed && proof.receipt.id==operation.transition.receipt &&
+                proof.receipt.state==(interrupted ? OperationState::Rejected : OperationState::Verified) &&
+                proof.nativeEffectVerified==!interrupted,"craft_history_matches_actual_saved_native_outcome");
             ProfessionJob job;std::string blocker;require(DecodeProfessionJob(request.task.checkpoint.data,job,blocker),"craft_result_job_decoded");
             require(ReadNativeCraftFrame(*bot,job,fixture.after,blocker),"craft_after_native_frame");
             require(fixture.before.money==fixture.after.money,"craft_money_conserved");
