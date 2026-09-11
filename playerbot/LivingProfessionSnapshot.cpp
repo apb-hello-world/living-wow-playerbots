@@ -44,10 +44,16 @@ namespace LivingActivity {
         // affect usefulness, never rewrite the accepted recipe or its history.
         auto current=job;current.initialSkill=native.skillValue;
         std::string nativeBlocker;
-        snapshot.useful=MatchNativeProfessionRecipe(current,native,nativeBlocker);
+        if (job.purpose==ProfessionPurpose::SkillGain && native.skillValue>=job.targetSkill) {
+            snapshot.useful=false;
+            nativeBlocker="profession_target_met_requires_settlement";
+        } else snapshot.useful=MatchNativeProfessionRecipe(current,native,nativeBlocker);
         if (!nativeBlocker.empty()) snapshot.blocker=nativeBlocker;
         ItemGainSpec output;
-        if (snapshot.useful && ReadNativeCraftOutput(actor,job,output,nativeBlocker)) {
+        // Recipe/output/tool facts remain true after the accepted target is
+        // reached. Usefulness decides whether to cast again, not whether to
+        // inspect those facts or acknowledge the previous native result.
+        if (snapshot.knownRecipe && native.blocker.empty() && ReadNativeCraftOutput(actor,job,output,nativeBlocker)) {
             snapshot.outputPerAttempt=output.quantity;
             ItemPosCountVec positions;
             snapshot.capacity=actor.CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,output.entry,output.quantity)==EQUIP_ERR_OK;
@@ -65,7 +71,7 @@ namespace LivingActivity {
                 Cell::VisitGridObjects(&actor,search,actor.GetMap()->GetVisibilityDistance());
                 snapshot.atStation=focus!=nullptr; // Native spawn/distance check, no stored pointer.
             }
-        } else if (snapshot.useful) snapshot.blocker=nativeBlocker;
+        } else if (snapshot.blocker.empty()) snapshot.blocker=nativeBlocker;
         // These paths are not connected to the native executor yet. State that
         // explicitly instead of misreporting zero stock, bank denial or transit.
         for (size_t i=0;i<job.reagents.size() && snapshot.blocker.empty();++i) {

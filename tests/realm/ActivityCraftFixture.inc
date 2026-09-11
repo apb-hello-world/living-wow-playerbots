@@ -57,6 +57,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         report.put("gold_grants",0);report.put("spell_grants",0);report.put("skill_grants",0);
         report.put("general_execution_enabled",false);report.add_child("fixture_material_grants",fixture.grants);
         report.add_child("selection_rejections",fixture.selection);report.add_child("checks",fixture.checks);
+        report.add_child("native_snapshot",fixture.snapshot);
         if (request.task.actor) report.put("actor_diagnostic",ActorJson(request.task.actor));
         std::ofstream evidence("/isolated/evidence/activity-craft-"+state->boot+".json");evidence<<Json(report);evidence.close();
         if (!evidence) sLog.outError("Living isolated craft evidence write failed");
@@ -243,11 +244,17 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(ReadProfessionSnapshot(request.task.actor,request.task.id,request.task.revision,snapshot,fixture.blocker),
                 "craft_fresh_native_snapshot_uses_saved_history");
             const auto decision=NextProfessionStep(request.task,snapshot);
+            fixture.snapshot.put("skill",snapshot.skill);fixture.snapshot.put("output_per_attempt",snapshot.outputPerAttempt);
+            fixture.snapshot.put("tools",snapshot.tools);fixture.snapshot.put("at_station",snapshot.atStation);
+            fixture.snapshot.put("known_recipe",snapshot.knownRecipe);fixture.snapshot.put("useful_for_another_attempt",snapshot.useful);
+            fixture.snapshot.put("blocker",snapshot.blocker);fixture.snapshot.put("next_step",unsigned(decision.step));
             require(decision.step==(interrupted ? ProfessionStep::Defer : ProfessionStep::Finalize) &&
                 decision.verifiedAttempts==(interrupted ? 0u : 1u) && decision.verifiedOutput==(interrupted ? 0u : 1u),
                 "craft_next_step_recognizes_success_or_exhausted_cancellation");
             require(snapshot.skill==bot->GetSkillValuePure(SKILL_ALCHEMY) && snapshot.outputPerAttempt==1 &&
                 snapshot.tools && snapshot.atStation,"craft_snapshot_native_skill_tools_station_output");
+            if (settling) require(!snapshot.useful && snapshot.blocker=="profession_target_met_requires_settlement",
+                "profession_met_target_stops_new_work_without_erasing_native_facts");
             auto staleHistory=history;++staleHistory.revision;ProfessionSnapshot rejected;std::string staleBlocker;
             require(!InspectNativeProfessionSnapshot(*bot,request.task,staleHistory,NowMs(),rejected,staleBlocker) &&
                 !rejected.complete && staleBlocker=="profession_snapshot_history_not_current",

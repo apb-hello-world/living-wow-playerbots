@@ -234,7 +234,7 @@ struct LivingActivityCoordinator::State {
         unsigned step=0,launches=0;
         uint64_t deadline=0;
         std::string blocker;
-        boost::property_tree::ptree checks,selection,grants;
+        boost::property_tree::ptree checks,selection,grants,snapshot;
     } craftFixture;
     bool vendorFixtureFaults = false;
     uint32_t vendorFixtureCountBefore = 0;
