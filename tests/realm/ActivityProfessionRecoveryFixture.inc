@@ -23,7 +23,7 @@ void LivingActivityCoordinator::RunIsolatedProfessionRecoveryFixture() {
             for (const auto& item : frame.stacks) {
                 boost::property_tree::ptree row;
                 row.put("guid",item.guid);row.put("entry",item.entry);row.put("count",item.count);
-                row.put("bag",item.bag);row.put("slot",item.slot);rows.push_back({"",row});
+                row.put("bag",item.bagGuid);row.put("slot",uint32_t(item.slot));rows.push_back({"",row});
             }
             return rows;
         };
