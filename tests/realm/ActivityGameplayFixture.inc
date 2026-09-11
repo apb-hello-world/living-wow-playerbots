@@ -58,6 +58,8 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
             report.put("native_form_aura", bot && bot->HasAura(spell));
             report.put("native_form",bot ? uint32(bot->GetShapeshiftForm()) : 0);
             report.put("fixture_existing_aura_removed",false); // Selected only absent forms.
+            report.put("requested_existing_form_caster",state->supportFixtureRequestedActor);
+            report.put("fixture_spells_granted",0);
         }
         report.put("native_heal_packets", state->gameplayHealPackets.load(std::memory_order_acquire));
         report.put("native_heal_amount", state->gameplayHealAmount.load(std::memory_order_acquire));
@@ -216,5 +218,28 @@ void LivingActivityCoordinator::RunIsolatedGameplayFixture() {
         }
         if (!started) finish(false, support ? "native_form_cast_rejected" : "native_healing_cast_rejected");
         return;
+    }
+    if (support && !state->supportFixtureLookupStarted) {
+        state->supportFixtureLookupStarted = true;
+        // A small copied roster may contain no trained druid. Request at most
+        // ONE already-existing, already-trained random bot, never a fixed ID,
+        // human character, new spell, new character or production fixture.
+        // This one-time native lookup is not a per-bot/tick database scan.
+        const bool queued = CharacterDatabase.AsyncQuery([this](QueryResult* rows) {
+            MANGOS_ASSERT(OnWorldThread()); RequireIsolatedNativeFixtureEnvironment();
+            if (!rows || state->fixtureFinished || sWorld.GetActiveAndQueuedSessionCount() ||
+                sRandomPlayerbotMgr.GetAllBots().size() >= 49) return;
+            do {
+                const auto* fields = rows->Fetch();
+                const auto guid = fields[0].GetUInt32(), account = fields[1].GetUInt32();
+                if (!sPlayerbotAIConfig.IsInRandomAccountList(account)) continue;
+                state->supportFixtureRequestedActor = guid;
+                sRandomPlayerbotMgr.AddRandomBot(guid); // Native account/login checks remain authoritative.
+                break;
+            } while (rows->NextRow());
+        }, "SELECT DISTINCT c.guid,c.account FROM characters c JOIN character_spell s ON s.guid=c.guid "
+            "WHERE c.class=11 AND c.online=0 AND s.spell IN (768,5487,9634,24858) "
+            "AND NOT EXISTS(SELECT 1 FROM group_member g WHERE g.memberGuid=c.guid) ORDER BY c.guid LIMIT 4");
+        if (!queued) finish(false,"native_form_candidate_query_unavailable");
     }
 }
