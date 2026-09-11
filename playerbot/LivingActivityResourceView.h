@@ -21,6 +21,10 @@ namespace LivingActivity {
         uint64_t revision = 0;
         std::array<std::shared_ptr<const ResourceBucket>,256> buckets{};
         uint32_t UnreservedItem(uint32_t actor,uint32_t guid,uint32_t entry,uint32_t nativeCount) const;
+        // Exact immutable protection, not the clamped available quantity. A
+        // service must not mistake an overclaimed full stack for its own claim.
+        uint64_t ProtectedItem(uint32_t guid) const;
+        bool HasUncertainItem(uint32_t actor,uint32_t entry) const;
         uint32_t UnreservedMoney(uint32_t actor,uint32_t nativeCopper) const;
     };
     class ResourcePublisher;

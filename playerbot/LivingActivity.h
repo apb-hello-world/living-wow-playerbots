@@ -94,8 +94,9 @@ namespace LivingActivity
         uint64_t revision = 0, ownerGeneration = 0;
         uint32_t permittedEffects = 0;
         WorldContext world;
-        // Populated only for the one synchronous dispatch of a journalled native
-        // operation. Its presence alone is not a grant and cannot replay work.
+        // Populated only for one journalled native operation. A timed spell
+        // retains immutable attribution; every synchronous effect callback
+        // still rechecks authority. Its presence alone grants no replay.
         std::string operation;
     };
     struct ResourceClaim {

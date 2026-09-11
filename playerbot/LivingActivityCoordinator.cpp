@@ -14,6 +14,7 @@
 #include "LivingActivityNativeContext.h"
 #include "LivingActivityCommitments.h"
 #include "LivingProfessionNative.h"
+#include "LivingNativeCraftCapture.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
 #include "LivingProfessionDemand.h"
 #endif
@@ -224,6 +225,16 @@ struct LivingActivityCoordinator::State {
     uint64_t petFixtureDeadline = 0;
     uint64_t professionFixtureDeadline = 0;
     NativeVendorQuote vendorFixtureQuote;
+    struct CraftFixture {
+        TaskRequest request;
+        ReservationRequest reservation;
+        OperationRequest operation;
+        CraftFrame before,after;
+        unsigned step=0,launches=0;
+        uint64_t deadline=0;
+        std::string blocker;
+        boost::property_tree::ptree checks,selection,grants;
+    } craftFixture;
     bool vendorFixtureFaults = false;
     uint32_t vendorFixtureCountBefore = 0;
     float vendorFixtureX = 0, vendorFixtureY = 0, vendorFixtureZ = 0, vendorFixtureO = 0;
@@ -266,6 +277,10 @@ struct LivingActivityCoordinator::State {
         bool ready = false, dispatched = false, uncertain = false, saveBlocked = false;
         OperationState outcome = OperationState::Reconciling;
         ActivityLease held;
+        std::shared_ptr<NativeCraftCast> craft;
+        bool craftAwaiting = false;
+        std::string completionBlocker;
+        uint64_t completionRetryAt=0;
     };
     // Bounded transient admission state. An entry is created before its intent
     // write; it is NEVER reconstructed as dispatchable from a persisted intent.
@@ -748,6 +763,7 @@ LivingActivityCoordinator& LivingActivityCoordinator::instance() {
 #include "../tests/realm/ActivityCombatFixture.inc"
 #include "../tests/realm/ActivityPetFixture.inc"
 #include "../tests/realm/ActivityVendorFixture.inc"
+#include "../tests/realm/ActivityCraftFixture.inc"
 #endif
 
 LivingActivityCoordinator::LivingActivityCoordinator() : state(new State) {
@@ -793,6 +809,9 @@ void LivingActivityCoordinator::Update() {
         sLog.outString("Living activity shadow: %s", StatusJson().c_str());
     }
     const auto deadline = started + std::chrono::milliseconds(2);
+    // At most sixteen already admitted casts; collect at most one per update.
+    // A policy change cannot discard a native effect's pending save/receipt.
+    if (CollectNativeCraft()) return;
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     RunIsolatedBoundaryFixture();
 #endif
@@ -847,6 +866,8 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("native_dispatches", state->nativeDispatches); p.put("native_result_receipts", state->nativeOutcomes);
     p.put("verified_native_results", state->nativeVerifiedResults);
     p.put("pending_native_operations", state->operations.size());
+    p.put("native_casts_waiting",std::count_if(state->operations.begin(),state->operations.end(),
+        [](const auto& row){return row.second.craftAwaiting;}));
     p.put("purchase_budget_reads",state->budgetReads); p.put("purchase_budget_failures",state->budgetFailures);
     p.put("purchase_budget_cache",state->purchaseBudgets.size());
     p.put("unacknowledged_writes",std::count_if(state->pending.begin(),state->pending.end(),
@@ -946,8 +967,11 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
         p.put("native_operation.task", pending.request.transition.task.id);
         p.put("native_operation.kind", pending.request.kind);
         p.put("native_operation.save_capture_blocked", pending.saveBlocked);
+        p.put("native_operation.completion_blocker",pending.completionBlocker);
+        p.put("native_operation.completion_retry_at_ms",pending.completionRetryAt);
         p.put("native_operation.phase", pending.uncertain ? "reconciliation_required" : pending.dispatched ?
-            "result_receipt_pending" : pending.ready ? "ready_for_native_validation" : "intent_receipt_pending");
+            (pending.craftAwaiting ? "native_cast_completion_pending" : "result_receipt_pending") :
+            pending.ready ? "ready_for_native_validation" : "intent_receipt_pending");
     }
     return Json(p);
 }
@@ -1584,8 +1608,8 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         return reject(AdmissionCode::ReconciliationRequired, "atomic_admission_rejected");
     pending.held = held; pending.dispatched = true; // Consumed before native execution.
     state->operationDispatching = true;
-    struct DispatchGuard { State& state; ActivityLease lease; std::string id; ~DispatchGuard() {
-        state.authority.EndDispatch(lease, id);
+    struct DispatchGuard { State& state; ActivityLease lease; std::string id; bool preserve=false; ~DispatchGuard() {
+        if (!preserve) state.authority.EndDispatch(lease, id);
         const auto binding = state.bindings.find(lease.actor);
         if (binding != state.bindings.end()) binding->second.publisher.Publish(state.authority.Read(lease.actor));
         state.operationDispatching = false;
@@ -1606,6 +1630,29 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
             if (state->authority.Authorize(effects, current, monotonic, &executing, &action) == AuthorityCode::Allowed) {
                 state->bindings.at(intended.actor).publisher.Publish(state->authority.Read(intended.actor));
                 ExecutionScope scope(executing, action);
+                if (adapter.DeferredNativeCast()) {
+                    if (request.persistence!=NativePersistence::Profession || request.kind!="profession_craft" ||
+                        CharacterDatabase.HasOpenTransaction()) {
+                        observation.state=OperationState::Rejected;
+                        observation.evidence="native_craft_dispatch_contract_unavailable";
+                    } else {
+                        // Reserve the same bounded operation slot before launch.
+                        // No DB transaction or thread-local effect scope survives
+                        // this call; native callbacks receive only this binding.
+                        pending.craft=adapter.ReserveNativeCast(request,executing,action);
+                        if (!pending.craft) throw std::runtime_error("native_cast_capture_missing");
+                        state->HoldNativeSave(intended.actor,true);
+                        pending.craftAwaiting=true;
+                        if (pending.craft->Start(*bot,blocker)) {
+                            ++state->nativeDispatches;result.executed=true;
+                            dispatchGuard.preserve=true;
+                            return reject(AdmissionCode::Pending,"native_cast_completion_pending");
+                        }
+                        pending.craftAwaiting=false;pending.craft.reset();
+                        observation.state=OperationState::Rejected;
+                        observation.evidence=IsToken(blocker) ? blocker : "native_craft_launch_rejected";
+                    }
+                } else {
                 const auto nativeBefore=NativeConsumptionBalances(*bot,request,false);
                 const auto itemsBefore=NativeGainStacks(*bot,request.itemGain);
                 if (request.persistence != NativePersistence::JournalOnly) {
@@ -1631,9 +1678,73 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                     !VerifyNativeItemGain(intended.actor,request.itemGain,itemsBefore,NativeGainStacks(*bot,request.itemGain),nativeGains,blocker)) {
                     observation.state=OperationState::Reconciling; observation.evidence=blocker;
                 }
+                }
             }
         }
-    } catch (const std::exception&) { observation = {}; observation.evidence="native_adapter_exception"; }
+    } catch (const std::exception&) {
+        if (pending.craftAwaiting && pending.craft) {
+            // The native event may already exist. Invalidate its effect capture
+            // and reconcile it once; never call SpellStart a second time.
+            pending.craft->Abandon();dispatchGuard.preserve=true;
+            result.executed=true;
+            return reject(AdmissionCode::ReconciliationRequired,"native_cast_launch_uncertain");
+        }
+        observation = {}; observation.evidence="native_adapter_exception";
+    }
+    dispatchGuard.preserve=true; // Finalizer ends the synchronous effect scope.
+    return FinalizeNativeOperation(id,*bot,std::move(observation),std::move(nativeGains),
+        nativeTransactionOpen,result.executed,&adapter);
+}
+
+bool LivingActivityCoordinator::CollectNativeCraft() {
+    if (state->operationDispatching) return false;
+    for (auto& row : state->operations) {
+        auto& pending=row.second;
+        if (!pending.craftAwaiting || !pending.craft || pending.completionRetryAt>NowMs()) continue;
+        const auto completion=pending.craft->Capture()->ReadFinished();
+        if (!completion) continue;
+        Player* actor=sRandomPlayerbotMgr.GetPlayerBot(pending.request.transition.task.actor);
+        if (!actor || !actor->GetPlayerbotAI() || !actor->IsInWorld() || actor->IsBeingTeleported()) {
+            pending.completionBlocker="native_craft_actor_unavailable_for_save";pending.completionRetryAt=NowMs()+5000;continue;
+        }
+        if (state->ioPending || CharacterDatabase.HasOpenTransaction()) {
+            pending.completionBlocker="native_craft_save_queue_pending";continue;
+        }
+        state->operationDispatching=true;
+        struct Guard {State& state;~Guard(){state.operationDispatching=false;}} guard{*state};
+        NativeObservation observation;std::vector<VerifiedItemGain> gains;
+        try {observation=pending.craft->Observe(*actor,*completion,gains);}
+        catch (const std::exception&) {observation.evidence="native_craft_observation_requires_reconciliation";}
+        const bool nativeTransaction=CharacterDatabase.BeginTransaction();
+        if (!nativeTransaction) {
+            pending.completionBlocker="native_craft_save_transaction_unavailable";pending.completionRetryAt=NowMs()+1000;return false;
+        }
+        // This slot already reserves outcome capacity. Ordinary admissions stop
+        // at the batch cap; at most sixteen deferred results can be appended.
+        pending.craftAwaiting=false;pending.completionBlocker.clear();
+        try {FinalizeNativeOperation(row.first,*actor,std::move(observation),std::move(gains),nativeTransaction,true);}
+        catch (const std::exception&) {
+            if (CharacterDatabase.HasOpenTransaction()) CharacterDatabase.RollbackTransaction();
+            pending.saveBlocked=pending.uncertain=true;pending.outcome=OperationState::Reconciling;
+            pending.completionBlocker="native_craft_result_capture_requires_reconciliation";
+            state->authority.EndDispatch(pending.held,row.first);
+            const auto binding=state->bindings.find(pending.held.actor);
+            if (binding!=state->bindings.end()) binding->second.publisher.Publish(state->authority.Read(pending.held.actor));
+        }
+        return true;
+    }
+    return false;
+}
+
+DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::string& id,Player& actor,
+    NativeObservation observation,std::vector<VerifiedItemGain> nativeGains,bool nativeTransactionOpen,
+    bool executed,const NativeOperationAdapter* adapter) {
+    auto& pending=state->operations.at(id);const auto& request=pending.request;
+    const auto& intended=request.transition.task;const auto held=pending.held;
+    const auto saved=state->cache.find(intended.id);MANGOS_ASSERT(saved!=state->cache.end());
+    Player* bot=&actor;
+    DispatchResult result;result.executed=executed;
+    result.admission.task=intended.id;result.admission.revision=intended.revision;
     state->authority.EndDispatch(held, id); // No old operation scope survives the callback.
     state->bindings.at(intended.actor).publisher.Publish(state->authority.Read(intended.actor));
     if (!ValidateNativeObservation(observation)) observation = {};
@@ -1688,8 +1799,9 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         try {
             if (!CharacterDatabase.HasOpenTransaction()) throw std::runtime_error("native_transaction_escaped");
             bot->SaveServiceStateToDB(request.persistence == NativePersistence::Profession);
-            write.nativeSave=NativeSaveBatch::Capture(CharacterDatabase,write.plan,
-                adapter.PersistedNativeProof(*bot,request,write.task)+NativeGainProof(nativeGains));
+            const auto nativeProof=adapter ? adapter->PersistedNativeProof(*bot,request,write.task) :
+                pending.craft->PersistedProof(*bot,write.task);
+            write.nativeSave=NativeSaveBatch::Capture(CharacterDatabase,write.plan,nativeProof+NativeGainProof(nativeGains));
         } catch (const std::exception&) {
             // Never emit the old success receipt alone after a native save
             // could not be sealed. Preserve uncertainty and both actor holds.
@@ -1707,5 +1819,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     }
     state->pending.push_back(std::move(write));
     state->nextWork = 0; result.outcomeQueued = true;
-    return reject(AdmissionCode::Pending, pending.uncertain ? "native_outcome_uncertain" : "native_result_receipt_pending");
+    result.admission.code=AdmissionCode::Pending;
+    result.admission.blocker=pending.uncertain ? "native_outcome_uncertain" : "native_result_receipt_pending";
+    return result;
 }

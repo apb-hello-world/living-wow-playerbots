@@ -4,8 +4,10 @@
 #include "LivingActivityEffects.h"
 #include "LivingActivityClaimConsumption.h"
 #include "LivingActivityItemGain.h"
+#include <memory>
 class Player;
 namespace LivingActivity {
+    class NativeCraftCast;
     enum class NativePersistence { JournalOnly, Inventory, Profession };
     struct OperationRequest {
         TaskRequest transition; // Preparing/traveling -> executing, receipt is operation ID.
@@ -40,6 +42,12 @@ namespace LivingActivity {
         // intent admission. False waits WITHOUT dispatching or recording a
         // rejected native effect. The exact native validator still runs later.
         virtual bool PrepareDispatch(Player&,const OperationRequest&,std::string&) { return true; }
+        // Only the finite native crafting adapter uses a cross-update cast.
+        // Reserve a value-only capture BEFORE launch; never retain this adapter
+        // or its caller across ticks. Other native services remain synchronous.
+        virtual bool DeferredNativeCast() const { return false; }
+        virtual std::shared_ptr<NativeCraftCast> ReserveNativeCast(const OperationRequest&,
+            const Task&,const ActionContext&) const { return {}; }
         virtual NativeObservation ExecuteNative(Player& actor, const OperationRequest& request) = 0;
     };
     bool ValidateOperationRequest(const OperationRequest& request, const Task& saved,

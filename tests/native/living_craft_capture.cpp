@@ -19,6 +19,14 @@ int main() {
     CraftFrame after=before;after.skill=2;after.stacks[0].count=1;
     after.stacks.erase(after.stacks.begin()+1);after.stacks[1].count=4;after.stacks[2].count=3;
     assert(ValidCraftFrame(before) && ValidCraftFrame(after));
+    {
+        ResourceView view;assert(view.HasUncertainItem(235,765));assert(view.ProtectedItem(100)>5);
+        view.ready=true;assert(!view.HasUncertainItem(235,765));assert(!view.ProtectedItem(100));
+        auto exact=std::make_shared<ResourceBucket>();exact->items[100]=10;view.buckets[100%256]=exact;
+        assert(!view.UnreservedItem(235,100,765,5) && view.ProtectedItem(100)==10);
+        auto uncertain=std::make_shared<ResourceBucket>();uncertain->uncertain[{235,765}]=1;
+        view.buckets[235%256]=uncertain;assert(view.HasUncertainItem(235,765));
+    }
     auto invalid=before;invalid.stacks.push_back(invalid.stacks.front());assert(!ValidCraftFrame(invalid));
     invalid=before;invalid.stacks[1].slot=23;assert(!ValidCraftFrame(invalid));
     invalid=before;invalid.stacks[0].actor=999;assert(!ValidCraftFrame(invalid));

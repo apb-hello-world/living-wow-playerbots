@@ -20,9 +20,9 @@ namespace LivingActivity {
                 values.emplace_back(stack.actor,stack.guid,stack.entry,stack.count,stack.bagGuid,stack.slot);
             std::sort(values.begin(),values.end());return values;
         }
-        bool SameFrame(const CraftFrame& a,const CraftFrame& b) {
-            return a.actor==b.actor && a.skill==b.skill && a.money==b.money && Values(a)==Values(b);
-        }
+    }
+    bool SameCraftFrame(const CraftFrame& a,const CraftFrame& b) {
+        return a.actor==b.actor && a.skill==b.skill && a.money==b.money && Values(a)==Values(b);
     }
     bool SameCraftIdentity(const CraftIdentity& a,const CraftIdentity& b) {
         return a.task==b.task && a.operation==b.operation && a.revision==b.revision &&
@@ -40,6 +40,7 @@ namespace LivingActivity {
     CraftCapture::CraftCapture(CraftIdentity identity) {
         if (!ValidIdentity(identity)) throw std::invalid_argument("invalid_native_craft_identity");
         result.identity=std::move(identity);
+        result.blocker.reserve(128); // All callback reason strings fit before any native effect.
     }
     bool CraftCapture::Start(const CraftIdentity& identity,CraftFrame before) {
         std::lock_guard<std::mutex> lock(mutex);
@@ -50,7 +51,7 @@ namespace LivingActivity {
     bool CraftCapture::EnterEffect(const CraftIdentity& identity,const CraftFrame& current) {
         std::lock_guard<std::mutex> lock(mutex);
         if (result.phase!=CraftCapturePhase::Casting || !SameCraftIdentity(identity,result.identity)) return false;
-        if (!ValidCraftFrame(current) || !SameFrame(result.before,current)) {
+        if (!ValidCraftFrame(current) || !SameCraftFrame(result.before,current)) {
             result.blocker="native_craft_inputs_changed_before_effect";return false;
         }
         result.effectEntered=true;result.phase=CraftCapturePhase::Applying;return true;
@@ -112,7 +113,7 @@ namespace LivingActivity {
             observed.before.actor!=expected.world.actor || observed.after.actor!=expected.world.actor)
             return reject("native_craft_completion_proof_missing");
         if (!observed.nativeSucceeded) {
-            if (!observed.effectEntered && !observed.createdCalls && SameFrame(observed.before,observed.after)) {
+            if (!observed.effectEntered && !observed.createdCalls && SameCraftFrame(observed.before,observed.after)) {
                 result.result=CraftEvidence::RejectedWithoutEffect;result.blocker="native_cast_cancelled_without_effect";return result;
             }
             return reject("native_craft_cancelled_after_possible_effect");

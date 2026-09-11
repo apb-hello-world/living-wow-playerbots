@@ -48,6 +48,7 @@ namespace LivingActivity {
     };
     bool SameCraftIdentity(const CraftIdentity& a, const CraftIdentity& b);
     bool ValidCraftFrame(const CraftFrame& frame);
+    bool SameCraftFrame(const CraftFrame& a,const CraftFrame& b);
     enum class CraftEvidence { Verified, RejectedWithoutEffect, Reconciling };
     struct CraftVerification {
         CraftEvidence result=CraftEvidence::Reconciling;

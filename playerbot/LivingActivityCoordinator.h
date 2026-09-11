@@ -110,6 +110,10 @@ private:
     struct State;
     std::unique_ptr<State> state;
     void RefreshPermission(uint32_t guid, uint64_t actorEpoch);
+    bool CollectNativeCraft();
+    LivingActivity::DispatchResult FinalizeNativeOperation(const std::string& operation,Player& actor,
+        LivingActivity::NativeObservation observation,std::vector<LivingActivity::VerifiedItemGain> gains,
+        bool nativeTransactionOpen,bool executed,const LivingActivity::NativeOperationAdapter* adapter=nullptr);
     void RunIsolatedBoundaryFixture();
     void RunIsolatedAdmissionFixture();
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
@@ -117,6 +121,7 @@ private:
     void RunIsolatedCombatFixture();
     void RunIsolatedPetFixture();
     void RunIsolatedVendorFixture();
+    void RunIsolatedCraftFixture();
 #endif
 };
 #define sLivingActivityCoordinator LivingActivityCoordinator::instance()

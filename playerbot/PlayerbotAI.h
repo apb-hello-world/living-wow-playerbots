@@ -413,6 +413,7 @@ public:
 
     uint64 GetActivityActorEpoch() const { return activityEpoch.Actor(); }
     uint64 GetActivityMapEpoch() const { return activityEpoch.Map(); }
+    LivingActivity::PermissionReader ActivityPermissions() const { return activityPermissions; }
     // Native core hook. Revokes old asynchronous proposals, not commitments.
     void InvalidateActivityWorld() { activityEpoch.Invalidate(); }
 

@@ -26,6 +26,14 @@ namespace LivingActivity {
         const auto& owner=buckets[actor%256];
         return Available(nativeCopper,owner ? Get(owner->money,actor) : 0);
     }
+    uint64_t ResourceView::ProtectedItem(uint32_t guid) const {
+        if (!ready || !guid) return std::numeric_limits<uint64_t>::max();
+        const auto& bucket=buckets[guid%256];return bucket ? Get(bucket->items,guid) : 0;
+    }
+    bool ResourceView::HasUncertainItem(uint32_t actor,uint32_t entry) const {
+        if (!ready || !actor || !entry) return true;
+        const auto& bucket=buckets[actor%256];return bucket && Get(bucket->uncertain,std::make_pair(actor,entry));
+    }
     std::shared_ptr<const ResourceView> ResourceReader::Inspect() const {
         if (!cell) return {};
         return std::atomic_load_explicit(&cell->value,std::memory_order_acquire);
