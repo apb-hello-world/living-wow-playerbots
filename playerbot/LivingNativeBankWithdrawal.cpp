@@ -178,7 +178,7 @@ bool PlanNativeBankDeposit(Player& actor,const Task& task,NativeBankQuote& q,Res
         !NativeCapacityNeed(actor,task,job,claims,need,blocker)) return false;
     const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
     if (!view || !view->ready) return reject("capacity_reservations_unavailable");
-    auto items=actor.GetPlayerbotAI()->InventoryParseItems("inventory",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+    auto items=actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
     items.sort([](const Item* a,const Item* b){return a->GetGUIDLow()<b->GetGUIDLow();});
     Item* selected=nullptr;
     for (auto* item:items) {
@@ -231,8 +231,9 @@ bool NativeBankTransfer::ValidateNative(Player& actor,const OperationRequest& r,
         return reject("profession_bank_destination_changed");
     if (deposit) {
         NativeBankQuote current;ResourceClaim held;
-        if (!PlanNativeBankDeposit(actor,r.transition.task,current,held,blocker) || held.id!=c.id ||
-            EncodeNativeBankQuote(current)!=EncodeNativeBankQuote(quote)) return false;
+        if (!PlanNativeBankDeposit(actor,r.transition.task,current,held,blocker)) return false;
+        if (held.id!=c.id || EncodeNativeBankQuote(current)!=EncodeNativeBankQuote(quote))
+            return reject("capacity_bank_quote_changed");
     }
     blocker.clear();return true;
 }
