@@ -89,6 +89,9 @@ bool SellAction::Sell(Player* requester, Item* item)
     if (!sLivingActivityCoordinator.PermitEffects(*ai, GetActivityEffects(), "native service mutation")) return false;
     if (!item || sGuildSupplies.Reserved(item->GetGUIDLow()))
         return false;
+    const auto claims=sLivingActivityCoordinator.ResourceReservations().Inspect();
+    if(!claims || claims->UnreservedItem(bot->GetGUIDLow(),item->GetGUIDLow(),item->GetEntry(),item->GetCount())!=item->GetCount())
+        return false; // A managed capacity sale executes through its exact native adapter, not this legacy path.
     bool didSell = false;
 
     std::ostringstream out;

@@ -17,7 +17,7 @@ namespace LivingActivity {
         NativePersistence persistence = NativePersistence::JournalOnly;
         std::vector<ClaimConsumption> consumption;
         ItemGainSpec itemGain; // Exact output bound into intent before purchase.
-        ResourceClaim itemTransfer; // Same GUID/quantity, bank or mail -> bags; never consumption.
+        ResourceClaim itemTransfer; // Same claim/quantity; verified whole-stack merges may replace its GUID.
     };
     struct NativeObservation {
         OperationState state = OperationState::Reconciling;

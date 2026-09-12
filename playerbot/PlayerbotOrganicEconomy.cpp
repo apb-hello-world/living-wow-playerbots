@@ -562,6 +562,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
     if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) return {false,"saved_service_actor_unavailable",saved->checkpoint.activeElapsedMs};
     uint32 purpose=service==ServiceDestination::Mailbox ? uint32(ai::TravelDestinationPurpose::Mail) :
         uint32(ai::TravelDestinationPurpose::Bank);
+    if(service==ServiceDestination::Vendor)purpose=uint32(ai::TravelDestinationPurpose::Vendor);
     if(service==ServiceDestination::CraftingStation) {
         ProfessionJob job;std::string blocker;
         if(!DecodeProfessionJob(saved->checkpoint.data,job,blocker)) return {false,blocker,saved->checkpoint.activeElapsedMs};

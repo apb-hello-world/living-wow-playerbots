@@ -20,6 +20,7 @@
 #include "LivingNativeCraftCapture.h"
 #include "LivingNativeBankWithdrawal.h"
 #include "LivingNativeMailCollection.h"
+#include "LivingNativeVendorSale.h"
 #include "Mails/Mail.h"
 #include "LivingActivityTransfer.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
@@ -27,6 +28,7 @@
 #include "PlayerbotInventoryPressure.h"
 #include "strategy/actions/MailAction.h"
 #include "strategy/actions/AhAction.h"
+#include "strategy/actions/SellAction.h"
 #endif
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotActionBroker.h"
@@ -287,6 +289,9 @@ struct LivingActivityCoordinator::State {
         std::string mailOperation,mailClaim;
         uint32_t mailId=0,mailGuid=0,mailCount=0;
         uint32_t mailMergeGuid=0,mailMergeCount=0;
+        bool capacityFilled=false,capacityLegacyChecked=false;
+        uint32_t capacityMoneyBefore=0,capacityFillCount=0;
+        std::map<std::string,NativeSaleQuote> capacitySales;
         Task resumeTask;
         std::string resumeReceipt;
         std::vector<ResourceClaim> resumeClaims;
@@ -1487,6 +1492,14 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             NativeMailCollection adapter(quote);
             return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
         }
+        if (row.second.request.kind=="capacity_vendor_sale") {
+            NativeSaleQuote quote;
+            if(!DecodeNativeSaleQuote(row.second.request.beforeState,quote))return stop("capacity_saved_intent_invalid");
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Money),60000,"profession_capacity_sale");
+            if(!grant.Permitted())return stop(grant.blocker);
+            NativeVendorSale adapter(quote);
+            return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
         if (row.second.request.kind!="profession_craft") return stop("profession_operation_requires_reconciliation");
         return stop(DispatchProfessionAttempt(actor,row.first).admission.blocker);
     }
@@ -1550,6 +1563,33 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             return stop(route.blocker);
         }
     }
+    auto prepareCapacity=[&]() {
+        if(saved->phase==Phase::Verifying || saved->phase==Phase::Traveling)return advance(Phase::Preparing);
+        if(saved->phase!=Phase::Preparing)return stop("capacity_preparation_requires_reconciliation");
+        NativeSaleQuote quote;ResourceClaim held;
+        if(!PlanNativeCapacitySale(*bot,*saved,quote,held,blocker)) {
+            if(blocker=="capacity_vendor_travel_required")return beginService(ServiceDestination::Vendor);
+            return stop(blocker);
+        }
+        const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Money),60000,"profession_capacity_prepare");
+        if(!grant.Permitted())return stop(grant.blocker);
+        if(held.id.empty()) {
+            ResourceClaim claim;claim.id=NewId();claim.task=id;claim.actor=actor;claim.itemGuid=quote.item.guid;
+            claim.itemEntry=quote.item.entry;claim.quantity=quote.item.quantity;claim.location="bags";claim.state="held";
+            ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+            ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+            request.authorization=grant.action;request.changes.push_back({claim,0});
+            NativeCapacityReservation adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
+        }
+        OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+        ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+        request.transition.task.checkpoint.step="profession_capacity_sale";request.transition.task.updatedAtMs=NowMs();
+        request.transition.receipt=NewId();request.authorization=grant.action;request.kind="capacity_vendor_sale";
+        request.effects=Mask(Effect::Inventory)|Mask(Effect::Money);request.persistence=NativePersistence::Inventory;
+        request.beforeState=EncodeNativeSaleQuote(quote);request.consumption.push_back({held,quote.item.quantity});
+        NativeVendorSale adapter(quote);return stop(SubmitOperationIntent(request,adapter).blocker);
+    };
+    if(next.step==ProfessionStep::PrepareCapacity)return prepareCapacity();
     if(next.step==ProfessionStep::ReachBank) return beginService(ServiceDestination::PersonalBank);
     if(next.step==ProfessionStep::ReachStation) return beginService(ServiceDestination::CraftingStation);
     if (next.step==ProfessionStep::Collect && !next.quantities.empty()) {
@@ -1562,6 +1602,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             NativeMailQuote quote;
             if (!PlanNativeMailCollection(*bot,*saved,claim,quote,blocker)) {
                 if(blocker=="profession_mailbox_travel_required") return beginService(ServiceDestination::Mailbox);
+                if(blocker=="profession_mail_single_destination_required")return prepareCapacity();
                 return stop(blocker);
             }
             const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_mail_preparation");
@@ -1582,6 +1623,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         NativeBankQuote quote;
         if (!PlanNativeBankWithdrawal(*bot,*saved,next.quantities.front(),quote,blocker)) {
             if(blocker=="profession_banker_travel_required") return beginService(ServiceDestination::PersonalBank);
+            if(blocker=="profession_bank_single_destination_required")return prepareCapacity();
             return stop(blocker);
         }
         UnsettledClaimBatch batch;
@@ -2474,6 +2516,10 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     pending.outcome = observation.state;
     after.phase = pending.uncertain ? Phase::Reconciling : Phase::Verifying;
     after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
+    if(request.kind=="capacity_vendor_sale" && observation.state==OperationState::Rejected) {
+        after.retryAtMs=after.updatedAtMs+300000;
+        after.checkpoint.blocker=observation.evidence; // Retain claim, do not hammer a rejecting native service.
+    }
     // Uncertainty is itself a native observation. Retain its references and
     // measured after-state so a restart can reconcile without guessing/replay.
     OperationResult proof; proof.id = id; proof.task = intended.id; proof.taskRevision = intended.revision;

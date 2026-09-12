@@ -30,6 +30,7 @@ int main() {
         ServiceDestination service;
         assert(ParseServiceStep("profession_service_mail",service) && service==ServiceDestination::Mailbox);
         assert(ParseServiceStep("profession_service_bank",service) && service==ServiceDestination::PersonalBank);
+        assert(ParseServiceStep("profession_service_capacity_vendor",service) && service==ServiceDestination::Vendor);
         assert(!ParseServiceStep("profession_completed",service));
         Task task;task.id=task.root="637bd562-36d2-5b01-bc01-e2d831c49f38";
         task.actor=11;task.revision=5;task.mode=Mode::Active;task.accepted=true;task.phase=Phase::Traveling;

@@ -7,17 +7,18 @@ namespace LivingActivity {
     inline bool LegacyProfessionInFlight(bool casting,bool service,bool savedService,bool paidWindow) {
         return casting || (service && !savedService) || paidWindow;
     }
-    enum class ServiceDestination { Mailbox, PersonalBank, CraftingStation };
+    enum class ServiceDestination { Mailbox, PersonalBank, CraftingStation, Vendor };
     inline const char* ServiceStep(ServiceDestination service) {
         switch (service) {
         case ServiceDestination::Mailbox: return "profession_service_mail";
         case ServiceDestination::PersonalBank: return "profession_service_bank";
         case ServiceDestination::CraftingStation: return "profession_service_station";
+        case ServiceDestination::Vendor: return "profession_service_capacity_vendor";
         }
         return "";
     }
     inline bool ParseServiceStep(const std::string& step,ServiceDestination& service) {
-        for (const auto candidate : {ServiceDestination::Mailbox,ServiceDestination::PersonalBank,ServiceDestination::CraftingStation})
+        for (const auto candidate : {ServiceDestination::Mailbox,ServiceDestination::PersonalBank,ServiceDestination::CraftingStation,ServiceDestination::Vendor})
             if (step==ServiceStep(candidate)) {service=candidate;return true;}
         return false;
     }
