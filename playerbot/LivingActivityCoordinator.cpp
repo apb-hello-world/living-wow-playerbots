@@ -274,7 +274,7 @@ struct LivingActivityCoordinator::State {
     std::shared_ptr<const std::set<uint32_t>> nativeSaveHolds = std::make_shared<const std::set<uint32_t>>();
     GuildSaveFence guildSaveHolds;
     struct GuildDeliveryRead {
-        uint64_t revision=0,retryAt=0;
+        uint64_t revision=0,retryAt=0,lastRejected=0;
         uint32_t deposited=0,failures=0;
         bool pending=false,complete=false;
         std::string phase,blocker;

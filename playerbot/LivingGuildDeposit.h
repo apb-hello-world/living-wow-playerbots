@@ -35,4 +35,9 @@ std::string EncodeGuildDepositQuote(const GuildDepositQuote& quote);
 bool DecodeGuildDepositQuote(const std::string& text,GuildDepositQuote& quote);
 std::string GuildDepositNativeProof(const GuildDepositQuote&,const Task& outcome,
     uint32_t sourceAfter,uint32_t bagsAfter,uint32_t bankAfter,uint32_t moneyAfter);
+inline uint64_t GuildDepositRetryAt(uint32_t failures,uint64_t lastRejected) {
+    if(!failures)return 0;
+    const uint64_t delay=failures<2?300000:1800000;
+    return lastRejected>UINT64_MAX-delay?UINT64_MAX:lastRejected+delay;
+}
 }

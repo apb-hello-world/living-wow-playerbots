@@ -13,6 +13,11 @@ static GuildDepositQuote Quote() {
     return q;
 }
 int main() {
+    assert(GuildDepositRetryAt(0,1000)==0);
+    assert(GuildDepositRetryAt(1,1000)==301000);
+    assert(GuildDepositRetryAt(2,1000)==1801000);
+    assert(GuildDepositRetryAt(9,1000)==1801000); // Never permanently give up on accepted items.
+    assert(GuildDepositRetryAt(1,UINT64_MAX-2)==UINT64_MAX);
     auto q=Quote();assert(ValidGuildDepositQuote(q));
     auto text=EncodeGuildDepositQuote(q);GuildDepositQuote decoded;
     assert(DecodeGuildDepositQuote(text,decoded) && EncodeGuildDepositQuote(decoded)==text);

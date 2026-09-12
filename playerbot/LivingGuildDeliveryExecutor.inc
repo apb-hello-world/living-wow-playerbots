@@ -91,6 +91,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             if(state->ioPending)return stop("guild_delivery_database_queue_wait");
             read.revision=saved->revision;read.pending=true;state->ioPending=true;const auto revision=saved->revision;
             const std::string query="SELECT d.phase,d.deposited_quantity,(SELECT COUNT(*) FROM living_activity_operation o WHERE o.task_id="+
+                SqlValue(id)+" AND o.state='rejected'),(SELECT COALESCE(MAX(o.updated_at_ms),0) FROM living_activity_operation o WHERE o.task_id="+
                 SqlValue(id)+" AND o.state='rejected') FROM guild_society_supply_delivery d WHERE d.delivery_id="+
                 std::to_string(job.delivery)+" AND d.guild_id="+std::to_string(job.guild)+" AND d.goal_id="+SqlValue(job.goal)+
                 " AND d.carrier_guid="+std::to_string(actor)+" AND d.donor_guid="+std::to_string(job.donor)+
@@ -100,8 +101,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                 state->ioPending=false;const auto found=state->guildDeliveryReads.find(id);
                 if(found==state->guildDeliveryReads.end())return;
                 auto& read=found->second;read.pending=false;if(read.revision!=revision)return;
-                if(!rows || rows->GetFieldCount()!=3){read.blocker="guild_delivery_native_record_missing";read.retryAt=NowMs()+30000;return;}
-                auto* f=rows->Fetch();read.phase=f[0].GetCppString();read.deposited=f[1].GetUInt32();read.failures=f[2].GetUInt32();read.complete=true;
+                if(!rows || rows->GetFieldCount()!=4){read.blocker="guild_delivery_native_record_missing";read.retryAt=NowMs()+30000;return;}
+                auto* f=rows->Fetch();read.phase=f[0].GetCppString();read.deposited=f[1].GetUInt32();read.failures=f[2].GetUInt32();
+                read.lastRejected=f[3].GetUInt64();read.complete=true;
             },query.c_str())) {state->ioPending=false;read.pending=false;read.retryAt=NowMs()+30000;
                 read.blocker="guild_delivery_database_unavailable";return stop(read.blocker);}
             return stop("guild_delivery_receipt_read_pending");
@@ -117,7 +119,14 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             state->pending.push_back(std::move(write));state->nextWork=0;return stop("guild_delivery_settlement_pending");
         }
         if(read.phase!="carried" || read.deposited>=job.quantity)return stop("guild_delivery_native_state_requires_reconciliation");
-        if(read.failures>=2)return stop("guild_delivery_repeated_native_rejection");
+        const auto retry=GuildDepositRetryAt(read.failures,read.lastRejected);
+        if(retry>NowMs()) {
+            TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;request.receipt=NewId();
+            ++request.task.revision;request.task.phase=Phase::Deferred;request.task.context=current;request.task.updatedAtMs=NowMs();
+            request.task.retryAtMs=retry;request.task.checkpoint.step="guild_delivery_prepare";
+            request.task.checkpoint.blocker=read.failures<2?"guild_delivery_native_retry_wait":"guild_delivery_repeated_native_rejection";
+            return stop(SubmitTask(request).blocker);
+        }
         if(saved->retryAtMs>NowMs())return stop("guild_delivery_native_retry_wait");
         return advance(saved->context==current?Phase::Preparing:Phase::Reconciling,"guild_delivery_prepare");
     }
