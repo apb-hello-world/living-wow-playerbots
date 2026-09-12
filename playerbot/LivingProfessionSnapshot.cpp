@@ -104,7 +104,8 @@ namespace LivingActivity {
                 NativeProfessionVendorSources(actor,have.entry,quantity,sellers,have.sourceBlocker);
             if(!have.sourceAvailable && RequiredProfessionVendorQuantity(required,have,1,quantity,have.sourceBlocker))
                 have.sourceAvailable=NativeAuctionSourceAvailable(actor,have.entry,quantity,have.sourceBlocker);
-            if (tool && !have.sourceAvailable && have.sourceBlocker=="profession_material_source_unavailable")
+            if (tool && !have.sourceAvailable && (have.sourceBlocker=="profession_material_source_unavailable" ||
+                have.sourceBlocker=="profession_auction_source_unavailable"))
                 have.sourceBlocker="profession_tool_source_unavailable";
         }
         // Completion evidence is evaluated before readiness blockers by the
