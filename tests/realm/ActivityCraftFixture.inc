@@ -166,7 +166,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             for (const auto& row : state->cache) if (row.second.source=="profession_job" &&
                 row.second.sourceKey.find("isolated_craft_v1:")==0 && row.second.context.boot!=state->boot &&
                 row.second.mode==Mode::Active && row.second.accepted &&
-                ((row.second.phase==Phase::Preparing && row.second.checkpoint.step==(travelRetry ? "profession_prepare" : "profession_resume_checkpoint")) ||
+                ((row.second.phase==Phase::Preparing && row.second.checkpoint.step==((travelRetry || capacityResume) ? "profession_prepare" : "profession_resume_checkpoint")) ||
                  (!travelRetry && row.second.phase==Phase::Verifying && row.second.checkpoint.step=="profession_mail_collect"))) {
                 if(travelRetry || capacityResume) {
                     const auto boot=row.second.sourceKey.substr(std::string("isolated_craft_v1:").size());
@@ -177,8 +177,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                         boost::property_tree::read_json(file,original);
                     } catch(const std::exception&) {continue;}
                     if(capacityResume) {
-                        if(row.second.phase!=Phase::Verifying ||
-                            original.get<std::string>("suite","")!="activity-profession-mail-capacity-v1" ||
+                        if(original.get<std::string>("suite","")!="activity-profession-mail-capacity-v1" ||
                             original.get<std::string>("outcome","")!="failed" ||
                             original.get<unsigned>("step",0)!=11 || original.get<unsigned>("native_launches",1)!=0 ||
                             !IsUuid(original.get<std::string>("mail_operation",""))) continue;
@@ -249,7 +248,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 require(!fixture.capacitySales.empty() && fixture.capacityFillCount && fixture.capacityLegacyChecked,
                     "restart_requires_original_capacity_preparation_evidence");
             }
-            fixture.mailCollectedAtResume=prior->phase==Phase::Verifying;
+            fixture.mailCollectedAtResume=capacityResume || prior->phase==Phase::Verifying;
             for (const auto& claim : batch.claims) {
                 require(claim.state=="held" && claim.task==prior->id && claim.actor==prior->actor,
                     "restart_retains_claim_identity_and_owner");
@@ -439,7 +438,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(SubmitTask(request).code==AdmissionCode::Pending,"craft_task_admitted");fixture.step=1;return;
         }
         const auto saved=state->cache.find(request.task.id);require(saved!=state->cache.end(),"craft_task_receipt_present");
-        if (fixture.step==10 || fixture.step==11) request.task=saved->second; // Journal-driven service substep, same root.
+        if (fixture.step==10 || fixture.step==11 || (capacityMail && fixture.step==2))
+            request.task=saved->second; // Journal-driven service substep, same root.
         if (fixture.step==5) {
             if (saved->second.phase==Phase::Executing) {fixture.blocker="native_cast_or_receipt_pending";return;}
             require(saved->second.phase==Phase::Verifying && !DefersNativeSave(bot->GetGUIDLow()) &&
@@ -453,6 +453,25 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 return true;
             }
             return false;
+        };
+        auto captureCapacityOperations=[&]() {
+            if(!capacityMail)return;
+            for(const auto& pending:state->operations)
+                if(pending.second.request.transition.task.id==request.task.id && pending.second.request.kind=="capacity_vendor_sale") {
+                    NativeSaleQuote quote;require(DecodeNativeSaleQuote(pending.second.request.beforeState,quote),"capacity_intent_contains_exact_native_quote");
+                    fixture.capacitySales.emplace(pending.first,quote);
+                    if(!fixture.capacityLegacyChecked && !pending.second.dispatched) {
+                        auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item.guid));
+                        require(item && item->GetEntry()==quote.item.entry && item->GetCount()==quote.item.quantity,
+                            "capacity_reserves_exact_native_disposable_stack");
+                        const auto money=bot->GetMoney();const bool enforcement=state->enforceEffects.exchange(false,std::memory_order_acq_rel);
+                        SellAction legacy(bot->GetPlayerbotAI());const bool sold=legacy.Sell(bot,item);
+                        state->enforceEffects.store(enforcement,std::memory_order_release);
+                        require(!sold && bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item.guid))==item && bot->GetMoney()==money,
+                            "legacy_vendor_cannot_take_capacity_claim_with_execution_disabled");
+                        fixture.capacityLegacyChecked=true;
+                    }
+                }
         };
         auto advance=[&](Phase phase) {
             request.expectedRevision=request.task.revision++;request.receipt=NewId();
@@ -746,22 +765,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 fixture.mailOperation=intent.transition.receipt;followRunnerWrite();return;
             }
             fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
-            if(capacityMail)for(const auto& pending:state->operations)
-                if(pending.second.request.transition.task.id==request.task.id && pending.second.request.kind=="capacity_vendor_sale") {
-                    NativeSaleQuote quote;require(DecodeNativeSaleQuote(pending.second.request.beforeState,quote),"capacity_intent_contains_exact_native_quote");
-                    fixture.capacitySales.emplace(pending.first,quote);
-                    if(!fixture.capacityLegacyChecked && !pending.second.dispatched) {
-                        auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item.guid));
-                        require(item && item->GetEntry()==quote.item.entry && item->GetCount()==quote.item.quantity,
-                            "capacity_reserves_exact_native_disposable_stack");
-                        const auto money=bot->GetMoney();const bool enforcement=state->enforceEffects.exchange(false,std::memory_order_acq_rel);
-                        SellAction legacy(bot->GetPlayerbotAI());const bool sold=legacy.Sell(bot,item);
-                        state->enforceEffects.store(enforcement,std::memory_order_release);
-                        require(!sold && bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item.guid))==item && bot->GetMoney()==money,
-                            "legacy_vendor_cannot_take_capacity_claim_with_execution_disabled");
-                        fixture.capacityLegacyChecked=true;
-                    }
-                }
+            captureCapacityOperations();
             if(serviceTravel && !fixture.travelConflictChecked && request.task.phase==Phase::Traveling) {
                 const auto monotonic=uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -821,12 +825,27 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             followRunnerWrite();return;
         }
         if (fixture.step==2) {
+            if(capacityMail && request.task.phase!=Phase::Preparing) {
+                fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+                captureCapacityOperations();followRunnerWrite();return;
+            }
             ProfessionSnapshot prepared;
             if (!ReadProfessionSnapshot(request.task.actor,request.task.id,request.task.revision,prepared,fixture.blocker)) return;
+            if(capacityMail && NextProfessionStep(request.task,prepared).step==ProfessionStep::PrepareCapacity) {
+                fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+                captureCapacityOperations();followRunnerWrite();return;
+            }
             require(NextProfessionStep(request.task,prepared).step==ProfessionStep::Execute &&
                 prepared.attempts.empty() && prepared.outputPerAttempt==1,
                 "craft_initial_native_snapshot_selects_exact_ready_attempt");
-            if (resumed || serviceTravel) {fixture.inputs=fixture.inheritedInputs;fixture.step=3;return;}
+            if (resumed || serviceTravel || capacityMail) {
+                if(capacityMail) {
+                    ProfessionJob job;
+                    require(DecodeProfessionJob(request.task.checkpoint.data,job,fixture.blocker) &&
+                        ReadNativeCraftFrame(*bot,job,fixture.before,fixture.blocker),"craft_frame_after_all_capacity_preparation");
+                }
+                fixture.inputs=fixture.inheritedInputs;fixture.step=3;return;
+            }
             if (paid) {
                 fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
                 if (!followRunnerWrite()) return;
