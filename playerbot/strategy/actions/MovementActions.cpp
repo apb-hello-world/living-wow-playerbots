@@ -1174,6 +1174,22 @@ bool MovementAction::MoveTo2(const WorldPosition& endPos, bool idle, bool react,
 
     TravelPath movePath = ResolveMovePath(startPos, endPos, mover, lastMove);
 
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    if (sLivingActivityCoordinator.IsolatedGameplayActor(bot->GetGUIDLow()))
+    {
+        std::ostringstream trace;
+        trace << "Living isolated native path: actor=" << bot->GetGUIDLow()
+            << " planned=" << movePath.getPath().size() << " start=" << startPos.to_string()
+            << " end=" << endPos.to_string();
+        for (size_t n=0;n<std::min<size_t>(4,movePath.getPath().size());++n)
+        {
+            const auto& leg=movePath.getPath()[n];
+            trace << " leg=" << int(leg.type) << ":" << leg.entry << ":" << leg.point.to_string();
+        }
+        sLog.outString("%s",trace.str().c_str());
+    }
+#endif
+
     lastMove.setPath(movePath);
 
     if (movePath.empty())
@@ -1182,6 +1198,11 @@ bool MovementAction::MoveTo2(const WorldPosition& endPos, bool idle, bool react,
      
     if (!bot->GetTransport())
         movePath.makeShortCut(startPos, sPlayerbotAIConfig.reactDistance, bot);
+
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    if (sLivingActivityCoordinator.IsolatedGameplayActor(bot->GetGUIDLow()))
+        sLog.outString("Living isolated native shortcut: actor=%u retained=%u",bot->GetGUIDLow(),uint32(movePath.getPath().size()));
+#endif
 
     if (movePath.empty())
     {

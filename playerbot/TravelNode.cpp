@@ -2,6 +2,9 @@
 #include "TravelRouteQueue.h"
 #include "playerbot/TravelMgr.h"
 #include "LivingTravelRegion.h"
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+#include "LivingActivityCoordinator.h"
+#endif
 
 #include <iomanip>
 #include <regex>
@@ -1897,6 +1900,17 @@ TravelNodeRoute TravelNodeMap::getRoute(WorldPosition startPos, WorldPosition en
         }
     }
 
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    if (bot && sLivingActivityCoordinator.IsolatedGameplayActor(bot->GetGUIDLow()))
+    {
+        std::ostringstream trace;
+        trace << "Living isolated native graph failure: actor=" << bot->GetGUIDLow()
+            << " nodes=" << m_nodes.size() << " bad_start=" << badStartNodes.size() << " bad_end=" << badEndNodes.size();
+        for (auto* node:startNodes) trace << " start=" << node->getName() << ":" << node->getPosition()->to_string();
+        for (auto* node:endNodes) trace << " end=" << node->getName() << ":" << node->getPosition()->to_string();
+        sLog.outString("%s",trace.str().c_str());
+    }
+#endif
     return TravelNodeRoute();
 }
 
