@@ -39,10 +39,11 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     if (requested && (std::string(requested)=="activity-managed-recipe-v1" ||
         std::string(requested)=="activity-managed-recipe-prepare-v1" || std::string(requested)=="activity-managed-recipe-restart-v1" ||
-        std::string(requested)=="activity-recipe-service-v1")) {
+        std::string(requested)=="activity-recipe-service-v1" || std::string(requested)=="activity-recipe-service-restart-v1")) {
         RequireIsolatedNativeFixtureEnvironment();
         RunIsolatedManagedRecipeFixture(*state,std::string(requested)=="activity-managed-recipe-prepare-v1",
-            std::string(requested)=="activity-managed-recipe-restart-v1",std::string(requested)=="activity-recipe-service-v1");return;
+            std::string(requested)=="activity-managed-recipe-restart-v1" || std::string(requested)=="activity-recipe-service-restart-v1",
+            std::string(requested)=="activity-recipe-service-v1" || std::string(requested)=="activity-recipe-service-restart-v1");return;
     }
     if (requested && std::string(requested)=="activity-useful-recipe-v1") {
         RequireIsolatedNativeFixtureEnvironment();

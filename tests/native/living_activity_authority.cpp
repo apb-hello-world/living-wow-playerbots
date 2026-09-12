@@ -24,6 +24,25 @@ ActionContext Action(Task& task, const ActivityLease& lease) {
     a.permittedEffects = Movement; return a;
 }
 int main() {
+    {
+        // Reproduce the service-learning arrival deadlock: one saved revision
+        // must not acquire broad preparation effects and then different effects
+        // inside a nested mail adapter. Preserve the guard; dispatch inspection
+        // to the chosen adapter before acquiring its one exact permission set.
+        ExecutionAuthority serviceAuthority;const auto context=Context();
+        auto task=Root();task.phase=Phase::Preparing;
+        serviceAuthority.Observe(context,0);
+        const auto inventory=Mask(Effect::Inventory);
+        const auto broad=inventory|Mask(Effect::Spell)|Mask(Effect::Movement)|Mask(Effect::Money);
+        const auto premature=serviceAuthority.Acquire(task,broad,1000,60000);
+        assert(premature.Granted());
+        assert(serviceAuthority.Acquire(task,inventory,1001,60000).code==AuthorityCode::StaleRevision);
+        assert(serviceAuthority.Release(premature.lease).code==AuthorityCode::Released);
+        const auto selected=serviceAuthority.Acquire(task,inventory,1002,60000);
+        assert(selected.Granted());
+        assert(serviceAuthority.Acquire(task,inventory,1003,60000).code==AuthorityCode::Renewed);
+        assert(serviceAuthority.Read(task.actor).effects==inventory);
+    }
     ExecutionAuthority authority(2);
     auto t = Root(); auto current = Context();
     assert(authority.Acquire(t, Movement, 1000, 5000).code == AuthorityCode::StaleContext);

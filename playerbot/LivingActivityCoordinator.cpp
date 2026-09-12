@@ -287,6 +287,8 @@ struct LivingActivityCoordinator::State {
     struct RecipeLearningFixture {
         uint32_t actor=0,item=0,recipe=0,skill=0,skillBefore=0,moneyBefore=0,countBefore=0;
         uint64_t deadline=0;
+        unsigned diagnosticEvents=0;
+        std::string diagnosticKey;
         bool started=false,requestedLogin=false;
         std::string blocker;
         std::string task;
@@ -2386,9 +2388,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if (ParseServiceStep(saved->checkpoint.step,service))
         return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.book,1}).blocker);
     if (saved->phase!=Phase::Preparing) return stop("recipe_preparation_required");
-    const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects()|Mask(Effect::Movement)|Mask(Effect::Money),60000,"recipe_prepare");
-    if (!grant.Permitted()) return stop(grant.blocker);
-    if (!bot->IsStopped()) {ExecutionScope scope(grant.task,grant.action);bot->GetPlayerbotAI()->StopMoving();return stop("recipe_stopping_for_cast");}
+    // Inspect before acquiring. The selected shared adapter owns its effects;
+    // acquiring a broad learning grant first then a narrower service grant at
+    // the SAME revision correctly fails the authority's stale-definition guard.
     UnsettledClaimBatch claims;
     if (!ReadTaskClaims(actor,id,saved->revision,claims,blocker)) return stop(blocker);
     ResourceClaim bookClaim;
@@ -2402,6 +2404,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             if (blocker!="recipe_book_not_owned") return stop(blocker);
             return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Purchase,{job.book,1}).blocker);
         }
+        const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"recipe_book_reservation");
+        if (!grant.Permitted()) return stop(grant.blocker);
         ResourceClaim claim;claim.id=NewId();claim.task=id;claim.actor=actor;claim.itemGuid=selected.itemGuid;
         claim.itemEntry=job.book;claim.quantity=1;claim.location=selected.location;claim.nativeReference=selected.nativeReference;claim.state="held";
         ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
@@ -2412,6 +2416,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     // A book can arrive while an unused purchase hold exists. Release only
     // that acknowledged hold; never buy a second book or strand its money.
     for (const auto& held:claims.claims) if (held.location=="money" && held.state=="held") {
+        const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Money),60000,"recipe_purchase_hold_release");
+        if (!grant.Permitted()) return stop(grant.blocker);
         auto released=held;++released.revision;released.state="released";
         ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
         ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
@@ -2432,6 +2438,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.book,1}).blocker);
     }
     if (bookClaim.location!="bags") return stop("recipe_book_location_requires_reconciliation");
+    const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects()|Mask(Effect::Movement),60000,"recipe_prepare");
+    if (!grant.Permitted()) return stop(grant.blocker);
+    if (!bot->IsStopped()) {ExecutionScope scope(grant.task,grant.action);bot->GetPlayerbotAI()->StopMoving();return stop("recipe_stopping_for_cast");}
     OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
     ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;request.transition.task.checkpoint.step="recipe_learning";
     request.transition.task.updatedAtMs=NowMs();request.transition.receipt=SourceId("recipe_native_operation",id);

@@ -33,7 +33,9 @@ namespace {
             for (const auto& row:f.beforeStacks) {boost::property_tree::ptree item;item.put("guid",row.first);item.put("quantity",row.second);items.push_back({"",item});}
             report.add_child("original_books",items);report.add_child("assertions",f.checks);
             if (actor) {report.put("known_after",actor->HasSpell(f.recipe));report.put("count_after",count(books(*actor)));
-                report.put("money_after",actor->GetMoney());report.put("skill_after",actor->GetSkillValuePure(f.skill));}
+                report.put("money_after",actor->GetMoney());report.put("skill_after",actor->GetSkillValuePure(f.skill));
+                report.put("stopped",actor->IsStopped());report.put("mails_updated",actor->m_mailsUpdated);
+                report.put("activity_json",sLivingActivityCoordinator.ActorJson(f.actor));}
             if (const auto saved=sLivingActivityCoordinator.ReadSavedTask(f.task)) {
                 report.put("phase",Name(saved->phase));report.put("revision",saved->revision);
             }
@@ -93,6 +95,17 @@ namespace {
             if (!saved) {f.blocker="task_admission_pending";return;}
             const auto work=state.executionBlockers.find(f.task);
             f.blocker=work==state.executionBlockers.end()?saved->checkpoint.blocker:work->second;
+            const auto diagnostic=std::to_string(saved->revision)+":"+f.blocker;
+            if (f.diagnosticEvents<128 && diagnostic!=f.diagnosticKey) {
+                f.diagnosticKey=diagnostic;++f.diagnosticEvents;
+                boost::property_tree::ptree progress;
+                progress.put("task",f.task);progress.put("actor",f.actor);progress.put("revision",saved->revision);
+                progress.put("phase",Name(saved->phase));progress.put("step",saved->checkpoint.step);
+                progress.put("blocker",f.blocker);progress.put("stopped",actor->IsStopped());
+                progress.put("mails_updated",actor->m_mailsUpdated);progress.put("native_safety",NativeSafety(actor));
+                progress.put("map",actor->GetMapId());progress.put("x",actor->GetPositionX());progress.put("y",actor->GetPositionY());
+                sLog.outString("Living isolated recipe progress: %s",Json(progress).c_str());
+            }
             if (prepareOnly && saved->phase==Phase::Preparing) {
                 UnsettledClaimBatch claims;
                 if (!sLivingActivityCoordinator.ReadTaskClaims(f.actor,f.task,saved->revision,claims,f.blocker) || claims.claims.empty()) return;
