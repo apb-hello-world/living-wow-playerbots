@@ -49,6 +49,16 @@ int main() {
     auto service=task;service.checkpoint.step="profession_service_mail";
     assert(ValidateProfessionTask(service,blocker) && !IsProfessionJob(service) && IsRecipeLearningTask(service));
     assert(ReadTaskItemRequirements(service,items,blocker) && items.front().entry==6326);
+    // Shared native purchasing accepts typed learning demand even though it
+    // deliberately is not a craft job. Every unrelated/extra book is rejected.
+    assert(!IsProfessionJob(service) && MatchesRecipeBookPurchase(service,6326,1,blocker));
+    assert(!MatchesRecipeBookPurchase(service,6325,1,blocker));
+    assert(!MatchesRecipeBookPurchase(service,6326,0,blocker));
+    assert(!MatchesRecipeBookPurchase(service,6326,2,blocker));
+    auto wrongDemand=service;wrongDemand.checkpoint.data="{}";
+    assert(!MatchesRecipeBookPurchase(wrongDemand,6326,1,blocker));
+    wrongDemand=service;wrongDemand.source="guild_supply";wrongDemand.checkpoint.step="guild_supply";
+    assert(!MatchesRecipeBookPurchase(wrongDemand,6326,1,blocker));
     auto changed=task;changed.checkpoint.data=EncodeRecipeLearningJob({6325,7751,185,483});
     assert(!PreserveProfessionIntent(task,changed,blocker));
     changed=task;changed.source="other";changed.checkpoint.step="other";changed.checkpoint.data="{}";

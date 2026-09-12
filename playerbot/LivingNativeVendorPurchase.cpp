@@ -1,6 +1,8 @@
 #include "botpch.h"
 #include "LivingNativeVendorPurchase.h"
 #include "LivingProfessionNative.h"
+#include "LivingTaskItemRequirements.h"
+#include "LivingNativeRecipeLearning.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingServiceExecution.h"
 #include "LivingPurchaseBudget.h"
@@ -78,6 +80,14 @@ namespace LivingActivity {
         NativeVendorQuote current;
         if (!InspectNativeVendorQuote(actor,quote.vendor,quote.entry,quote.quantity,current,blocker)) return false;
         if (EncodeNativeVendorQuote(current) != EncodeNativeVendorQuote(quote)) return reject("vendor_quote_changed");
+        if (IsRecipeLearningTask(request.transition.task)) {
+            if (!MatchesRecipeBookPurchase(request.transition.task,quote.entry,quote.quantity,blocker) ||
+                !ValidateNativeRecipeLearningTask(actor,request.transition.task,blocker)) return false;
+            // The same committed-demand provider rechecks owned/banked/mail
+            // stock, bids, reservations and the real spending limit. This is
+            // one learnable book, not permission to shop for arbitrary items.
+            return prerequisites.ValidateCommittedDemandAndBudget(actor,request,quote,blocker);
+        }
         if (!IsProfessionJob(request.transition.task)) return reject("vendor_demand_adapter_not_supported");
         ProfessionJob job;
         if (!DecodeProfessionJob(request.transition.task.checkpoint.data,job,blocker)) return false;

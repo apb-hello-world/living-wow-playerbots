@@ -20,4 +20,12 @@ namespace LivingActivity {
         }
         items=job.reagents;blocker.clear();return true;
     }
+    inline bool MatchesRecipeBookPurchase(const Task& task,uint32_t entry,uint32_t quantity,std::string& blocker) {
+        std::vector<ProfessionReagent> required;
+        if (!IsRecipeLearningTask(task) || !ReadTaskItemRequirements(task,required,blocker)) return false;
+        if (required.size()!=1 || required.front().entry!=entry || quantity!=1) {
+            blocker="vendor_purchase_not_the_learning_book";return false;
+        }
+        blocker.clear();return true;
+    }
 }
