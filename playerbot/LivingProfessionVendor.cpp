@@ -28,12 +28,11 @@ namespace LivingActivity {
                 if(dest->GetEntry()<=0 || GuidPosition(HIGHGUID_UNIT,dest->GetEntry()).IsHostileTo(&actor))continue;
                 // Use real service points, not the bounding square's distance.
                 // Cross-map geometric distances omit transport waiting/riding.
-                for(const auto map:dest->GetSubSquareIds()) {
-                    const auto* point=dest->GetSubSquare(map).GetClosestPoint(here);
+                for(const auto* point:dest->GetPoints()) {
                     if(!point)continue;
                     const auto distance=double(here.distance(*point));
                     if(!std::isfinite(distance) || distance>=FLT_MAX)continue;
-                    const ServiceEstimate candidate{distance,dest->GetEntry(),map!=actor.GetMapId()};
+                    const ServiceEstimate candidate{distance,dest->GetEntry(),point->getMapId()!=actor.GetMapId()};
                     if(candidate.Rank()<best.Rank())best=candidate;
                 }
             }
