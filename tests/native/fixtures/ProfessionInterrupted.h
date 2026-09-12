@@ -22,7 +22,7 @@ struct InterruptedFixture {
         InterruptedCraftIntent intent;assert(DecodeInterruptedCraftIntent(task,row,intent,blocker));
         unsigned index=0;
         for(auto& use:intent.inputs) {
-            const auto old=use.before.id;use.before.id="ff2efbdf-f0ec-4539-b840-29984797810"+std::to_string(++index);
+            const auto old=use.before.id;use.before.id="b71b6cac-8b42-44d9-9f1f-24e4e40a000"+std::to_string(++index);
             const auto pos=row.beforeState.find(old);assert(pos!=std::string::npos);
             row.beforeState.replace(pos,old.size(),use.before.id);
         }
