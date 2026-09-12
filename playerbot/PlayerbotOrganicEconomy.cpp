@@ -27,6 +27,7 @@
 #include "strategy/actions/AhAction.h"
 #include "strategy/actions/MovementActions.h"
 #include "strategy/actions/ChooseTravelTargetAction.h"
+#include "strategy/triggers/WithinAreaTrigger.h"
 #include "Entities/GameObject.h"
 #include "Mails/Mail.h"
 
@@ -822,10 +823,24 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             result.blocker="recipe_traveling_to_service";
             if(same && now>=trip.nextMove) {
                 trip.nextMove=now+5;
+                auto& nativePath=context->GetValue<ai::LastMovement&>("last movement")->Get().lastPath.getPath();
+                const uint32 pendingTrigger=context->GetValue<ai::LastMovement&>("last area trigger")->Get().lastAreaTrigger;
+                // Native movement prepares area triggers as a separate action.
+                // Run that leg under this same root, not a competing AI tick.
+                // A stale trigger from a displaced route is never authority.
+                const bool ownPortal=saved && HasOwnedServiceRoute(guid,purpose) && pendingTrigger && !nativePath.empty() &&
+                    nativePath.front().type==ai::PathNodeType::NODE_AREA_TRIGGER && nativePath.front().entry==pendingTrigger &&
+                    target->GetPosition() && nativePath.back().point.getMapId()==target->GetPosition()->getMapId() &&
+                    nativePath.back().point.distance(*target->GetPosition())<=INTERACTION_DISTANCE;
+                ai::WithinAreaTrigger reached(ai);
+                if(ownPortal && reached.IsActive()) {
+                    const bool dispatched=ai->DoSpecificAction("area trigger",Event("recipe_service","",bot),true);
+                    result.blocker=dispatched?"recipe_service_portal_dispatched":"recipe_service_portal_rejected";
+                }
                 // The normal travel action can sit below incidental RPG work
                 // in the action queue. Execute its existing guarded movement
                 // step for this exact owned route, without a new movement path.
-                if(!ai->DoSpecificAction("move to travel target",Event("recipe_service","",bot),true))
+                else if(!ai->DoSpecificAction("move to travel target",Event("recipe_service","",bot),true))
                     result.blocker="recipe_service_movement_pending";
             }
         }
