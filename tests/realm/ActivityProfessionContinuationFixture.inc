@@ -109,7 +109,7 @@
         fixture.blocker=AdvanceProfessionJob(saved->actor,taskId).blocker;
         travel=actor->GetPlayerbotAI()->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get();
         auto* aiContext=actor->GetPlayerbotAI()->GetAiObjectContext();
-        const auto& movement=aiContext->GetValue<ai::LastMovement&>("last movement")->Get();
+        auto& movement=aiContext->GetValue<ai::LastMovement&>("last movement")->Get();
         const auto& path=movement.lastPath.getPath();
         const auto pendingTrigger=aiContext->GetValue<ai::LastMovement&>("last area trigger")->Get().lastAreaTrigger;
         const auto stamp=std::to_string(saved->revision)+":"+fixture.blocker+":"+std::to_string(travelBefore)+
