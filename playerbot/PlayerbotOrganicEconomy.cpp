@@ -508,7 +508,10 @@ bool PlayerbotOrganicEconomy::HasOwnedServiceRoute(uint32 guid,uint32 purpose) c
     if(!target || target->GetRouteRevision()!=trip.routeRevision || !target->GetDestination() ||
         uint32(target->GetDestination()->GetPurpose())!=purpose)return false;
     const auto effects=Mask(Effect::Movement)|Mask(Effect::TravelTarget);
-    const auto current=sLivingActivityCoordinator.NativeActionContext(*ai,Lane::Managed,effects,0).world;
+    // NativeActionContext deliberately refuses the managed lane: it constructs
+    // exception permits, not task contexts. Re-read native lifecycle/session
+    // state and let the permission reader compare it with the current grant.
+    const auto current=ReadNativeContext(*bot,trip.action.world.policyRevision,trip.action.world.boot);
     const uint64 stamp=std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     return ai->ActivityPermissions().Check({effects,Lane::Managed,true},current,stamp,&trip.managedTask,&trip.action,nullptr,
