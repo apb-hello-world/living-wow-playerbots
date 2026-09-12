@@ -297,6 +297,14 @@ struct LivingActivityCoordinator::State {
         std::map<uint32_t,uint32_t> beforeStacks;
         boost::property_tree::ptree checks;
     } recipeLearningFixture;
+    struct AuctionProfessionFixture {
+        uint32_t actor=0,moneyBefore=0,skillBefore=0,outputBefore=0;
+        uint64_t deadline=0;
+        bool started=false,requestedLogin=false,priorEnforcement=false;
+        unsigned diagnostics=0;
+        std::string task,blocker,lastDiagnostic;
+        boost::property_tree::ptree setup,checks;
+    } auctionProfessionFixture;
     NativeVendorQuote vendorFixtureQuote;
     uint32_t vendorFixtureSpawn=0,vendorFixtureEntry=0;
     struct CraftFixture {

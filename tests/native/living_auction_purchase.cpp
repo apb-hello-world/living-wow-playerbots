@@ -22,6 +22,11 @@ int main() {
     std::vector<AuctionMail> mails{pending,sold,won};NativeResourceBalance acquired;
     assert(VerifyAuctionMails(q,mails,acquired,why));
     assert(acquired.location=="mail" && acquired.nativeReference==11 && acquired.itemGuid==123);
+    // The original listing determines mail provenance even when purchased
+    // through a different auctioneer in the same faction market.
+    auto otherCity=q;otherCity.auctioneerEntry=8670;otherCity.auctioneer=20000;
+    assert(VerifyAuctionMails(otherCity,mails,acquired,why));
+    otherCity.house=4;assert(!VerifyAuctionMails(otherCity,mails,acquired,why));
     for(unsigned n=0;n<9;++n) {
         auto bad=mails;
         switch(n){case 0:bad.pop_back();break;case 1:bad[0].id=12;break;case 2:++bad[1].money;break;

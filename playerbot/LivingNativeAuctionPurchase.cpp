@@ -70,7 +70,9 @@ bool InspectLocked(Player& actor,uint64_t auctioneer,uint32_t id,NativeAuctionQu
     const auto cut=priced.GetAuctionCut();const uint64_t gross=uint64_t(offer->buyout)+offer->deposit;
     if(cut>gross || gross-cut>UINT32_MAX)return reject("auction_native_proceeds_out_of_range");
     if(actor.GetMoney()<offer->buyout)return reject("auction_native_money_shortfall");
-    q.actor=actor.GetGUIDLow();q.seller=offer->owner;q.house=house->houseId;q.auction=id;
+    // Faction markets share listings across cities. MailSender(AuctionEntry*)
+    // uses the listing's house, not the auctioneer visited by this buyer.
+    q.actor=actor.GetGUIDLow();q.seller=offer->owner;q.house=offer->GetHouseId();q.auction=id;
     q.guid=item->GetGUIDLow();q.entry=item->GetEntry();q.quantity=item->GetCount();q.copper=offer->buyout;
     q.moneyBefore=actor.GetMoney();q.bidder=offer->bidder;q.bid=offer->bid;q.proceeds=uint32_t(gross-cut);
     q.auctioneerEntry=npc->GetEntry();q.property=offer->itemRandomPropertyId;q.auctioneer=auctioneer;q.expiresAt=offer->expireTime;
