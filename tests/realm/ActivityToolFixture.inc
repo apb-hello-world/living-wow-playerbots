@@ -11,6 +11,7 @@ void RunIsolatedToolFixture(FixtureState& state) {
     auto emit=[&](bool passed,const std::string& why,Player* actor) {
         auto report=f.setup;report.put("suite","activity-tool-v1");report.put("boot",state.boot);
         report.put("task",f.task);report.put("actor",f.actor);report.put("test_only",true);
+        report.put("original_boot",f.originalBoot);report.put("resumed_same_task",f.resuming);
         report.put("outcome",passed?"passed":"failed");report.put("failure",why);report.put("blocker",f.blocker);
         report.put("ordinary_due_queue",true);report.put("independent_audit_required",true);
         if (actor && f.started) {
@@ -30,6 +31,9 @@ void RunIsolatedToolFixture(FixtureState& state) {
             require(!id.empty() && id.size()<=9 && id.find_first_not_of("0123456789")==std::string::npos,"explicit_tool_actor_required");
             f.actor=uint32_t(std::stoul(id));require(f.actor!=0,"explicit_tool_actor_required");
             f.task=SourceId("profession_job","isolated_tool_v1:"+state.boot);
+            f.originalBoot=state.boot;
+            const auto* original=std::getenv("LIVING_WOW_NATIVE_FIXTURE_TASK");
+            if(original && *original) {require(IsUuid(original),"exact_tool_resume_task_required");f.task=original;f.resuming=true;}
             state.gameplayFixtureActor.store(f.actor,std::memory_order_release);
         }
         if (sWorld.GetActiveAndQueuedSessionCount() || !state.loaded || state.ioPending || !state.pending.empty() ||
@@ -46,6 +50,22 @@ void RunIsolatedToolFixture(FixtureState& state) {
         if (!f.started) {
             require(actor->GetPlayerbotAI() && !actor->GetPlayerbotAI()->IsRealPlayer() && actor->GetSession() &&
                 sPlayerbotAIConfig.IsInRandomAccountList(actor->GetSession()->GetAccountId()),"copied_native_blacksmith_required");
+            if(f.resuming) {
+                const auto saved=sLivingActivityCoordinator.ReadSavedTask(f.task);
+                const std::string prefix="isolated_tool_v1:";
+                require(saved && saved->actor==f.actor && saved->mode==Mode::Active && saved->accepted &&
+                    saved->source=="profession_job" && saved->sourceKey.compare(0,prefix.size(),prefix)==0 &&
+                    !Terminal(saved->phase),"original_unfinished_tool_job_required");
+                f.originalBoot=saved->sourceKey.substr(prefix.size());require(IsUuid(f.originalBoot),"original_tool_boot_required");
+                std::ifstream setup("/isolated/evidence/tool-setup-"+f.task+".json",std::ios::ate);
+                require(setup && setup.tellg()>0 && setup.tellg()<32768,"original_tool_setup_required");
+                setup.seekg(0);boost::property_tree::read_json(setup,f.setup);
+                require(f.setup.template get<uint32_t>("actor")==f.actor && f.setup.template get<std::string>("task")==f.task &&
+                    f.setup.template get<std::string>("job")==saved->checkpoint.data &&
+                    DecodeProfessionJob(saved->checkpoint.data,f.job,f.blocker),"original_tool_identity_changed");
+                require(f.job.recipe==2662 && f.job.skill==SKILL_BLACKSMITHING,"original_tool_recipe_required");
+                state.enforceEffects.store(true,std::memory_order_release);f.started=true;return;
+            }
             for (const auto& row:state.cache) if (row.second.actor==f.actor && row.second.mode==Mode::Active && !Terminal(row.second.phase))
                 require(false,"existing_tool_actor_obligation_preserved");
             require(BuildNativeSkillGainJob(*actor,2662,f.job,f.blocker),"native_tool_recipe:"+f.blocker);

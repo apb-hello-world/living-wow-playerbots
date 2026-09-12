@@ -8,6 +8,26 @@
 using namespace LivingActivity;
 int main() {
     {
+        const ServicePathPoint here{1,874.343,-4044.7,5.3722};
+        std::vector<ServicePathPoint> path;
+        const auto valid=[&]{return ReachableServicePrefix(here,path.size(),[&](size_t n){return path[n];},2);};
+        assert(!valid());
+        path={here};assert(!valid()); // Native pathfinder returned its start only.
+        path={{1,1522.3,-4352.53,18.9047}};assert(!valid()); // The observed invented endpoint.
+        path={here,{1,900,-4050,5}};assert(valid());
+        path={here,{1,850,-4040,5}};assert(valid()); // A real road can initially lead away.
+        path={here,here};assert(!valid());
+        path={here,{1,875,-4044.7,5.3722}};assert(!valid());
+        path={here,{0,900,-4050,5}};assert(!valid()); // Never invent a map/transport leg.
+        path={{1,800,-4000,5},{1,900,-4050,5}};assert(!valid()); // Detached prefix.
+        path={here,{1,std::numeric_limits<double>::quiet_NaN(),0,0}};assert(!valid());
+        path={here,{1,900,-4050,5}};
+        assert(!ReachableServicePrefix(here,path.size(),[&](size_t n){return path[n];},0));
+        assert(!ReachableServicePrefix(here,path.size(),[&](size_t n){return path[n];},std::numeric_limits<double>::infinity()));
+        assert(!ReachableServicePrefix(here,4097,[&](size_t n){return path[n];},2));
+        assert(!ServiceInteractionApproach(path.back(),{1,1522.3,-4352.53,18.9047},5));
+    }
+    {
         assert(PreferNearbyService("profession_service_travel"));
         assert(!PreferNearbyService("autonomous") && !PreferNearbyService("player_command") && !PreferNearbyService(""));
         assert(ServiceChoiceRank(863,143982,1,1,2,3)<ServiceChoiceRank(2684,143982,1,1,2,3));

@@ -1945,13 +1945,24 @@ TravelPath TravelNodeMap::getFullPath(WorldPosition startPos, WorldPosition endP
     std::vector<WorldPosition> beginPath, endPath;
 
     beginPath = endPos.getPathFromPath({ startPos }, unit, 40);
+    const bool ownedService=OwnedServiceDestination(unit,endPos);
 
     // A spell-sized neighbourhood is insufficient for a concrete service.
     // Conversely the NPC centre need not lie on the walkable mesh: a point
     // within actual interaction distance can be validated at service execution.
-    if (OwnedServiceDestination(unit,endPos) ? ServiceEndReached(endPos,beginPath) :
+    if (ownedService ? ServiceEndReached(endPos,beginPath) :
         endPos.isPathTo(beginPath,sPlayerbotAIConfig.spellDistance))
         return TravelPath(beginPath);
+
+    // getRoute rewrites beginPath while testing connections. Preserve only an
+    // actual same-map native approach before those attempts, not their last
+    // rejected connection. The service executor still checks progress/arrival.
+    const auto point=[](const WorldPosition& p){return LivingActivity::ServicePathPoint{p.getMapId(),p.getX(),p.getY(),p.getZ()};};
+    TravelPath localApproach;
+    if(ownedService && startPos.getMapId()==endPos.getMapId() &&
+        LivingActivity::ReachableServicePrefix(point(startPos),beginPath.size(),
+            [&](size_t n){return point(beginPath[n]);},sPlayerbotAIConfig.targetPosRecalcDistance))
+        localApproach=TravelPath(beginPath);
 
     //[[Node pathfinding system]]
                 //We try to find nodes near the bot and near the end position that have a route between them.
@@ -1966,7 +1977,7 @@ TravelPath TravelNodeMap::getFullPath(WorldPosition startPos, WorldPosition endP
     if (route.isEmpty())
     {
         route.cleanTempNodes();
-        return movePath;
+        return localApproach;
     }
 
     movePath = route.buildPath(beginPath, endPath);

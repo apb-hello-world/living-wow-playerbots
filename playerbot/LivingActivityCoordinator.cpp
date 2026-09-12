@@ -334,8 +334,8 @@ struct LivingActivityCoordinator::State {
     } enchantFixture;
     struct ToolFixture {
         uint32_t actor=0;uint64_t deadline=0;unsigned diagnostics=0;
-        bool requested=false,started=false;
-        std::string task,blocker,lastDiagnostic;
+        bool requested=false,started=false,resuming=false;
+        std::string task,blocker,lastDiagnostic,originalBoot;
         ProfessionJob job;boost::property_tree::ptree setup;
     } toolFixture;
     struct AuctionProfessionFixture {

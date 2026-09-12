@@ -74,6 +74,22 @@ namespace LivingActivity {
             before.checkpoint.data==after.checkpoint.data;
     }
     struct ServicePathPoint { uint32_t map=0; double x=0,y=0,z=0; };
+    // A failed graph connection may still leave a genuine local navmesh path.
+    // Retain that prefix, never a fabricated destination or a start-only path.
+    // This proves a walking leg, not arrival, reachability of the final service,
+    // permission to teleport, or completion of the owning task.
+    template<class PointAt>
+    bool ReachableServicePrefix(const ServicePathPoint& here,size_t count,PointAt pointAt,double minimumProgress) {
+        const auto finite=[](const ServicePathPoint& p){return std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z);};
+        if(!finite(here) || count<2 || count>4096 || !std::isfinite(minimumProgress) || minimumProgress<=0)return false;
+        for(size_t n=0;n<count;++n) {
+            const auto p=pointAt(n);
+            if(p.map!=here.map || !finite(p))return false;
+        }
+        const auto first=pointAt(0),last=pointAt(count-1);
+        return std::hypot(first.x-here.x,first.y-here.y,first.z-here.z)<=minimumProgress &&
+            std::hypot(last.x-here.x,last.y-here.y,last.z-here.z)>minimumProgress;
+    }
     // Service routes end at a reachable interaction position, not necessarily
     // the NPC's centre (which can sit above the navmesh). This is geometry only;
     // the caller must prove its current owner and native service access again.

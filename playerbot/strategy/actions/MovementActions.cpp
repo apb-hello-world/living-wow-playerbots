@@ -1207,7 +1207,7 @@ bool MovementAction::MoveTo2(const WorldPosition& endPos, bool idle, bool react,
     if (movePath.empty())
     {
         lastMove.setPath(movePath);
-        return true; // Path collapsed — will rebuild next tick.
+        return false; // No movement was dispatched; let the owner track failure.
     }
 
 
