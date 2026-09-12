@@ -66,7 +66,7 @@ namespace {
     }
     std::vector<ClaimConsumption> Inputs(const Task& task,const Tree& value) {
         Require(value.data().empty() && !value.empty() && value.size()<=16,"stored_craft_claim_bound");
-        std::vector<ClaimConsumption> uses;std::set<uint32_t> entries,items;std::string previous;
+        std::vector<ClaimConsumption> uses;std::string previous;
         for (const auto& row : value) {
             Require(row.first.empty(),"stored_craft_claim_array_required");const auto& p=row.second;
             Object(p,{"claim","task","actor","revision","item_guid","item_entry","quantity","copper","location","used"});
@@ -77,7 +77,7 @@ namespace {
             c.copper=Number<uint64_t>(p.get_child("copper"));c.location=Scalar(p.get_child("location"));use.used=Number(p.get_child("used"));
             Require(ValidResourceClaim(c) && c.id>previous && c.actor==task.actor && c.task==task.root &&
                 !c.copper && c.location=="bags" && c.quantity && use.used && use.used<=c.quantity &&
-                c.revision<std::numeric_limits<uint64_t>::max()-1 && entries.insert(c.itemEntry).second && items.insert(c.itemGuid).second,
+                c.revision<std::numeric_limits<uint64_t>::max()-1,
                 "stored_craft_input_claim_invalid");
             previous=c.id;uses.push_back(std::move(use));
         }
@@ -89,16 +89,21 @@ namespace {
             Require(a[i].used==b[i].used && SameResourceClaim(a[i].before,b[i].before),"stored_craft_claims_changed");
     }
     void InputBacking(const ProfessionJob& job,const std::vector<ClaimConsumption>& uses,const CraftFrame& frame) {
-        Require(uses.size()==job.reagents.size(),"stored_craft_recipe_claims_mismatch");
+        size_t matched=0;
         for (const auto& reagent : job.reagents) {
-            const auto use=std::find_if(uses.begin(),uses.end(),[&](const auto& item){return item.before.itemEntry==reagent.entry;});
-            Require(use!=uses.end() && use->used==reagent.perAttempt,"stored_craft_recipe_claims_mismatch");
-            unsigned count=0;
+            unsigned count=0;const NativeItemStack* native=nullptr;
             for (const auto& stack : frame.stacks) if (stack.entry==reagent.entry) {
-                ++count;Require(stack.guid==use->before.itemGuid && stack.count>=use->before.quantity,"stored_craft_input_backing_mismatch");
+                ++count;native=&stack;
             }
             Require(count==1,"stored_craft_input_backing_mismatch");
+            uint64_t used=0,held=0;
+            for (const auto& claim:uses) if(claim.before.itemEntry==reagent.entry) {
+                ++matched;used+=claim.used;held+=claim.before.quantity;
+                Require(claim.before.itemGuid==native->guid,"stored_craft_input_backing_mismatch");
+            }
+            Require(used==reagent.perAttempt && held<=native->count,"stored_craft_recipe_claims_mismatch");
         }
+        Require(matched==uses.size(),"stored_craft_recipe_claims_mismatch");
     }
     void GainedBacking(const Tree& rows,const std::vector<VerifiedItemGain>& gains) {
         Require(rows.data().empty() && rows.size()==gains.size(),"stored_craft_gains_mismatch");std::set<uint32_t> seen;
@@ -255,8 +260,9 @@ std::string ProfessionHistoryQuery(const Task& task) {
         "AND u.state IN ('intent','reconciling')),o.operation_id,o.task_id,o.task_revision,o.kind,o.state,"
         "o.native_reference,o.before_state,o.after_state,o.evidence_code FROM living_activity_task t "
         "LEFT JOIN (SELECT operation_id,task_id,task_revision,kind,state,native_reference,before_state,after_state,evidence_code "
-        "FROM living_activity_operation WHERE task_id="+id+" AND kind='profession_craft' "
-        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(job.attemptLimit+1)+") o ON o.task_id=t.task_id "
+        "FROM living_activity_operation WHERE task_id="+id+" AND (kind='profession_craft' OR "
+        "(kind='mail_collect' AND state IN ('intent','reconciling'))) "
+        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(job.attemptLimit+2)+") o ON o.task_id=t.task_id "
         "WHERE t.task_id="+id+" AND t.actor_guid="+std::to_string(task.actor)+" AND t.revision="+
         std::to_string(task.revision)+" AND t.root_task_id=t.task_id AND t.mode='active' "
         "AND t.accepted=1 AND t.source='profession_job' AND t.kind='profession' ORDER BY o.task_revision,o.operation_id";
@@ -269,8 +275,9 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
         ProfessionJob job;std::string why;
         Require(DecodeProfessionJob(owner.checkpoint.data,job,why),"profession_history_task_invalid");
         Require(!rows.empty(),"profession_history_task_changed_or_missing");
-        Require(rows.size()<=job.attemptLimit,"profession_history_attempt_limit_exceeded");
+        Require(rows.size()<=job.attemptLimit+1,"profession_history_attempt_limit_exceeded");
         bool first=true,unresolved=false;uint64_t previous=0;std::set<std::string> ids;
+        unsigned crafts=0,mails=0;
         for (const auto& fields : rows) {
             auto number=[&](size_t i){Tree scalar;scalar.data()=fields[i];return Number<uint64_t>(scalar);};
             Require(number(0)==owner.actor && number(1)==owner.revision,"profession_history_read_identity_changed");
@@ -285,8 +292,12 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
             StoredCraftOperation row;auto& receipt=row.receipt;
             receipt.id=fields[3];receipt.task=fields[4];receipt.taskRevision=number(5);receipt.kind=fields[6];
             Require(IsUuid(receipt.id) && ids.insert(receipt.id).second && receipt.task==owner.id &&
-                receipt.taskRevision>previous && receipt.taskRevision<=owner.revision && receipt.kind=="profession_craft",
+                receipt.taskRevision>previous && receipt.taskRevision<=owner.revision &&
+                (receipt.kind=="profession_craft" || receipt.kind=="mail_collect"),
                 "profession_history_operation_identity_invalid");
+            if(receipt.kind=="profession_craft") Require(++crafts<=job.attemptLimit,"profession_history_attempt_limit_exceeded");
+            else Require(++mails==1 && receipt.taskRevision==owner.revision &&
+                (fields[7]=="intent" || fields[7]=="reconciling"),"profession_history_mail_identity_invalid");
             previous=receipt.taskRevision;
             if (fields[7]=="verified") receipt.state=OperationState::Verified;
             else if (fields[7]=="rejected") receipt.state=OperationState::Rejected;
@@ -320,7 +331,10 @@ bool ProfessionHistoryCursor::Advance(std::string& blocker) {
     } else {
         history.unresolvedOperation=true;
         if(row.receipt.state==OperationState::Intent && row.receipt.taskRevision==task.revision &&
-            task.phase==Phase::Executing) history.interruptedCraft=row;
+            task.phase==Phase::Executing) {
+            if(row.receipt.kind=="mail_collect") history.interruptedMail=row;
+            else history.interruptedCraft=row;
+        }
     }
     if (++position==records.size()) {history.complete=true;records.clear();}
     return true;

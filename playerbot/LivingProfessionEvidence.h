@@ -43,6 +43,7 @@ namespace LivingActivity {
         bool complete=false, unresolvedOperation=true;
         std::vector<ProfessionCraftProof> attempts;
         std::optional<StoredCraftOperation> interruptedCraft;
+        std::optional<StoredCraftOperation> interruptedMail;
     };
     std::string ProfessionHistoryQuery(const Task& task);
     // Value-only, finite decoder. Begin validates the read's identity/envelope;

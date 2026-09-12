@@ -85,5 +85,19 @@ void TestProfessionAttemptPlan() {
     fail(task,view,claims,native); // Native consumption order needs explicit safe split preparation.
     assert(run(task,view,claims,frame));
     assert(claims.claims.back().quantity==5 && frame.money==81 && task.phase==Phase::Preparing);
+    // Separate paid receipts can own portions of one native merged stack.
+    auto mergedTask=task;auto mergedJob=job;mergedJob.reagents.front().perAttempt=3;
+    mergedTask.checkpoint.data=EncodeProfessionJob(mergedJob);
+    auto mergedView=view;mergedView.stock.front().bag=3;
+    auto mergedFrame=frame;mergedFrame.stacks.front().count=3;
+    auto mergedClaims=claims;auto second=mergedClaims.claims.front();
+    second.id="ff2efbdf-f0ec-4539-b840-299847972103";second.quantity=2;mergedClaims.claims.push_back(second);
+    assert(run(mergedTask,mergedView,mergedClaims,mergedFrame) && result.consumption.size()==4);
+    uint32_t used=0;for(const auto& use:result.consumption)if(use.before.itemGuid==100)used+=use.used;
+    assert(used==3);
+    std::vector<ProfessionMaterialReservation> missing;
+    assert(PlanProfessionMaterialReservations(mergedTask,mergedView,mergedClaims,mergedFrame,missing,blocker) && missing.empty());
+    mergedClaims.claims.back().quantity=3;
+    assert(!run(mergedTask,mergedView,mergedClaims,mergedFrame)); // Aggregate protection cannot exceed physical stock.
 }
 }

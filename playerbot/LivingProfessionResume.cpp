@@ -34,6 +34,8 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
     std::string guard,frames="{\"skill\":"+n(frame.skill)+",\"money\":"+n(frame.money)+",\"stacks\":[";
     std::set<std::string> ids;
     std::set<uint32_t> bankIds;
+    std::map<uint32_t,uint64_t> inputQuantities;
+    for(const auto& input:intent.inputs)inputQuantities[input.before.itemGuid]+=input.before.quantity;
     for(const auto& c:batch.claims) {
         const auto use=std::find_if(intent.inputs.begin(),intent.inputs.end(),[&](const auto& v){return v.before.id==c.id;});
         if(!ids.insert(c.id).second || !ValidResourceClaim(c) || c.task!=saved.id || c.actor!=saved.actor ||
@@ -56,7 +58,7 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
         } else {
         if(!SameResourceClaim(c,use->before)) return reject("interrupted_craft_claim_changed");
         const auto item=std::find_if(frame.stacks.begin(),frame.stacks.end(),[&](const auto& v){return v.guid==c.itemGuid;});
-        if(item==frame.stacks.end() || item->entry!=c.itemEntry || item->count!=c.quantity)
+        if(item==frame.stacks.end() || item->entry!=c.itemEntry || item->count!=inputQuantities[c.itemGuid])
             return reject("interrupted_craft_native_quantity_changed");
         // Conservative compatibility for intents without an entire before-frame:
         // require one exact, fully reserved native stack per recipe input.

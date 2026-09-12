@@ -126,7 +126,7 @@ namespace LivingActivity {
         if (!protectedItems || !protectedItems->ready) return reject("native_craft_claim_projection_unavailable");
         const auto trade=sPlayerbotActionBroker.ReservedItemsView();
         const auto supply=sGuildSupplies.ReservedItemsView();
-        if (consumption.size()!=job.reagents.size()) return reject("native_craft_exact_input_claims_required");
+        if (consumption.size()<job.reagents.size() || consumption.size()>16) return reject("native_craft_exact_input_claims_required");
         std::set<std::string> usedClaims;
         for (const auto& reagent : job.reagents) {
             const NativeItemStack* native=nullptr;
@@ -137,21 +137,24 @@ namespace LivingActivity {
                 native=&stack;
             }
             if (!native || native->count<reagent.perAttempt) return reject("native_craft_material_missing");
-            const ClaimConsumption* own=nullptr;
+            uint64_t held=0,used=0;
             for (const auto& use : consumption) if (use.before.itemGuid==native->guid) {
-                if (own) return reject("native_craft_ambiguous_input_claim");
-                own=&use;
+                const auto& c=use.before;
+                if (!ValidResourceClaim(c) || c.actor!=actor.GetGUIDLow() || c.task!=task.root ||
+                    c.itemEntry!=reagent.entry || c.state!="held" || c.location!="bags" ||
+                    c.copper || c.nativeReference || !use.used || use.used>c.quantity ||
+                    !usedClaims.insert(c.id).second)
+                    return reject("native_craft_exact_input_claims_required");
+                held+=c.quantity;used+=use.used;
             }
-            if (!own || own->before.actor!=actor.GetGUIDLow() || own->before.task!=task.root ||
-                own->before.itemEntry!=reagent.entry || own->before.state!="held" || own->before.location!="bags" ||
-                own->before.quantity<reagent.perAttempt || own->before.quantity>native->count ||
-                own->used!=reagent.perAttempt || !usedClaims.insert(own->before.id).second)
+            if (used!=reagent.perAttempt || held>native->count)
                 return reject("native_craft_exact_input_claims_required");
             if (trade->Item(native->guid) || supply->Item(native->guid) || supply->Entry(actor.GetGUIDLow(),reagent.entry) ||
                 protectedItems->HasUncertainItem(actor.GetGUIDLow(),reagent.entry) ||
-                protectedItems->ProtectedItem(native->guid)!=own->before.quantity)
+                protectedItems->ProtectedItem(native->guid)!=held)
                 return reject("native_craft_other_obligation_protects_material");
         }
+        if (usedClaims.size()!=consumption.size()) return reject("native_craft_exact_input_claims_required");
         blocker.clear();return true;
     }
     bool NativeProfessionCraftCast::Attach(Spell& spell,std::string& blocker) {
@@ -262,7 +265,7 @@ namespace LivingActivity {
             request.effects!=OperationEffects() || request.persistence!=PersistencePolicy() ||
             (job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial) ||
             job.subjectItem || !ValidItemGainSpec(request.itemGain) || request.itemGain.entry!=job.outputEntry ||
-            request.consumption.size()!=job.reagents.size()) return reject("native_craft_exact_operation_required");
+            request.consumption.size()<job.reagents.size() || request.consumption.size()>16) return reject("native_craft_exact_operation_required");
         if (!actor.GetPlayerbotAI() || !actor.IsInWorld() || actor.IsBeingTeleported() || actor.GetMap()->IsDungeon() ||
             ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) || actor.GetTradeData() ||
             !actor.IsStopped() || actor.IsNonMeleeSpellCasted(false,true,true)) return reject("native_craft_safety_prerequisite");
@@ -273,18 +276,23 @@ namespace LivingActivity {
         CraftFrame frame;
         if (!ReadNativeCraftFrame(actor,job,frame,blocker)) return false;
         if (frame.stacks.size()>32) return reject("native_craft_frame_proof_bound");
+        std::set<std::string> matched;
         for (const auto& reagent : job.reagents) {
-            unsigned stacks=0,claims=0;
+            unsigned stacks=0;uint64_t held=0,used=0,count=0;
             for (const auto& stack : frame.stacks) if (stack.entry==reagent.entry) {
-                ++stacks;
+                ++stacks;count=stack.count;
                 for (const auto& use : request.consumption) if (use.before.itemGuid==stack.guid &&
                     use.before.itemEntry==reagent.entry && use.before.actor==actor.GetGUIDLow() &&
                     use.before.task==request.transition.task.root && use.before.location=="bags" &&
-                    use.before.state=="held" && use.used==reagent.perAttempt && use.before.quantity>=use.used &&
-                    stack.count>=use.before.quantity) ++claims;
+                    use.before.state=="held" && use.used && use.before.quantity>=use.used &&
+                    !use.before.copper && !use.before.nativeReference && ValidResourceClaim(use.before)) {
+                    if(!matched.insert(use.before.id).second) return reject("native_craft_exact_input_preparation_required");
+                    held+=use.before.quantity;used+=use.used;
+                }
             }
-            if (stacks!=1 || claims!=1) return reject("native_craft_exact_input_preparation_required");
+            if (stacks!=1 || used!=reagent.perAttempt || held>count) return reject("native_craft_exact_input_preparation_required");
         }
+        if (matched.size()!=request.consumption.size()) return reject("native_craft_exact_input_preparation_required");
         blocker.clear();return true;
     }
     std::shared_ptr<NativeCraftCast> NativeCraftOperation::ReserveNativeCast(const OperationRequest& request,

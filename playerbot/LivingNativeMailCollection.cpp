@@ -1,5 +1,6 @@
 #include "botpch.h"
 #include "LivingNativeMailCollection.h"
+#include "LivingMailRecovery.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingActivityTransfer.h"
@@ -67,31 +68,6 @@ uint64_t NativeNearbyMailbox(Player& actor) {
         if (actor.GetGameObjectIfCanInteractWith(guid,GAMEOBJECT_TYPE_MAILBOX)) return guid.GetRawValue();
     return 0;
 }
-std::string EncodeNativeMailQuote(const NativeMailQuote& q) {
-    return "{\"actor\":"+std::to_string(q.actor)+",\"mail\":"+std::to_string(q.mail)+",\"guid\":"+std::to_string(q.guid)+
-        ",\"entry\":"+std::to_string(q.entry)+",\"quantity\":"+std::to_string(q.quantity)+",\"mailbox\":"+std::to_string(q.mailbox)+
-        ",\"mailbox_entry\":"+std::to_string(q.mailboxEntry)+",\"delivered_at\":"+std::to_string(q.deliveredAt)+
-        ",\"expires_at\":"+std::to_string(q.expiresAt)+",\"money_before\":"+std::to_string(q.moneyBefore)+
-        ",\"mail_money\":"+std::to_string(q.mailMoney)+",\"attachments_before\":"+std::to_string(q.attachmentsBefore)+
-        ",\"bag_before\":"+std::to_string(q.bagBefore)+",\"total_before\":"+std::to_string(q.totalBefore)+",\"to\":"+std::to_string(q.to)+
-        (q.mergeGuid ? ",\"merge_guid\":"+std::to_string(q.mergeGuid)+",\"merge_count\":"+std::to_string(q.mergeCount) : "")+'}';
-}
-bool DecodeNativeMailQuote(const std::string& value,NativeMailQuote& q) {
-    q={};
-    try {
-        boost::property_tree::ptree p;std::istringstream input(value);boost::property_tree::read_json(input,p);
-        q.actor=p.get<uint32_t>("actor");q.mail=p.get<uint32_t>("mail");q.guid=p.get<uint32_t>("guid");
-        q.entry=p.get<uint32_t>("entry");q.quantity=p.get<uint32_t>("quantity");q.mailbox=p.get<uint64_t>("mailbox");
-        q.mailboxEntry=p.get<uint32_t>("mailbox_entry");q.deliveredAt=p.get<uint64_t>("delivered_at");
-        q.expiresAt=p.get<uint64_t>("expires_at");q.moneyBefore=p.get<uint32_t>("money_before");
-        q.mailMoney=p.get<uint32_t>("mail_money");q.attachmentsBefore=p.get<uint32_t>("attachments_before");
-        q.bagBefore=p.get<uint32_t>("bag_before");q.totalBefore=p.get<uint32_t>("total_before");q.to=p.get<uint16_t>("to");
-        q.mergeGuid=p.get<uint32_t>("merge_guid",0);q.mergeCount=p.get<uint32_t>("merge_count",0);
-        return value==EncodeNativeMailQuote(q) && q.actor && q.mail && q.guid && q.entry && q.quantity &&
-            q.mailbox && q.mailboxEntry && q.attachmentsBefore && bool(q.mergeGuid)==bool(q.mergeCount) && q.mergeGuid!=q.guid &&
-            uint64_t(q.mergeCount)+q.quantity<=UINT32_MAX;
-    } catch (...) {q={};return false;}
-}
 bool PlanNativeMailCollection(Player& actor,const Task& task,const ResourceClaim& c,NativeMailQuote& q,std::string& blocker) {
     q={};auto reject=[&](const char* why){blocker=why;return false;};
     if (!sLivingActivityCoordinator.OnWorldThread() || task.actor!=actor.GetGUIDLow() || !SafeMailActor(actor))
@@ -116,6 +92,31 @@ bool PlanNativeMailCollection(Player& actor,const Task& task,const ResourceClaim
     q.deliveredAt=mail->deliver_time;q.expiresAt=mail->expire_time;q.moneyBefore=actor.GetMoney();q.mailMoney=mail->money;
     q.attachmentsBefore=uint32_t(mail->items.size());q.bagBefore=actor.GetItemCount(c.itemEntry,false);
     q.totalBefore=actor.GetItemCount(c.itemEntry,true);q.to=to;blocker.clear();return true;
+}
+bool ReadUncollectedNativeMail(Player& actor,const NativeMailQuote& before,MailRecoverySnapshot& result,std::string& why) {
+    result={};auto reject=[&](const char* s){why=s;return false;};
+    if(!sLivingActivityCoordinator.OnWorldThread() || actor.GetGUIDLow()!=before.actor || !SafeMailActor(actor))
+        return reject("interrupted_mail_safety_pause");
+    const auto* mail=actor.GetMail(before.mail);const auto* item=actor.GetMItem(before.guid);
+    if(!mail || !item || mail->receiverGuid!=actor.GetObjectGuid() || mail->state!=MAIL_STATE_UNCHANGED ||
+        mail->COD || mail->expire_time<=time(nullptr) || actor.m_mailsUpdated || !mail->removedItems.empty() ||
+        item->GetOwnerGuid()!=actor.GetObjectGuid() ||
+        std::count_if(mail->items.begin(),mail->items.end(),[&](const MailItemInfo& a){
+            return a.item_guid==before.guid && a.item_template==before.entry;
+        })!=1 || actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,before.guid)))
+        return reject("interrupted_mail_attachment_changed");
+    result.unchanged=before;auto& q=result.unchanged;
+    q.entry=item->GetEntry();q.quantity=item->GetCount();q.deliveredAt=mail->deliver_time;q.expiresAt=mail->expire_time;
+    q.mailMoney=mail->money;q.attachmentsBefore=mail->items.size();q.moneyBefore=actor.GetMoney();
+    q.bagBefore=actor.GetItemCount(q.entry,false);q.totalBefore=actor.GetItemCount(q.entry,true);
+    result.destination=Stack(actor,actor.GetItemByPos(before.to));
+    q.mergeGuid=result.destination.guid;q.mergeCount=result.destination.count;
+    if(!q.mergeGuid && uint8_t(before.to>>8)!=INVENTORY_SLOT_BAG_0) {
+        const auto* bag=actor.GetItemByPos(INVENTORY_SLOT_BAG_0,uint8_t(before.to>>8));
+        if(!bag || !bag->IsBag())return reject("interrupted_mail_destination_changed");
+        result.destination.bagGuid=bag->GetGUIDLow();
+    }
+    why.clear();return true;
 }
 bool NativeMailCollection::ValidateNative(Player& actor,const OperationRequest& r,std::string& blocker) {
     NativeMailQuote current;

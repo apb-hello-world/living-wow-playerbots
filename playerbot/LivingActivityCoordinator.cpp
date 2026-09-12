@@ -22,6 +22,7 @@
 #include "LivingRecipeLearningSettlement.h"
 #include "LivingNativeBankWithdrawal.h"
 #include "LivingNativeMailCollection.h"
+#include "LivingMailRecovery.h"
 #include "LivingNativeAuctionPurchase.h"
 #include "LivingNativeVendorSale.h"
 #include "LivingProfessionDemand.h"
@@ -2340,6 +2341,20 @@ AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint3
     if (!owned.operation.empty()) return reject(AdmissionCode::ReconciliationRequired,"atomic_operation_pending");
     ProfessionHistory history;ProfessionSnapshot snapshot;UnsettledClaimBatch batch;std::string blocker;
     if (!ReadProfessionHistory(actor,id,expectedRevision,history,blocker)) return reject(AdmissionCode::NotReady,blocker);
+    if(history.interruptedMail && saved->second.phase==Phase::Executing) {
+        const auto partyBlocker=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+        if(*partyBlocker) return reject(AdmissionCode::NotReady,partyBlocker);
+        NativeMailQuote before;MailRecoverySnapshot native;ProfessionPreparation prepared;
+        if(!state->resources.ReadUnsettled(id,batch,blocker) ||
+            !DecodeInterruptedMailQuote(saved->second,*history.interruptedMail,before,blocker) ||
+            !ReadUncollectedNativeMail(*bot,before,native,blocker) ||
+            !PrepareInterruptedMail(saved->second,current,history,batch,native,NowMs(),receipt,prepared,blocker))
+            return reject(AdmissionCode::ReconciliationRequired,blocker);
+        State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
+        write.admissionReceipt=receipt;state->pending.push_back(std::move(write));
+        if(owned.lease.rootTask==id) ReleaseTaskLease(owned.lease);
+        state->nextWork=0;return reject(AdmissionCode::Pending);
+    }
     if(history.interruptedCraft && saved->second.phase==Phase::Executing) {
         if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || LivingServiceExecution::Busy(bot))
             return reject(AdmissionCode::NotReady,"profession_safety_pause");
