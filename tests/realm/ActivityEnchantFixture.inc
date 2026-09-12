@@ -11,6 +11,7 @@ void RunIsolatedEnchantFixture(FixtureState& state) {
         boost::property_tree::ptree report;
         report.put("suite","activity-enchant-v1");report.put("boot",state.boot);report.put("test_only",true);
         report.put("outcome",outcome);report.put("failure",failure);report.put("actor",f.actor);report.put("task",f.task);
+        report.put("original_boot",f.originalBoot);report.put("resumed_same_task",f.resuming);
         report.put("ordinary_due_queue",true);report.put("independent_audit_required",true);
         report.put("general_execution_enabled",state.effective==Mode::Active);report.put("blocker",f.blocker);
         report.add_child("setup",f.setup);
@@ -39,6 +40,9 @@ void RunIsolatedEnchantFixture(FixtureState& state) {
             require(!id.empty() && id.size()<=9 && id.find_first_not_of("0123456789")==std::string::npos,"explicit_enchant_actor_required");
             f.actor=uint32_t(std::stoul(id));require(f.actor!=0,"explicit_enchant_actor_required");
             f.recipe=7443;f.task=SourceId("profession_job","isolated_enchant_v1:"+state.boot);
+            f.originalBoot=state.boot;
+            const auto* original=std::getenv("LIVING_WOW_NATIVE_FIXTURE_TASK");
+            if(original && *original) {require(IsUuid(original),"exact_enchant_resume_task_required");f.task=original;f.resuming=true;}
             state.gameplayFixtureActor.store(f.actor,std::memory_order_release);
         }
         if(sWorld.GetActiveAndQueuedSessionCount() || !state.loaded || state.ioPending || !state.pending.empty() ||
@@ -55,6 +59,25 @@ void RunIsolatedEnchantFixture(FixtureState& state) {
         if(!f.started) {
             require(actor->GetPlayerbotAI() && !actor->GetPlayerbotAI()->IsRealPlayer() && actor->GetSession() &&
                 sPlayerbotAIConfig.IsInRandomAccountList(actor->GetSession()->GetAccountId()),"copied_native_enchanter_required");
+            if(f.resuming) {
+                const auto saved=sLivingActivityCoordinator.ReadSavedTask(f.task);
+                require(saved && saved->actor==f.actor && saved->mode==Mode::Active && saved->accepted &&
+                    saved->source=="profession_job" && saved->sourceKey.compare(0,20,"isolated_enchant_v1:")==0 &&
+                    !Terminal(saved->phase),"original_unfinished_enchant_job_required");
+                f.originalBoot=saved->sourceKey.substr(20);require(IsUuid(f.originalBoot),"original_enchant_boot_required");
+                std::ifstream setup("/isolated/evidence/enchant-setup-"+f.task+".json",std::ios::ate);
+                require(setup && setup.tellg()>0 && setup.tellg()<32768,"original_enchant_setup_required");
+                setup.seekg(0);boost::property_tree::read_json(setup,f.setup);
+                require(f.setup.get<uint32_t>("actor")==f.actor && f.setup.get<std::string>("task")==f.task &&
+                    f.setup.get<std::string>("job")==saved->checkpoint.data &&
+                    DecodeProfessionJob(saved->checkpoint.data,f.job,f.blocker),"original_enchant_identity_changed");
+                f.subject=EnchantCodec::Subject(f.setup.get_child("subject_before"));
+                f.before.actor=f.actor;f.before.money=f.setup.get<uint32_t>("money_before");f.before.skill=f.setup.get<uint32_t>("skill_before");
+                f.toolBefore=f.setup.get<uint32_t>("tool_before");f.toolGrant=f.setup.get<uint32_t>("tool_grant");
+                f.toolGuid=f.setup.get<uint32_t>("tool_guid");
+                require(ReadNativeEnchantSpec(*actor,f.job,f.enchant,f.blocker),"original_enchant_recipe_required");
+                state.enforceEffects.store(true,std::memory_order_release);f.started=true;return;
+            }
             for(const auto& row:state.cache) if(row.second.actor==f.actor && row.second.mode==Mode::Active && !Terminal(row.second.phase))
                 require(false,"existing_enchant_actor_obligation_preserved");
             require(BuildNativeSkillGainJob(*actor,f.recipe,f.job,f.blocker),"native_enchant_recipe:"+f.blocker);

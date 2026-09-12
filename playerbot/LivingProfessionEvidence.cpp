@@ -122,12 +122,22 @@ namespace {
         StoredCraftProof& result,std::string& blocker) {
         const auto& receipt=row.receipt;const bool verified=receipt.state==OperationState::Verified;
         if (!verified && receipt.evidence=="native_craft_intent_not_committed") {
+            const auto recovered=Parse(row.afterState);
+            const bool priorCapture=recovered.count("prior_observation")!=0;
             auto predecessor=task;predecessor.revision=receipt.taskRevision;predecessor.phase=Phase::Executing;
             predecessor.checkpoint.step="profession_craft";auto original=row;original.receipt.state=OperationState::Intent;
             original.receipt.evidence.clear();original.receipt.nativeReference.clear();original.afterState="{}";
+            if(priorCapture) {
+                ++predecessor.revision;predecessor.phase=Phase::Reconciling;
+                predecessor.checkpoint.blocker="native_save_capture_requires_reconciliation";
+                original.receipt.state=OperationState::Reconciling;original.receipt.evidence=predecessor.checkpoint.blocker;
+                original.receipt.nativeReference=receipt.nativeReference;
+                original.afterState=EnchantCodec::Json(recovered.get_child("prior_observation"));
+            }
             InterruptedCraftIntent intent;
             if (!DecodeInterruptedCraftIntent(predecessor,original,intent,blocker) || !intent.enchant) return false;
-            const auto recovered=Parse(row.afterState);Object(recovered,{"recovery","frame","subject"});
+            if(priorCapture) Object(recovered,{"recovery","frame","subject","prior_observation"});
+            else Object(recovered,{"recovery","frame","subject"});
             const auto& basis=recovered.get_child("recovery");Object(basis,{"version","basis","boot"});
             const auto frame=Frame(task.actor,recovered.get_child("frame"));
             Require(Number(basis.get_child("version"))==1 && Scalar(basis.get_child("basis"))=="atomic_native_save_absent" &&
@@ -288,11 +298,16 @@ bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& r
     try {
         ProfessionJob job;std::string reason;const auto& r=row.receipt;
         Require(row.acknowledged && task.mode==Mode::Active && task.accepted && task.root==task.id &&
-            task.parent.empty() && task.phase==Phase::Executing && task.checkpoint.step=="profession_craft" &&
+            task.parent.empty() && (task.phase==Phase::Executing || task.phase==Phase::Reconciling) && task.checkpoint.step=="profession_craft" &&
             ValidateProfessionTask(task,reason) && IsProfessionJob(task) &&
             DecodeProfessionJob(task.checkpoint.data,job,reason),"interrupted_craft_task_invalid");
-        Require(IsUuid(r.id) && r.task==task.id && r.taskRevision==task.revision && r.kind=="profession_craft" &&
-            r.state==OperationState::Intent && r.evidence.empty() && r.nativeReference.empty() && row.afterState=="{}",
+        const bool captured=job.operation==ProfessionOperation::EnchantItem && task.phase==Phase::Reconciling &&
+            r.state==OperationState::Reconciling && r.taskRevision<UINT64_MAX && r.taskRevision+1==task.revision &&
+            r.evidence=="native_save_capture_requires_reconciliation" && task.checkpoint.blocker==r.evidence &&
+            r.nativeReference=="spell:"+std::to_string(job.recipe)+":operation:"+r.id;
+        Require(IsUuid(r.id) && r.task==task.id && r.kind=="profession_craft" &&
+            (captured || (task.phase==Phase::Executing && r.taskRevision==task.revision &&
+             r.state==OperationState::Intent && r.evidence.empty() && r.nativeReference.empty() && row.afterState=="{}")),
             "interrupted_craft_not_pristine_intent");
         const bool enchant=job.operation==ProfessionOperation::EnchantItem;
         Require(enchant || ((job.operation==ProfessionOperation::CreateItem || job.operation==ProfessionOperation::TransformMaterial) &&
@@ -311,6 +326,32 @@ bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& r
         } else {Object(native,{"recipe","skill","money"});decoded.output=Gain(before.get_child("item_gain"));}
         decoded.skill=Number<uint16_t>(native.get_child("skill"));decoded.money=Number(native.get_child("money"));
         decoded.inputs=Inputs(task,before.get_child("native.claimed_consumption"));
+        if(captured) {
+            // A failed native callback is not success. Only this exact
+            // pre-effect capture gap is eligible for restored-state comparison;
+            // possible effects or changed native possessions remain unresolved.
+            const auto observed=Parse(row.afterState);
+            Object(observed,{"recipe","skill_id","effect_entered","native_finished","native_succeeded","created_calls","created_quantity",
+                "before","after","enchantment","subject_claim","subject_before","subject_after"});
+            const auto original=Frame(task.actor,observed.get_child("before"));ResourceClaim held;
+            Require(Number(observed.get_child("recipe"))==job.recipe && Number(observed.get_child("skill_id"))==job.skill &&
+                !Flag(observed.get_child("effect_entered")) && !Flag(observed.get_child("native_finished")) &&
+                !Flag(observed.get_child("native_succeeded")) && !Number(observed.get_child("created_calls")) &&
+                !Number(observed.get_child("created_quantity")) && original.money==decoded.money && original.skill==decoded.skill &&
+                Number(observed.get_child("enchantment"))==decoded.enchant->spec.id &&
+                SameEnchantSubject(EnchantCodec::Subject(observed.get_child("subject_before")),decoded.enchant->before) &&
+                DecodeClaimProjection(EnchantCodec::Json(observed.get_child("subject_claim")),held,blocker) &&
+                SameResourceClaim(held,decoded.enchant->claim),"interrupted_enchant_capture_has_possible_effect");
+            InputBacking(job,decoded.inputs,original);
+            const auto& empty=observed.get_child("after");Object(empty,{"skill","money","stacks"});
+            Require(!Number(empty.get_child("skill")) && !Number(empty.get_child("money")) && empty.get_child("stacks").empty(),
+                "interrupted_enchant_capture_has_after_state");
+            const auto& target=observed.get_child("subject_after");
+            Object(target,{"actor","guid","entry","count","bag","slot","enchantments"});
+            for(const auto* key:{"actor","guid","entry","count","bag","slot"})
+                Require(!Number(target.get_child(key)),"interrupted_enchant_capture_has_after_subject");
+            Require(target.get_child("enchantments").empty(),"interrupted_enchant_capture_has_after_subject");
+        }
         Require(Number(native.get_child("recipe"))==job.recipe && (enchant || decoded.output.entry==job.outputEntry),
             "interrupted_craft_recipe_mismatch");
         size_t matched=0;
@@ -417,6 +458,9 @@ bool ProfessionHistoryCursor::Advance(std::string& blocker) {
             task.phase==Phase::Executing) {
             if(row.receipt.kind=="mail_collect") history.interruptedMail=row;
             else history.interruptedCraft=row;
+        } else if(row.receipt.kind=="profession_craft" && task.phase==Phase::Reconciling) {
+            InterruptedCraftIntent intent;std::string reason;
+            if(DecodeInterruptedCraftIntent(task,row,intent,reason)) history.interruptedCraft=row;
         }
     }
     if (++position==records.size()) {history.complete=true;records.clear();}

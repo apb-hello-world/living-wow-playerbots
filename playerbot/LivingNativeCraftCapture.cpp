@@ -18,9 +18,13 @@
 #include <stdexcept>
 
 namespace LivingActivity {
-    bool ReadNativeEnchantSpec(Player& actor,const ProfessionJob& job,EnchantSpec& spec,std::string& blocker) {
+    namespace {
+    // Actor-local reads run synchronously on the world owner OR the native
+    // Spell callback's map owner. Public planning readers remain world-only.
+    // No Player/Item pointer or mutable coordinator cache crosses this boundary.
+    bool ReadActorEnchantSpec(Player& actor,const ProfessionJob& job,EnchantSpec& spec,std::string& blocker) {
         spec={};auto reject=[&](const char* why){blocker=why;return false;};
-        if (!sLivingActivityCoordinator.OnWorldThread() || !actor.IsInWorld() || actor.IsBeingTeleported() ||
+        if (!actor.IsInWorld() || actor.IsBeingTeleported() ||
             job.operation!=ProfessionOperation::EnchantItem || !job.subjectItem || job.skill!=SKILL_ENCHANTING)
             return reject("native_enchant_exact_owned_subject_required");
         const auto* info=sSpellTemplate.LookupEntry<SpellEntry>(job.recipe);
@@ -46,9 +50,9 @@ namespace LivingActivity {
             return reject("native_enchant_existing_upgrade_protected");
         blocker.clear();return true;
     }
-    bool ReadNativeEnchantSubject(Player& actor,const ProfessionJob& job,EnchantSubject& subject,std::string& blocker) {
+    bool ReadActorEnchantSubject(Player& actor,const ProfessionJob& job,EnchantSubject& subject,std::string& blocker) {
         subject={};
-        if (!sLivingActivityCoordinator.OnWorldThread() || !actor.IsInWorld() || actor.IsBeingTeleported()) {
+        if (!actor.IsInWorld() || actor.IsBeingTeleported()) {
             blocker="native_enchant_subject_unavailable";return false;
         }
         auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,job.subjectItem));
@@ -62,6 +66,15 @@ namespace LivingActivity {
             subject.enchantments.push_back({item->GetEnchantmentId(slot),item->GetEnchantmentDuration(slot),item->GetEnchantmentCharges(slot)});
         }
         blocker.clear();return true;
+    }
+    }
+    bool ReadNativeEnchantSpec(Player& actor,const ProfessionJob& job,EnchantSpec& spec,std::string& blocker) {
+        if (!sLivingActivityCoordinator.OnWorldThread()) {spec={};blocker="native_enchant_world_reader_required";return false;}
+        return ReadActorEnchantSpec(actor,job,spec,blocker);
+    }
+    bool ReadNativeEnchantSubject(Player& actor,const ProfessionJob& job,EnchantSubject& subject,std::string& blocker) {
+        if (!sLivingActivityCoordinator.OnWorldThread()) {subject={};blocker="native_enchant_world_reader_required";return false;}
+        return ReadActorEnchantSubject(actor,job,subject,blocker);
     }
     bool BuildNativeEnchantIntent(Player& actor,const Task& task,const UnsettledClaimBatch& claims,
         std::string& beforeState,std::string& blocker) {
@@ -160,15 +173,25 @@ namespace LivingActivity {
                  (this->job.operation!=ProfessionOperation::CreateItem && this->job.operation!=ProfessionOperation::TransformMaterial))))
             throw std::invalid_argument("native_craft_saved_execution_context_required");
     }
-    bool NativeProfessionCraftCast::SubjectAllowed(Player& actor,bool before,std::string& blocker) const {
+    bool NativeProfessionCraftCast::SubjectAllowed(Player& actor,bool before,std::string& blocker,bool nativeCallback) const {
         if (job.operation!=ProfessionOperation::EnchantItem) {blocker.clear();return true;}
+        const bool world=sLivingActivityCoordinator.OnWorldThread();
+        if (!world && !(nativeCallback && attached.load() && AuthorityAllowed(actor))) {
+            blocker="native_enchant_owned_callback_required";return false;
+        }
         EnchantSubject current;EnchantSpec spec;
-        if (!ReadNativeEnchantSpec(actor,job,spec,blocker) || !ReadNativeEnchantSubject(actor,job,current,blocker)) return false;
+        if (!ReadActorEnchantSpec(actor,job,spec,blocker) || !ReadActorEnchantSubject(actor,job,current,blocker)) return false;
         const auto protectedItems=sLivingActivityCoordinator.ResourceReservations().Inspect();
+        const auto trade=sPlayerbotActionBroker.ReservedItemsView();
+        const auto supply=sGuildSupplies.ReservedItemsView();
+        // Launch/save revalidate the acknowledged world-owned claim. During a
+        // native callback, the immutable attached intent, current task/lease
+        // revision and published protection are authoritative; never consult
+        // the mutable world claim book from a map worker.
         if (spec.id!=enchant.spec.id || !SameEnchantSubject(current,before?enchant.before:enchantAfter) ||
-            !sLivingActivityCoordinator.AcknowledgedResourceClaim(enchant.claim) || !protectedItems || !protectedItems->ready ||
+            (world && !sLivingActivityCoordinator.AcknowledgedResourceClaim(enchant.claim)) || !protectedItems || !protectedItems->ready ||
             protectedItems->ProtectedItem(job.subjectItem)!=1 || protectedItems->HasUncertainItem(task.actor,current.item.entry) ||
-            sPlayerbotActionBroker.IsItemReserved(job.subjectItem) || sGuildSupplies.ReservedEntry(task.actor,current.item.entry) ||
+            trade->Item(job.subjectItem) || supply->Item(job.subjectItem) || supply->Entry(task.actor,current.item.entry) ||
             ai::ItemUsageValue::IsNeededForQuest(&actor,current.item.entry,true)) {
             blocker="native_enchant_subject_commitment_changed";return false;
         }
@@ -419,7 +442,7 @@ namespace LivingActivity {
         if (!actor || !attached.load() || !AuthorityAllowed(*actor) || !actor->HasSpell(job.recipe) ||
             actor->GetTradeData() || !actor->IsStopped() ||
             !ReadNativeCraftFrame(*actor,job,current,blocker) || !InputsAllowed(*actor,current,blocker) ||
-            !SubjectAllowed(*actor,true,blocker)) return {};
+            !SubjectAllowed(*actor,true,blocker,true)) return {};
         if (job.operation==ProfessionOperation::EnchantItem && spell.m_targets.getItemTargetGuid()!=ObjectGuid(HIGHGUID_ITEM,job.subjectItem)) return {};
         if (!capture->EnterEffect(identity,current)) return {};
         return std::make_unique<ExecutionScope>(task,action);
@@ -432,7 +455,9 @@ namespace LivingActivity {
         try {
             auto* actor=Actor(spell);CraftFrame after;std::string blocker;
             if (!actor || !ReadNativeCraftFrame(*actor,job,after,blocker)) {capture->Abandon();return;}
-            if (job.operation==ProfessionOperation::EnchantItem && !ReadNativeEnchantSubject(*actor,job,enchantAfter,blocker)) {
+            // Finished is a native synchronous callback, commonly a map worker.
+            // Publish the value snapshot before CraftCapture's mutex release.
+            if (job.operation==ProfessionOperation::EnchantItem && !ReadActorEnchantSubject(*actor,job,enchantAfter,blocker)) {
                 capture->Abandon();return;
             }
             capture->Finish(identity,succeeded,std::move(after));

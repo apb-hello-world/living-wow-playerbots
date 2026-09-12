@@ -51,22 +51,38 @@ static void EnchantWorkflowDatabase(Connection& db) {
          "UPDATE living_activity_claim SET location='equipment' WHERE claim_id="+subject);
     race("UPDATE living_activity_claim SET revision=2 WHERE claim_id="+subject,
          "UPDATE living_activity_claim SET revision=1 WHERE claim_id="+subject);
+    // The actual copied-map failure observed a pre-effect callback gap, then
+    // rolled back its native save. Preserve that observation through recovery.
+    const auto missing=f.MissingCallback();task.phase=Phase::Reconciling;++task.revision;
+    task.checkpoint.blocker=missing.receipt.evidence;
+    assert(db.Write(OperationOutcomeWrite(task,4,missing.receipt,rid(9),missing.afterState)));
+    saved=task;saved.context.boot.clear();saved.context.actorGeneration=saved.context.mapGeneration=0;
+    const auto captureHistory=history(task);assert(captureHistory.interruptedCraft);
+    assert(PrepareInterruptedProfession(saved,current,captureHistory,f.Held(),f.before,1100,rid(4),recovery,blocker,{},&f.intent.before));
+    assert(db.Execute("UPDATE item_instance SET enchantments="+SqlValue(applied)+" WHERE guid=906"));
+    assert(!db.Write(recovery.plan));
+    assert(db.Execute("UPDATE item_instance SET enchantments="+SqlValue(blank)+" WHERE guid=906"));
+    assert(db.Execute("UPDATE living_activity_operation SET after_state=JSON_SET(after_state,'$.effect_entered',true) WHERE operation_id="+SqlValue(pending.receipt.id)));
+    assert(!db.Write(recovery.plan));
+    assert(db.Execute("UPDATE living_activity_operation SET after_state="+SqlValue(missing.afterState)+" WHERE operation_id="+SqlValue(pending.receipt.id)));
     {Connection restarted;assert(restarted.Write(recovery.plan));}
     assert(db.Write(recovery.plan)); // Lost acknowledgement does not consume the reagent or enchant the target.
     task=recovery.task;
+    assert(db.Scalar("SELECT JSON_EXTRACT(after_state,'$.prior_observation.recipe') FROM living_activity_operation WHERE operation_id="+
+        SqlValue(pending.receipt.id))=="7443");
     assert(db.Scalar("SELECT enchantments FROM item_instance WHERE guid=906")==blank);
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+id+" AND state='held'")=="2");
     const auto resumed=history(task);
     assert(!resumed.unresolvedOperation && resumed.attempts.size()==1 && !resumed.attempts[0].nativeEffectVerified);
     task.phase=Phase::Preparing;++task.revision;
-    assert(db.Write(TaskWrite(task,5,rid(5),"enchant_fixture_retry")));
+    assert(db.Write(TaskWrite(task,task.revision-1,rid(5),"enchant_fixture_retry")));
     task.phase=Phase::Executing;task.checkpoint.step="profession_craft";++task.revision;
     const auto cast=rid(6);
-    assert(db.Write(OperationIntentWrite(task,6,cast,"profession_craft",pending.beforeState)));
+    assert(db.Write(OperationIntentWrite(task,task.revision-1,cast,"profession_craft",pending.beforeState)));
     OperationResult receipt=f.row.receipt;receipt.id=cast;receipt.taskRevision=task.revision;
     receipt.nativeReference="spell:7443:operation:"+cast;
     task.phase=Phase::Verifying;++task.revision;
-    const auto effect=ConsumedOperationWrite(task,7,receipt,rid(7),f.Capture(false),f.inputs);
+    const auto effect=ConsumedOperationWrite(task,task.revision-1,receipt,rid(7),f.Capture(false),f.inputs);
     assert(!db.Write(effect.journal,true));
     assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+material)=="held");
     assert(db.Write(effect.journal));assert(db.Write(effect.journal));

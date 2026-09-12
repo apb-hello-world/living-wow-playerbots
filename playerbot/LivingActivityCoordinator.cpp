@@ -322,8 +322,8 @@ struct LivingActivityCoordinator::State {
         uint32_t actor=0,recipe=0,toolGuid=0,toolBefore=0,toolGrant=0;
         uint64_t deadline=0;
         unsigned diagnostics=0;
-        bool requested=false,started=false;
-        std::string task,blocker,lastDiagnostic;
+        bool requested=false,started=false,resuming=false;
+        std::string task,blocker,lastDiagnostic,originalBoot;
         ProfessionJob job;
         CraftFrame before;
         EnchantSubject subject;
@@ -2438,7 +2438,7 @@ AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint3
         if(owned.lease.rootTask==id) ReleaseTaskLease(owned.lease);
         state->nextWork=0;return reject(AdmissionCode::Pending);
     }
-    if(history.interruptedCraft && saved->second.phase==Phase::Executing) {
+    if(history.interruptedCraft && (saved->second.phase==Phase::Executing || saved->second.phase==Phase::Reconciling)) {
         if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || LivingServiceExecution::Busy(bot))
             return reject(AdmissionCode::NotReady,"profession_safety_pause");
         const auto partyBlocker=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);

@@ -54,5 +54,16 @@ namespace LivingActivityTest {
             auto pending=row;pending.receipt.state=OperationState::Intent;pending.receipt.evidence.clear();
             pending.receipt.nativeReference.clear();pending.afterState="{}";return pending;
         }
+        StoredCraftOperation MissingCallback() const {
+            auto row=Pending();row.receipt.state=OperationState::Reconciling;
+            row.receipt.evidence="native_save_capture_requires_reconciliation";
+            row.receipt.nativeReference="spell:7443:operation:"+row.receipt.id;
+            EnchantCodec::Tree p;std::istringstream in(Capture(false));boost::property_tree::read_json(in,p);
+            p.put("effect_entered",false);p.put("native_finished",false);p.put("native_succeeded",false);
+            EnchantCodec::Tree frame,target;
+            std::istringstream emptyFrame("{\"skill\":0,\"money\":0,\"stacks\":[]}");boost::property_tree::read_json(emptyFrame,frame);
+            std::istringstream emptyTarget(EnchantSubjectJson({}));boost::property_tree::read_json(emptyTarget,target);
+            p.put_child("after",frame);p.put_child("subject_after",target);row.afterState=EnchantCodec::Json(p);return row;
+        }
     };
 }

@@ -73,5 +73,25 @@ namespace {
         mutate(recovered,"subject.guid",907);assert(!DecodeStoredCraftProof(resumed.task,recovered,proof,blocker));
         auto uncertain=f.Pending();uncertain.receipt.state=OperationState::Reconciling;
         InterruptedCraftIntent interrupted;assert(!DecodeInterruptedCraftIntent(task,uncertain,interrupted,blocker));
+        // Observed native callback gap, not arbitrary uncertainty. A restart
+        // compares exact untouched subject/material/skill/money before retry.
+        uncertain=f.MissingCallback();task.phase=Phase::Reconciling;++task.revision;
+        task.checkpoint.blocker=uncertain.receipt.evidence;
+        assert(DecodeInterruptedCraftIntent(task,uncertain,interrupted,blocker));
+        history.revision=task.revision;history.interruptedCraft=uncertain;
+        assert(restore(f.intent.before,f.Held(),f.before));
+        assert(resumed.plan.statements[1].find("o.state="+SqlValue("reconciling"))!=std::string::npos);
+        assert(resumed.plan.statements[1].find("o.after_state="+SqlValue(uncertain.afterState))!=std::string::npos);
+        recovered=f.Pending();recovered.receipt.state=OperationState::Rejected;
+        recovered.receipt.evidence="native_craft_intent_not_committed";recovered.receipt.nativeReference=f.row.receipt.nativeReference;
+        recovered.afterState="{\"recovery\":{\"version\":1,\"basis\":\"atomic_native_save_absent\",\"boot\":\""+
+            current.boot+"\"},\"frame\":"+FrameJson(f.before)+",\"subject\":"+EnchantSubjectJson(f.intent.before)+
+            ",\"prior_observation\":"+uncertain.afterState+'}';
+        assert(DecodeStoredCraftProof(resumed.task,recovered,proof,blocker));
+        target=f.intent.before;target.enchantments[0].id=24;assert(!restore(target,f.Held(),f.before));
+        frame=f.before;frame.stacks.clear();assert(!restore(f.intent.before,f.Held(),frame));
+        mutate(uncertain,"effect_entered",1);assert(!DecodeInterruptedCraftIntent(task,uncertain,interrupted,blocker));
+        uncertain=f.MissingCallback();mutate(uncertain,"after.skill",20);
+        assert(!DecodeInterruptedCraftIntent(task,uncertain,interrupted,blocker));
     }
 }

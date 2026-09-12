@@ -63,7 +63,7 @@ namespace LivingActivity {
         Player* Actor(Spell& spell) const; // Synchronous resolver, never stored.
         bool InputsAllowed(Player& actor,const CraftFrame& frame,std::string& blocker) const;
         bool AuthorityAllowed(Player& actor) const;
-        bool SubjectAllowed(Player&,bool before,std::string&) const;
+        bool SubjectAllowed(Player&,bool before,std::string&,bool nativeCallback=false) const;
         const Task task;
         const ActionContext action;
         const ProfessionJob job;
