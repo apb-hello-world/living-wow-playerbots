@@ -7,11 +7,13 @@ using namespace LivingActivityTest;
 #include "fixtures/ProfessionResume.inc"
 #include "fixtures/ProfessionInterrupted.inc"
 #include "fixtures/MailRecovery.inc"
+#include "fixtures/EnchantWorkflow.inc"
 int main() {
     TestProfessionAttemptPlan();
     TestProfessionResumption();
     TestInterruptedProfession();
     TestMailRecovery();
+    TestEnchantWorkflow();
     Task task;task.id=task.root="637bd562-36d2-5b01-bc01-e2d831c49f92";
     task.actor=task.context.actor=703;task.source="profession_job";task.sourceKey="settlement_fixture";
     task.mode=Mode::Active;task.phase=Phase::Verifying;task.kind=Kind::Profession;task.revision=5;
@@ -44,7 +46,7 @@ int main() {
     assert(book.Protection().ProtectedItem(703,102,3371)==4); // Queueing is not acknowledgement.
     const auto completed=settled;
     assert(completed.plan.statements.front().find("actor_guid=actor_guid")!=std::string::npos);
-    assert(completed.plan.statements[1].find("$.native.result.after.skill")!=std::string::npos);
+    assert(completed.plan.statements[1].find(SqlValue("$.native.result.after.skill"))!=std::string::npos);
     assert(completed.plan.statements[1].find("c.state NOT IN ('consumed','released')")!=std::string::npos);
     WorldContext restarted=task.context;restarted.boot="ff2efbdf-f0ec-4539-b840-299847974001";
     restarted.actorGeneration=19;restarted.mapGeneration=27;restarted.policyRevision=3;

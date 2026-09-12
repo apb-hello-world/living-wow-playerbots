@@ -34,7 +34,7 @@ namespace LivingActivity {
             claim.copper > std::numeric_limits<uint32_t>::max()) return false;
         if (claim.state != "proposed" && claim.state != "held" && claim.state != "in_transfer" &&
             claim.state != "reconciling" && !TerminalClaim(claim)) return false;
-        if (claim.location != "bags" && claim.location != "bank" && claim.location != "mail" &&
+        if (claim.location != "bags" && claim.location != "bank" && claim.location != "equipment" && claim.location != "mail" &&
             claim.location != "auction" && claim.location != "guild_bank" &&
             claim.location != "trade" && claim.location != "money") return false;
         if (claim.copper) {
@@ -47,6 +47,7 @@ namespace LivingActivity {
             // while reconciling; it can never be treated as an executable item.
             if (!claim.itemGuid && (claim.state == "held" || claim.state == "in_transfer")) return false;
         }
+        if (claim.location=="equipment" && (claim.quantity!=1 || !claim.itemGuid || claim.nativeReference)) return false;
         if ((claim.location == "mail" || claim.location == "auction" ||
             claim.location == "guild_bank" || claim.location == "trade") &&
             !claim.nativeReference && claim.state != "proposed" && claim.state != "reconciling") return false;

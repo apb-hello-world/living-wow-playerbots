@@ -19,5 +19,5 @@ bool PrepareProfessionResumption(const Task& saved,const WorldContext& current,
 bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
     const ProfessionHistory&,const UnsettledClaimBatch&,const CraftFrame&,
     uint64_t nowMs,const std::string& receipt,ProfessionPreparation&,std::string& blocker,
-    const std::vector<NativeItemStack>& preservedBank={});
+    const std::vector<NativeItemStack>& preservedBank={},const EnchantSubject* subject=nullptr);
 }

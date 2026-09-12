@@ -28,14 +28,15 @@ namespace LivingActivity {
     struct NativeResourceBalance {
         uint32_t actor = 0, itemGuid = 0, itemEntry = 0, quantity = 0, copper = 0;
         std::string location;
-        uint64_t nativeReference = 0; // Mail ID for an exact native attachment; zero for bags/bank/money.
+        uint64_t nativeReference = 0; // Mail ID; zero for native carried/equipped/banked items or money.
     };
     inline bool ValidNativeResourceBalance(const NativeResourceBalance& b) {
         if (!b.actor) return false;
         if (b.location=="money") return !b.itemGuid && !b.itemEntry && !b.quantity && !b.nativeReference;
         return b.itemGuid && b.itemEntry && !b.copper &&
             ((b.location=="mail" && b.nativeReference && b.nativeReference<=UINT32_MAX) ||
-             ((b.location=="bags" || b.location=="bank") && !b.nativeReference));
+             ((b.location=="bags" || b.location=="bank") && !b.nativeReference) ||
+             (b.location=="equipment" && b.quantity==1 && !b.nativeReference));
     }
     // Preparation-only reservation/release. No transfer, consumption, native
     // effect or completion can be written through this path. The coordinator

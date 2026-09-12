@@ -1,6 +1,7 @@
 #ifndef LIVING_PROFESSION_EVIDENCE_H
 #define LIVING_PROFESSION_EVIDENCE_H
 #include "LivingCraftCapture.h"
+#include "LivingEnchantIntent.h"
 #include <array>
 
 namespace LivingActivity {
@@ -26,6 +27,7 @@ namespace LivingActivity {
         uint32_t skill=0,money=0;
         ItemGainSpec output;
         std::vector<ClaimConsumption> inputs;
+        std::optional<EnchantIntent> enchant;
     };
     // Only an acknowledged, still-intent atomic profession save is eligible.
     // This decodes identity, not proof that a native effect did or did not run.

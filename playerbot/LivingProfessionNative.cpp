@@ -1,6 +1,7 @@
 #include "playerbot/playerbot.h"
 #include "LivingProfessionNative.h"
 #include "LivingProfessionPlan.h"
+#include "LivingNativeCraftCapture.h"
 #include "ServerFacade.h"
 #include "Spells/SpellMgr.h"
 #include <map>
@@ -19,11 +20,31 @@ namespace LivingActivity {
         }
         const auto native=InspectNativeProfessionRecipe(actor,job);
         if (!native.blocker.empty()) {blocker=native.blocker;return false;}
-        if (native.operation!=ProfessionOperation::CreateItem) return reject("profession_subject_executor_required");
+        if (native.operation!=ProfessionOperation::CreateItem && native.operation!=ProfessionOperation::EnchantItem)
+            return reject("profession_subject_executor_required");
         job.initialSkill=native.skillValue;job.targetSkill=native.skillValue+1;
         job.operation=native.operation;job.purpose=ProfessionPurpose::SkillGain;
-        job.outputEntry=native.outputEntry;job.outputQuantity=1;job.reagents=native.reagents;
-        return MatchNativeProfessionRecipe(job,native,blocker);
+        job.outputEntry=native.outputEntry;job.outputQuantity=native.operation==ProfessionOperation::CreateItem?1:0;job.reagents=native.reagents;
+        if (job.operation==ProfessionOperation::EnchantItem) {
+            if (!actor.GetPlayerbotAI()) return reject("profession_native_actor_unavailable");
+            // Prefer an owned equipped piece. Never replace a different existing
+            // permanent enchant merely to practice a low-level skill recipe.
+            for (const auto location:{IterateItemsMask::ITERATE_ITEMS_IN_EQUIP,IterateItemsMask::ITERATE_ITEMS_IN_BAGS}) {
+                uint32_t selected=0;unsigned count=0;
+                for (auto* item:actor.GetPlayerbotAI()->InventoryParseItems("all",location)) {
+                    if (++count>256) return reject("native_enchant_subject_snapshot_bound");
+                    if (!item) continue;
+                    job.subjectItem=item->GetGUIDLow();EnchantSpec spec;std::string why;
+                    if (!ReadNativeEnchantSpec(actor,job,spec,why) ||
+                        (item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) && item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT)!=spec.id)) continue;
+                    if (!selected || job.subjectItem<selected) selected=job.subjectItem;
+                }
+                job.subjectItem=selected;
+                if (selected) break;
+            }
+            if (!job.subjectItem) return reject("native_enchant_safe_owned_subject_unavailable");
+        }
+        return MatchNativeProfessionRecipe(job,InspectNativeProfessionRecipe(actor,job),blocker);
     }
     NativeProfessionRecipe InspectNativeProfessionRecipe(Player& actor, const ProfessionJob& job) {
         NativeProfessionRecipe result;

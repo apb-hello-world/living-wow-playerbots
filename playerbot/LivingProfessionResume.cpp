@@ -9,7 +9,7 @@ namespace LivingActivity {
 bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
     const ProfessionHistory& history,const UnsettledClaimBatch& batch,const CraftFrame& frame,
     uint64_t nowMs,const std::string& receipt,ProfessionPreparation& result,std::string& blocker,
-    const std::vector<NativeItemStack>& preservedBank) {
+    const std::vector<NativeItemStack>& preservedBank,const EnchantSubject* subject) {
     result={};auto reject=[&](const char* why){blocker=why;return false;};
     // Only a restored record can enter this path. Zoning or a live pending cast
     // cannot erase its operation by presenting another map/session generation.
@@ -27,8 +27,11 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
         !DecodeProfessionJob(saved.checkpoint.data,job,blocker)) return false;
     if(!ValidCraftFrame(frame) || frame.actor!=saved.actor || frame.skill!=intent.skill || frame.money!=intent.money)
         return reject("interrupted_craft_native_state_changed");
-    if(!batch.complete || !batch.bookRevision || batch.claims.size()<intent.inputs.size() || batch.claims.size()>16 ||
-        preservedBank.size()!=batch.claims.size()-intent.inputs.size())
+    const size_t subjects=intent.enchant?1:0;
+    if (bool(subject)!=bool(intent.enchant) || (subject && !SameEnchantSubject(*subject,intent.enchant->before)))
+        return reject("interrupted_enchant_subject_changed");
+    if(!batch.complete || !batch.bookRevision || batch.claims.size()<intent.inputs.size()+subjects || batch.claims.size()>16 ||
+        preservedBank.size()!=batch.claims.size()-intent.inputs.size()-subjects)
         return reject("interrupted_craft_claim_batch_changed");
     auto n=[](uint64_t v){return std::to_string(v);};
     std::string guard,frames="{\"skill\":"+n(frame.skill)+",\"money\":"+n(frame.money)+",\"stacks\":[";
@@ -41,7 +44,15 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
         if(!ids.insert(c.id).second || !ValidResourceClaim(c) || c.task!=saved.id || c.actor!=saved.actor ||
             c.state!="held" || c.copper || c.nativeReference)
             return reject("interrupted_craft_claim_changed");
-        if(use==intent.inputs.end()) {
+        if (intent.enchant && c.id==intent.enchant->claim.id) {
+            if (!SameResourceClaim(c,intent.enchant->claim)) return reject("interrupted_enchant_subject_claim_changed");
+            const auto& item=subject->item;std::string fields;
+            for (const auto& e:subject->enchantments) fields+=n(e.id)+' '+n(e.duration)+' '+n(e.charges)+' ';
+            guard+=" AND EXISTS(SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+
+                n(saved.actor)+" AND v.item="+n(item.guid)+" AND v.item_template="+n(item.entry)+" AND v.bag="+n(item.bagGuid)+
+                " AND v.slot="+n(item.slot)+" AND i.owner_guid="+n(saved.actor)+" AND i.itemEntry="+n(item.entry)+
+                " AND i.count=1 AND i.enchantments="+SqlValue(fields)+')';
+        } else if(use==intent.inputs.end()) {
             // Dependent capacity work shares this root; banking its surplus
             // does not release the claim before the whole job is settled.
             const auto item=std::find_if(preservedBank.begin(),preservedBank.end(),[&](const auto& v){return v.guid==c.itemGuid;});
@@ -86,7 +97,7 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
     outcome.evidence="native_craft_intent_not_committed";
     outcome.nativeReference="spell:"+n(job.recipe)+":operation:"+outcome.id;
     const auto after=std::string("{\"recovery\":{\"version\":1,\"basis\":\"atomic_native_save_absent\",\"boot\":\"")+
-        current.boot+"\"},\"frame\":"+frames+'}';
+        current.boot+"\"},\"frame\":"+frames+(subject?",\"subject\":"+EnchantSubjectJson(*subject):"")+'}';
     prepared.plan=OperationOutcomeWrite(next,saved.revision,outcome,receipt,after);
     prepared.plan.statements.front()+=" AND phase='executing' AND accepted=1 AND checkpoint="+SqlValue(saved.checkpoint.data)+
         " AND EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+SqlValue(outcome.id)+

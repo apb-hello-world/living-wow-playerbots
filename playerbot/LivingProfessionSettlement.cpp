@@ -23,8 +23,9 @@ bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& sn
     if (NextProfessionStep(before,snapshot).step!=ProfessionStep::Finalize)
         return reject("profession_settlement_goal_not_verified");
     // Do not quietly release an item promised to a requester or another job.
+    const bool enchant=job.operation==ProfessionOperation::EnchantItem;
     if (job.purpose!=ProfessionPurpose::SkillGain ||
-        (job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial))
+        (!enchant && job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial))
         return reject("profession_output_handoff_validator_required");
     PersonalResourceSettlement resources;
     if (!PreparePersonalResourceSettlement(before,batch,balances,resources,blocker,"profession_settlement_")) return false;
@@ -52,6 +53,8 @@ bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& sn
     prepared.plan=Detail::TaskTransitionWrite(next,before.revision,receipt,
         batch.complete ? "profession_completed" : "profession_claims_settled",fingerprint);
     auto& update=prepared.plan.statements.front();
+    const std::string path=enchant?"$.native.":"$.native.result.";
+    const std::string evidence=enchant?"native_enchant_consumption_subject_and_skill_observed":"native_craft_consumption_output_and_skill_observed";
     update+=" AND mode='active' AND accepted=1 AND phase='verifying' AND checkpoint="+SqlValue(before.checkpoint.data)+
         " AND NOT EXISTS (SELECT 1 FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id "
         "WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))"+
@@ -59,12 +62,12 @@ bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& sn
         "AND o.kind='profession_craft')="+N(snapshot.attempts.size())+
         " AND EXISTS (SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id "
         "AND o.kind='profession_craft' AND o.state='verified' "
-        "AND o.evidence_code='native_craft_consumption_output_and_skill_observed' "
-        "AND JSON_UNQUOTE(JSON_EXTRACT(o.after_state,'$.native.result.recipe'))="+SqlValue(N(job.recipe))+
-        " AND JSON_UNQUOTE(JSON_EXTRACT(o.after_state,'$.native.result.skill_id'))="+SqlValue(N(job.skill))+
-        " AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.after_state,'$.native.result.after.skill')) AS UNSIGNED)>="+N(job.targetSkill)+
-        " AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.after_state,'$.native.result.after.skill')) AS UNSIGNED)>"
-        "CAST(JSON_UNQUOTE(JSON_EXTRACT(o.after_state,'$.native.result.before.skill')) AS UNSIGNED))"+
+        "AND o.evidence_code="+SqlValue(evidence)+
+        " AND JSON_UNQUOTE(JSON_EXTRACT(o.after_state,"+SqlValue(path+"recipe")+"))="+SqlValue(N(job.recipe))+
+        " AND JSON_UNQUOTE(JSON_EXTRACT(o.after_state,"+SqlValue(path+"skill_id")+"))="+SqlValue(N(job.skill))+
+        " AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.after_state,"+SqlValue(path+"after.skill")+")) AS UNSIGNED)>="+N(job.targetSkill)+
+        " AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.after_state,"+SqlValue(path+"after.skill")+")) AS UNSIGNED)>"
+        "CAST(JSON_UNQUOTE(JSON_EXTRACT(o.after_state,"+SqlValue(path+"before.skill")+")) AS UNSIGNED))"+
         " AND NOT EXISTS (SELECT 1 FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id "
         "AND c.state IN ('in_transfer','reconciling'))"+
         " AND NOT EXISTS (SELECT 1 FROM living_activity_task child WHERE child.root_task_id=living_activity_task.task_id "

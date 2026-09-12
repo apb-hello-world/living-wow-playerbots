@@ -1,6 +1,7 @@
 #ifndef LIVING_NATIVE_CRAFT_CAPTURE_H
 #define LIVING_NATIVE_CRAFT_CAPTURE_H
 #include "LivingCraftCapture.h"
+#include "LivingEnchantIntent.h"
 #include "LivingActivityScope.h"
 #include "LivingActivityOperations.h"
 #include <atomic>
@@ -15,6 +16,9 @@ namespace LivingActivity {
     // SpellStart, resource effects, or a model. Unsupported variable/scripted
     // outcomes require their own adapter rather than an assumed output count.
     bool ReadNativeCraftOutput(Player& actor,const ProfessionJob& job,ItemGainSpec& output,std::string& blocker);
+    bool ReadNativeEnchantSpec(Player&,const ProfessionJob&,EnchantSpec&,std::string&);
+    bool ReadNativeEnchantSubject(Player&,const ProfessionJob&,EnchantSubject&,std::string&);
+    bool BuildNativeEnchantIntent(Player&,const Task&,const UnsettledClaimBatch&,std::string&,std::string&);
     // One reserved, value-only binding for one native Spell. The coordinator
     // retains the same capture until its guarded save is acknowledged. No
     // Player/Item/Spell pointer is retained here or delivered to another thread.
@@ -36,7 +40,7 @@ namespace LivingActivity {
     class NativeProfessionCraftCast final : public NativeCraftCast {
     public:
         NativeProfessionCraftCast(Task executing,ActionContext action,ProfessionJob job,
-            std::vector<ClaimConsumption> consumption,ItemGainSpec output);
+            std::vector<ClaimConsumption> consumption,ItemGainSpec output,EnchantIntent enchant={});
         // World-thread launch only, BEFORE SpellStart. This does not start a
         // spell, manufacture a lease, waive native CheckCast, or prove success.
         bool Attach(Spell& spell,std::string& blocker);
@@ -59,11 +63,14 @@ namespace LivingActivity {
         Player* Actor(Spell& spell) const; // Synchronous resolver, never stored.
         bool InputsAllowed(Player& actor,const CraftFrame& frame,std::string& blocker) const;
         bool AuthorityAllowed(Player& actor) const;
+        bool SubjectAllowed(Player&,bool before,std::string&) const;
         const Task task;
         const ActionContext action;
         const ProfessionJob job;
         const std::vector<ClaimConsumption> consumption;
         const ItemGainSpec output;
+        const EnchantIntent enchant;
+        EnchantSubject enchantAfter;
         const CraftIdentity identity;
         const std::shared_ptr<CraftCapture> capture;
         std::atomic<bool> attached{false};

@@ -66,6 +66,18 @@ namespace {
             if (!DecodeProfessionJob(request.transition.task.checkpoint.data,job,blocker)) return false;
             for (const auto& change : request.changes) {
                 const auto& claim=change.after;
+                if (job.operation==ProfessionOperation::EnchantItem && claim.itemGuid==job.subjectItem) {
+                    EnchantSpec spec;EnchantSubject subject;
+                    if (change.expectedRevision || claim.revision!=1 || !ValidEnchantClaim(request.transition.task,job,claim) ||
+                        !ReadNativeEnchantSpec(actor,job,spec,blocker) || !ReadNativeEnchantSubject(actor,job,subject,blocker) ||
+                        subject.item.entry!=claim.itemEntry ||
+                        (claim.location=="equipment" ? (subject.item.bagGuid || subject.item.slot>=EQUIPMENT_SLOT_END) :
+                         (!subject.item.bagGuid && (subject.item.slot<INVENTORY_SLOT_ITEM_START || subject.item.slot>=INVENTORY_SLOT_ITEM_END)))) {
+                        if (blocker.empty()) blocker="native_enchant_subject_reservation_mismatch";
+                        return false;
+                    }
+                    continue;
+                }
                 const auto need=std::find_if(job.reagents.begin(),job.reagents.end(),[&](const auto& r){return r.entry==claim.itemEntry;});
                 if (change.expectedRevision || claim.revision!=1 || claim.actor!=actor.GetGUIDLow() ||
                     claim.task!=request.transition.task.root || claim.state!="held" ||
@@ -115,9 +127,10 @@ namespace {
     }
     std::vector<NativeResourceBalance> NativeClaimBalances(Player& bot,const std::vector<ResourceClaim>& claims,bool admission=true) {
         std::map<uint32_t,NativeResourceBalance> owned;
-        bool bags=false,bank=false,money=false;
+        bool bags=false,bank=false,money=false,equipment=false;
         for (const auto& claim : claims) if (claim.state == "held") {
             bags |= claim.location == "bags"; bank |= claim.location == "bank"; money |= claim.location == "money";
+            equipment |= claim.location == "equipment";
         }
         const auto actor=bot.GetGUIDLow();
         if (money) {
@@ -125,13 +138,15 @@ namespace {
             owned.emplace(0,NativeResourceBalance{actor,0,0,0,native-std::min(native,legacy),"money"});
         }
         for (const auto& service : {std::make_pair(bags,IterateItemsMask::ITERATE_ITEMS_IN_BAGS),
-                                   std::make_pair(bank,IterateItemsMask::ITERATE_ITEMS_IN_BANK)}) if (service.first)
+                                   std::make_pair(bank,IterateItemsMask::ITERATE_ITEMS_IN_BANK),
+                                   std::make_pair(equipment,IterateItemsMask::ITERATE_ITEMS_IN_EQUIP)}) if (service.first)
             // "inventory" is the parser's bags-only selector, even with a
             // bank mask. "all" applies this explicit native location mask.
             for (Item* item : bot.GetPlayerbotAI()->InventoryParseItems("all",service.second)) {
                 if (!item || (admission && (sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
                     sGuildSupplies.ReservedEntry(actor,item->GetEntry())))) continue;
-                const std::string location=service.second == IterateItemsMask::ITERATE_ITEMS_IN_BAGS ? "bags" : "bank";
+                const std::string location=service.second == IterateItemsMask::ITERATE_ITEMS_IN_BAGS ? "bags" :
+                    service.second==IterateItemsMask::ITERATE_ITEMS_IN_EQUIP ? "equipment" : "bank";
                 for (const auto& claim : claims) if (claim.state == "held" && claim.itemGuid == item->GetGUIDLow() &&
                     claim.itemEntry == item->GetEntry() && claim.location == location)
                     owned.emplace(item->GetGUIDLow(),NativeResourceBalance{actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,location});
@@ -761,10 +776,13 @@ struct LivingActivityCoordinator::State {
             "(table_name='living_activity_operation' AND column_name IN ('operation_id','state')) OR "
             "(table_name='living_activity_claim' AND column_name IN ('claim_id','task_id','actor_guid','item_guid','item_entry',"
             "'quantity','copper','location','native_reference','state','revision')))),"
-            "(SELECT COUNT(*) FROM living_activity_transition) FROM living_activity_schema WHERE version=1";
+            "(SELECT COUNT(*) FROM living_activity_transition),EXISTS(SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema=DATABASE() AND table_name='living_activity_claim' AND column_name='location' "
+            "AND column_type LIKE '%''equipment''%') FROM living_activity_schema WHERE version=2";
         if (!CharacterDatabase.AsyncQuery([this](QueryResult* result) {
             ioPending = false;
-            schemaReady = result && result->Fetch()[0].GetUInt32() == 1 && result->Fetch()[1].GetUInt32() == 23;
+            schemaReady = result && result->Fetch()[0].GetUInt32() == 2 && result->Fetch()[1].GetUInt32() == 23 &&
+                result->Fetch()[3].GetUInt32()==1;
             purchaseLedgerReady.store(schemaReady,std::memory_order_release);
             if (schemaReady) transitionCount = result->Fetch()[2].GetUInt64();
             blocker = schemaReady ? "startup_reconciliation" : "activity_schema_unavailable";
@@ -2045,8 +2063,26 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     ProfessionJob job;CraftFrame frame;UnsettledClaimBatch batch;
     std::vector<ProfessionMaterialReservation> missing;
     if (!DecodeProfessionJob(saved->checkpoint.data,job,blocker) || !ReadNativeCraftFrame(*bot,job,frame,blocker) ||
-        !state->resources.ReadUnsettled(id,batch,blocker) ||
-        !PlanProfessionMaterialReservations(*saved,snapshot,batch,frame,missing,blocker)) return stop(blocker);
+        !state->resources.ReadUnsettled(id,batch,blocker)) return stop(blocker);
+    if (job.operation==ProfessionOperation::EnchantItem) {
+        ResourceClaim subject;
+        if (!FindEnchantClaim(*saved,job,batch,subject,blocker)) {
+            if (blocker!="native_enchant_subject_reservation_required") return stop(blocker);
+            EnchantSpec spec;EnchantSubject target;
+            if (!ReadNativeEnchantSpec(*bot,job,spec,blocker) || !ReadNativeEnchantSubject(*bot,job,target,blocker)) return stop(blocker);
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_subject_preparation");
+            if (!grant.Permitted()) return stop(grant.blocker);
+            ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+            ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+            request.authorization=grant.action;
+            ResourceClaim claim;claim.id=NewId();claim.actor=actor;claim.task=id;claim.itemGuid=job.subjectItem;
+            claim.itemEntry=target.item.entry;claim.quantity=1;claim.state="held";
+            claim.location=!target.item.bagGuid && target.item.slot<EQUIPMENT_SLOT_END?"equipment":"bags";
+            request.changes.push_back({claim,0});ProfessionMaterialReservationAdapter adapter;
+            return stop(SubmitResourceReservation(request,adapter).blocker);
+        }
+    }
+    if (!PlanProfessionMaterialReservations(*saved,snapshot,batch,frame,missing,blocker)) return stop(blocker);
     if (!missing.empty()) {
         const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_material_preparation");
         if (!grant.Permitted()) return stop(grant.blocker);
@@ -2071,6 +2107,12 @@ bool LivingActivityCoordinator::EffectEnforcementEnabled() const {
 bool LivingActivityCoordinator::DefersNativeSave(uint32_t actor) const {
     const auto held = std::atomic_load_explicit(&state->nativeSaveHolds, std::memory_order_acquire);
     return actor && held && held->count(actor);
+}
+
+bool LivingActivityCoordinator::AcknowledgedResourceClaim(const ResourceClaim& claim) const {
+    if (!OnWorldThread() || !state->resources.Protection().ready || !ValidResourceClaim(claim)) return false;
+    const auto* saved=state->resources.Inspect(claim.id);
+    return saved && SameResourceClaim(*saved,claim);
 }
 
 Acquisition LivingActivityCoordinator::AcquireCompatibilityLease(uint32_t actor,const std::string& owner,
@@ -2287,6 +2329,8 @@ AdmissionResult LivingActivityCoordinator::PrepareProfessionAttempt(uint32_t act
         !ReadNativeCraftFrame(*bot,job,frame,blocker)) return reject(AdmissionCode::ReconciliationRequired,blocker);
     ProfessionAttemptPlan plan;
     if (!PlanProfessionAttempt(*saved,snapshot,batch,frame,plan,blocker)) return reject(AdmissionCode::NotReady,blocker);
+    if (job.operation==ProfessionOperation::EnchantItem && !BuildNativeEnchantIntent(*bot,*saved,batch,plan.beforeState,blocker))
+        return reject(AdmissionCode::NotReady,blocker);
     NativeCraftOperation craft;
     const auto grant=AcquireSavedTask(id,expectedRevision,craft.OperationEffects(),60000,"profession_native_attempt");
     if (!grant.Permitted()) return reject(AdmissionCode::NotReady,grant.blocker);
@@ -2396,10 +2440,12 @@ AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint3
                     banked.push_back({actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),
                         item->GetContainer()?item->GetContainer()->GetGUIDLow():0,item->GetSlot()});
             }
-        if(
-            !DecodeProfessionJob(saved->second.checkpoint.data,job,blocker) ||
+        EnchantSubject subject;
+        if (!DecodeProfessionJob(saved->second.checkpoint.data,job,blocker) ||
+            (job.operation==ProfessionOperation::EnchantItem && !ReadNativeEnchantSubject(*bot,job,subject,blocker)) ||
             !ReadNativeCraftFrame(*bot,job,frame,blocker) ||
-            !PrepareInterruptedProfession(saved->second,current,history,batch,frame,NowMs(),receipt,prepared,blocker,banked))
+            !PrepareInterruptedProfession(saved->second,current,history,batch,frame,NowMs(),receipt,prepared,blocker,banked,
+                job.operation==ProfessionOperation::EnchantItem?&subject:nullptr))
             return reject(AdmissionCode::ReconciliationRequired,blocker);
         State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
         write.admissionReceipt=receipt;state->pending.push_back(std::move(write));

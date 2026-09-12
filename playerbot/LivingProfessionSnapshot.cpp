@@ -56,13 +56,16 @@ namespace LivingActivity {
         } else snapshot.useful=MatchNativeProfessionRecipe(current,native,nativeBlocker);
         if (!nativeBlocker.empty()) snapshot.blocker=nativeBlocker;
         ItemGainSpec output;
+        EnchantSpec enchant;
         // Recipe/output/tool facts remain true after the accepted target is
         // reached. Usefulness decides whether to cast again, not whether to
         // inspect those facts or acknowledge the previous native result.
-        if (snapshot.knownRecipe && native.blocker.empty() && ReadNativeCraftOutput(actor,job,output,nativeBlocker)) {
+        if (snapshot.knownRecipe && native.blocker.empty() && (job.operation==ProfessionOperation::EnchantItem ?
+            ReadNativeEnchantSpec(actor,job,enchant,nativeBlocker) : ReadNativeCraftOutput(actor,job,output,nativeBlocker))) {
             snapshot.outputPerAttempt=output.quantity;
             ItemPosCountVec positions;
-            snapshot.capacity=actor.CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,output.entry,output.quantity)==EQUIP_ERR_OK;
+            snapshot.capacity=job.operation==ProfessionOperation::EnchantItem ||
+                actor.CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,output.entry,output.quantity)==EQUIP_ERR_OK;
             const auto* spell=sSpellTemplate.LookupEntry<SpellEntry>(job.recipe);
             snapshot.tools=true;
             for (const auto item : spell->Totem)

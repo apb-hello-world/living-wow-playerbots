@@ -1,6 +1,7 @@
 #include "LivingProfessionEvidence.h"
 #include "LivingActivityGameplay.h"
 #include "LivingActivityOperations.h"
+#include "LivingEnchantIntent.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <algorithm>
 #include <limits>
@@ -117,6 +118,71 @@ namespace {
                 Number(p.get_child("added"))==gain->added,"stored_craft_gain_quantity_mismatch");
         }
     }
+    bool DecodeStoredEnchantProof(const Task& task,const StoredCraftOperation& row,const ProfessionJob& job,
+        StoredCraftProof& result,std::string& blocker) {
+        const auto& receipt=row.receipt;const bool verified=receipt.state==OperationState::Verified;
+        if (!verified && receipt.evidence=="native_craft_intent_not_committed") {
+            auto predecessor=task;predecessor.revision=receipt.taskRevision;predecessor.phase=Phase::Executing;
+            predecessor.checkpoint.step="profession_craft";auto original=row;original.receipt.state=OperationState::Intent;
+            original.receipt.evidence.clear();original.receipt.nativeReference.clear();original.afterState="{}";
+            InterruptedCraftIntent intent;
+            if (!DecodeInterruptedCraftIntent(predecessor,original,intent,blocker) || !intent.enchant) return false;
+            const auto recovered=Parse(row.afterState);Object(recovered,{"recovery","frame","subject"});
+            const auto& basis=recovered.get_child("recovery");Object(basis,{"version","basis","boot"});
+            const auto frame=Frame(task.actor,recovered.get_child("frame"));
+            Require(Number(basis.get_child("version"))==1 && Scalar(basis.get_child("basis"))=="atomic_native_save_absent" &&
+                IsUuid(Scalar(basis.get_child("boot"))) && receipt.nativeReference=="spell:"+std::to_string(job.recipe)+":operation:"+receipt.id &&
+                frame.skill==intent.skill && frame.money==intent.money &&
+                SameEnchantSubject(EnchantCodec::Subject(recovered.get_child("subject")),intent.enchant->before),
+                "stored_enchant_recovery_changed");
+            InputBacking(job,intent.inputs,frame);std::map<uint32_t,uint64_t> quantities;
+            for (const auto& use:intent.inputs) quantities[use.before.itemGuid]+=use.before.quantity;
+            for (const auto& item:frame.stacks) if (quantities.count(item.guid))
+                Require(item.count==quantities[item.guid],"stored_enchant_recovery_quantity_changed");
+            StoredCraftProof parsed;parsed.inputs=std::move(intent.inputs);parsed.attempt.recipe=job.recipe;
+            parsed.attempt.subjectItem=job.subjectItem;parsed.attempt.skillBefore=parsed.attempt.skillAfter=frame.skill;
+            parsed.attempt.receipt=receipt;parsed.attempt.committed=true;result=std::move(parsed);return true;
+        }
+        Require(receipt.nativeReference=="spell:"+std::to_string(job.recipe)+":operation:"+receipt.id &&
+            receipt.evidence==(verified?"native_enchant_consumption_subject_and_skill_observed":"native_cast_cancelled_without_effect"),
+            "stored_enchant_native_reference_mismatch");
+        const auto before=Parse(row.beforeState),after=Parse(row.afterState);
+        Object(before,{"effects","persistence","native"});Object(before.get_child("native"),{"native","claimed_consumption"});
+        Require(Number(before.get_child("effects"))==SpellEffectMask(false) &&
+            Number(before.get_child("persistence"))==unsigned(NativePersistence::Profession),"stored_enchant_persistence_mismatch");
+        EnchantIntent intent;
+        if (!DecodeEnchantIntent(task,job,EnchantCodec::Json(before.get_child("native.native")),intent,blocker)) return false;
+        const auto inputs=Inputs(task,before.get_child("native.claimed_consumption"));
+        const auto& captured=verified?after.get_child("native"):after;
+        Object(captured,{"recipe","skill_id","effect_entered","native_finished","native_succeeded","created_calls","created_quantity",
+            "before","after","enchantment","subject_claim","subject_before","subject_after"});
+        const auto frameBefore=Frame(task.actor,captured.get_child("before")),frameAfter=Frame(task.actor,captured.get_child("after"));
+        const auto subjectBefore=EnchantCodec::Subject(captured.get_child("subject_before"));
+        const auto subjectAfter=EnchantCodec::Subject(captured.get_child("subject_after"));ResourceClaim subject;
+        Require(Number(captured.get_child("recipe"))==job.recipe && Number(captured.get_child("skill_id"))==job.skill &&
+            Number(captured.get_child("enchantment"))==intent.spec.id && frameBefore.skill==intent.skill && frameBefore.money==intent.money &&
+            SameEnchantSubject(subjectBefore,intent.before) &&
+            DecodeClaimProjection(EnchantCodec::Json(captured.get_child("subject_claim")),subject,blocker) &&
+            SameResourceClaim(subject,intent.claim),"stored_enchant_intent_changed");
+        InputBacking(job,inputs,frameBefore);
+        Require(Flag(captured.get_child("native_finished")) && !Number(captured.get_child("created_calls")) &&
+            !Number(captured.get_child("created_quantity")),"stored_enchant_finish_or_creation_mismatch");
+        StoredCraftProof parsed;
+        if (verified) {
+            Object(after,{"native","claimed_consumption"});SameInputs(inputs,Inputs(task,after.get_child("claimed_consumption")));
+            Require(Flag(captured.get_child("native_succeeded")) && Flag(captured.get_child("effect_entered")),"stored_enchant_effect_missing");
+            auto physical=VerifyEnchantResources(task.actor,job,intent.spec,frameBefore,frameAfter,subjectBefore,subjectAfter);
+            if (physical.result!=CraftEvidence::Verified) {blocker=physical.blocker;return false;}
+            parsed.attempt=std::move(physical.attempt);parsed.attempt.nativeEffectVerified=true;
+        } else {
+            Require(!Flag(captured.get_child("native_succeeded")) && !Flag(captured.get_child("effect_entered")) &&
+                SameCraftFrame(frameBefore,frameAfter) && SameEnchantSubject(subjectBefore,subjectAfter),"stored_enchant_rejection_has_effect");
+            parsed.attempt.recipe=job.recipe;parsed.attempt.subjectItem=job.subjectItem;
+            parsed.attempt.skillBefore=frameBefore.skill;parsed.attempt.skillAfter=frameAfter.skill;
+        }
+        parsed.inputs=inputs;parsed.attempt.receipt=receipt;parsed.attempt.committed=true;
+        result=std::move(parsed);blocker.clear();return true;
+    }
 }
 bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
     StoredCraftProof& result,std::string& blocker) {
@@ -131,6 +197,8 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
             receipt.kind=="profession_craft","stored_craft_receipt_identity_mismatch");
         Require(receipt.state==OperationState::Verified || receipt.state==OperationState::Rejected,
             "stored_craft_operation_unresolved");
+        if (job.operation==ProfessionOperation::EnchantItem)
+            return DecodeStoredEnchantProof(task,row,job,result,blocker);
         const bool verified=receipt.state==OperationState::Verified;
         if (!verified && receipt.evidence=="native_craft_intent_not_committed") {
             auto predecessor=task;predecessor.revision=receipt.taskRevision;
@@ -226,17 +294,24 @@ bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& r
         Require(IsUuid(r.id) && r.task==task.id && r.taskRevision==task.revision && r.kind=="profession_craft" &&
             r.state==OperationState::Intent && r.evidence.empty() && r.nativeReference.empty() && row.afterState=="{}",
             "interrupted_craft_not_pristine_intent");
-        Require((job.operation==ProfessionOperation::CreateItem || job.operation==ProfessionOperation::TransformMaterial) &&
-            !job.subjectItem,"interrupted_craft_operation_unsupported");
-        const auto before=Parse(row.beforeState);Object(before,{"effects","persistence","native","item_gain"});
+        const bool enchant=job.operation==ProfessionOperation::EnchantItem;
+        Require(enchant || ((job.operation==ProfessionOperation::CreateItem || job.operation==ProfessionOperation::TransformMaterial) &&
+            !job.subjectItem),"interrupted_craft_operation_unsupported");
+        const auto before=Parse(row.beforeState);
+        if (enchant) Object(before,{"effects","persistence","native"});
+        else Object(before,{"effects","persistence","native","item_gain"});
         Require(Number(before.get_child("effects"))==SpellEffectMask(false) &&
             Number(before.get_child("persistence"))==unsigned(NativePersistence::Profession),"interrupted_craft_atomic_contract_required");
         Object(before.get_child("native"),{"native","claimed_consumption"});
-        const auto& native=before.get_child("native.native");Object(native,{"recipe","skill","money"});
-        InterruptedCraftIntent decoded;decoded.output=Gain(before.get_child("item_gain"));
+        const auto& native=before.get_child("native.native");InterruptedCraftIntent decoded;
+        if (enchant) {
+            EnchantIntent target;
+            if (!DecodeEnchantIntent(task,job,EnchantCodec::Json(native),target,blocker)) return false;
+            decoded.enchant=std::move(target);
+        } else {Object(native,{"recipe","skill","money"});decoded.output=Gain(before.get_child("item_gain"));}
         decoded.skill=Number<uint16_t>(native.get_child("skill"));decoded.money=Number(native.get_child("money"));
         decoded.inputs=Inputs(task,before.get_child("native.claimed_consumption"));
-        Require(Number(native.get_child("recipe"))==job.recipe && decoded.output.entry==job.outputEntry,
+        Require(Number(native.get_child("recipe"))==job.recipe && (enchant || decoded.output.entry==job.outputEntry),
             "interrupted_craft_recipe_mismatch");
         size_t matched=0;
         for(const auto& need:job.reagents) {

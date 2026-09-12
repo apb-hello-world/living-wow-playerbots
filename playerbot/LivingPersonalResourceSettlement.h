@@ -30,7 +30,9 @@ namespace LivingActivity {
         for (const auto& native:balances) {
             if (native.actor!=task.actor || native.nativeReference || !owned.emplace(native.itemGuid,native).second ||
                 (native.location=="money" ? (native.itemGuid || native.itemEntry || native.quantity) :
-                 (!native.itemGuid || !native.itemEntry || native.copper || (native.location!="bags" && native.location!="bank"))))
+                 (!native.itemGuid || !native.itemEntry || native.copper ||
+                  (native.location!="bags" && native.location!="bank" && native.location!="equipment") ||
+                  (native.location=="equipment" && native.quantity!=1))))
                 return reject("native_balance_invalid");
         }
         PersonalResourceSettlement prepared;std::set<std::string> ids;std::map<uint32_t,uint64_t> totals;

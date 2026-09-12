@@ -1,6 +1,7 @@
 #pragma once
 #include "LivingCraftCapture.h"
 #include "LivingActivityClaimConsumption.h"
+#include "LivingEnchantIntent.h"
 #include <algorithm>
 #include <set>
 
@@ -22,7 +23,8 @@ namespace LivingActivity {
             return reject("profession_material_snapshot_incomplete");
         ProfessionJob job;
         if (!DecodeProfessionJob(task.checkpoint.data,job,blocker)) return false;
-        if (job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial)
+        if (job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial &&
+            job.operation!=ProfessionOperation::EnchantItem)
             return reject("profession_material_operation_unsupported");
         std::set<std::string> ids;
         for (const auto& claim : batch.claims)
@@ -67,16 +69,22 @@ namespace LivingActivity {
         if (next.step!=ProfessionStep::Execute) {blocker=next.blocker;return false;}
         ProfessionJob job;
         if (!DecodeProfessionJob(task.checkpoint.data,job,blocker)) return false;
-        if ((job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial) || job.subjectItem)
+        const bool enchant=job.operation==ProfessionOperation::EnchantItem;
+        if ((!enchant && job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial) ||
+            (!enchant && job.subjectItem))
             return reject("profession_attempt_operation_not_supported");
         if (!batch.complete || batch.claims.size()>16 || !ValidCraftFrame(frame) || frame.actor!=task.actor ||
-            frame.skill!=snapshot.skill || !snapshot.outputPerAttempt)
+            frame.skill!=snapshot.skill || (enchant ? snapshot.outputPerAttempt!=0 : !snapshot.outputPerAttempt))
             return reject("profession_attempt_native_snapshot_incomplete");
         std::set<std::string> ids;
         for (const auto& claim : batch.claims)
             if (!ValidResourceClaim(claim) || claim.task!=task.id || claim.actor!=task.actor || !ids.insert(claim.id).second)
                 return reject("profession_attempt_claim_identity_mismatch");
         ProfessionAttemptPlan result;
+        if (enchant) {
+            ResourceClaim subject;
+            if (!FindEnchantClaim(task,job,batch,subject,blocker)) return false;
+        }
         for (const auto& reagent : job.reagents) {
             const NativeItemStack* stack=nullptr;
             for (const auto& candidate : frame.stacks) if (candidate.entry==reagent.entry) {
@@ -103,8 +111,10 @@ namespace LivingActivity {
                 remaining-=used;
             }
         }
-        result.output={job.outputEntry,snapshot.outputPerAttempt};
-        if (!ValidItemGainSpec(result.output)) return reject("profession_attempt_native_output_invalid");
+        if (!enchant) {
+            result.output={job.outputEntry,snapshot.outputPerAttempt};
+            if (!ValidItemGainSpec(result.output)) return reject("profession_attempt_native_output_invalid");
+        }
         result.beforeState="{\"recipe\":"+std::to_string(job.recipe)+",\"skill\":"+std::to_string(frame.skill)+
             ",\"money\":"+std::to_string(frame.money)+'}';
         plan=std::move(result);blocker.clear();return true;

@@ -6,6 +6,7 @@
 #include "LivingProfessionNative.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
+#include "strategy/values/ItemUsageValue.h"
 #include "Skills/SkillExtraItems.h"
 #include "Spells/Spell.h"
 #include "Spells/Scripts/SpellScript.h"
@@ -17,6 +18,60 @@
 #include <stdexcept>
 
 namespace LivingActivity {
+    bool ReadNativeEnchantSpec(Player& actor,const ProfessionJob& job,EnchantSpec& spec,std::string& blocker) {
+        spec={};auto reject=[&](const char* why){blocker=why;return false;};
+        if (!sLivingActivityCoordinator.OnWorldThread() || !actor.IsInWorld() || actor.IsBeingTeleported() ||
+            job.operation!=ProfessionOperation::EnchantItem || !job.subjectItem || job.skill!=SKILL_ENCHANTING)
+            return reject("native_enchant_exact_owned_subject_required");
+        const auto* info=sSpellTemplate.LookupEntry<SpellEntry>(job.recipe);
+        if (!info || !actor.HasSpell(job.recipe) || IsChanneledSpell(info) || SpellScriptMgr::GetSpellScript(job.recipe))
+            return reject("native_enchant_scripted_or_unknown_spell");
+        unsigned effects=0;
+        for (uint8_t i=0;i<MAX_EFFECT_INDEX;++i) if (info->Effect[i]) {
+            if (info->Effect[i]!=SPELL_EFFECT_ENCHANT_ITEM || info->EffectMiscValue[i]<=0 || info->EffectTriggerSpell[i] ||
+                !sSpellItemEnchantmentStore.LookupEntry(info->EffectMiscValue[i]))
+                return reject("native_enchant_permanent_effect_required");
+            spec.id=info->EffectMiscValue[i];++effects;
+        }
+        static_assert(PERM_ENCHANTMENT_SLOT==0 && MAX_ENCHANTMENT_SLOT<=16,"Review native enchantment layout");
+        if (effects!=1) return reject("native_enchant_single_effect_required");
+        const auto* subject=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,job.subjectItem));
+        if (!subject || subject->GetOwnerGuid()!=actor.GetObjectGuid() || subject->GetCount()!=1 || subject->IsInTrade() ||
+            !subject->IsFitToSpellRequirements(info) ||
+            !(Player::IsInventoryPos(subject->GetBagSlot(),subject->GetSlot()) ||
+              (subject->GetBagSlot()==INVENTORY_SLOT_BAG_0 && subject->GetSlot()<EQUIPMENT_SLOT_END)))
+            return reject("native_enchant_subject_unavailable_or_incompatible");
+        if (job.purpose==ProfessionPurpose::SkillGain && subject->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) &&
+            subject->GetEnchantmentId(PERM_ENCHANTMENT_SLOT)!=spec.id)
+            return reject("native_enchant_existing_upgrade_protected");
+        blocker.clear();return true;
+    }
+    bool ReadNativeEnchantSubject(Player& actor,const ProfessionJob& job,EnchantSubject& subject,std::string& blocker) {
+        subject={};
+        if (!sLivingActivityCoordinator.OnWorldThread() || !actor.IsInWorld() || actor.IsBeingTeleported()) {
+            blocker="native_enchant_subject_unavailable";return false;
+        }
+        auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,job.subjectItem));
+        if (!item || item->GetOwnerGuid()!=actor.GetObjectGuid() || item->GetCount()!=1 || item->IsInTrade()) {
+            blocker="native_enchant_subject_unavailable";return false;
+        }
+        subject.item={actor.GetGUIDLow(),item->GetGUIDLow(),item->GetEntry(),item->GetCount(),
+            item->GetContainer()?item->GetContainer()->GetGUIDLow():0,item->GetSlot()};
+        for (uint8_t i=0;i<MAX_ENCHANTMENT_SLOT;++i) {
+            const auto slot=EnchantmentSlot(i);
+            subject.enchantments.push_back({item->GetEnchantmentId(slot),item->GetEnchantmentDuration(slot),item->GetEnchantmentCharges(slot)});
+        }
+        blocker.clear();return true;
+    }
+    bool BuildNativeEnchantIntent(Player& actor,const Task& task,const UnsettledClaimBatch& claims,
+        std::string& beforeState,std::string& blocker) {
+        ProfessionJob job;EnchantIntent intent;
+        if (!DecodeProfessionJob(task.checkpoint.data,job,blocker) || !FindEnchantClaim(task,job,claims,intent.claim,blocker) ||
+            !ReadNativeEnchantSpec(actor,job,intent.spec,blocker) || !ReadNativeEnchantSubject(actor,job,intent.before,blocker)) return false;
+        intent.skill=actor.GetSkillValuePure(job.skill);intent.money=actor.GetMoney();
+        beforeState=EncodeEnchantIntent(job,intent);EnchantIntent checked;
+        return DecodeEnchantIntent(task,job,beforeState,checked,blocker);
+    }
     namespace {
         CraftIdentity Identity(const Task& task,const ActionContext& action,const ProfessionJob& job) {
             return {task.id,action.operation,task.revision,action.ownerGeneration,task.context,job.recipe,job.skill};
@@ -90,17 +145,34 @@ namespace LivingActivity {
         blocker.clear();return true;
     }
     NativeProfessionCraftCast::NativeProfessionCraftCast(Task executing,ActionContext action,ProfessionJob job,
-        std::vector<ClaimConsumption> consumption,ItemGainSpec output)
+        std::vector<ClaimConsumption> consumption,ItemGainSpec output,EnchantIntent enchant)
         : task(std::move(executing)),action(std::move(action)),job(std::move(job)),consumption(std::move(consumption)),
-          output(output),identity(Identity(task,this->action,this->job)),capture(std::make_shared<CraftCapture>(identity)) {
+          output(output),enchant(std::move(enchant)),identity(Identity(task,this->action,this->job)),capture(std::make_shared<CraftCapture>(identity)) {
         std::string blocker;
         if (!ValidateProfessionTask(task,blocker) || task.phase!=Phase::Executing || task.mode!=Mode::Active ||
             !task.accepted || !Fresh(task,this->action,task.context) ||
             this->action.revision!=task.revision || EncodeProfessionJob(this->job)!=task.checkpoint.data ||
-            (SpellEffectMask(false)&~this->action.permittedEffects) || !ValidItemGainSpec(output) ||
-            output.entry!=this->job.outputEntry || this->job.subjectItem ||
-            (this->job.operation!=ProfessionOperation::CreateItem && this->job.operation!=ProfessionOperation::TransformMaterial))
+            (SpellEffectMask(false)&~this->action.permittedEffects) ||
+            (this->job.operation==ProfessionOperation::EnchantItem ?
+                (!output.Empty() || !ValidEnchantClaim(task,this->job,this->enchant.claim) ||
+                 !ValidEnchantSubject(this->enchant.before,task.actor,this->job.subjectItem,this->enchant.spec)) :
+                (!ValidItemGainSpec(output) || output.entry!=this->job.outputEntry || this->job.subjectItem ||
+                 (this->job.operation!=ProfessionOperation::CreateItem && this->job.operation!=ProfessionOperation::TransformMaterial))))
             throw std::invalid_argument("native_craft_saved_execution_context_required");
+    }
+    bool NativeProfessionCraftCast::SubjectAllowed(Player& actor,bool before,std::string& blocker) const {
+        if (job.operation!=ProfessionOperation::EnchantItem) {blocker.clear();return true;}
+        EnchantSubject current;EnchantSpec spec;
+        if (!ReadNativeEnchantSpec(actor,job,spec,blocker) || !ReadNativeEnchantSubject(actor,job,current,blocker)) return false;
+        const auto protectedItems=sLivingActivityCoordinator.ResourceReservations().Inspect();
+        if (spec.id!=enchant.spec.id || !SameEnchantSubject(current,before?enchant.before:enchantAfter) ||
+            !sLivingActivityCoordinator.AcknowledgedResourceClaim(enchant.claim) || !protectedItems || !protectedItems->ready ||
+            protectedItems->ProtectedItem(job.subjectItem)!=1 || protectedItems->HasUncertainItem(task.actor,current.item.entry) ||
+            sPlayerbotActionBroker.IsItemReserved(job.subjectItem) || sGuildSupplies.ReservedEntry(task.actor,current.item.entry) ||
+            ai::ItemUsageValue::IsNeededForQuest(&actor,current.item.entry,true)) {
+            blocker="native_enchant_subject_commitment_changed";return false;
+        }
+        blocker.clear();return true;
     }
     Player* NativeProfessionCraftCast::Actor(Spell& spell) const {
         auto* caster=spell.GetTrueCaster();
@@ -170,13 +242,19 @@ namespace LivingActivity {
         if (!MatchNativeProfessionRecipe(currentJob,native,blocker)) return false;
         if (job.purpose==ProfessionPurpose::SkillGain && native.skillValue>=job.targetSkill)
             return reject("native_craft_skill_goal_already_reached");
-        ItemGainSpec expected;
-        if (!ExactOutput(spell,*actor,job,expected,blocker)) return false;
-        if (expected.entry!=output.entry || expected.quantity!=output.quantity)
-            return reject("native_craft_exact_output_contract_required");
-        ItemPosCountVec destinations;
-        if (actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,destinations,output.entry,output.quantity)!=EQUIP_ERR_OK)
-            return reject("native_craft_capacity_preparation_required");
+        if (job.operation==ProfessionOperation::EnchantItem) {
+            if (!SubjectAllowed(*actor,true,blocker)) return false;
+            if (actor->GetMoney()!=enchant.money || actor->GetSkillValuePure(job.skill)!=enchant.skill)
+                return reject("native_enchant_intent_state_changed");
+        } else {
+            ItemGainSpec expected;
+            if (!ExactOutput(spell,*actor,job,expected,blocker)) return false;
+            if (expected.entry!=output.entry || expected.quantity!=output.quantity)
+                return reject("native_craft_exact_output_contract_required");
+            ItemPosCountVec destinations;
+            if (actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,destinations,output.entry,output.quantity)!=EQUIP_ERR_OK)
+                return reject("native_craft_capacity_preparation_required");
+        }
         CraftFrame before;
         if (!ReadNativeCraftFrame(*actor,job,before,blocker) || !InputsAllowed(*actor,before,blocker)) return false;
         if (before.stacks.size()>32) return reject("native_craft_frame_proof_bound");
@@ -197,6 +275,8 @@ namespace LivingActivity {
         std::unique_ptr<Spell> spell(new Spell(&actor,info,false));
         if (!Attach(*spell,blocker)) return false;
         SpellCastTargets targets;targets.setUnitTarget(&actor);
+        if (job.operation==ProfessionOperation::EnchantItem)
+            targets.setItemTarget(actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,job.subjectItem)));
         // SpellStart installs its native event before PreCastCheck. The event
         // owns deletion even when the cast is rejected or finishes immediately.
         spell.release()->SpellStart(&targets);
@@ -217,17 +297,24 @@ namespace LivingActivity {
             ",\"native_succeeded\":"+(result.nativeSucceeded ? "true" : "false")+
             ",\"created_calls\":"+std::to_string(result.createdCalls)+",\"created_quantity\":"+std::to_string(result.createdQuantity)+
             ",\"before\":"+FrameJson(result.before)+",\"after\":"+FrameJson(result.after)+'}';
-        const auto verified=VerifyCraftCapture(identity,job,result,output);
+        if (job.operation==ProfessionOperation::EnchantItem)
+            observation.afterState=observation.afterState.substr(0,observation.afterState.size()-1)+
+                ",\"enchantment\":"+std::to_string(enchant.spec.id)+",\"subject_claim\":"+EnchantClaimJson(enchant.claim)+
+                ",\"subject_before\":"+EnchantSubjectJson(enchant.before)+",\"subject_after\":"+EnchantSubjectJson(enchantAfter)+'}';
+        const auto verified=job.operation==ProfessionOperation::EnchantItem ?
+            VerifyEnchantCapture(identity,job,enchant.spec,result,enchant.before,enchantAfter) : VerifyCraftCapture(identity,job,result,output);
         observation.evidence=verified.blocker;
         if (verified.result==CraftEvidence::Reconciling) return observation;
         CraftFrame current;std::string blocker;
         if (!ReadNativeCraftFrame(actor,job,current,blocker) || !SameCraftFrame(result.after,current)) {
             observation.evidence="native_craft_changed_before_save";return observation;
         }
+        if (!SubjectAllowed(actor,false,blocker)) {observation.evidence=blocker;return observation;}
         if (verified.result==CraftEvidence::RejectedWithoutEffect) observation.state=OperationState::Rejected;
         else {
             observation.state=OperationState::Verified;gains=verified.gains;
-            observation.evidence="native_craft_consumption_output_and_skill_observed";
+            observation.evidence=job.operation==ProfessionOperation::EnchantItem ?
+                "native_enchant_consumption_subject_and_skill_observed" : "native_craft_consumption_output_and_skill_observed";
         }
         return observation;
     }
@@ -237,6 +324,7 @@ namespace LivingActivity {
         CraftFrame current;std::string blocker;
         if (!ReadNativeCraftFrame(actor,job,current,blocker) || !SameCraftFrame(result->after,current))
             throw std::runtime_error("native_craft_changed_before_commit");
+        if (!SubjectAllowed(actor,false,blocker)) throw std::runtime_error(blocker);
         std::string proof="SELECT "+SqlValue(outcome.id)+','+std::to_string(outcome.revision)+
             " FROM characters WHERE guid="+std::to_string(actor.GetGUIDLow())+" AND money="+std::to_string(result->after.money)+
             " AND EXISTS (SELECT 1 FROM character_skills WHERE guid="+std::to_string(actor.GetGUIDLow())+
@@ -253,6 +341,19 @@ namespace LivingActivity {
         for (const auto& item : result->before.stacks) if (!present.count(item.guid))
             proof+=" AND NOT EXISTS (SELECT 1 FROM character_inventory WHERE item="+std::to_string(item.guid)+
                 ") AND NOT EXISTS (SELECT 1 FROM item_instance WHERE guid="+std::to_string(item.guid)+')';
+        if (job.operation==ProfessionOperation::EnchantItem) {
+            const auto& item=enchantAfter.item;std::string fields;
+            for (const auto& e:enchantAfter.enchantments)
+                fields+=std::to_string(e.id)+' '+std::to_string(e.duration)+' '+std::to_string(e.charges)+' ';
+            proof+=" AND EXISTS (SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+
+                std::to_string(task.actor)+" AND v.item="+std::to_string(item.guid)+" AND v.bag="+std::to_string(item.bagGuid)+
+                " AND v.slot="+std::to_string(item.slot)+" AND i.owner_guid="+std::to_string(task.actor)+
+                " AND i.itemEntry="+std::to_string(item.entry)+" AND i.count=1 AND i.enchantments="+SqlValue(fields)+')';
+            proof+=" AND EXISTS (SELECT 1 FROM living_activity_claim WHERE claim_id="+SqlValue(enchant.claim.id)+
+                " AND task_id="+SqlValue(task.id)+" AND actor_guid="+std::to_string(task.actor)+" AND item_guid="+std::to_string(item.guid)+
+                " AND item_entry="+std::to_string(item.entry)+" AND quantity=1 AND copper=0 AND native_reference=0 AND state='held'"+
+                " AND location="+SqlValue(enchant.claim.location)+" AND revision="+std::to_string(enchant.claim.revision)+')';
+        }
         return proof;
     }
     uint32_t NativeCraftOperation::OperationEffects() const {return SpellEffectMask(false);}
@@ -263,8 +364,9 @@ namespace LivingActivity {
             !DecodeProfessionJob(request.transition.task.checkpoint.data,job,blocker)) return false;
         if (request.transition.task.actor!=actor.GetGUIDLow() || request.kind!=OperationKind() ||
             request.effects!=OperationEffects() || request.persistence!=PersistencePolicy() ||
-            (job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial) ||
-            job.subjectItem || !ValidItemGainSpec(request.itemGain) || request.itemGain.entry!=job.outputEntry ||
+            (job.operation==ProfessionOperation::EnchantItem ? !request.itemGain.Empty() :
+             ((job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial) ||
+              job.subjectItem || !ValidItemGainSpec(request.itemGain) || request.itemGain.entry!=job.outputEntry)) ||
             request.consumption.size()<job.reagents.size() || request.consumption.size()>16) return reject("native_craft_exact_operation_required");
         if (!actor.GetPlayerbotAI() || !actor.IsInWorld() || actor.IsBeingTeleported() || actor.GetMap()->IsDungeon() ||
             ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) || actor.GetTradeData() ||
@@ -276,6 +378,14 @@ namespace LivingActivity {
         CraftFrame frame;
         if (!ReadNativeCraftFrame(actor,job,frame,blocker)) return false;
         if (frame.stacks.size()>32) return reject("native_craft_frame_proof_bound");
+        if (job.operation==ProfessionOperation::EnchantItem) {
+            EnchantIntent intent;EnchantSpec spec;EnchantSubject target;
+            if (!DecodeEnchantIntent(request.transition.task,job,request.beforeState,intent,blocker) ||
+                !ReadNativeEnchantSpec(actor,job,spec,blocker) || !ReadNativeEnchantSubject(actor,job,target,blocker)) return false;
+            if (!sLivingActivityCoordinator.AcknowledgedResourceClaim(intent.claim) || spec.id!=intent.spec.id ||
+                !SameEnchantSubject(target,intent.before) || frame.skill!=intent.skill || frame.money!=intent.money)
+                return reject("native_enchant_intent_state_changed");
+        }
         std::set<std::string> matched;
         for (const auto& reagent : job.reagents) {
             unsigned stacks=0;uint64_t held=0,used=0,count=0;
@@ -299,13 +409,18 @@ namespace LivingActivity {
         const Task& executing,const ActionContext& action) const {
         ProfessionJob job;std::string blocker;
         if (!DecodeProfessionJob(executing.checkpoint.data,job,blocker)) throw std::invalid_argument(blocker);
-        return std::make_shared<NativeProfessionCraftCast>(executing,action,job,request.consumption,request.itemGain);
+        EnchantIntent intent;
+        if (job.operation==ProfessionOperation::EnchantItem && !DecodeEnchantIntent(executing,job,request.beforeState,intent,blocker))
+            throw std::invalid_argument(blocker);
+        return std::make_shared<NativeProfessionCraftCast>(executing,action,job,request.consumption,request.itemGain,std::move(intent));
     }
     std::unique_ptr<ExecutionScope> NativeProfessionCraftCast::EnterEffect(Spell& spell) {
         auto* actor=Actor(spell);std::string blocker;CraftFrame current;
         if (!actor || !attached.load() || !AuthorityAllowed(*actor) || !actor->HasSpell(job.recipe) ||
             actor->GetTradeData() || !actor->IsStopped() ||
-            !ReadNativeCraftFrame(*actor,job,current,blocker) || !InputsAllowed(*actor,current,blocker)) return {};
+            !ReadNativeCraftFrame(*actor,job,current,blocker) || !InputsAllowed(*actor,current,blocker) ||
+            !SubjectAllowed(*actor,true,blocker)) return {};
+        if (job.operation==ProfessionOperation::EnchantItem && spell.m_targets.getItemTargetGuid()!=ObjectGuid(HIGHGUID_ITEM,job.subjectItem)) return {};
         if (!capture->EnterEffect(identity,current)) return {};
         return std::make_unique<ExecutionScope>(task,action);
     }
@@ -317,6 +432,9 @@ namespace LivingActivity {
         try {
             auto* actor=Actor(spell);CraftFrame after;std::string blocker;
             if (!actor || !ReadNativeCraftFrame(*actor,job,after,blocker)) {capture->Abandon();return;}
+            if (job.operation==ProfessionOperation::EnchantItem && !ReadNativeEnchantSubject(*actor,job,enchantAfter,blocker)) {
+                capture->Abandon();return;
+            }
             capture->Finish(identity,succeeded,std::move(after));
         } catch (...) {capture->Abandon();}
     }
