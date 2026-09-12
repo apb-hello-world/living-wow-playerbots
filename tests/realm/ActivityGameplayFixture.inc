@@ -3,7 +3,11 @@
 // A known direct heal or learned druid form is used. No spell/talent/item grant.
 // Fixture health setup/restoration is NOT organic gameplay/economy evidence.
 bool LivingActivityCoordinator::IsolatedGameplayActor(uint32_t actor) const {
-    return actor && state->gameplayFixtureActor.load(std::memory_order_acquire) == actor;
+    if(!actor)return false;
+    if(state->gameplayFixtureActor.load(std::memory_order_acquire)==actor)return true;
+    for(const auto& held:state->professionCohortActors)
+        if(held.load(std::memory_order_acquire)==actor)return true;
+    return false;
 }
 
 void LivingActivityCoordinator::ObserveIsolatedGameplayPacket(PlayerbotAI& ai, const WorldPacket& packet) {

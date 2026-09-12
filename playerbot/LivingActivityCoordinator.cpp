@@ -47,6 +47,7 @@
 #include <boost/uuid/string_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <chrono>
+#include <array>
 #include <deque>
 #include <fstream>
 #include <map>
@@ -308,6 +309,17 @@ struct LivingActivityCoordinator::State {
         std::string task,blocker,lastDiagnostic;
         boost::property_tree::ptree setup,checks;
     } auctionProfessionFixture;
+    struct ProfessionCohortCase {
+        uint32_t actor=0,recipe=0,skill=0,moneyBefore=0,skillBefore=0,outputBefore=0,output=0;
+        bool requested=false,started=false,finished=false;
+        unsigned diagnostics=0;
+        std::string task,blocker,lastDiagnostic;
+    };
+    std::vector<ProfessionCohortCase> professionCohort;
+    std::array<std::atomic<uint32_t>,20> professionCohortActors{};
+    boost::property_tree::ptree professionCohortSetup;
+    std::string professionCohortId;
+    uint64_t professionCohortDeadline=0;
     NativeVendorQuote vendorFixtureQuote;
     uint32_t vendorFixtureSpawn=0,vendorFixtureEntry=0;
     struct CraftFixture {
@@ -507,7 +519,8 @@ struct LivingActivityCoordinator::State {
         const char* mode=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
         if(mode && *mode && std::string(mode)!="activity-profession-auction-v1" &&
             std::string(mode)!="activity-profession-auction-restart-v1" &&
-            std::string(mode)!="activity-profession-auction-partial-v1")return false;
+            std::string(mode)!="activity-profession-auction-partial-v1" &&
+            std::string(mode)!="activity-profession-cohort-v1")return false;
 #endif
         return true;
     }
