@@ -46,10 +46,11 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const bool banked=suite=="activity-profession-bank-v1";
     const bool checkpoint=suite=="activity-profession-mail-checkpoint-v1";
     const bool travelRetry=suite=="activity-profession-mail-travel-resume-v1";
-    const bool resumed=suite=="activity-profession-mail-resume-v1" || travelRetry;
+    const bool capacityResume=suite=="activity-profession-mail-capacity-resume-v1";
+    const bool resumed=suite=="activity-profession-mail-resume-v1" || travelRetry || capacityResume;
     const bool serviceTravel=suite=="activity-profession-mail-travel-v1" || travelRetry;
     const bool mergeMail=suite=="activity-profession-mail-merge-v1";
-    const bool capacityMail=suite=="activity-profession-mail-capacity-v1";
+    const bool capacityMail=suite=="activity-profession-mail-capacity-v1" || capacityResume;
     const bool mailed=suite=="activity-profession-mail-v1" || checkpoint || resumed || serviceTravel || mergeMail || capacityMail;
     const bool automatic=paid || resumed || serviceTravel || capacityMail;
     const bool settling=suite=="activity-profession-settlement-v1" || paid || banked || mailed;
@@ -93,7 +94,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         }
         report.add_child("preparation_claims_before",retained);
         const auto originalClaims=fixture.originalCheckpoint.get_child_optional("checkpoint_claims");
-        report.add_child("checkpoint_claims",resumed && originalClaims ? *originalClaims : retained);
+        report.add_child("checkpoint_claims",resumed && !capacityResume && originalClaims ? *originalClaims : retained);
+        report.put("capacity_process_restart_proof",passed && capacityResume);
         report.put("collection_already_verified_before_resume",fixture.mailCollectedAtResume);
         if (banked) {
             report.put("ordinary_bank_runner",true);report.put("bank_operation",fixture.bankOperation);
@@ -166,7 +168,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 row.second.mode==Mode::Active && row.second.accepted &&
                 ((row.second.phase==Phase::Preparing && row.second.checkpoint.step==(travelRetry ? "profession_prepare" : "profession_resume_checkpoint")) ||
                  (!travelRetry && row.second.phase==Phase::Verifying && row.second.checkpoint.step=="profession_mail_collect"))) {
-                if(travelRetry) {
+                if(travelRetry || capacityResume) {
                     const auto boot=row.second.sourceKey.substr(std::string("isolated_craft_v1:").size());
                     if(!IsUuid(boot)) continue;
                     boost::property_tree::ptree original;
@@ -174,7 +176,13 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                         std::ifstream file("/isolated/evidence/activity-craft-"+boot+".json");
                         boost::property_tree::read_json(file,original);
                     } catch(const std::exception&) {continue;}
-                    if(original.get<std::string>("suite","")!="activity-profession-mail-travel-v1" ||
+                    if(capacityResume) {
+                        if(row.second.phase!=Phase::Verifying ||
+                            original.get<std::string>("suite","")!="activity-profession-mail-capacity-v1" ||
+                            original.get<std::string>("outcome","")!="failed" ||
+                            original.get<unsigned>("step",0)!=11 || original.get<unsigned>("native_launches",1)!=0 ||
+                            !IsUuid(original.get<std::string>("mail_operation",""))) continue;
+                    } else if(original.get<std::string>("suite","")!="activity-profession-mail-travel-v1" ||
                         original.get<std::string>("outcome","")!="failed" ||
                         original.get<std::string>("failure","")!="walk_fixture_safe_outside_service_start") continue;
                 }
@@ -202,7 +210,12 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(IsUuid(checkpointBoot),"restart_checkpoint_boot_is_bounded");
             std::ifstream originalFile("/isolated/evidence/activity-craft-"+checkpointBoot+".json");
             boost::property_tree::read_json(originalFile,fixture.originalCheckpoint);
-            const bool originalValid=travelRetry ?
+            const bool originalValid=capacityResume ?
+                fixture.originalCheckpoint.get<std::string>("suite")=="activity-profession-mail-capacity-v1" &&
+                fixture.originalCheckpoint.get<std::string>("outcome")=="failed" &&
+                fixture.originalCheckpoint.get<unsigned>("step")==11 &&
+                fixture.originalCheckpoint.get<unsigned>("native_launches")==0 &&
+                IsUuid(fixture.originalCheckpoint.get<std::string>("mail_operation")) : travelRetry ?
                 fixture.originalCheckpoint.get<std::string>("suite")=="activity-profession-mail-travel-v1" &&
                 fixture.originalCheckpoint.get<std::string>("outcome")=="failed" &&
                 fixture.originalCheckpoint.get<std::string>("failure")=="walk_fixture_safe_outside_service_start" &&
@@ -212,6 +225,20 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(originalValid &&
                 fixture.originalCheckpoint.get<std::string>("task")==prior->id &&
                 fixture.originalCheckpoint.get<uint32_t>("actor")==prior->actor,"restart_original_checkpoint_receipt_retained");
+            if(capacityResume) {
+                fixture.capacityFilled=true;
+                fixture.capacityMoneyBefore=fixture.originalCheckpoint.get<uint32_t>("money_before_capacity");
+                fixture.capacityFillCount=fixture.originalCheckpoint.get<uint32_t>("capacity_fill_count");
+                fixture.capacityLegacyChecked=fixture.originalCheckpoint.get<bool>("legacy_sale_claim_guard_checked");
+                for(const auto& row:fixture.originalCheckpoint.get_child("capacity_sales")) {
+                    const auto id=row.second.get<std::string>("operation");NativeSaleQuote quote;
+                    require(IsUuid(id) && DecodeNativeSaleQuote(Json(row.second.get_child("quote")),quote) &&
+                        quote.item.actor==prior->actor && fixture.capacitySales.emplace(id,quote).second,
+                        "restart_retains_prior_capacity_sale_identity");
+                }
+                require(!fixture.capacitySales.empty() && fixture.capacityFillCount && fixture.capacityLegacyChecked,
+                    "restart_requires_original_capacity_preparation_evidence");
+            }
             fixture.mailCollectedAtResume=prior->phase==Phase::Verifying;
             for (const auto& claim : batch.claims) {
                 require(claim.state=="held" && claim.task==prior->id && claim.actor==prior->actor,
@@ -660,7 +687,11 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                     claim->nativeReference==0 && claim->itemGuid==target && claim->quantity==fixture.mailCount &&
                     claim->state=="held","ordinary_mail_runner_preserves_item_claim");
                 uint64_t saleCopper=0;for(const auto& sale:fixture.capacitySales)saleCopper+=sale.second.copper;
-                require(bot->GetMoney()==uint64_t(fixture.before.money)+saleCopper,"ordinary_mail_runner_preserves_money_after_exact_capacity_sales");
+                // The asynchronous history read may revisit this branch after
+                // refreshing fixture.before. Sale proceeds apply once to the
+                // immutable pre-capacity wallet, not again to that craft frame.
+                const auto moneyBefore=capacityMail?fixture.capacityMoneyBefore:fixture.before.money;
+                require(bot->GetMoney()==uint64_t(moneyBefore)+saleCopper,"ordinary_mail_runner_preserves_money_after_exact_capacity_sales");
                 if(capacityMail)require(!fixture.capacitySales.empty() && fixture.capacityLegacyChecked,
                     "same_job_cleared_native_capacity_before_mail_collection");
                 if(mergeMail) {
