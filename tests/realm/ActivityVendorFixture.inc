@@ -224,6 +224,18 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
                 require(entry.second.request.kind=="vendor_purchase","ordinary_purchase_only_expected_native_operation");
                 operation=entry.second.request;
                 require(DecodeNativeVendorQuote(operation.beforeState,quote),"ordinary_purchase_exact_native_quote_saved");
+                if(entry.second.ready && !entry.second.dispatched) {
+                    auto changed=quote;++changed.entry;
+                    NativeProfessionPurchasePrerequisites prerequisites;
+                    NativeVendorPurchase invalid(changed,prerequisites);std::string reason;
+                    if(invalid.PrepareDispatch(*bot,operation,reason)) {
+                        const auto money=bot->GetMoney(),count=bot->GetItemCount(quote.entry,false);
+                        require(!invalid.ValidateNative(*bot,operation,reason) && !reason.empty(),
+                            "ready_budget_does_not_turn_invalid_demand_into_endless_wait");
+                        require(bot->GetMoney()==money && bot->GetItemCount(quote.entry,false)==count,
+                            "invalid_purchase_validation_has_no_native_effect");
+                    }
+                }
             }
             const auto before=state->nativeDispatches;
             state->vendorFixtureBlocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
