@@ -2036,6 +2036,7 @@ AdmissionResult LivingActivityCoordinator::PrepareProfessionAttempt(uint32_t act
     if (!grant.Permitted()) return reject(AdmissionCode::NotReady,grant.blocker);
     OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=expectedRevision;
     ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+    request.transition.task.checkpoint.step="profession_craft";
     request.transition.task.updatedAtMs=NowMs();request.transition.receipt=operation;request.authorization=grant.action;
     request.kind=craft.OperationKind();request.effects=craft.OperationEffects();request.persistence=craft.PersistencePolicy();
     request.beforeState=std::move(plan.beforeState);request.itemGain=plan.output;request.consumption=std::move(plan.consumption);
