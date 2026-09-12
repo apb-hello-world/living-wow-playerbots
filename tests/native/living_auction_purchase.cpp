@@ -4,6 +4,15 @@
 #include <algorithm>
 using namespace LivingActivity;
 int main() {
+    // Replay the real false-local comparison: Brill's geometric transfer
+    // distance was 496yd versus Orgrimmar's 97yd auction, with 861c available.
+    assert(!PreferAuctionSource({40,1,496.134,true},{83,1,97.443,true}));
+    assert(PreferAuctionSource({40,1,496.134,true,true},{83,1,97.443,true,false}));
+    assert(!PreferAuctionSource({40,1,97.443,true,false},{83,1,496.134,true,true}));
+    assert(PurchaseTravelDistance(496.134,true)==2000);
+    assert(PurchaseTravelDistance(496.134,false)==496.134);
+    assert(PurchaseTravelDistance(4000,true)==4000);
+    assert(!PreferAuctionSource({40,1,496,true,true},{1000,1,0,true})); // premium remains bounded
     assert(PreferAuctionSource({40,1,4000,true},{83,1,50,true})); // local market, distant shop
     assert(!PreferAuctionSource({40,1,0,true},{83,1,50,true})); // affordable native shop wins
     assert(PreferAuctionSource({40,1,0,true},{15,1,50,true})); // genuinely cheaper nearby listing

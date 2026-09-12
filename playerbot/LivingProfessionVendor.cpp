@@ -13,17 +13,29 @@
 namespace LivingActivity {
     namespace {
         VendorSourceIndex sources;
-        std::pair<double,int32_t> NearestService(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries) {
-            std::pair<double,int32_t> best{std::numeric_limits<double>::infinity(),0};
+        struct ServiceEstimate {
+            double distance=std::numeric_limits<double>::infinity();
+            int32_t entry=0;
+            bool mapTransfer=false;
+            auto Rank() const {return std::make_pair(PurchaseTravelDistance(distance,mapTransfer),entry);}
+        };
+        ServiceEstimate NearestService(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries) {
+            ServiceEstimate best;
             const ai::PlayerTravelInfo info(&actor);const WorldPosition here(&actor);
             // Distance ranks candidates only. Do not reinstate the retired
             // radius limit or claim a speculative route already succeeded.
             for(const auto* dest:sTravelMgr.GetDestinations(info,purpose,entries,true,0,false)) {
                 if(dest->GetEntry()<=0 || GuidPosition(HIGHGUID_UNIT,dest->GetEntry()).IsHostileTo(&actor))continue;
-                const auto distance=double(dest->DistanceTo(here));
-                if(!std::isfinite(distance) || distance>=FLT_MAX)continue;
-                const auto candidate=std::make_pair(distance,dest->GetEntry());
-                if(candidate<best)best=candidate;
+                // Use real service points, not the bounding square's distance.
+                // Cross-map geometric distances omit transport waiting/riding.
+                for(const auto map:dest->GetSubSquareIds()) {
+                    const auto* point=dest->GetSubSquare(map).GetClosestPoint(here);
+                    if(!point)continue;
+                    const auto distance=double(here.distance(*point));
+                    if(!std::isfinite(distance) || distance>=FLT_MAX)continue;
+                    const ServiceEstimate candidate{distance,dest->GetEntry(),map!=actor.GetMapId()};
+                    if(candidate.Rank()<best.Rank())best=candidate;
+                }
             }
             return best;
         }
@@ -113,7 +125,7 @@ namespace LivingActivity {
     }
     std::vector<int32_t> NearestNativePurchaseEntries(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries) {
         const auto best=NearestService(actor,purpose,entries);
-        return best.second ? std::vector<int32_t>{best.second} : entries;
+        return best.entry ? std::vector<int32_t>{best.entry} : entries;
     }
     PurchaseSourcePreference PreferNativeProfessionSource(Player& actor,const Task& saved,
         const ProfessionReagent& need,const std::string& operation,const NativeVendorQuote* localVendor,
@@ -126,9 +138,9 @@ namespace LivingActivity {
             return blocker=="profession_purchase_market_snapshot_busy" ? PurchaseSourcePreference::Wait : PurchaseSourcePreference::Vendor;
         const auto auctionService=NearestService(actor,uint32_t(ai::TravelDestinationPurpose::AH),{});
         const auto& offer=offers.front();
-        diagnostics.auctionService=auctionService.second;diagnostics.listing=offer.id;
+        diagnostics.auctionService=auctionService.entry;diagnostics.listing=offer.id;
         auto& auction=diagnostics.auction;auto& vendor=diagnostics.vendor;
-        auction={offer.copper,offer.quantity,auctionService.first,true};
+        auction={offer.copper,offer.quantity,auctionService.distance,true,auctionService.mapTransfer};
         if(localVendor)vendor={localVendor->copper,localVendor->quantity,0,true};
         else if(!vendorOutOfStock) {
             ProfessionReagent actual;std::vector<int32_t> vendors;
@@ -137,7 +149,7 @@ namespace LivingActivity {
                 const uint64_t price=item && item->BuyCount ? uint64_t(item->BuyPrice)*actual.perAttempt/item->BuyCount : 0;
                 if(price && price<=UINT32_MAX) {
                     const auto service=NearestService(actor,uint32_t(ai::TravelDestinationPurpose::Vendor),vendors);
-                    vendor={uint32_t(price),actual.perAttempt,service.first,true};diagnostics.vendorService=service.second;
+                    vendor={uint32_t(price),actual.perAttempt,service.distance,true,service.mapTransfer};diagnostics.vendorService=service.entry;
                 }
             }
         }

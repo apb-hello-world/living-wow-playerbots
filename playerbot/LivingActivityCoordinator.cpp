@@ -1792,6 +1792,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                 auto candidate=[&](const char* name,const PurchaseSourceCandidate& value) {
                     boost::property_tree::ptree item;item.put("available",value.available);
                     item.put("copper",value.copper);item.put("quantity",value.quantity);
+                    item.put("map_transfer",value.mapTransfer);
                     if(std::isfinite(value.distance))item.put("distance",value.distance);
                     item.put("reachable_estimate",std::isfinite(value.distance)&&value.available);
                     if(std::isfinite(PurchaseSourceScore(value)))item.put("score",PurchaseSourceScore(value));
