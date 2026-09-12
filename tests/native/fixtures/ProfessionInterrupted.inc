@@ -4,7 +4,7 @@ void TestInterruptedProfession() {
     using namespace LivingActivity;using namespace LivingActivityTest;
     InterruptedFixture f;ProfessionPreparation result;std::string blocker;
     auto prepare=[&](const InterruptedFixture& x) {
-        return PrepareInterruptedProfession(x.task,x.current,x.history,x.batch,x.frame,1200,x.receipt,result,blocker);
+        return PrepareInterruptedProfession(x.task,x.current,x.history,x.batch,x.frame,1200,x.receipt,result,blocker,x.bank);
     };
     assert(prepare(f));const auto accepted=result;
     assert(result.task.phase==Phase::Verifying && result.task.context==f.current && result.task.revision==5);
@@ -40,6 +40,16 @@ void TestInterruptedProfession() {
     bad=f;++bad.batch.claims[0].revision;fail(bad);
     bad=f;bad.batch.claims[0].state="consumed";fail(bad);
     bad=f;bad.batch.claims.push_back(bad.batch.claims[0]);fail(bad);
+    auto storage=f;storage.AddBankDependency();assert(prepare(storage));
+    assert(result.plan.statements[1].find("i.count=2")!=std::string::npos);
+    bad=storage;bad.bank.clear();fail(bad);
+    bad=storage;bad.bank[0].count=1;fail(bad);
+    bad=storage;bad.bank[0].actor=706;fail(bad);
+    bad=storage;bad.bank[0].slot=26;fail(bad);
+    bad=storage;bad.batch.claims.back().location="mail";fail(bad);
+    bad=storage;bad.batch.claims.back().state="reconciling";fail(bad);
+    auto bagged=storage;bagged.bank[0].bagGuid=900;bagged.bank[0].slot=1;
+    assert(prepare(bagged) && result.plan.statements[1].find("b.slot>=67 AND b.slot<74")!=std::string::npos);
     // An interrupted non-commit is stored without inventing a spell callback.
     auto row=*f.history.interruptedCraft;row.receipt.state=OperationState::Rejected;
     row.receipt.evidence="native_craft_intent_not_committed";

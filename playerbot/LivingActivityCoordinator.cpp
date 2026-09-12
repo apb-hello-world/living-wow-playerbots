@@ -2332,10 +2332,19 @@ AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint3
         const auto partyBlocker=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
         if(*partyBlocker) return reject(AdmissionCode::NotReady,partyBlocker);
         ProfessionJob job;CraftFrame frame;ProfessionPreparation prepared;
-        if(!state->resources.ReadUnsettled(id,batch,blocker) ||
+        if(!state->resources.ReadUnsettled(id,batch,blocker)) return reject(AdmissionCode::ReconciliationRequired,blocker);
+        std::vector<NativeItemStack> banked;
+        if(std::any_of(batch.claims.begin(),batch.claims.end(),[](const auto& c){return c.location=="bank";}))
+            for(auto* item:bot->GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BANK)) {
+                if(!item || item->GetOwnerGuid()!=bot->GetObjectGuid()) continue;
+                if(std::any_of(batch.claims.begin(),batch.claims.end(),[&](const auto& c){return c.location=="bank" && c.itemGuid==item->GetGUIDLow();}))
+                    banked.push_back({actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),
+                        item->GetContainer()?item->GetContainer()->GetGUIDLow():0,item->GetSlot()});
+            }
+        if(
             !DecodeProfessionJob(saved->second.checkpoint.data,job,blocker) ||
             !ReadNativeCraftFrame(*bot,job,frame,blocker) ||
-            !PrepareInterruptedProfession(saved->second,current,history,batch,frame,NowMs(),receipt,prepared,blocker))
+            !PrepareInterruptedProfession(saved->second,current,history,batch,frame,NowMs(),receipt,prepared,blocker,banked))
             return reject(AdmissionCode::ReconciliationRequired,blocker);
         State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
         write.admissionReceipt=receipt;state->pending.push_back(std::move(write));

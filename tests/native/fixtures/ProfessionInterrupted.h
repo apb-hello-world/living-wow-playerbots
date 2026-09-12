@@ -8,6 +8,7 @@ struct InterruptedFixture {
     ProfessionHistory history;
     UnsettledClaimBatch batch;
     CraftFrame frame;
+    std::vector<NativeItemStack> bank;
     std::string receipt="ff2efbdf-f0ec-4539-b840-299847978003";
     InterruptedFixture() {
         ResumeFixture base;task=base.task;task.id=task.root="637bd562-36d2-5b01-bc01-e2d831c49f94";
@@ -30,6 +31,11 @@ struct InterruptedFixture {
         history.interruptedCraft=row;
         batch.complete=true;batch.bookRevision=1;
         for(const auto& use:intent.inputs) batch.claims.push_back(use.before);
+    }
+    void AddBankDependency() {
+        auto claim=batch.claims.front();claim.id="b71b6cac-8b42-44d9-9f1f-24e4e40a0004";
+        claim.itemGuid=803;claim.itemEntry=4470;claim.quantity=2;claim.location="bank";claim.revision=1;
+        batch.claims.push_back(claim);bank.push_back({705,803,4470,2,0,43});
     }
 };
 }
