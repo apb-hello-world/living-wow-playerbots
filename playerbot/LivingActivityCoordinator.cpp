@@ -313,6 +313,8 @@ struct LivingActivityCoordinator::State {
         unsigned step=0;
         uint64_t deadline=0;
         boost::property_tree::ptree checks;
+        boost::property_tree::ptree continuationTrace;
+        std::string lastCheckpoint;
     } professionRecoveryFixture;
     bool vendorFixtureFaults = false;
     uint32_t vendorFixtureCountBefore = 0;

@@ -844,6 +844,12 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
                 captureCapacityOperations();followRunnerWrite();return;
             }
+            // Preserve the first unmet native prerequisite in failed evidence;
+            // a test assertion must not discard the executor's actual reason.
+            fixture.blocker=NextProfessionStep(request.task,prepared).blocker;
+            fixture.snapshot.put("next_step",uint32_t(NextProfessionStep(request.task,prepared).step));
+            fixture.snapshot.put("capacity",prepared.capacity);fixture.snapshot.put("safe",prepared.safe);
+            fixture.snapshot.put("blocker",fixture.blocker);
             require(NextProfessionStep(request.task,prepared).step==ProfessionStep::Execute &&
                 prepared.attempts.empty() && prepared.outputPerAttempt==1,
                 "craft_initial_native_snapshot_selects_exact_ready_attempt");

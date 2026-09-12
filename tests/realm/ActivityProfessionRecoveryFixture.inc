@@ -1,6 +1,10 @@
 // No grants, forced travel, spells or purchases. Reconcile a prior boot's exact
 // verified skill-job receipt and backed goods through the real finite executor.
 void LivingActivityCoordinator::RunIsolatedProfessionRecoveryFixture() {
+    if(std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE"))=="activity-profession-continue-v1") {
+#include "ActivityProfessionContinuationFixture.inc"
+        return;
+    }
     MANGOS_ASSERT(OnWorldThread());RequireIsolatedNativeFixtureEnvironment();
     if (state->fixtureFinished || NowMs()<state->fixtureNext) return;
     state->fixtureNext=NowMs()+1000;
