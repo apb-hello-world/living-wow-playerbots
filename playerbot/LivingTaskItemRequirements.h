@@ -15,7 +15,8 @@ namespace LivingActivity {
         ProfessionJob job;
         if (!IsProfessionJob(task) || !ValidateProfessionTask(task,blocker) ||
             !DecodeProfessionJob(task.checkpoint.data,job,blocker)) {
-            if (blocker.empty()) blocker="item_service_typed_demand_required";return false;
+            if (blocker.empty()) blocker="item_service_typed_demand_required";
+            return false;
         }
         items=job.reagents;blocker.clear();return true;
     }
