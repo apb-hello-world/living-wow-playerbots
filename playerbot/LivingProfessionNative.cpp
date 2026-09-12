@@ -2,11 +2,106 @@
 #include "LivingProfessionNative.h"
 #include "LivingProfessionPlan.h"
 #include "LivingNativeCraftCapture.h"
+#include "LivingActivityCoordinator.h"
+#include "LivingProfessionTools.h"
+#include "LivingTaskItemRequirements.h"
+#include "LivingProfessionVendor.h"
+#include "LivingNativeAuctionPurchase.h"
 #include "ServerFacade.h"
 #include "Spells/SpellMgr.h"
 #include <map>
+#include <set>
 
 namespace LivingActivity {
+    namespace {
+        std::vector<std::pair<uint32_t,uint32_t>> toolCatalog;
+        bool toolCatalogReady=false;
+    }
+    void BuildNativeProfessionToolCatalog() {
+        toolCatalog.clear();toolCatalogReady=false;
+        for (uint32_t id=1;id<sItemStorage.GetMaxEntry();++id) {
+            const auto* item=sObjectMgr.GetItemPrototype(id);
+            if (item && item->TotemCategory) toolCatalog.emplace_back(id,item->TotemCategory);
+        }
+        toolCatalogReady=true;
+    }
+    bool ReadNativeProfessionTools(Player& actor,const Task& task,
+        std::vector<ProfessionReagent>& tools,std::string& unavailable,std::string& blocker) {
+        tools.clear();unavailable.clear();
+        auto reject=[&](const char* why){blocker=why;return false;};
+        if (!sLivingActivityCoordinator.OnWorldThread() || actor.GetGUIDLow()!=task.actor || !actor.IsInWorld() ||
+            actor.IsBeingTeleported() || !toolCatalogReady) return reject("profession_tool_catalog_or_context_unavailable");
+        ProfessionJob job;
+        if (!DecodeProfessionJob(task.checkpoint.data,job,blocker)) return false;
+        const auto* spell=sServerFacade.LookupSpellInfo(job.recipe);
+        if (!spell) return reject("profession_tool_recipe_unavailable");
+        // A tentative transition may be one revision ahead; claims always come
+        // from the acknowledged root with the identical immutable checkpoint.
+        const auto saved=sLivingActivityCoordinator.ReadSavedTask(task.id);
+        UnsettledClaimBatch claims;
+        if (!saved || saved->actor!=task.actor || saved->checkpoint.data!=task.checkpoint.data ||
+            !sLivingActivityCoordinator.ReadTaskClaims(saved->actor,saved->id,saved->revision,claims,blocker))
+            return reject("profession_tool_claim_snapshot_required");
+        std::set<uint32_t> selected;
+        for (const auto entry:spell->Totem) if (entry) {
+            if (!sObjectMgr.GetItemPrototype(entry)) return reject("profession_tool_native_item_unavailable");
+            selected.insert(entry);
+        }
+        for (const auto category:spell->TotemCategory) if (category) {
+            std::vector<ProfessionToolCandidate> candidates;
+            for (const auto& item:toolCatalog) {
+                if (!IsTotemCategoryCompatiableWith(item.second,category)) continue;
+                if (candidates.size()>=64) return reject("profession_tool_category_snapshot_bound");
+                const auto* proto=sObjectMgr.GetItemPrototype(item.first);
+                if (!proto) continue;
+                ProfessionToolCandidate candidate;candidate.entry=item.first;
+                candidate.carried=actor.GetItemCount(item.first,false)>0;
+                candidate.banked=actor.GetItemCount(item.first,true)>actor.GetItemCount(item.first,false);
+                for (const auto& claim:claims.claims)
+                    if (claim.itemEntry==item.first && claim.quantity &&
+                        (claim.location=="bags" || claim.location=="bank" || claim.location=="mail")) candidate.committed=true;
+                if (!(candidate.committed || candidate.carried || candidate.banked) && actor.CanUseItem(proto)!=EQUIP_ERR_OK) continue;
+                candidates.push_back(candidate);
+            }
+            // Do not query the market when an owned/committed compatible tool
+            // already fulfils this category. Preserve paid incoming identity.
+            auto entry=ChooseProfessionTool(candidates);
+            if (!entry) {
+                for (auto& candidate:candidates) {
+                    const auto* proto=sObjectMgr.GetItemPrototype(candidate.entry);
+                    std::vector<int32_t> vendors;std::string why;
+                    candidate.vendor=proto && proto->BuyCount==1 &&
+                        NativeProfessionVendorSources(actor,candidate.entry,1,vendors,why);
+                }
+                entry=ChooseProfessionTool(candidates);
+                if (!entry) {
+                    for (auto& candidate:candidates) {
+                        std::string why;candidate.auction=NativeAuctionSourceAvailable(actor,candidate.entry,1,why);
+                        if (why=="profession_purchase_market_snapshot_busy") {blocker=why;return false;}
+                    }
+                    entry=ChooseProfessionTool(candidates);
+                }
+            }
+            // A real compatible catalog item with no currently obtainable
+            // source remains a truthful shortage, never permission to spawn it.
+            if (!entry && !candidates.empty()) entry=candidates.front().entry;
+            if (entry) selected.insert(entry);
+            else unavailable="profession_tool_category_has_no_usable_item";
+        }
+        for (const auto entry:selected) tools.push_back({entry,1});
+        if (!ValidProfessionTools(job,tools)) return reject("profession_tool_consumable_overlap_or_invalid");
+        blocker.clear();return true;
+    }
+    bool ReadNativeTaskItemRequirements(Player& actor,const Task& task,
+        std::vector<ProfessionReagent>& items,std::string& blocker,std::string* unavailable) {
+        if (unavailable) unavailable->clear();
+        if (!ReadTaskItemRequirements(task,items,blocker)) return false;
+        if (IsRecipeLearningTask(task)) return true;
+        std::vector<ProfessionReagent> tools;std::string missing;
+        if (!ReadNativeProfessionTools(actor,task,tools,missing,blocker)) return false;
+        if (unavailable) *unavailable=missing;
+        items.insert(items.end(),tools.begin(),tools.end());return true;
+    }
     bool BuildNativeSkillGainJob(Player& actor,uint32_t recipe,ProfessionJob& job,std::string& blocker) {
         job={};job.recipe=recipe;
         auto reject=[&](const char* why){blocker=why;return false;};

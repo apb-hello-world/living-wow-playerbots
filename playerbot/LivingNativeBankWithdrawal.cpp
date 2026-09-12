@@ -7,6 +7,7 @@
 #include "LivingNativeVendorSale.h"
 #include "LivingServiceExecution.h"
 #include "LivingTaskItemRequirements.h"
+#include "LivingProfessionNative.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
@@ -148,7 +149,7 @@ bool PlanNativeBankWithdrawal(Player& actor,const Task& task,const ProfessionRea
     const auto banker=NativeNearbyBanker(actor);
     if (!banker) return reject("profession_banker_travel_required");
     std::vector<ProfessionReagent> requirements;
-    if (!ReadTaskItemRequirements(task,requirements,blocker)) return false;
+    if (!ReadNativeTaskItemRequirements(actor,task,requirements,blocker)) return false;
     const auto reagent=std::find_if(requirements.begin(),requirements.end(),[&](const auto& r){return r.entry==need.entry;});
     if (reagent==requirements.end() || !need.perAttempt || need.perAttempt>reagent->perAttempt)
         return reject("profession_bank_exact_demand_required");

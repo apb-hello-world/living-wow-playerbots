@@ -25,7 +25,7 @@ bool Safe(Player& actor) {
 }
 bool Demand(Player& actor,const Task& saved,uint32_t entry,uint32_t& remaining,std::string& why) {
     remaining=0;std::vector<ProfessionReagent> required;
-    if(!ReadTaskItemRequirements(saved,required,why))return false;
+    if(!ReadNativeTaskItemRequirements(actor,saved,required,why))return false;
     if(IsRecipeLearningTask(saved)) {
         if(!ValidateNativeRecipeLearningTask(actor,saved,why))return false;
     } else {
@@ -38,6 +38,7 @@ bool Demand(Player& actor,const Task& saved,uint32_t entry,uint32_t& remaining,s
     }
     NativeProfessionDemand have;
     if(!InspectNativeProfessionDemand(actor,saved,have)) {why=have.blocker;return false;}
+    if (required!=have.requirements) {why="profession_item_requirements_changed";return false;}
     for(size_t i=0;i<required.size();++i) {
         if(have.stock[i].bank && have.stock[i].bag<required[i].perAttempt) {
             why="profession_banked_material_requires_collection";return false;

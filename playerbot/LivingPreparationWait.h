@@ -10,7 +10,8 @@ namespace LivingActivity {
         for(const auto* known : {"purchase_hourly_limit", "purchase_seller_weekly_limit",
             "purchase_daily_limit", "purchase_protected_money_shortfall",
             "profession_material_has_legacy_commitment", "profession_material_source_unavailable",
-            "profession_paid_material_in_transit", "vendor_limited_stock_unavailable"})
+            "profession_paid_material_in_transit", "vendor_limited_stock_unavailable",
+            "profession_tool_source_unavailable"})
             if(blocker==known)return 300000;
         return 0;
     }

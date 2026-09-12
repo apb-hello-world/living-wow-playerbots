@@ -98,6 +98,12 @@ namespace LivingActivity {
         // Known external reservation prevented material inspection. Quantities
         // remain unknown (not zero stock); this snapshot can only wait/rebind.
         std::string readinessBlocker;
+        // Native spell tool requirements are separate from consumed reagents.
+        // These snapshots are derived from the pinned spell/item catalog and
+        // current claims; they do not rewrite the accepted recipe checkpoint.
+        std::vector<ProfessionReagent> requiredTools;
+        std::vector<ProfessionStock> toolStock;
+        std::string toolBlocker;
     };
     struct ProfessionDecision {
         ProfessionStep step = ProfessionStep::Reconcile;

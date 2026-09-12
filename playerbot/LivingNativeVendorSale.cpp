@@ -32,12 +32,13 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
         return false;
     };
     std::vector<ProfessionReagent> requirements;
-    if (!ReadTaskItemRequirements(task,requirements,blocker)) return false;
+    if (!ReadNativeTaskItemRequirements(actor,task,requirements,blocker)) return false;
     ItemGainSpec output;
     if (IsRecipeLearningTask(task)) output={requirements.front().entry,1};
     else {
         ProfessionJob job;
-        if (!DecodeProfessionJob(task.checkpoint.data,job,blocker) || !ReadNativeCraftOutput(actor,job,output,blocker)) return false;
+        if (!DecodeProfessionJob(task.checkpoint.data,job,blocker)) return false;
+        if (job.operation!=ProfessionOperation::EnchantItem && !ReadNativeCraftOutput(actor,job,output,blocker)) return false;
     }
     if (missing(output.entry,output.quantity)) return true;
     // Paid/committed attachments may require space even when the craft output
@@ -47,7 +48,8 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
         if (!ReadNativeMailBalance(actor,c,balance)) {blocker="capacity_mail_requires_reconciliation";return false;}
         if (missing(c.itemEntry,balance.quantity)) return true;
     }
-    for (const auto& reagent : requirements) if(actor.GetItemCount(reagent.entry,false)<reagent.perAttempt)
+    for (const auto& reagent : requirements) if(actor.GetItemCount(reagent.entry,false)<reagent.perAttempt) {
+        if (missing(reagent.entry,reagent.perAttempt-actor.GetItemCount(reagent.entry,false))) return true;
         for(auto* item : actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BANK)) {
             if (!item || item->GetEntry()!=reagent.entry) continue;
             uint32_t available=0;
@@ -55,6 +57,7 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
                 {task.actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,"bank"},available,blocker)) return false;
             if (available==item->GetCount() && missing(item->GetEntry(),item->GetCount())) return true;
         }
+    }
     blocker="capacity_already_available";return false;
 }
 bool JobProtected(Player& actor,const Task& task,Item& item) {
@@ -65,14 +68,15 @@ bool JobProtected(Player& actor,const Task& task,Item& item) {
     ProfessionJob job;std::string why;
     if (!DecodeProfessionJob(task.checkpoint.data,job,why)) return true;
     ItemGainSpec output;std::string blocker;
-    if (!ReadNativeCraftOutput(actor,job,output,blocker) || item.GetEntry()==output.entry) return true;
+    if (job.operation==ProfessionOperation::EnchantItem) {
+        if (item.GetGUIDLow()==job.subjectItem) return true;
+    } else if (!ReadNativeCraftOutput(actor,job,output,blocker) || item.GetEntry()==output.entry) return true;
     for (const auto& reagent : job.reagents) if (item.GetEntry()==reagent.entry) return true;
     const auto* spell=sSpellTemplate.LookupEntry<SpellEntry>(job.recipe);
     if (!spell) return true;
     for (const auto tool : spell->Totem) if (tool && item.GetEntry()==uint32_t(tool)) return true;
-    // Preserve tools with category requirements conservatively until native
-    // tool-category identity can be represented by the common claim adapter.
-    for (const auto category : spell->TotemCategory) if (category) return true;
+    for (const auto category : spell->TotemCategory)
+        if (category && IsTotemCategoryCompatiableWith(item.GetProto()->TotemCategory,category)) return true;
     return false;
 }
 CapacitySaleFacts Facts(Player& actor,const Task& task,Item& item) {

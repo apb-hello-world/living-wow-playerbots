@@ -64,6 +64,8 @@ namespace {
         bool ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& blocker) override {
             ProfessionJob job;
             if (!DecodeProfessionJob(request.transition.task.checkpoint.data,job,blocker)) return false;
+            std::vector<ProfessionReagent> requirements;
+            if (!ReadNativeTaskItemRequirements(actor,request.transition.task,requirements,blocker)) return false;
             for (const auto& change : request.changes) {
                 const auto& claim=change.after;
                 if (job.operation==ProfessionOperation::EnchantItem && claim.itemGuid==job.subjectItem) {
@@ -78,11 +80,11 @@ namespace {
                     }
                     continue;
                 }
-                const auto need=std::find_if(job.reagents.begin(),job.reagents.end(),[&](const auto& r){return r.entry==claim.itemEntry;});
+                const auto need=std::find_if(requirements.begin(),requirements.end(),[&](const auto& r){return r.entry==claim.itemEntry;});
                 if (change.expectedRevision || claim.revision!=1 || claim.actor!=actor.GetGUIDLow() ||
                     claim.task!=request.transition.task.root || claim.state!="held" ||
                     (claim.location!="bags" && claim.location!="bank") ||
-                    !claim.itemGuid || claim.copper || claim.nativeReference || need==job.reagents.end() ||
+                    !claim.itemGuid || claim.copper || claim.nativeReference || need==requirements.end() ||
                     (claim.location=="bags" && claim.quantity!=need->perAttempt)) {
                     blocker="profession_material_reservation_mismatch";return false;
                 }
@@ -330,6 +332,12 @@ struct LivingActivityCoordinator::State {
         EnchantSpec enchant;
         boost::property_tree::ptree setup;
     } enchantFixture;
+    struct ToolFixture {
+        uint32_t actor=0;uint64_t deadline=0;unsigned diagnostics=0;
+        bool requested=false,started=false;
+        std::string task,blocker,lastDiagnostic;
+        ProfessionJob job;boost::property_tree::ptree setup;
+    } toolFixture;
     struct AuctionProfessionFixture {
         uint32_t actor=0,moneyBefore=0,skillBefore=0,outputBefore=0;
         uint64_t deadline=0;
@@ -553,7 +561,7 @@ struct LivingActivityCoordinator::State {
             std::string(mode)!="activity-profession-auction-restart-v1" &&
             std::string(mode)!="activity-profession-auction-partial-v1" &&
             std::string(mode)!="activity-profession-cohort-v1" &&
-            std::string(mode)!="activity-enchant-v1")return false;
+            std::string(mode)!="activity-enchant-v1" && std::string(mode)!="activity-tool-v1")return false;
 #endif
         return true;
     }
@@ -1704,7 +1712,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     std::vector<ProfessionReagent> requirements;
     if (!OnWorldThread() || !EffectEnforcementEnabled() || !saved || saved->actor!=actor ||
         saved->mode!=Mode::Active || !saved->accepted || !bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() ||
-        !ReadTaskItemRequirements(*saved,requirements,blocker)) return stop("item_service_saved_task_required");
+        !ReadNativeTaskItemRequirements(*bot,*saved,requirements,blocker)) return stop("item_service_saved_task_required");
     if (!(saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot))) return stop("item_service_context_changed");
     for (const auto& write:state->pending) if (write.task.actor==actor) return stop("item_service_transition_pending");
     auto advance=[&](Phase phase) {

@@ -1,6 +1,7 @@
 #include "botpch.h"
 #include "LivingProfessionDemand.h"
 #include "LivingTaskItemRequirements.h"
+#include "LivingProfessionNative.h"
 #include "LivingNativeRecipeLearning.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingNativeMailCollection.h"
@@ -22,16 +23,21 @@ namespace LivingActivity {
         if (!sLivingActivityCoordinator.OnWorldThread() || !actor.GetPlayerbotAI() || !actor.IsInWorld() ||
             actor.IsBeingTeleported() || actor.GetGUIDLow()!=saved.actor)
             return reject("profession_demand_native_context_unavailable");
-        std::vector<ProfessionReagent> requirements;
-        if (!ReadTaskItemRequirements(saved,requirements,demand.blocker)) return false;
+        auto& requirements=demand.requirements;
+        if (!ReadNativeTaskItemRequirements(actor,saved,requirements,demand.blocker,&demand.toolBlocker)) return false;
+        std::vector<ProfessionReagent> consumed;
+        if (!ReadTaskItemRequirements(saved,consumed,demand.blocker)) return false;
+        auto tool=[&](uint32_t entry) {return std::none_of(consumed.begin(),consumed.end(),[&](const auto& r){return r.entry==entry;});};
         std::map<uint32_t,ProfessionStock> stock;
         for (const auto& reagent : requirements) stock.emplace(reagent.entry,ProfessionStock{reagent.entry});
         unsigned scanned=0; std::set<uint32_t> seen;
-        for (unsigned bank=0;bank!=2;++bank) {
-            for (Item* item : actor.GetPlayerbotAI()->InventoryParseItems("all",bank ?
-                IterateItemsMask::ITERATE_ITEMS_IN_BANK : IterateItemsMask::ITERATE_ITEMS_IN_BAGS)) {
+        for (unsigned location=0;location!=3;++location) {
+            const bool bank=location==1,equipment=location==2;
+            for (Item* item : actor.GetPlayerbotAI()->InventoryParseItems("all",equipment?IterateItemsMask::ITERATE_ITEMS_IN_EQUIP:
+                bank?IterateItemsMask::ITERATE_ITEMS_IN_BANK:IterateItemsMask::ITERATE_ITEMS_IN_BAGS)) {
                 if (++scanned>256) return reject("profession_inventory_snapshot_limit");
                 if (!item || !stock.count(item->GetEntry())) continue;
+                if (equipment && !tool(item->GetEntry())) continue;
                 if (item->GetOwnerGuid()!=actor.GetObjectGuid() || !seen.insert(item->GetGUIDLow()).second)
                     return reject("profession_inventory_identity_unresolved",item->GetGUIDLow());
                 // Existing reservations stay protected during migration. They
@@ -42,8 +48,10 @@ namespace LivingActivity {
                     return reject("profession_material_has_legacy_commitment",item->GetGUIDLow());
                 uint32_t available=0;
                 if (!sLivingActivityCoordinator.TaskResourceAvailability(saved.id,saved.revision,
-                    {saved.actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,bank ? "bank" : "bags"},available,demand.blocker))
+                    {saved.actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,equipment?"equipment":bank?"bank":"bags"},available,demand.blocker))
                     {demand.nativeReference=item->GetGUIDLow();return false;}
+                if (tool(item->GetEntry()) && !available)
+                    return reject("profession_material_has_legacy_commitment",item->GetGUIDLow());
                 auto& count=bank ? stock.at(item->GetEntry()).bank : stock.at(item->GetEntry()).bag;
                 if (uint64_t(count)+available>std::numeric_limits<uint32_t>::max()) return reject("profession_stock_overflow");
                 count+=available;
@@ -94,7 +102,9 @@ namespace LivingActivity {
                     return reject("profession_material_bid_pending",auction->Id);
             }
         }
-        for (const auto& row : stock) demand.stock.push_back(row.second);
+        // Requirements keep consumed reagents first and retained tools second;
+        // item-ID ordering across those two groups must not scramble counts.
+        for (const auto& required:requirements) demand.stock.push_back(stock.at(required.entry));
         return true;
     }
     bool NativeProfessionPurchasePrerequisites::ValidateCommittedDemandAndBudget(Player& actor,
@@ -105,7 +115,7 @@ namespace LivingActivity {
             (saved->revision!=request.transition.expectedRevision && saved->revision!=request.transition.task.revision))
             return reject("profession_purchase_saved_intent_changed");
         std::vector<ProfessionReagent> requirements;
-        if (!ReadTaskItemRequirements(*saved,requirements,blocker)) return false;
+        if (!ReadNativeTaskItemRequirements(actor,*saved,requirements,blocker)) return false;
         if (IsRecipeLearningTask(*saved)) {
             if (!ValidateNativeRecipeLearningTask(actor,*saved,blocker)) return false;
         } else {
@@ -116,6 +126,7 @@ namespace LivingActivity {
         }
         NativeProfessionDemand demand;
         if (!InspectNativeProfessionDemand(actor,*saved,demand)) {blocker=demand.blocker; return false;}
+        if (requirements!=demand.requirements) return reject("profession_item_requirements_changed");
         for (size_t i=0;i<requirements.size();++i) {
             if (demand.stock[i].bank && demand.stock[i].bag<requirements[i].perAttempt)
                 return reject("profession_banked_material_requires_collection");

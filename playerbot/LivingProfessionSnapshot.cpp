@@ -39,7 +39,15 @@ namespace LivingActivity {
             // Still inspect safety/recipe/history for a metadata-only restart
             // rebind. Never turn protected stock into missing purchasable stock.
             snapshot.readinessBlocker=demand.blocker;
-        } else snapshot.stock=std::move(demand.stock);
+        } else {
+            if (demand.stock.size()<job.reagents.size() || demand.stock.size()!=demand.requirements.size())
+                return reject("profession_native_requirement_snapshot_mismatch");
+            snapshot.stock.assign(demand.stock.begin(),demand.stock.begin()+job.reagents.size());
+            snapshot.toolStock.assign(demand.stock.begin()+job.reagents.size(),demand.stock.end());
+        }
+        if (demand.requirements.size()>=job.reagents.size())
+            snapshot.requiredTools.assign(demand.requirements.begin()+job.reagents.size(),demand.requirements.end());
+        snapshot.toolBlocker=demand.toolBlocker;
         snapshot.skill=actor.GetSkillValuePure(job.skill);
         snapshot.safe=!ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) &&
             !actor.GetMap()->IsDungeon() && !LivingServiceExecution::Busy(&actor);
@@ -84,16 +92,20 @@ namespace LivingActivity {
         snapshot.bankAccess=NativeNearbyBanker(actor)!=0;
         // Real spawned seller candidates, not generic vendors. Collection of
         // owned/paid stock remains ahead of acquiring anything new.
-        for (size_t i=0;i<job.reagents.size() && snapshot.blocker.empty() && snapshot.readinessBlocker.empty();++i) {
-            auto& have=snapshot.stock[i];
-            if (have.bag>=job.reagents[i].perAttempt) continue;
+        for (size_t i=0;i<demand.requirements.size() && snapshot.blocker.empty() && snapshot.readinessBlocker.empty();++i) {
+            const bool tool=i>=job.reagents.size();
+            auto& have=tool?snapshot.toolStock[i-job.reagents.size()]:snapshot.stock[i];
+            const auto& required=demand.requirements[i];
+            if (have.bag>=required.perAttempt) continue;
             if(have.bank || have.delivered) continue;
             const auto* item=sObjectMgr.GetItemPrototype(have.entry);uint32_t quantity=0;
             std::vector<int32_t> sellers;
-            have.sourceAvailable=item && RequiredProfessionVendorQuantity(job.reagents[i],have,item->BuyCount,quantity,have.sourceBlocker) &&
+            have.sourceAvailable=item && RequiredProfessionVendorQuantity(required,have,item->BuyCount,quantity,have.sourceBlocker) &&
                 NativeProfessionVendorSources(actor,have.entry,quantity,sellers,have.sourceBlocker);
-            if(!have.sourceAvailable && RequiredProfessionVendorQuantity(job.reagents[i],have,1,quantity,have.sourceBlocker))
+            if(!have.sourceAvailable && RequiredProfessionVendorQuantity(required,have,1,quantity,have.sourceBlocker))
                 have.sourceAvailable=NativeAuctionSourceAvailable(actor,have.entry,quantity,have.sourceBlocker);
+            if (tool && !have.sourceAvailable && have.sourceBlocker=="profession_material_source_unavailable")
+                have.sourceBlocker="profession_tool_source_unavailable";
         }
         // Completion evidence is evaluated before readiness blockers by the
         // finite policy. A successful receipt must not cause another craft just

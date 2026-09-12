@@ -2,9 +2,20 @@
 #include "LivingActivityRequests.h"
 #include "LivingProfessionEconomy.h"
 #include "LivingPreparationWait.h"
+#include "LivingProfessionTools.h"
 #include <cassert>
 using namespace LivingActivity;
 int main() {
+    {
+        assert(ChooseProfessionTool({})==0);
+        assert(ChooseProfessionTool({{5956}})==0); // Catalog existence is not availability.
+        assert(ChooseProfessionTool({{5956,false,false,false,true},{6218,false,true}})==6218);
+        assert(ChooseProfessionTool({{5956,false,false,true},{6218,false,false,false,true}})==5956);
+        assert(ChooseProfessionTool({{5956,true},{6218,false,true}})==5956); // Do not replace an incoming paid tool.
+        assert(ChooseProfessionTool({{6218,false,true},{5956,false,true}})==5956); // Stable tie break.
+        assert(ChooseProfessionTool({{5956,false,false,false,false,true},{6218,false,false,false,true}})==6218);
+        assert(ChooseProfessionTool({{0,true},{5956,false,false,false,false,true}})==5956);
+    }
     {
         Task task;task.id=task.root="7da35c8f-3400-4219-8140-498088fc3092";
         task.mode=Mode::Active;task.phase=Phase::Preparing;task.updatedAtMs=100;
@@ -242,6 +253,34 @@ int main() {
     assert(NextProfessionStep(saved,changed).step==ProfessionStep::PrepareCapacity);
     changed=snapshot; changed.tools=false;
     assert(NextProfessionStep(saved,changed).step==ProfessionStep::PrepareTools);
+    changed.requiredTools={{5956,1}};changed.toolStock={{5956,0,0,0,0,true}};
+    auto toolStep=NextProfessionStep(saved,changed);
+    assert(toolStep.step==ProfessionStep::Purchase && toolStep.quantities==std::vector<ProfessionReagent>({{5956,1}}));
+    changed.toolStock[0].sourceAvailable=false;changed.toolStock[0].bank=1;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Withdraw);
+    changed.bankAccess=false;assert(NextProfessionStep(saved,changed).step==ProfessionStep::ReachBank);
+    changed.bankAccess=true;changed.toolStock[0].bank=0;changed.toolStock[0].delivered=1;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Collect);
+    changed.toolStock[0].delivered=0;changed.toolStock[0].paidInTransit=1;
+    for (unsigned refresh=0;refresh<100;++refresh)
+        assert(NextProfessionStep(saved,changed).step==ProfessionStep::WaitForDelivery);
+    changed.toolStock[0].paidInTransit=0;changed.toolStock[0].sourceBlocker="profession_tool_source_unavailable";
+    assert(NextProfessionStep(saved,changed).blocker=="profession_tool_source_unavailable");
+    changed.toolStock[0].bag=1;changed.tools=true;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Execute);
+    changed.toolStock[0].entry=6218;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed.toolStock[0].entry=5956;changed.requiredTools[0].perAttempt=2;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
+    changed.requiredTools={{2934,1}};changed.toolStock={{2934,1}};
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile); // A tool cannot also be consumed.
+    changed=snapshot;changed.toolBlocker="profession_tool_category_has_no_usable_item";
+    changed.stock[0]={2934,0,0,0,0,true};
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Defer); // No speculative reagent kit.
+    changed.stock[0].delivered=3;
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Collect); // Already paid work is preserved.
+    changed.toolBlocker="unsafe raw text";
+    assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
     changed=snapshot; changed.atStation=false;
     assert(NextProfessionStep(saved,changed).step==ProfessionStep::ReachStation);
 
@@ -293,6 +332,7 @@ int main() {
     proof.recipe=2881; proof.consumed=job.reagents; proof.produced={{2318,1}};
     proof.skillBefore=1; proof.skillAfter=2; proof.committed=proof.nativeEffectVerified=true;
     changed=snapshot; changed.attempts={proof}; changed.skill=2;
+    changed.requiredTools={{5956,1}};changed.toolStock={{5956,1}};
     next=NextProfessionStep(saved,changed);
     assert(next.step==ProfessionStep::Finalize && next.verifiedAttempts==1 && next.verifiedOutput==1);
     changed.blocker="profession_material_sources_not_planned";changed.stock[0].bag=0;

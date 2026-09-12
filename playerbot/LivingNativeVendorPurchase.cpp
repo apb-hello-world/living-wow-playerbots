@@ -96,11 +96,14 @@ namespace LivingActivity {
         // this step without requiring the original admission-time skill value.
         job.initialSkill=native.skillValue;
         if (!MatchNativeProfessionRecipe(job,native,blocker)) return false;
-        const auto reagent=std::find_if(job.reagents.begin(),job.reagents.end(),[&](const auto& r){return r.entry==quote.entry;});
+        std::vector<ProfessionReagent> requirements;
+        if (!ReadNativeTaskItemRequirements(actor,request.transition.task,requirements,blocker)) return false;
+        const auto reagent=std::find_if(requirements.begin(),requirements.end(),[&](const auto& r){return r.entry==quote.entry;});
         const auto bundle=sObjectMgr.GetItemPrototype(quote.entry)->BuyCount;
-        const uint64_t total=reagent==job.reagents.end() ? 0 : uint64_t(reagent->perAttempt)*job.attemptLimit;
+        const bool tool=std::none_of(job.reagents.begin(),job.reagents.end(),[&](const auto& r){return r.entry==quote.entry;});
+        const uint64_t total=reagent==requirements.end()?0:uint64_t(reagent->perAttempt)*(tool?1:job.attemptLimit);
         const uint64_t maximum=total ? ((total+bundle-1)/bundle)*bundle : 0;
-        if (reagent == job.reagents.end() || quote.quantity>maximum)
+        if (reagent == requirements.end() || quote.quantity>maximum)
             return reject("vendor_purchase_not_a_required_recipe_material");
         // Native quote/possession checks never manufacture budget authorization.
         return prerequisites.ValidateCommittedDemandAndBudget(actor,request,quote,blocker);

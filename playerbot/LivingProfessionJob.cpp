@@ -1,5 +1,6 @@
 #include "LivingProfessionJob.h"
 #include "LivingRecipeLearning.h"
+#include "LivingProfessionTools.h"
 #include <algorithm>
 #include <boost/property_tree/json_parser.hpp>
 #include <limits>
@@ -207,11 +208,15 @@ namespace LivingActivity {
         if (snapshot.unresolvedOperation) return stop(ProfessionStep::Reconcile, "profession_operation_unresolved");
         const bool protectedMaterials=snapshot.readinessBlocker=="profession_material_has_legacy_commitment";
         if ((!snapshot.readinessBlocker.empty() && !protectedMaterials) || snapshot.attempts.size() > job.attemptLimit ||
-            (!protectedMaterials && snapshot.stock.size()!=job.reagents.size()))
+            !ValidProfessionTools(job,snapshot.requiredTools) || (!snapshot.toolBlocker.empty() && !IsToken(snapshot.toolBlocker)) ||
+            (!protectedMaterials && (snapshot.stock.size()!=job.reagents.size() || snapshot.toolStock.size()!=snapshot.requiredTools.size())))
             return stop(ProfessionStep::Reconcile, "profession_snapshot_inconsistent");
         for (size_t i = 0; !protectedMaterials && i < job.reagents.size(); ++i)
             if (snapshot.stock[i].entry != job.reagents[i].entry)
                 return stop(ProfessionStep::Reconcile, "profession_stock_identity_mismatch");
+        for (size_t i=0;!protectedMaterials && i<snapshot.requiredTools.size();++i)
+            if (snapshot.toolStock[i].entry!=snapshot.requiredTools[i].entry)
+                return stop(ProfessionStep::Reconcile,"profession_tool_stock_identity_mismatch");
 
         // Only exact, saved native receipts count. Inventory totals, a changed
         // skill flag, elapsed time and a planner's replaced goal are not proof.
@@ -277,10 +282,14 @@ namespace LivingActivity {
         if (!snapshot.useful) return stop(ProfessionStep::Defer, "profession_recipe_no_longer_useful");
 
         bool withdraw = false, collect = false, incoming = false, unavailable = false;
-        std::string sourceBlocker;
+        std::string sourceBlocker=IsToken(snapshot.toolBlocker)?snapshot.toolBlocker:"";
+        if (!snapshot.toolBlocker.empty()) unavailable=true;
         std::vector<ProfessionReagent> bank, mail, buy;
-        for (size_t i = 0; i < job.reagents.size(); ++i) {
-            const auto& need = job.reagents[i]; const auto& stock = snapshot.stock[i];
+        for (size_t i = 0; i < job.reagents.size()+snapshot.requiredTools.size(); ++i) {
+            const bool tool=i>=job.reagents.size();
+            const auto index=tool?i-job.reagents.size():i;
+            const auto& need=tool?snapshot.requiredTools[index]:job.reagents[index];
+            const auto& stock=tool?snapshot.toolStock[index]:snapshot.stock[index];
             uint32_t missing = need.perAttempt > stock.bag ? need.perAttempt - stock.bag : 0;
             const auto takeBank = std::min(missing, stock.bank);
             if (takeBank) { bank.push_back({need.entry,takeBank}); withdraw = true; missing -= takeBank; }

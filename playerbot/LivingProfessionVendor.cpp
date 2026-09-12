@@ -60,7 +60,7 @@ namespace LivingActivity {
                 if(row && !row->ExtendedCost) sources.Add(row->item,vendor);
         }
     }
-    void SealNativeVendorSources() {sources.Seal();}
+    void SealNativeVendorSources() {sources.Seal();BuildNativeProfessionToolCatalog();}
     bool NativeProfessionVendorSources(Player& actor,uint32_t entry,uint32_t quantity,
         std::vector<int32_t>& vendors,std::string& blocker) {
         vendors.clear();
@@ -88,8 +88,9 @@ namespace LivingActivity {
     bool NextNativeProfessionVendorItem(Player& actor,const Task& saved,
         ProfessionReagent& need,std::vector<int32_t>& vendors,std::string& blocker) {
         need={};vendors.clear();std::vector<ProfessionReagent> requirements;NativeProfessionDemand demand;
-        if(!ReadTaskItemRequirements(saved,requirements,blocker)) return false;
+        if(!ReadNativeTaskItemRequirements(actor,saved,requirements,blocker)) return false;
         if(!InspectNativeProfessionDemand(actor,saved,demand)) {blocker=demand.blocker;return false;}
+        if (requirements!=demand.requirements) {blocker="profession_item_requirements_changed";return false;}
         for(size_t i=0;i<requirements.size();++i) {
             const auto& required=requirements[i];const auto& have=demand.stock[i];
             if(have.bag>=required.perAttempt) continue;

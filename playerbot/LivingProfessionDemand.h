@@ -8,6 +8,8 @@ namespace LivingActivity {
         std::vector<ProfessionStock> stock;
         std::string blocker;
         uint64_t nativeReference=0;
+        std::vector<ProfessionReagent> requirements;
+        std::string toolBlocker;
     };
     // Fresh world-thread inventory and incoming native references. Unknown
     // incoming mail is a collection/reconciliation blocker, NOT a guessed
