@@ -1,5 +1,6 @@
 #include "LivingActivityRequests.h"
 #include "LivingProfessionJob.h"
+#include "LivingGuildDelivery.h"
 #include <cassert>
 #include <limits>
 using namespace LivingActivity;
@@ -18,7 +19,9 @@ static TaskRequest Request() {
     task.checkpoint.data=EncodeProfessionJob(job);
     return request;
 }
+#include "fixtures/GuildDeliveryRequests.inc"
 int main() {
+    GuildDeliveryRequests();
     auto request = Request(); auto current = request.task.context; std::string reason;
     assert(ValidateTaskRequest(request, nullptr, current, reason) == AdmissionCode::Pending);
     assert(reason.empty());

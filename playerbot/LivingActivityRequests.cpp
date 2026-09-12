@@ -1,5 +1,6 @@
 #include "LivingActivityRequests.h"
 #include "LivingProfessionJob.h"
+#include "LivingGuildDelivery.h"
 #include <limits>
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
@@ -33,6 +34,7 @@ namespace LivingActivity {
     AdmissionCode ValidateTaskRequest(const TaskRequest& request, const Task* saved,
         const WorldContext& current, std::string& reason, const Task* root) {
         const Task& task = request.task;
+        if (!ValidateGuildDeliveryTask(task, reason)) return AdmissionCode::InvalidRequest;
         if (!ValidateProfessionTask(task, reason)) return AdmissionCode::InvalidRequest;
         if (!Validate(task, reason) || !IsUuid(request.receipt) || !IsSourceKey(task.sourceKey) ||
             request.expectedRevision >= std::numeric_limits<uint64_t>::max() - 1 ||
@@ -68,6 +70,7 @@ namespace LivingActivity {
                 reason = "new_task_must_be_queued"; return AdmissionCode::InvalidRequest;
             }
         } else {
+            if (!PreserveGuildDeliveryIntent(*saved, task, reason)) return AdmissionCode::InvalidRequest;
             if (!PreserveProfessionIntent(*saved, task, reason)) return AdmissionCode::InvalidRequest;
             if (saved->revision != request.expectedRevision) {
                 reason = "stale_task_revision"; return AdmissionCode::StaleRevision;
@@ -108,6 +111,7 @@ namespace LivingActivity {
     }
     bool SavedTaskExecutable(const Task& saved, uint64_t revision,
         const WorldContext& current, uint64_t wallNow, std::string& reason) {
+        if (!ValidateGuildDeliveryTask(saved, reason)) return false;
         if (!ValidateProfessionTask(saved, reason)) return false;
         if (saved.revision != revision) reason = "stale_task_revision";
         else if (!ValidContext(current) || !(saved.context == current)) reason = "stale_native_context";
