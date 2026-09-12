@@ -32,10 +32,17 @@ namespace {
 
 #include "ActivityProfessionFixture.inc"
 #include "ActivityUsefulRecipeFixture.inc"
+#include "ActivityManagedRecipeFixture.inc"
 
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if (requested && (std::string(requested)=="activity-managed-recipe-v1" ||
+        std::string(requested)=="activity-managed-recipe-prepare-v1" || std::string(requested)=="activity-managed-recipe-restart-v1")) {
+        RequireIsolatedNativeFixtureEnvironment();
+        RunIsolatedManagedRecipeFixture(*state,std::string(requested)=="activity-managed-recipe-prepare-v1",
+            std::string(requested)=="activity-managed-recipe-restart-v1");return;
+    }
     if (requested && std::string(requested)=="activity-useful-recipe-v1") {
         RequireIsolatedNativeFixtureEnvironment();
         RunIsolatedUsefulRecipeFixture(*state);return;

@@ -18,6 +18,8 @@
 #include "LivingProfessionResume.h"
 #include "LivingProfessionAttempt.h"
 #include "LivingNativeCraftCapture.h"
+#include "LivingNativeRecipeLearning.h"
+#include "LivingRecipeLearningSettlement.h"
 #include "LivingNativeBankWithdrawal.h"
 #include "LivingNativeMailCollection.h"
 #include "LivingNativeVendorSale.h"
@@ -286,6 +288,8 @@ struct LivingActivityCoordinator::State {
         uint64_t deadline=0;
         bool started=false,requestedLogin=false;
         std::string blocker;
+        std::string task;
+        bool priorEnforcement=false;
         std::map<uint32_t,uint32_t> beforeStacks;
         boost::property_tree::ptree checks;
     } recipeLearningFixture;
@@ -405,6 +409,11 @@ struct LivingActivityCoordinator::State {
     bool preferReceiptRetry = false;
     std::deque<Incoming> incoming;
     std::map<std::string, Task> cache;
+    // In-memory execution index within this coordinator, not a bot timer or
+    // DB scan. Add domain adapters here as their old execution path is retired.
+    std::set<std::pair<uint64_t,std::string>> executionDue;
+    std::map<std::string,uint64_t> executionTimes;
+    std::map<std::string,std::string> executionBlockers;
     ResourceClaimBook resources;
     struct IncomingClaim { std::string id, payload; uint32_t taskActor; std::string taskPhase; };
     std::deque<IncomingClaim> incomingClaims;
@@ -471,6 +480,12 @@ struct LivingActivityCoordinator::State {
     }
     void Remember(const Task& task) {
         cache[task.id] = task;
+        const auto queued=executionTimes.find(task.id);
+        if (queued!=executionTimes.end()) {executionDue.erase({queued->second,task.id});executionTimes.erase(queued);}
+        if (task.mode==Mode::Active && IsRecipeLearningTask(task) && !Terminal(task.phase)) {
+            const auto at=std::max(NowMs()+1000,task.retryAtMs);
+            executionTimes[task.id]=at;executionDue.emplace(at,task.id);
+        } else executionBlockers.erase(task.id);
         if (task.mode==Mode::Active) for (auto& row : professionHistory) {
             auto& read=row.second;
             // A dependent or different root may change this actor's unresolved
@@ -1041,6 +1056,19 @@ void LivingActivityCoordinator::Update() {
         if (state->preferHistoryRead && state->QueryProfessionHistory(now)) {state->preferHistoryRead=false;return;}
         if (state->QueryPurchaseBudget(now)) {state->preferHistoryRead=true;return;}
         if (!state->preferHistoryRead && state->QueryProfessionHistory(now)) {state->preferHistoryRead=false;return;}
+        // Already-admitted native results and persistence above always win.
+        // Execute at most one due finite task in the remaining world budget.
+        if (EffectEnforcementEnabled() && !state->executionDue.empty() && state->executionDue.begin()->first<=now) {
+            const auto id=state->executionDue.begin()->second;state->executionDue.erase(state->executionDue.begin());
+            state->executionTimes.erase(id);
+            const auto saved=state->cache.find(id);
+            if (saved!=state->cache.end() && IsRecipeLearningTask(saved->second) && !Terminal(saved->second.phase)) {
+                const auto progress=AdvanceRecipeLearning(saved->second.actor,id);
+                state->executionBlockers[id]=progress.blocker;
+                if (!progress.completed) {state->executionTimes[id]=now+5000;state->executionDue.emplace(now+5000,id);}
+            }
+            return;
+        }
     }
     if (work == ObservationWork::Wait) return;
     if (work == ObservationWork::Decode) {
@@ -1174,6 +1202,8 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
         p.put("blocker", task.checkpoint.blocker); p.put("active_elapsed_ms", task.checkpoint.activeElapsedMs);
         p.put("source", task.source); p.put("last_progress_at_ms", task.checkpoint.lastProgressAtMs);
         p.put("updated_at_ms", task.updatedAtMs); p.put("due_at_ms", task.dueAtMs); p.put("retry_at_ms", task.retryAtMs);
+        const auto execution=state->executionBlockers.find(task.id);
+        if (execution!=state->executionBlockers.end()) p.put("execution_blocker",execution->second);
     }
     for (const auto& operation : state->operations) {
         const auto& pending = operation.second;
@@ -2223,6 +2253,159 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJobImpl(uint32_t acto
     state->nextWork=0;return reject(AdmissionCode::Pending);
 }
 
+bool LivingActivityCoordinator::RecipeLearningAdmissionsEnabled() const {
+    return state->effective==Mode::Active && EffectEnforcementEnabled() && state->loaded && state->schemaReady;
+}
+AdmissionResult LivingActivityCoordinator::AdmitRecipeLearning(uint32_t actor,uint32_t book) {
+    AdmissionResult result;
+    if (!OnWorldThread() || !EffectEnforcementEnabled()) {result.code=AdmissionCode::Disabled;result.blocker="execution_disabled";return result;}
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);RecipeLearningJob job;std::string blocker;
+    if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || !BuildNativeRecipeLearningJob(*bot,book,job,blocker)) {
+        result.code=AdmissionCode::InvalidRequest;result.blocker=blocker.empty()?"recipe_actor_unavailable":blocker;return result;
+    }
+    TaskRequest request;auto& task=request.task;task.source="recipe_learning";
+    task.sourceKey="actor:"+std::to_string(actor)+":recipe:"+std::to_string(job.recipe);
+    task.id=task.root=SourceId(task.source,task.sourceKey);task.actor=actor;
+    const auto existing=ReadSavedTask(task.id);
+    if (existing) {
+        result.task=task.id;result.revision=existing->revision;
+        result.code=existing->checkpoint.data==EncodeRecipeLearningJob(job)?AdmissionCode::Saved:AdmissionCode::InvalidRequest;
+        result.blocker=Name(result.code);return result;
+    }
+    task.mode=Mode::Active;task.kind=Kind::Profession;task.phase=Phase::Queued;task.priority=Priority::Progression;
+    task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);task.createdAtMs=task.updatedAtMs=NowMs();
+    task.checkpoint.step="recipe_prepare";task.checkpoint.data=EncodeRecipeLearningJob(job);
+    request.receipt=SourceId("recipe_learning_admission",task.id);
+    return SubmitTask(request);
+}
+LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceRecipeLearning(uint32_t actor,const std::string& id) {
+    ProfessionProgress result;auto stop=[&](const std::string& why){result.blocker=why;return result;};
+    if (!OnWorldThread() || !EffectEnforcementEnabled()) return stop("execution_disabled");
+    const auto saved=ReadSavedTask(id);RecipeLearningJob job;std::string blocker;
+    if (!saved || saved->actor!=actor || !IsRecipeLearningTask(*saved) ||
+        !ValidateRecipeLearningTask(*saved,blocker) || !DecodeRecipeLearningJob(saved->checkpoint.data,job,blocker))
+        return stop("recipe_saved_task_required");
+    if (saved->phase==Phase::Completed) {result.completed=true;return result;}
+    if (Terminal(saved->phase)) return stop("recipe_task_terminal");
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || bot->IsBeingTeleported()) return stop("recipe_actor_unavailable");
+    const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    if (!(saved->context==current)) {
+        // A committed receipt can settle after restart. Uncertain effects are
+        // never retried, and collection/permission reconciliation stays explicit.
+        if (bot->HasSpell(job.recipe)) return stop(SettleRecipeLearning(actor,id,saved->revision,SourceId("recipe_settlement",id)).blocker);
+        if (state->operationDispatching || DefersNativeSave(actor) || state->ioPending) return stop("recipe_restart_native_save_pending");
+        for (const auto& write:state->pending) if (write.task.actor==actor) return stop("recipe_restart_task_write_pending");
+        for (const auto& operation:state->operations) if (operation.second.request.transition.task.actor==actor)
+            return stop("recipe_restart_operation_unresolved");
+        if (state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+            return stop("task_admission_backpressure");
+        if (!ValidateNativeRecipeLearningTask(*bot,*saved,blocker)) return stop(blocker);
+        UnsettledClaimBatch claims;
+        if (!ReadTaskClaims(actor,id,saved->revision,claims,blocker)) return stop(blocker);
+        RecipeLearningSettlement resumed;
+        const auto receipt=SourceId("recipe_resume",id+":"+std::to_string(saved->revision)+":"+current.boot);
+        if (!PrepareRecipeLearningResumption(*saved,current,claims,NativeClaimBalances(*bot,claims.claims),NowMs(),receipt,resumed,blocker))
+            return stop(blocker);
+        State::Pending write;write.task=std::move(resumed.task);write.plan=std::move(resumed.plan);write.admissionReceipt=receipt;
+        state->pending.push_back(std::move(write));state->nextWork=0;
+        return stop("recipe_preparation_reconciliation_pending");
+    }
+    if (saved->retryAtMs>NowMs()) return stop("recipe_retry_wait");
+    if (DefersNativeSave(actor)) return stop("native_save_pending");
+    NativeRecipeLearningOperation adapter;
+    for (const auto& row:state->operations) if (row.second.request.transition.task.actor==actor) {
+        if (row.second.request.transition.task.id!=id || row.second.request.kind!="recipe_learning") return stop("native_operation_pending");
+        if (!row.second.ready || row.second.dispatched) return stop("recipe_native_receipt_pending");
+        const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"recipe_learning");
+        if (!grant.Permitted()) return stop(grant.blocker);
+        return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+    }
+    if (saved->phase==Phase::Verifying || saved->phase==Phase::Reconciling) {
+        if (!bot->HasSpell(job.recipe)) return stop("recipe_native_failure_requires_reconciliation");
+        return stop(SettleRecipeLearning(actor,id,saved->revision,SourceId("recipe_settlement",id)).blocker);
+    }
+    if (!ValidateNativeRecipeLearningTask(*bot,*saved,blocker)) return stop(blocker);
+    if (saved->phase==Phase::Queued) {
+        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
+        request.task.phase=Phase::Preparing;request.task.updatedAtMs=NowMs();request.receipt=NewId();
+        return stop(SubmitTask(request).blocker);
+    }
+    if (saved->phase!=Phase::Preparing) return stop("recipe_preparation_required");
+    const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects()|Mask(Effect::Movement),60000,"recipe_prepare");
+    if (!grant.Permitted()) return stop(grant.blocker);
+    if (!bot->IsStopped()) {ExecutionScope scope(grant.task,grant.action);bot->GetPlayerbotAI()->StopMoving();return stop("recipe_stopping_for_cast");}
+    UnsettledClaimBatch claims;
+    if (!ReadTaskClaims(actor,id,saved->revision,claims,blocker)) return stop(blocker);
+    ResourceClaim bookClaim;
+    for (const auto& claim:claims.claims) if (claim.itemEntry==job.book) {
+        if (!bookClaim.id.empty()) return stop("recipe_multiple_book_claims_require_reconciliation");
+        bookClaim=claim;
+    }
+    if (bookClaim.id.empty()) {
+        Item* selected=nullptr;
+        for (auto* book:bot->GetPlayerbotAI()->InventoryParseItems(std::to_string(job.book),IterateItemsMask::ITERATE_ITEMS_IN_BAGS)) {
+            if (!book || book->IsInTrade()) continue;
+            NativeResourceBalance native{actor,book->GetGUIDLow(),book->GetEntry(),book->GetCount(),0,"bags",0};
+            uint32_t available=0;
+            if (!TaskResourceAvailability(id,saved->revision,native,available,blocker) || !available) continue;
+            if (!selected || book->GetGUIDLow()<selected->GetGUIDLow()) selected=book;
+        }
+        if (!selected) return stop("recipe_book_collection_or_purchase_required");
+        ResourceClaim claim;claim.id=NewId();claim.task=id;claim.actor=actor;claim.itemGuid=selected->GetGUIDLow();
+        claim.itemEntry=job.book;claim.quantity=1;claim.location="bags";claim.state="held";
+        ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+        ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+        request.authorization=grant.action;request.changes.push_back({claim,0});NativeRecipeBookReservation reservation;
+        return stop(SubmitResourceReservation(request,reservation).blocker);
+    }
+    OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+    ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;request.transition.task.checkpoint.step="recipe_learning";
+    request.transition.task.updatedAtMs=NowMs();request.transition.receipt=SourceId("recipe_native_operation",id);
+    request.authorization=grant.action;request.kind=adapter.OperationKind();request.effects=adapter.OperationEffects();
+    request.persistence=adapter.PersistencePolicy();request.consumption.push_back({bookClaim,1});
+    request.beforeState=EncodeRecipeLearningJob(job);
+    return stop(SubmitOperationIntent(request,adapter).blocker);
+}
+AdmissionResult LivingActivityCoordinator::SettleRecipeLearning(uint32_t actor,const std::string& id,
+    uint64_t expectedRevision,const std::string& receipt) {
+    AdmissionResult result;result.task=id;result.revision=expectedRevision+1;
+    auto stop=[&](AdmissionCode code,const std::string& why=""){result.code=code;result.blocker=why.empty()?Name(code):why;return result;};
+    if (!OnWorldThread() || !EffectEnforcementEnabled()) return stop(AdmissionCode::Disabled);
+    if (!actor || !IsUuid(id) || !IsUuid(receipt) || !expectedRevision || expectedRevision>=std::numeric_limits<uint64_t>::max()-1)
+        return stop(AdmissionCode::InvalidRequest);
+    if (!state->loaded || !state->schemaReady || !state->resources.Protection().ready) return stop(AdmissionCode::NotReady);
+    if (state->operationDispatching || DefersNativeSave(actor)) return stop(AdmissionCode::Backpressure,"native_save_pending");
+    const auto saved=ReadSavedTask(id);
+    if (!saved || saved->actor!=actor || id!=SourceId(saved->source,saved->sourceKey)) return stop(AdmissionCode::InvalidRequest);
+    for (const auto& write:state->pending) if (write.task.actor==actor) {
+        if (write.admissionReceipt==receipt && write.task.id==id && write.task.revision==expectedRevision+1)
+            return stop(AdmissionCode::Pending);
+        return stop(AdmissionCode::ConflictingWrite);
+    }
+    const auto acknowledged=state->admissionReceipts.find(id);
+    if (saved->revision==expectedRevision+1 && saved->phase==Phase::Completed &&
+        acknowledged!=state->admissionReceipts.end() && acknowledged->second==receipt) return stop(AdmissionCode::Saved);
+    if (saved->revision!=expectedRevision) return stop(AdmissionCode::StaleRevision);
+    for (const auto& operation:state->operations) if (operation.second.request.transition.task.actor==actor)
+        return stop(AdmissionCode::ReconciliationRequired,"native_operation_pending");
+    if (state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000) return stop(AdmissionCode::Backpressure);
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);RecipeLearningJob job;std::string blocker;UnsettledClaimBatch claims;
+    if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || bot->IsBeingTeleported()) return stop(AdmissionCode::StaleContext);
+    if (!DecodeRecipeLearningJob(saved->checkpoint.data,job,blocker) || !bot->HasSpell(job.recipe))
+        return stop(AdmissionCode::ReconciliationRequired,"recipe_native_learned_spell_missing");
+    const auto owned=state->authority.Read(actor);
+    if (!owned.operation.empty()) return stop(AdmissionCode::ReconciliationRequired,"atomic_operation_pending");
+    if (!state->resources.ReadUnsettled(id,claims,blocker)) return stop(AdmissionCode::ReconciliationRequired,blocker);
+    RecipeLearningSettlement settled;
+    if (!PrepareRecipeLearningSettlement(*saved,ReadNativeContext(*bot,state->policyRevision,state->boot),claims,
+        NowMs(),receipt,settled,blocker)) return stop(AdmissionCode::ReconciliationRequired,blocker);
+    State::Pending write;write.task=std::move(settled.task);write.plan=std::move(settled.plan);write.admissionReceipt=receipt;
+    state->pending.push_back(std::move(write));
+    if (owned.lease.rootTask==id) ReleaseTaskLease(owned.lease);
+    state->nextWork=0;return stop(AdmissionCode::Pending);
+}
+
 AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request) {
     AdmissionResult result; result.task = request.task.id; result.revision = request.task.revision;
     auto reject = [&](AdmissionCode code, const std::string& reason = "") {
@@ -2276,7 +2459,7 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
     // must remain possible if a recipe becomes obsolete or a subject changes.
     // Repeated requests share the saved receipt above, not a second job.
     if ((saved == state->cache.end() || (!saved->second.accepted && task.accepted)) &&
-        !ValidateNativeProfessionTask(*bot, task, reason))
+        (!ValidateNativeProfessionTask(*bot, task, reason) || !ValidateNativeRecipeLearningTask(*bot,task,reason)))
         return reject(AdmissionCode::InvalidRequest, reason);
     if (state->pending.size() >= state->batch ||
         (saved == state->cache.end() && state->cache.size() + state->pending.size() + state->quarantined.size() >= state->maxCache) ||
@@ -2524,7 +2707,8 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                 state->bindings.at(intended.actor).publisher.Publish(state->authority.Read(intended.actor));
                 ExecutionScope scope(executing, action);
                 if (adapter.DeferredNativeCast()) {
-                    if (request.persistence!=NativePersistence::Profession || request.kind!="profession_craft" ||
+                    if (request.persistence!=NativePersistence::Profession ||
+                        (request.kind!="profession_craft" && request.kind!="recipe_learning") ||
                         CharacterDatabase.HasOpenTransaction()) {
                         observation.state=OperationState::Rejected;
                         observation.evidence="native_craft_dispatch_contract_unavailable";
@@ -2594,8 +2778,7 @@ bool LivingActivityCoordinator::CollectNativeCraft() {
     for (auto& row : state->operations) {
         auto& pending=row.second;
         if (!pending.craftAwaiting || !pending.craft || pending.completionRetryAt>NowMs()) continue;
-        const auto completion=pending.craft->Capture()->ReadFinished();
-        if (!completion) continue;
+        if (!pending.craft->Ready()) continue;
         Player* actor=sRandomPlayerbotMgr.GetPlayerBot(pending.request.transition.task.actor);
         if (!actor || !actor->GetPlayerbotAI() || !actor->IsInWorld() || actor->IsBeingTeleported()) {
             pending.completionBlocker="native_craft_actor_unavailable_for_save";pending.completionRetryAt=NowMs()+5000;continue;
@@ -2606,7 +2789,7 @@ bool LivingActivityCoordinator::CollectNativeCraft() {
         state->operationDispatching=true;
         struct Guard {State& state;~Guard(){state.operationDispatching=false;}} guard{*state};
         NativeObservation observation;std::vector<VerifiedItemGain> gains;
-        try {observation=pending.craft->Observe(*actor,*completion,gains);}
+        try {observation=pending.craft->Observe(*actor,gains);}
         catch (const std::exception&) {observation.evidence="native_craft_observation_requires_reconciliation";}
         const bool nativeTransaction=CharacterDatabase.BeginTransaction();
         if (!nativeTransaction) {

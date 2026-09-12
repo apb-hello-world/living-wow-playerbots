@@ -89,7 +89,7 @@ namespace LivingActivity {
         if (!ValidCraftFrame(frame)) return reject("native_craft_inventory_snapshot_invalid");
         blocker.clear();return true;
     }
-    NativeCraftCast::NativeCraftCast(Task executing,ActionContext action,ProfessionJob job,
+    NativeProfessionCraftCast::NativeProfessionCraftCast(Task executing,ActionContext action,ProfessionJob job,
         std::vector<ClaimConsumption> consumption,ItemGainSpec output)
         : task(std::move(executing)),action(std::move(action)),job(std::move(job)),consumption(std::move(consumption)),
           output(output),identity(Identity(task,this->action,this->job)),capture(std::make_shared<CraftCapture>(identity)) {
@@ -102,13 +102,13 @@ namespace LivingActivity {
             (this->job.operation!=ProfessionOperation::CreateItem && this->job.operation!=ProfessionOperation::TransformMaterial))
             throw std::invalid_argument("native_craft_saved_execution_context_required");
     }
-    Player* NativeCraftCast::Actor(Spell& spell) const {
+    Player* NativeProfessionCraftCast::Actor(Spell& spell) const {
         auto* caster=spell.GetTrueCaster();
         if (!caster || !caster->IsPlayer() || !spell.m_spellInfo || spell.m_spellInfo->Id!=job.recipe ||
             caster->GetGUIDLow()!=task.actor) return nullptr;
         return static_cast<Player*>(caster);
     }
-    bool NativeCraftCast::AuthorityAllowed(Player& actor) const {
+    bool NativeProfessionCraftCast::AuthorityAllowed(Player& actor) const {
         auto* ai=actor.GetPlayerbotAI();if (!ai) return false;
         const auto reader=ai->ActivityPermissions();const auto view=reader.Inspect();
         if (!view) return false;
@@ -120,7 +120,7 @@ namespace LivingActivity {
         // Being a test/native callback does not manufacture execution authority.
         return reader.Check({SpellEffectMask(false),Lane::Managed,true},current,now,&task,&action,nullptr,safety)==AuthorityCode::Allowed;
     }
-    bool NativeCraftCast::InputsAllowed(Player& actor,const CraftFrame& frame,std::string& blocker) const {
+    bool NativeProfessionCraftCast::InputsAllowed(Player& actor,const CraftFrame& frame,std::string& blocker) const {
         auto reject=[&](const char* code){blocker=code;return false;};
         const auto protectedItems=sLivingActivityCoordinator.ResourceReservations().Inspect();
         if (!protectedItems || !protectedItems->ready) return reject("native_craft_claim_projection_unavailable");
@@ -154,7 +154,7 @@ namespace LivingActivity {
         }
         blocker.clear();return true;
     }
-    bool NativeCraftCast::Attach(Spell& spell,std::string& blocker) {
+    bool NativeProfessionCraftCast::Attach(Spell& spell,std::string& blocker) {
         auto reject=[&](const char* code){blocker=code;return false;};
         auto* actor=Actor(spell);
         if (!sLivingActivityCoordinator.OnWorldThread() || !actor || !AuthorityAllowed(*actor))
@@ -184,7 +184,7 @@ namespace LivingActivity {
         }
         blocker.clear();return true;
     }
-    bool NativeCraftCast::Start(Player& actor,std::string& blocker) {
+    bool NativeProfessionCraftCast::Start(Player& actor,std::string& blocker) {
         if (!sLivingActivityCoordinator.OnWorldThread() || actor.GetGUIDLow()!=task.actor ||
             !actor.HasSpell(job.recipe) || actor.IsNonMeleeSpellCasted(false,true,true)) {
             blocker="native_craft_launch_prerequisite_changed";return false;
@@ -199,7 +199,12 @@ namespace LivingActivity {
         spell.release()->SpellStart(&targets);
         blocker.clear();return true;
     }
-    NativeObservation NativeCraftCast::Observe(Player& actor,const CraftCaptureResult& result,
+    NativeObservation NativeProfessionCraftCast::Observe(Player& actor,std::vector<VerifiedItemGain>& gains) const {
+        const auto result=capture->ReadFinished();
+        if (!result) return {OperationState::Reconciling,"","native_craft_capture_not_ready","{}"};
+        return Observe(actor,*result,gains);
+    }
+    NativeObservation NativeProfessionCraftCast::Observe(Player& actor,const CraftCaptureResult& result,
         std::vector<VerifiedItemGain>& gains) const {
         NativeObservation observation;
         observation.nativeReference="spell:"+std::to_string(job.recipe)+":operation:"+action.operation;
@@ -223,7 +228,7 @@ namespace LivingActivity {
         }
         return observation;
     }
-    std::string NativeCraftCast::PersistedProof(Player& actor,const Task& outcome) const {
+    std::string NativeProfessionCraftCast::PersistedProof(Player& actor,const Task& outcome) const {
         const auto result=capture->ReadFinished();
         if (!result || !result->nativeFinished) throw std::runtime_error("native_craft_saved_frame_missing");
         CraftFrame current;std::string blocker;
@@ -286,9 +291,9 @@ namespace LivingActivity {
         const Task& executing,const ActionContext& action) const {
         ProfessionJob job;std::string blocker;
         if (!DecodeProfessionJob(executing.checkpoint.data,job,blocker)) throw std::invalid_argument(blocker);
-        return std::make_shared<NativeCraftCast>(executing,action,job,request.consumption,request.itemGain);
+        return std::make_shared<NativeProfessionCraftCast>(executing,action,job,request.consumption,request.itemGain);
     }
-    std::unique_ptr<ExecutionScope> NativeCraftCast::EnterEffect(Spell& spell) {
+    std::unique_ptr<ExecutionScope> NativeProfessionCraftCast::EnterEffect(Spell& spell) {
         auto* actor=Actor(spell);std::string blocker;CraftFrame current;
         if (!actor || !attached.load() || !AuthorityAllowed(*actor) || !actor->HasSpell(job.recipe) ||
             actor->GetTradeData() || !actor->IsStopped() ||
@@ -296,18 +301,18 @@ namespace LivingActivity {
         if (!capture->EnterEffect(identity,current)) return {};
         return std::make_unique<ExecutionScope>(task,action);
     }
-    void NativeCraftCast::Created(Spell& spell,uint32_t entry,uint32_t quantity) noexcept {
+    void NativeProfessionCraftCast::Created(Spell& spell,uint32_t entry,uint32_t quantity) noexcept {
         try {if (Actor(spell)) capture->Created(identity,entry,quantity);else capture->Abandon();}
         catch (...) {capture->Abandon();}
     }
-    void NativeCraftCast::Finished(Spell& spell,bool succeeded) noexcept {
+    void NativeProfessionCraftCast::Finished(Spell& spell,bool succeeded) noexcept {
         try {
             auto* actor=Actor(spell);CraftFrame after;std::string blocker;
             if (!actor || !ReadNativeCraftFrame(*actor,job,after,blocker)) {capture->Abandon();return;}
             capture->Finish(identity,succeeded,std::move(after));
         } catch (...) {capture->Abandon();}
     }
-    void NativeCraftCast::Abandon() noexcept {capture->Abandon();}
+    void NativeProfessionCraftCast::Abandon() noexcept {capture->Abandon();}
     NativeCraftFinishGuard::~NativeCraftFinishGuard() noexcept {
         if (const auto& managed=spell.GetLivingCraftCast()) managed->Finished(spell,succeeded);
     }

@@ -97,6 +97,11 @@ public:
     // loop, timer, recipe choice or private executor state lives in the caller.
     struct ProfessionProgress { bool completed=false; std::string blocker; };
     ProfessionProgress AdvanceProfessionJob(uint32_t actor,const std::string& task);
+    bool RecipeLearningAdmissionsEnabled() const;
+    LivingActivity::AdmissionResult AdmitRecipeLearning(uint32_t actor,uint32_t book);
+    ProfessionProgress AdvanceRecipeLearning(uint32_t actor,const std::string& task);
+    LivingActivity::AdmissionResult SettleRecipeLearning(uint32_t actor,const std::string& task,
+        uint64_t expectedRevision,const std::string& receipt);
     // Build one exact craft intent from the saved job, current native snapshot
     // and its existing claims. Callers supply identity, not ingredients/output.
     LivingActivity::AdmissionResult PrepareProfessionAttempt(uint32_t actor,const std::string& task,

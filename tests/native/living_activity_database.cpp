@@ -12,6 +12,7 @@
 #include "LivingProfessionEvidence.h"
 #include "LivingProfessionSettlement.h"
 #include "LivingProfessionEconomy.h"
+#include "LivingRecipeLearningSettlement.h"
 #include "fixtures/CraftEvidence.h"
 #include <mysql.h>
 #include <cassert>
@@ -95,6 +96,7 @@ public:
 };
 #include "fixtures/ProfessionSettlementDatabase.inc"
 #include "fixtures/ProfessionResumeDatabase.inc"
+#include "fixtures/RecipeLearningDatabase.inc"
 int main() {
     Connection db;
     Task task; task.id = task.root = Id; task.actor = task.context.actor = 497;
@@ -666,5 +668,6 @@ int main() {
     assert(selected(true,13)=="completed"); // Pending legacy acknowledgement still finds its native owner.
     assert(db.Execute("UPDATE organic_economy_goal SET state='completed' WHERE goal_id=701"));
     assert(selected(true,11)=="0");
+    RecipeLearningDatabase(db);
     std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history, skill-job settlement and exact-row legacy handoff; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

@@ -1386,6 +1386,14 @@ bool UseRandomRecipeAction::Execute(Event& event)
     }
     if (!selected) return false;
 
+    // Active ownership admits one durable learning task; only the coordinator
+    // may later consume its claimed book. No fall-through to legacy execution.
+    if (sLivingActivityCoordinator.EffectEnforcementEnabled()) {
+        if (!sLivingActivityCoordinator.RecipeLearningAdmissionsEnabled()) return false;
+        const auto result=sLivingActivityCoordinator.AdmitRecipeLearning(bot->GetGUIDLow(),selected->GetEntry());
+        return result.code==LivingActivity::AdmissionCode::Pending || result.code==LivingActivity::AdmissionCode::Saved;
+    }
+
     if (bot->IsMoving())
     {
         ai->StopMoving();

@@ -964,14 +964,15 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(!bot->GetPlayerbotAI()->HasSpellItems(2329,nullptr),"bound_native_craft_cannot_skip_real_reagents");
             if (interrupted) {
                 const auto& pending=state->operations.at(operation.transition.receipt);
-                require(pending.craft && pending.craft->Capture()->Phase()==CraftCapturePhase::Casting &&
+                const auto capture=std::dynamic_pointer_cast<NativeProfessionCraftCast>(pending.craft);
+                require(capture && capture->Capture()->Phase()==CraftCapturePhase::Casting &&
                     bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) &&
                     bot->GetCurrentSpell(CURRENT_GENERIC_SPELL)->m_spellInfo->Id==2329,
                     "craft_interruption_targets_actual_pending_native_spell");
                 // Fault injection only: use native cancellation before resource
                 // effects. No simulated success, combat flag clearing, or SQL edit.
                 bot->InterruptSpell(CURRENT_GENERIC_SPELL,false);
-                const auto cancelled=pending.craft->Capture()->ReadFinished();
+                const auto cancelled=capture->Capture()->ReadFinished();
                 require(cancelled && cancelled->nativeFinished && !cancelled->nativeSucceeded &&
                     !cancelled->effectEntered && !cancelled->createdCalls,
                     "craft_native_interruption_observed_without_effect");

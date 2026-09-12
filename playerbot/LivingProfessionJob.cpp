@@ -1,4 +1,5 @@
 #include "LivingProfessionJob.h"
+#include "LivingRecipeLearning.h"
 #include <algorithm>
 #include <boost/property_tree/json_parser.hpp>
 #include <limits>
@@ -152,6 +153,7 @@ namespace LivingActivity {
         blocker.clear(); return true;
     }
     bool ValidateProfessionTask(const Task& task, std::string& blocker) {
+        if (!ValidateRecipeLearningTask(task,blocker)) return false;
         if (!IsProfessionJob(task)) { blocker.clear(); return true; }
         ProfessionJob job;
         if (task.kind != Kind::Profession || !task.parent.empty() || !DecodeProfessionJob(task.checkpoint.data, job, blocker)) {
@@ -161,6 +163,7 @@ namespace LivingActivity {
         blocker.clear(); return true;
     }
     bool PreserveProfessionIntent(const Task& before, const Task& after, std::string& blocker) {
+        if (!PreserveRecipeLearningIntent(before,after,blocker)) return false;
         if (!ValidateProfessionTask(after, blocker)) return false;
         if (!before.accepted || !IsProfessionJob(before)) return true;
         ProfessionJob oldJob, nextJob;

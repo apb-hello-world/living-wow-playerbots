@@ -48,7 +48,7 @@ namespace LivingActivity {
         // intent admission. False waits WITHOUT dispatching or recording a
         // rejected native effect. The exact native validator still runs later.
         virtual bool PrepareDispatch(Player&,const OperationRequest&,std::string&) { return true; }
-        // Only the finite native crafting adapter uses a cross-update cast.
+        // Finite crafting/learning adapters use the shared cross-update cast.
         // Reserve a value-only capture BEFORE launch; never retain this adapter
         // or its caller across ticks. Other native services remain synchronous.
         virtual bool DeferredNativeCast() const { return false; }

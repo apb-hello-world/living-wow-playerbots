@@ -18,25 +18,42 @@ namespace LivingActivity {
     // One reserved, value-only binding for one native Spell. The coordinator
     // retains the same capture until its guarded save is acknowledged. No
     // Player/Item/Spell pointer is retained here or delivered to another thread.
+    // Native core hook name retained for pinned-core compatibility. This is a
+    // finite spell-operation binding, shared by crafting and recipe learning;
+    // each adapter supplies its own effect and conservation proof.
     class NativeCraftCast : public std::enable_shared_from_this<NativeCraftCast> {
     public:
-        NativeCraftCast(Task executing,ActionContext action,ProfessionJob job,
+        virtual ~NativeCraftCast() = default;
+        virtual bool Start(Player&,std::string&) = 0;
+        virtual bool Ready() const = 0;
+        virtual NativeObservation Observe(Player&,std::vector<VerifiedItemGain>&) const = 0;
+        virtual std::string PersistedProof(Player&,const Task&) const = 0;
+        virtual std::unique_ptr<ExecutionScope> EnterEffect(Spell&) = 0;
+        virtual void Created(Spell&,uint32_t,uint32_t) noexcept = 0;
+        virtual void Finished(Spell&,bool) noexcept = 0;
+        virtual void Abandon() noexcept = 0;
+    };
+    class NativeProfessionCraftCast final : public NativeCraftCast {
+    public:
+        NativeProfessionCraftCast(Task executing,ActionContext action,ProfessionJob job,
             std::vector<ClaimConsumption> consumption,ItemGainSpec output);
         // World-thread launch only, BEFORE SpellStart. This does not start a
         // spell, manufacture a lease, waive native CheckCast, or prove success.
         bool Attach(Spell& spell,std::string& blocker);
         // Launches one ordinary, non-triggered native cast. False means no
         // native cast was started; a true return is NOT a completion result.
-        bool Start(Player& actor,std::string& blocker);
+        bool Start(Player& actor,std::string& blocker) override;
+        bool Ready() const override { return bool(capture->ReadFinished()); }
+        NativeObservation Observe(Player& actor,std::vector<VerifiedItemGain>& gains) const override;
         NativeObservation Observe(Player& actor,const CraftCaptureResult& result,
             std::vector<VerifiedItemGain>& gains) const;
-        std::string PersistedProof(Player& actor,const Task& outcome) const;
+        std::string PersistedProof(Player& actor,const Task& outcome) const override;
         // Called by the native core immediately before its resource effects.
         // The returned attribution scope exists only for that synchronous call.
-        std::unique_ptr<ExecutionScope> EnterEffect(Spell& spell);
-        void Created(Spell& spell,uint32_t entry,uint32_t quantity) noexcept;
-        void Finished(Spell& spell,bool succeeded) noexcept;
-        void Abandon() noexcept;
+        std::unique_ptr<ExecutionScope> EnterEffect(Spell& spell) override;
+        void Created(Spell& spell,uint32_t entry,uint32_t quantity) noexcept override;
+        void Finished(Spell& spell,bool succeeded) noexcept override;
+        void Abandon() noexcept override;
         std::shared_ptr<CraftCapture> Capture() const { return capture; }
     private:
         Player* Actor(Spell& spell) const; // Synchronous resolver, never stored.
