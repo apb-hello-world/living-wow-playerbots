@@ -198,7 +198,7 @@ ItemUsage ItemUsageValue::CalculateUsage(bool acquiringBankItem)
     // carried OR banked copy is enough; a recipe is not reagent stock.
     if (proto->Class==ITEM_CLASS_RECIPE &&
         LivingActivity::EvaluateUsefulRecipe(LivingActivity::InspectUsefulRecipe(*bot,proto)).useful)
-        return !acquiringBankItem && bot->GetItemCount(itemId,true)>0 ? ItemUsage::ITEM_USAGE_KEEP : ItemUsage::ITEM_USAGE_SKILL;
+        return !acquiringBankItem && LivingActivity::RecipeBookAlreadyOwnedOrIncoming(*bot,itemId) ? ItemUsage::ITEM_USAGE_KEEP : ItemUsage::ITEM_USAGE_SKILL;
 
     //SKILL
     if (ai->HasActivePlayerMaster())

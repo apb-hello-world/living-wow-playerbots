@@ -4,6 +4,7 @@
 #include "playerbot/LivingActivityCoordinator.h"
 #include "playerbot/LivingPurchaseBudget.h"
 #include "playerbot/LivingProfessionDemand.h"
+#include "playerbot/LivingUsefulRecipe.h"
 #include "playerbot/PlayerbotAuctionEligibility.h"
 #include "playerbot/PlayerbotServiceTracking.h"
 #include "AhAction.h"
@@ -14,6 +15,7 @@
 #include <mutex>
 #include <tuple>
 #include <limits>
+#include <set>
 #include "playerbot/strategy/values/ItemCountValue.h"
 #include "playerbot/RandomItemMgr.h"
 #include "playerbot/strategy/values/BudgetValues.h"
@@ -538,6 +540,21 @@ bool AhBidAction::ExecuteCommand(Player* requester, std::string text, Unit* auct
 
     if (text == "vendor")
     {
+        // Automatic self-use only. Explicit human item/budget commands below
+        // retain their existing behavior. Index all three native houses once,
+        // not a new per-bot timer or a database query for every candidate.
+        std::set<uint32_t> recipeOrders;
+        for (uint32_t house=0;house<MAX_AUCTION_HOUSE_TYPE;++house)
+            for (const auto& row:sAuctionMgr.GetAuctionsMap(AuctionHouseType(house))->GetAuctions())
+                if (row.second && row.second->bidder==bot->GetGUIDLow()) recipeOrders.insert(row.second->itemTemplate);
+        auto recipeBlocked=[&](const AuctionEntry& listing) {
+            const auto* proto=sObjectMgr.GetItemPrototype(listing.itemTemplate);
+            if (!proto || proto->Class!=ITEM_CLASS_RECIPE) return false;
+            return *LivingActivity::RecipePurchaseBlocker(
+                LivingActivity::EvaluateUsefulRecipe(LivingActivity::InspectUsefulRecipe(*bot,proto)),
+                LivingActivity::RecipeBookAlreadyOwnedOrIncoming(*bot,proto->ItemId),
+                recipeOrders.count(proto->ItemId)!=0,listing.itemCount)!=0;
+        };
         ItemUsage usage;
         auto data = WorldPacket();
         uint32 count, totalcount = 0;
@@ -579,6 +596,7 @@ bool AhBidAction::ExecuteCommand(Player* requester, std::string text, Unit* auct
 
             if (auction->owner == bot->GetGUIDLow() || auction->bidder == bot->GetGUIDLow())
                 continue;
+            if (recipeBlocked(*auction)) continue;
             // The exact recipe executor owns this demand, including mail waits.
             // Generic useful-item buying must not issue a competing order.
             if (sPlayerbotOrganicEconomy.RecipeMaterialQuantity(bot->GetGUIDLow(), auction->itemTemplate)) continue;
@@ -716,11 +734,15 @@ bool AhBidAction::ExecuteCommand(Player* requester, std::string text, Unit* auct
                 price > AI_VALUE2(uint32, "free money for", freeMoney[usage]) ||
                 !DailyPurchaseAllowed(spentToday,policy,bot->GetMoney(),bot->GetMoney(),price))
                 continue;
+            if (recipeBlocked(*auction)) continue;
+            const uint32_t orderedEntry=auction->itemTemplate; // Buyout destroys the native listing.
             const bool placedBid = BidItem(requester, auction, price, auctioneer, currentBuyoutPrice && price == currentBuyoutPrice, reason);
             bidItems = placedBid || bidItems;
 
-            if (placedBid)
+            if (placedBid) {
                 totalcount++;
+                recipeOrders.insert(orderedEntry);
+            }
 
             if (!urand(0, 5) || totalcount > 10)
                 break;

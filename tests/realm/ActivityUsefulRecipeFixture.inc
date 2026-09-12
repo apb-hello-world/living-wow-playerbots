@@ -48,6 +48,7 @@ namespace {
             boost::property_tree::ptree row;row.put("case",name);row.put("passed",ok);fixture.checks.push_back({"",row});
             if (!ok) throw std::runtime_error(name);
         };
+        Player* actor=nullptr;
         try {
             if (!fixture.actor) {
                 auto id=[](const char* key) {
@@ -70,7 +71,7 @@ namespace {
             for (const auto& row:state.cache) if (row.second.actor==fixture.actor &&
                 row.second.mode==Mode::Active && !Terminal(row.second.phase)) committed=true;
             if (committed) {emit(false,"accepted_task_would_be_displaced");return;}
-            auto* actor=sRandomPlayerbotMgr.GetPlayerBot(fixture.actor);
+            actor=sRandomPlayerbotMgr.GetPlayerBot(fixture.actor);
             if (!actor) {
                 if (!fixture.requestedLogin && sRandomPlayerbotMgr.GetAllBots().size()<49) {
                     fixture.requestedLogin=true;sRandomPlayerbotMgr.AddRandomBot(fixture.actor);
@@ -114,6 +115,6 @@ namespace {
             require(!EvaluateUsefulRecipe(InspectUsefulRecipe(*actor,sObjectMgr.GetItemPrototype(fixture.item))).useful,
                 "known_recipe_no_longer_a_learning_or_purchase_need");
             actor->SaveToDB();fixture.blocker.clear();emit(true,"",actor);
-        } catch (const std::exception& error) {emit(false,error.what());}
+        } catch (const std::exception& error) {emit(false,error.what(),actor);}
     }
 }

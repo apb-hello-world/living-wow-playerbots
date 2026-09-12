@@ -52,4 +52,12 @@ namespace LivingActivity {
     // gameplay paths; concrete guild/equipment demands need their own validated
     // producer and cannot be inferred from an item's name or a model response.
     RecipeLearningFacts InspectUsefulRecipe(Player& actor,const ItemPrototype* item);
+    bool RecipeBookAlreadyOwnedOrIncoming(Player& actor,uint32_t entry);
+    inline const char* RecipePurchaseBlocker(const UsefulRecipe& purpose,bool ownedOrIncoming,bool bidPending,uint32_t quantity) {
+        if (!purpose.useful) return purpose.reason;
+        if (ownedOrIncoming) return "recipe_copy_owned_or_awaiting_collection";
+        if (bidPending) return "recipe_bid_already_outstanding";
+        if (quantity!=1) return "recipe_requires_only_one_copy";
+        return "";
+    }
 }

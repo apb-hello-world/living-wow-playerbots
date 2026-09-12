@@ -3,8 +3,15 @@
 #include "PlayerbotOrganicEconomy.h"
 #include "ServerFacade.h"
 #include "Spells/SpellMgr.h"
+#include "strategy/actions/AhAction.h"
 
 namespace LivingActivity {
+    bool RecipeBookAlreadyOwnedOrIncoming(Player& actor,uint32_t entry) {
+        // The pinned core loads mail metadata before login completion. A mail
+        // attachment (even not delivered yet) is incoming, NOT usable bag stock.
+        // Preserve bounded inspection without adding a database query or timer.
+        return actor.GetItemCount(entry,true)>0 || actor.GetMailSize()>256 || ai::AhBidAction::HasPendingMaterial(&actor,entry);
+    }
     RecipeLearningFacts InspectUsefulRecipe(Player& actor,const ItemPrototype* item) {
         RecipeLearningFacts facts;
         if (!item || item->Class!=ITEM_CLASS_RECIPE) return facts;

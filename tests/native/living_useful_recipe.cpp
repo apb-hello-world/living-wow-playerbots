@@ -43,4 +43,12 @@ int main() {
     assert(!PreferUsefulRecipe(recipe,recipe));
     invalid=recipe;invalid.known=true;assert(!PreferUsefulRecipe(invalid,recipe));
     assert(PreferUsefulRecipe(recipe,invalid));
+    const auto useful=EvaluateUsefulRecipe(recipe);
+    assert(!*RecipePurchaseBlocker(useful,false,false,1));
+    assert(*RecipePurchaseBlocker(useful,true,false,1));
+    assert(*RecipePurchaseBlocker(useful,false,true,1));
+    assert(*RecipePurchaseBlocker(useful,true,true,1));
+    assert(*RecipePurchaseBlocker(useful,false,false,2));
+    assert(*RecipePurchaseBlocker(useful,false,false,0));
+    assert(*RecipePurchaseBlocker(EvaluateUsefulRecipe(invalid),false,false,1));
 }

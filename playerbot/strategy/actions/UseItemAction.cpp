@@ -229,6 +229,9 @@ bool IsTargetValidForItemUse(uint32 itemID, Unit* target)
 
 bool RequiresItemToUse(const ItemPrototype* itemProto, PlayerbotAI* ai, Player* bot)
 {
+    // Learning is an earned item operation, even when legacy consumable cheats
+    // are enabled. Bind the actual book to the native spell so it is consumed.
+    if (itemProto->Class==ITEM_CLASS_RECIPE) return true;
     // If no item cheat
     if (!ai->HasCheat(BotCheatMask::item))
         return true;
