@@ -312,6 +312,7 @@ struct LivingActivityCoordinator::State {
     } auctionProfessionFixture;
     struct ProfessionCohortCase {
         uint32_t actor=0,recipe=0,skill=0,moneyBefore=0,skillBefore=0,outputBefore=0,output=0;
+        uint64_t restoredCompletedRevision=0;
         bool requested=false,started=false,finished=false;
         unsigned diagnostics=0;
         std::string task,blocker,lastDiagnostic;
@@ -320,6 +321,7 @@ struct LivingActivityCoordinator::State {
     std::array<std::atomic<uint32_t>,20> professionCohortActors{};
     boost::property_tree::ptree professionCohortSetup;
     std::string professionCohortId;
+    bool professionCohortRestored=false;
     uint64_t professionCohortDeadline=0;
     NativeVendorQuote vendorFixtureQuote;
     uint32_t vendorFixtureSpawn=0,vendorFixtureEntry=0;

@@ -23,6 +23,9 @@ void RunIsolatedProfessionCohort(FixtureState& state) {
             row.put("output_before",f.outputBefore);row.put("output",f.output);row.put("finished",f.finished);
             if(const auto task=sLivingActivityCoordinator.ReadSavedTask(f.task)) {
                 row.put("phase",Name(task->phase));row.put("revision",task->revision);row.put("step",task->checkpoint.step);
+            } else if(f.restoredCompletedRevision) {
+                row.put("phase","completed");row.put("revision",f.restoredCompletedRevision);
+                row.put("step","profession_completed");row.put("completed_before_boot",true);
             }
             if(auto* actor=sRandomPlayerbotMgr.GetPlayerBot(f.actor)) {
                 row.put("money_after",actor->GetMoney());row.put("skill_after",actor->GetSkillValuePure(f.skill));
@@ -67,13 +70,47 @@ void RunIsolatedProfessionCohort(FixtureState& state) {
         }
         if(sWorld.GetActiveAndQueuedSessionCount() || !state.loaded || state.ioPending || !state.pending.empty() ||
             !state.incoming.empty() || !state.resources.Protection().ready)return;
+        if(!state.professionCohortRestored) {
+            // Production restores nonterminal work only. The copied harness
+            // must also recognise prior successes in this SAME cohort rather
+            // than attempting to admit them again. One bounded read per boot,
+            // never a production query or a per-tick database scan. This reads
+            // task identity only: native values below and the independent SQL
+            // receipt/conservation audit still have to prove every completion.
+            std::string wanted;
+            for(const auto& f:state.professionCohort) {
+                if(!wanted.empty())wanted+=" UNION ALL ";
+                wanted+="SELECT "+SqlValue(f.task)+" AS task_id";
+            }
+            std::unique_ptr<QueryResult> rows(CharacterDatabase.Query((
+                "SELECT wanted.task_id,COALESCE(t.actor_guid,0),COALESCE(t.revision,0),t.root_task_id,"
+                "t.phase,t.kind,t.mode,t.accepted,t.source,t.source_key FROM ("+wanted+
+                ") wanted LEFT JOIN living_activity_task t ON t.task_id=wanted.task_id LIMIT 21").c_str()));
+            require(rows && rows->GetRowCount()==state.professionCohort.size(),"cohort_restore_read_required");
+            std::set<std::string> seen;
+            do {
+                auto* fields=rows->Fetch();const auto task=fields[0].GetCppString();
+                auto found=std::find_if(state.professionCohort.begin(),state.professionCohort.end(),
+                    [&](const auto& f){return f.task==task;});
+                require(found!=state.professionCohort.end() && seen.insert(task).second,"cohort_restore_identity_changed");
+                if(!fields[1].GetUInt32())continue;
+                const auto source="isolated_profession_cohort_v1:"+state.professionCohortId+":"+std::to_string(found->actor);
+                require(fields[1].GetUInt32()==found->actor && fields[2].GetUInt64() &&
+                    fields[3].GetCppString()==task && fields[5].GetCppString()=="profession" &&
+                    fields[6].GetCppString()=="active" && fields[7].GetUInt32()==1 &&
+                    fields[8].GetCppString()=="profession_job" && fields[9].GetCppString()==source,
+                    "cohort_restore_identity_changed");
+                if(fields[4].GetCppString()=="completed")found->restoredCompletedRevision=fields[2].GetUInt64();
+            } while(rows->NextRow());
+            state.professionCohortRestored=true;
+        }
         if(!state.professionCohortDeadline)state.professionCohortDeadline=NowMs()+1800000;
         if(NowMs()>state.professionCohortDeadline){emit(false,"cohort_deadline_with_preserved_tasks");return;}
         state.enforceEffects.store(true,std::memory_order_release);
         unsigned active=0,finished=0;
         for(auto& f:state.professionCohort) {
             auto saved=sLivingActivityCoordinator.ReadSavedTask(f.task);
-            if(saved)f.started=true;
+            if(saved || f.restoredCompletedRevision)f.started=true;
             if(f.finished){++finished;continue;}
             if(!f.started && active>=4)continue;
             ++active;
@@ -87,6 +124,12 @@ void RunIsolatedProfessionCohort(FixtureState& state) {
             require(actor->GetPlayerbotAI() && !actor->GetPlayerbotAI()->IsRealPlayer(),"copied_native_bot_required");
             if(!actor->IsInWorld() || !actor->GetMap() || NativeSafety(actor) || actor->GetGroup() ||
                 actor->GetTradeData() || actor->GetMap()->IsDungeon()) {f.blocker="cohort_native_safety_wait";continue;}
+            if(!saved && f.restoredCompletedRevision) {
+                require(actor->GetSkillValuePure(f.skill)>f.skillBefore && actor->GetItemCount(f.output,true)>f.outputBefore &&
+                    actor->GetMoney()<f.moneyBefore,"cohort_restored_native_state_changed");
+                require(!sLivingActivityCoordinator.DefersNativeSave(f.actor),"cohort_native_save_pending");
+                f.finished=true;f.blocker.clear();++finished;--active;continue;
+            }
             if(!f.started) {
                 require(actor->GetMoney()==f.moneyBefore && actor->GetSkillValuePure(f.skill)==f.skillBefore &&
                     actor->GetItemCount(f.output,true)==f.outputBefore,"cohort_starting_native_state_changed");
