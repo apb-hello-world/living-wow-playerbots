@@ -30,9 +30,10 @@ int main() {
     changed = request; changed.receipt = Id;
     assert(!SameRequest(plan, TaskWrite(changed.task, 0, changed.receipt, "task_admitted")));
     assert(!SameRequest({}, {}));
-    for (Phase phase : {Phase::Preparing, Phase::Executing, Phase::Completed, Phase::Cancelled}) {
+    for (Phase phase : {Phase::Reconciling, Phase::Preparing, Phase::Executing, Phase::Completed, Phase::Cancelled}) {
         changed = request; changed.task.phase = phase;
         assert(ValidateTaskRequest(changed, nullptr, current, reason) != AdmissionCode::Pending);
+        if (phase == Phase::Reconciling) assert(reason == "new_task_must_be_queued");
     }
     Task saved = request.task;
     request.expectedRevision = 1; request.task.revision = 2; request.task.phase = Phase::Preparing;

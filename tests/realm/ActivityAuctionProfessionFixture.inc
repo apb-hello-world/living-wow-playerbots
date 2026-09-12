@@ -8,7 +8,7 @@ namespace {
         if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
         state.fixtureNext=NowMs()+500;auto& f=state.auctionProfessionFixture;
         Player* actor=nullptr;
-        auto require=[&](bool okay,const char* name) {
+        auto require=[&](bool okay,const std::string& name) {
             boost::property_tree::ptree row;row.put("case",name);row.put("passed",okay);f.checks.push_back({"",row});
             if(!okay)throw std::runtime_error(name);
         };
@@ -116,11 +116,14 @@ namespace {
                     actor->SaveToDB();state.enforceEffects.store(true,std::memory_order_release);
                     TaskRequest request;auto& task=request.task;task.id=task.root=f.task;task.actor=f.actor;
                     task.source="profession_job";task.sourceKey="isolated_auction_profession_v1:"+state.boot;
-                    task.kind=Kind::Profession;task.mode=Mode::Active;task.accepted=true;task.priority=Priority::Delivery;
+                    task.kind=Kind::Profession;task.mode=Mode::Active;task.phase=Phase::Queued;
+                    task.accepted=true;task.priority=Priority::Delivery;
                     task.context=ReadNativeContext(*actor,state.policyRevision,state.boot);
                     task.createdAtMs=task.updatedAtMs=NowMs();task.checkpoint.step="profession_prepare";
                     task.checkpoint.data=EncodeProfessionJob(job);request.receipt=NewId();
-                    require(sLivingActivityCoordinator.SubmitTask(request).code==AdmissionCode::Pending,"ordinary_native_task_admission");
+                    const auto admission=sLivingActivityCoordinator.SubmitTask(request);
+                    f.blocker=admission.blocker;
+                    require(admission.code==AdmissionCode::Pending,"ordinary_native_task_admission:"+admission.blocker);
                 }
                 state.enforceEffects.store(true,std::memory_order_release);f.started=true;return;
             }

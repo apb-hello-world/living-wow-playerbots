@@ -1559,7 +1559,8 @@ AdmissionResult LivingActivityCoordinator::AdmitEconomyProfession(uint32_t actor
     if (!BuildNativeSkillGainJob(*bot,recipe,job,blocker)) return reject(AdmissionCode::InvalidRequest,blocker);
     TaskRequest request;auto& task=request.task;
     task.id=task.root=result.task;task.source="profession_job";task.sourceKey=EconomyProfessionSourceKey(goalRow);
-    task.actor=actor;task.kind=Kind::Profession;task.mode=Mode::Active;task.priority=Priority::Progression;task.accepted=true;
+    task.actor=actor;task.kind=Kind::Profession;task.mode=Mode::Active;task.phase=Phase::Queued;
+    task.priority=Priority::Progression;task.accepted=true;
     task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
     task.createdAtMs=task.updatedAtMs=NowMs();task.checkpoint.step="profession_prepare";
     task.checkpoint.data=EncodeProfessionJob(job);request.receipt=NewId();
