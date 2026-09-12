@@ -67,7 +67,7 @@ int main() {
         assert(remaining({1,0,0,0})==500);
         assert(remaining({1,-20,0,0})==480); // Further from goal, but forward on road.
         assert(remaining({1,-100,30,0})==370);
-        assert(remaining({1,100,10,0})==10);
+        assert(std::abs(*remaining({1,100,10,0})-10)<0.000001);
         assert(!remaining({530,0,0,0}));
         assert(!remaining({1,std::numeric_limits<double>::quiet_NaN(),0,0}));
         assert(!ServicePathRemaining(road[0],4097,[&](size_t n){return road.at(n);}));
@@ -82,7 +82,7 @@ int main() {
         assert(!progress.Observe(-1));assert(!progress.Observe(std::numeric_limits<double>::infinity()));
         const std::vector<ServicePathPoint> crossing{{1,0,0,0},{1,10,0,0},{0,0,0,0},{0,20,0,0}};
         const auto after=ServicePathRemaining({0,5,0,0},crossing.size(),[&](size_t n){return crossing[n];});
-        assert(after==15); // No invented walking distance between maps.
+        assert(after && std::abs(*after-15)<0.000001); // No invented walking distance between maps.
     }
     static_assert(!std::is_convertible<Acquisition,bool>::value,"Waiting must not collapse into failure");
     for(auto code:{AdmissionCode::Pending,AdmissionCode::NotReady,AdmissionCode::ConflictingWrite,
