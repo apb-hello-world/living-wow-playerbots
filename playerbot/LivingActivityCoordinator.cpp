@@ -318,6 +318,18 @@ struct LivingActivityCoordinator::State {
         std::map<uint32_t,uint32_t> beforeStacks;
         boost::property_tree::ptree checks;
     } recipeLearningFixture;
+    struct EnchantFixture {
+        uint32_t actor=0,recipe=0,toolGuid=0,toolBefore=0,toolGrant=0;
+        uint64_t deadline=0;
+        unsigned diagnostics=0;
+        bool requested=false,started=false;
+        std::string task,blocker,lastDiagnostic;
+        ProfessionJob job;
+        CraftFrame before;
+        EnchantSubject subject;
+        EnchantSpec enchant;
+        boost::property_tree::ptree setup;
+    } enchantFixture;
     struct AuctionProfessionFixture {
         uint32_t actor=0,moneyBefore=0,skillBefore=0,outputBefore=0;
         uint64_t deadline=0;
@@ -540,7 +552,8 @@ struct LivingActivityCoordinator::State {
         if(mode && *mode && std::string(mode)!="activity-profession-auction-v1" &&
             std::string(mode)!="activity-profession-auction-restart-v1" &&
             std::string(mode)!="activity-profession-auction-partial-v1" &&
-            std::string(mode)!="activity-profession-cohort-v1")return false;
+            std::string(mode)!="activity-profession-cohort-v1" &&
+            std::string(mode)!="activity-enchant-v1")return false;
 #endif
         return true;
     }

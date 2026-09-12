@@ -35,10 +35,14 @@ namespace {
 #include "ActivityManagedRecipeFixture.inc"
 #include "ActivityAuctionProfessionFixture.inc"
 #include "ActivityProfessionCohortFixture.inc"
+#include "ActivityEnchantFixture.inc"
 
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(requested && std::string(requested)=="activity-enchant-v1") {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedEnchantFixture(*state);return;
+    }
     if(requested && std::string(requested)=="activity-profession-cohort-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedProfessionCohort(*state);return;
     }
