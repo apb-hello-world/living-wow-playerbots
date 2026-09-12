@@ -234,12 +234,18 @@ bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& r
         InterruptedCraftIntent decoded;decoded.output=Gain(before.get_child("item_gain"));
         decoded.skill=Number<uint16_t>(native.get_child("skill"));decoded.money=Number(native.get_child("money"));
         decoded.inputs=Inputs(task,before.get_child("native.claimed_consumption"));
-        Require(Number(native.get_child("recipe"))==job.recipe && decoded.output.entry==job.outputEntry &&
-            decoded.inputs.size()==job.reagents.size(),"interrupted_craft_recipe_mismatch");
+        Require(Number(native.get_child("recipe"))==job.recipe && decoded.output.entry==job.outputEntry,
+            "interrupted_craft_recipe_mismatch");
+        size_t matched=0;
         for(const auto& need:job.reagents) {
-            const auto use=std::find_if(decoded.inputs.begin(),decoded.inputs.end(),[&](const auto& v){return v.before.itemEntry==need.entry;});
-            Require(use!=decoded.inputs.end() && use->used==need.perAttempt,"interrupted_craft_recipe_mismatch");
+            uint64_t used=0;uint32_t guid=0;
+            for(const auto& use:decoded.inputs) if(use.before.itemEntry==need.entry) {
+                Require(!guid || guid==use.before.itemGuid,"interrupted_craft_mixed_stack_unsupported");
+                guid=use.before.itemGuid;used+=use.used;++matched;
+            }
+            Require(used==need.perAttempt,"interrupted_craft_recipe_mismatch");
         }
+        Require(matched==decoded.inputs.size(),"interrupted_craft_recipe_mismatch");
         result=std::move(decoded);return true;
     } catch(const std::invalid_argument& error) {blocker=error.what();}
       catch(const std::exception&) {blocker="interrupted_craft_evidence_malformed";}

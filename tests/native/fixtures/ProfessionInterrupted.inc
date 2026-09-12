@@ -65,5 +65,33 @@ void TestInterruptedProfession() {
         row.beforeState,"{}",""};
     ProfessionHistoryCursor cursor;assert(cursor.Begin(f.task,{fields},blocker) && cursor.Advance(blocker));
     assert(cursor.Result().complete && cursor.Result().unresolvedOperation && cursor.Result().interruptedCraft);
+    // A paid merged stack still has separate claims after a crash before craft.
+    InterruptedFixture merged;ProfessionJob job;
+    assert(DecodeProfessionJob(merged.task.checkpoint.data,job,blocker));
+    job.reagents.back().perAttempt=5;merged.task.checkpoint.data=EncodeProfessionJob(job);
+    auto pending=SavedCraft(merged.task,job,merged.frame,merged.frame,true,true);
+    pending.receipt.state=OperationState::Intent;pending.receipt.nativeReference.clear();
+    pending.receipt.evidence.clear();pending.afterState="{}";
+    InterruptedCraftIntent inputs;
+    assert(DecodeInterruptedCraftIntent(merged.task,pending,inputs,blocker));
+    auto second=inputs.inputs.back();inputs.inputs.back().before.quantity=inputs.inputs.back().used=2;
+    second.before.id="f71b6cac-8b42-44d9-9f1f-24e4e40a0004";second.before.quantity=second.used=3;
+    inputs.inputs.push_back(second);
+    auto native="{\"recipe\":"+std::to_string(job.recipe)+",\"skill\":1,\"money\":100}";
+    pending.beforeState="{\"effects\":21,\"persistence\":2,\"native\":"+ClaimedNativeState(native,inputs.inputs)+
+        ",\"item_gain\":"+ItemGainSpecJson(inputs.output)+'}';
+    merged.history.interruptedCraft=pending;merged.batch.claims.clear();
+    for(const auto& use:inputs.inputs)merged.batch.claims.push_back(use.before);
+    assert(prepare(merged));
+    auto missing=merged;missing.frame.stacks.back().count=4;assert(!prepare(missing));
+
+    auto after=merged.frame;after.skill=2;after.stacks={{705,804,job.outputEntry,1,0,23}};
+    auto success=SavedCraft(merged.task,job,merged.frame,after,false,true);
+    success.beforeState=pending.beforeState;
+    const auto cut=success.afterState.rfind(",\"claimed_consumption\":");assert(cut!=std::string::npos);
+    const auto nativeAfter=success.afterState.substr(10,cut-10);
+    success.afterState=ClaimedNativeState(nativeAfter,inputs.inputs,8192);
+    auto completed=merged.task;++completed.revision;completed.phase=Phase::Verifying;
+    assert(DecodeStoredCraftProof(completed,success,proof,blocker) && proof.inputs.size()==4);
 }
 }
