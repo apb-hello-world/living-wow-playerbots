@@ -102,7 +102,8 @@ int main() {
     assert(PrepareRecipeLearningResumption(task,task.context,claims,stock,2000,receipt,settlement,blocker));
     assert(settlement.task.retryAtMs==2500);
     sql.clear();for (const auto& line:settlement.plan.statements) sql+=line;
-    assert(sql.find("o.kind NOT IN ('vendor_purchase','mail_collect'")!=std::string::npos);
+    assert(sql.find("o.kind NOT IN ('vendor_purchase','auction_purchase','mail_collect'")!=std::string::npos);
+    assert(sql.find("o.kind IN ('vendor_purchase','auction_purchase','mail_collect','bank_withdraw')")!=std::string::npos);
     assert(sql.find("OR o.state NOT IN ('verified','rejected')")!=std::string::npos);
     assert(sql.find("mail_items")!=std::string::npos && sql.find("m.cod=0")!=std::string::npos);
     // Capacity preparation may leave safely banked personal stock. Completion
