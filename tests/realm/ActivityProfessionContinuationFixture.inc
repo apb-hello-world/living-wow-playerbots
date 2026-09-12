@@ -108,8 +108,14 @@
         struct Restore {State& state;bool original;~Restore(){state.enforceEffects.store(original,std::memory_order_release);}} restore{*state,original};
         fixture.blocker=AdvanceProfessionJob(saved->actor,taskId).blocker;
         travel=actor->GetPlayerbotAI()->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get();
+        auto* aiContext=actor->GetPlayerbotAI()->GetAiObjectContext();
+        const auto& movement=aiContext->GetValue<ai::LastMovement&>("last movement")->Get();
+        const auto& path=movement.lastPath.getPath();
+        const auto pendingTrigger=aiContext->GetValue<ai::LastMovement&>("last area trigger")->Get().lastAreaTrigger;
         const auto stamp=std::to_string(saved->revision)+":"+fixture.blocker+":"+std::to_string(travelBefore)+
-            ":"+std::to_string(travel?int(travel->GetStatus()):-1);
+            ":"+std::to_string(travel?int(travel->GetStatus()):-1)+":"+std::to_string(pendingTrigger)+
+            ":"+std::to_string(movement.nextTeleport)+":"+std::to_string(path.size())+
+            ":"+std::to_string(actor->IsMoving())+":"+std::to_string(actor->IsBeingTeleported());
         if(stamp!=fixture.lastCheckpoint) {
             if(fixture.continuationTrace.size()>=256) {emit(false,"continuation_transition_quota");return;}
             boost::property_tree::ptree row;row.put("revision",saved->revision);row.put("phase",Name(saved->phase));
@@ -119,6 +125,18 @@
             row.put("travel_purpose",travel && travel->GetDestination()?uint32_t(travel->GetDestination()->GetPurpose()):0);
             row.put("route_generation",state->authority.Read(saved->actor).lease.generation);
             row.put("native_route_revision",travel?travel->GetRouteRevision():0);
+            row.put("native_moving",actor->IsMoving());row.put("native_teleport_pending",actor->IsBeingTeleported());
+            row.put("native_motion_type",int(actor->GetMotionMaster()->GetCurrentMovementGeneratorType()));
+            row.put("native_next_teleport",movement.nextTeleport);row.put("native_area_trigger",pendingTrigger);
+            row.put("native_path_size",path.size());row.put("native_z",actor->GetPositionZ());
+            boost::property_tree::ptree legs;
+            for(size_t index=0;index<std::min<size_t>(4,path.size());++index) {
+                const auto& leg=path[index];boost::property_tree::ptree value;
+                value.put("type",int(leg.type));value.put("entry",leg.entry);value.put("map",leg.point.getMapId());
+                value.put("x",leg.point.getX());value.put("y",leg.point.getY());value.put("z",leg.point.getZ());
+                legs.push_back({"",value});
+            }
+            row.add_child("native_first_legs",legs);
             if(travel && travel->GetPosition()) {
                 row.put("destination_map",travel->GetPosition()->getMapId());row.put("destination",travel->GetPosStr());
                 row.put("destination_entry",travel->GetEntry());
