@@ -355,6 +355,16 @@ void PlayerbotGuildSupplies::RecordDeposit(uint32 guild,uint32 actor,uint32 entr
     // credit an attempt that did not commit. Donor remains distinct from courier.
     CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET phase=IF(deposited_quantity+%u>=quantity,'completed','carried'),deposited_quantity=deposited_quantity+%u,blocker='',updated_at=%u WHERE delivery_id=%llu AND phase='carried' AND deposited_quantity=%u",count,count,uint32(time(nullptr)),(unsigned long long)d.id,d.deposited);
 }
+bool PlayerbotGuildSupplies::ReadDeliveryJob(uint64_t id,uint32_t actor,LivingActivity::GuildDeliveryJob& job,std::string& blocker) const {
+    job={};blocker="guild_delivery_projection_pending";
+    if(!sLivingActivityCoordinator.OnWorldThread() || !state_->ready)return false;
+    const auto found=state_->deliveries.find(id);if(found==state_->deliveries.end())return false;
+    const auto& d=found->second;
+    if(d.carrier!=actor || d.phase!="carried" || !d.entry){blocker="guild_delivery_carried_item_leg_required";return false;}
+    job={d.id,d.guild,d.donor,d.entry,d.quantity,d.mail,d.goal,false};
+    if(!LivingActivity::ValidGuildDeliveryJob(job)){blocker="guild_delivery_native_identity_invalid";job={};return false;}
+    blocker.clear();return true;
+}
 bool PlayerbotGuildSupplies::ReadManagedDeposit(const LivingActivity::Task& task,LivingActivity::GuildDepositQuote& q,
     std::string& blocker) const {
     using namespace LivingActivity;
@@ -480,6 +490,16 @@ void PlayerbotGuildSupplies::Update() {
     for(uint32 visits=0;visits<std::min(size_t(8),s.deliveries.size());++visits) {
         auto& d=(next++)->second;if(next==s.deliveries.end()) next=s.deliveries.begin();s.workCursor=d.id;
         if(SupplyTerminal(d.phase)) continue;
+        const LivingActivity::GuildDeliveryJob managed{d.id,d.guild,d.donor,d.entry,d.quantity,d.mail,d.goal,!d.entry};
+        if(sLivingActivityCoordinator.OwnsGuildDelivery(d.carrier,managed)) {
+            // Admission retires the legacy executor, including during a pause,
+            // restart, cancellation or delayed native acknowledgement.
+            // Releasing only the OLD lease cannot clear the new owner's route.
+            s.Release(d);continue;
+        }
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+        if(sLivingActivityCoordinator.IsolatedGameplayActor(d.carrier))continue;
+#endif
         Player* p=Online(d.carrier);Guild* guild=sGuildMgr.GetGuildById(d.guild);
         if(!guild||!s.enabled[d.guild]||!sGuildGovernance.Allows(guild,"supplies")) {s.Block(d,"supply_automation_paused",now);continue;}
         if(!guild->GetMemberSlot(ObjectGuid(HIGHGUID_PLAYER,d.carrier))) {s.Block(d,"recipient_no_longer_member",now);continue;}

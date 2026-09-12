@@ -56,7 +56,8 @@ namespace ai
         GatherFishing = 1 << 17,
         Bank = 1 << 18,
         Explore = 1 << 19,
-        MaxFlag = 1 << 20
+        GuildBank = 1 << 20,
+        MaxFlag = 1 << 21
     };
 
     const std::unordered_map<TravelDestinationPurpose, std::string> TravelDestinationPurposeName =
@@ -74,6 +75,7 @@ namespace ai
         {TravelDestinationPurpose::Vendor, "Vendor"},
         {TravelDestinationPurpose::AH , "AH"},
         {TravelDestinationPurpose::Mail , "Mail"},
+        {TravelDestinationPurpose::GuildBank, "GuildBank"},
         {TravelDestinationPurpose::Grind , "Grind"},
         {TravelDestinationPurpose::Boss, "Boss"},
         {TravelDestinationPurpose::GatherSkinning , "GatherSkinning"},

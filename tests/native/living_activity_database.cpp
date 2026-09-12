@@ -13,6 +13,8 @@
 #include "LivingProfessionSettlement.h"
 #include "LivingProfessionEconomy.h"
 #include "LivingRecipeLearningSettlement.h"
+#include "LivingGuildDeliverySettlement.h"
+#include "LivingGuildDeposit.h"
 #include "fixtures/CraftEvidence.h"
 #include <mysql.h>
 #include <cassert>
@@ -100,6 +102,7 @@ public:
 #include "fixtures/ProfessionInterruptedDatabase.inc"
 #include "fixtures/RecipeLearningDatabase.inc"
 #include "fixtures/EnchantWorkflowDatabase.inc"
+#include "fixtures/GuildDepositDatabase.inc"
 int main() {
     Connection db;
     Task task; task.id = task.root = Id; task.actor = task.context.actor = 497;
@@ -714,5 +717,6 @@ int main() {
     RecipeLearningDatabase(db);
     ProfessionInterruptedDatabase(db);
     EnchantWorkflowDatabase(db);
+    GuildDepositDatabase(db);
     std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history, skill-job settlement and exact-row legacy handoff; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

@@ -27,6 +27,8 @@
 #include "LivingMailRecovery.h"
 #include "LivingNativeAuctionPurchase.h"
 #include "LivingNativeVendorSale.h"
+#include "LivingNativeGuildDeposit.h"
+#include "LivingGuildDeliverySettlement.h"
 #include "LivingProfessionDemand.h"
 #include "LivingTaskItemRequirements.h"
 #include "LivingProfessionVendor.h"
@@ -35,6 +37,7 @@
 #include "LivingActivityTransfer.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
 #include "PlayerbotInventoryPressure.h"
+#include "Guilds/GuildMgr.h"
 #include "strategy/actions/MailAction.h"
 #include "strategy/actions/AhAction.h"
 #include "strategy/actions/SellAction.h"
@@ -270,6 +273,13 @@ struct LivingActivityCoordinator::State {
     std::atomic<bool> enforceEffects{false}; // No configuration can enable it before Stage 3 acceptance.
     std::shared_ptr<const std::set<uint32_t>> nativeSaveHolds = std::make_shared<const std::set<uint32_t>>();
     GuildSaveFence guildSaveHolds;
+    struct GuildDeliveryRead {
+        uint64_t revision=0,retryAt=0;
+        uint32_t deposited=0,failures=0;
+        bool pending=false,complete=false;
+        std::string phase,blocker;
+    };
+    std::map<std::string,GuildDeliveryRead> guildDeliveryReads;
     std::atomic<uint64_t> publishedPolicyRevision{0};
     std::atomic<uint64_t> leaseBoundaries[3][2]{};
     std::thread::id worldThread;
@@ -340,6 +350,15 @@ struct LivingActivityCoordinator::State {
         std::string task,blocker,lastDiagnostic,originalBoot;
         ProfessionJob job;boost::property_tree::ptree setup;
     } toolFixture;
+    struct GuildDepositFixture {
+        uint32_t actor=0;
+        uint64_t deadline=0;
+        bool requested=false,started=false,admitted=false,resuming=false;
+        GuildDeliveryJob job;
+        std::string task,originalBoot,blocker,lastDiagnostic;
+        unsigned diagnostics=0;
+        boost::property_tree::ptree setup;
+    } guildDepositFixture;
     struct AuctionProfessionFixture {
         uint32_t actor=0,moneyBefore=0,skillBefore=0,outputBefore=0;
         uint64_t deadline=0;
@@ -553,6 +572,7 @@ struct LivingActivityCoordinator::State {
     }
     bool ScheduledExecution(const Task& task) const {
         if(task.mode!=Mode::Active || !task.accepted || Terminal(task.phase))return false;
+        if(IsManagedGuildDelivery(task))return true;
         if(IsRecipeLearningTask(task))return true;
         if(!IsProfessionJob(task))return false;
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
@@ -1168,7 +1188,8 @@ void LivingActivityCoordinator::Update() {
                     Turn(std::string& value,const std::string& task):current(value){current=task;}
                     ~Turn(){current.clear();}
                 } turn(state->executingTask,id);
-                auto progress=IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
+                auto progress=IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
+                    IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
                     AdvanceProfessionJob(saved->second.actor,id);
                 Task waiting;
                 if(!progress.completed && PrepareExternalPreparationWait(saved->second,progress.blocker,now,waiting)) {
@@ -1648,6 +1669,8 @@ AdmissionResult LivingActivityCoordinator::AdmitEconomyProfession(uint32_t actor
     task.checkpoint.data=EncodeProfessionJob(job);request.receipt=NewId();
     return SubmitTask(request);
 }
+#include "LivingGuildDeliveryExecutor.inc"
+
 std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoordinator::DispatchPendingItemService(
     uint32_t actor,const std::string& id) {
     const auto saved=ReadSavedTask(id);
@@ -3252,7 +3275,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     pending.outcome = observation.state;
     after.phase = pending.uncertain ? Phase::Reconciling : Phase::Verifying;
     after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
-    if(request.kind=="capacity_vendor_sale" && observation.state==OperationState::Rejected) {
+    if((request.kind=="capacity_vendor_sale" || request.kind=="guild_bank_deposit") && observation.state==OperationState::Rejected) {
         after.retryAtMs=after.updatedAtMs+300000;
         after.checkpoint.blocker=observation.evidence; // Retain claim, do not hammer a rejecting native service.
     }

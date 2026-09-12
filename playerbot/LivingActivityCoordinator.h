@@ -13,6 +13,7 @@
 #include "LivingPurchaseBudget.h"
 #include "LivingProfessionEvidence.h"
 #include "LivingProfessionEconomy.h"
+#include "LivingGuildDelivery.h"
 #include <optional>
 class PlayerbotAI;
 class WorldPacket;
@@ -103,6 +104,9 @@ public:
     bool RecipeLearningAdmissionsEnabled() const;
     LivingActivity::AdmissionResult AdmitRecipeLearning(uint32_t actor,uint32_t book);
     ProfessionProgress AdvanceRecipeLearning(uint32_t actor,const std::string& task);
+    LivingActivity::AdmissionResult AdmitGuildDelivery(uint32_t actor,const LivingActivity::GuildDeliveryJob& job);
+    bool OwnsGuildDelivery(uint32_t actor,const LivingActivity::GuildDeliveryJob& job) const;
+    ProfessionProgress AdvanceGuildDelivery(uint32_t actor,const std::string& task);
     LivingActivity::AdmissionResult SettleRecipeLearning(uint32_t actor,const std::string& task,
         uint64_t expectedRevision,const std::string& receipt);
     // Build one exact craft intent from the saved job, current native snapshot

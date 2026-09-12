@@ -37,10 +37,14 @@ namespace {
 #include "ActivityProfessionCohortFixture.inc"
 #include "ActivityEnchantFixture.inc"
 #include "ActivityToolFixture.inc"
+#include "ActivityGuildDepositFixture.inc"
 
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(requested && std::string(requested)=="activity-guild-deposit-v1") {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedGuildDepositFixture(*state);return;
+    }
     if(requested && std::string(requested)=="activity-tool-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedToolFixture(*state);return;
     }

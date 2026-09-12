@@ -177,18 +177,8 @@ EntryTravelPurposeMap EntryTravelPurposeMapValue::Calculate()
             for (auto& [questId, questFlag] : relationMap.at(goEntry))
                 purpose |= questFlag;
 
-        std::vector<GameobjectTypes> allowedGoTypes;
-
-        allowedGoTypes.push_back(GAMEOBJECT_TYPE_MAILBOX);
-
-        for (auto type : allowedGoTypes)
-        {
-            if (gInfo->type == type)
-            {
-                purpose |= (uint32)TravelDestinationPurpose::Mail;
-                break;
-            }
-        }
+        if(gInfo->type==GAMEOBJECT_TYPE_MAILBOX)purpose|=uint32(TravelDestinationPurpose::Mail);
+        if(gInfo->type==GAMEOBJECT_TYPE_GUILD_BANK)purpose|=uint32(TravelDestinationPurpose::GuildBank);
 
         if (uint32 skillId = SkillIdToGatherEntry(goEntry))
         {
@@ -296,6 +286,8 @@ bool NeedTravelPurposeValue::Calculate()
         return AI_VALUE(bool, "can fight boss");
     case TravelDestinationPurpose::Mail:
         return AI_VALUE(bool, "can get mail") && AI_VALUE(bool, "should get mail");
+    case TravelDestinationPurpose::GuildBank:
+        return false; // Only an accepted saved service requests this purpose.
     case TravelDestinationPurpose::Explore:
         return ai->HasStrategy("explore", BotState::BOT_STATE_NON_COMBAT);    
     case TravelDestinationPurpose::GenericRpg:

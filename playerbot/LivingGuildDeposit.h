@@ -8,7 +8,7 @@ namespace LivingActivity {
 struct GuildDepositQuote {
     GuildDeliveryJob job;
     uint32_t actor=0,item=0,itemCount=0,amount=0,deposited=0,bankCount=0,bagCount=0,money=0;
-    uint32_t goalTarget=0,goalReserved=0,goalUpdated=0;
+    uint32_t goalTarget=0,goalReserved=0;
     uint16_t position=0;
     uint8_t tab=0;
     uint64_t bank=0;
@@ -33,4 +33,6 @@ inline bool VerifyGuildDeposit(const GuildDepositQuote& q,uint32_t sourceAfter,u
 }
 std::string EncodeGuildDepositQuote(const GuildDepositQuote& quote);
 bool DecodeGuildDepositQuote(const std::string& text,GuildDepositQuote& quote);
+std::string GuildDepositNativeProof(const GuildDepositQuote&,const Task& outcome,
+    uint32_t sourceAfter,uint32_t bagsAfter,uint32_t bankAfter,uint32_t moneyAfter);
 }

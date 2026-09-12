@@ -77,6 +77,8 @@ std::string EntryTravelDestination::GetShortName() const
         return "mail";
     case TravelDestinationPurpose::Bank:
         return "bank";
+    case TravelDestinationPurpose::GuildBank:
+        return "guild_bank";
     case TravelDestinationPurpose::Trainer:
         return "trainer";
     case TravelDestinationPurpose::Explore:
@@ -509,6 +511,9 @@ std::string RpgTravelDestination::GetTitle() const
         break;
     case TravelDestinationPurpose::Mail:
         out << "receive mail from";
+        break;
+    case TravelDestinationPurpose::GuildBank:
+        out << "deliver supplies to";
         break;
     case TravelDestinationPurpose::Trainer:
         out << "train a skill at";
@@ -1448,6 +1453,7 @@ void TravelMgr::LoadQuestTravelTable()
                 case TravelDestinationPurpose::AH:
                 case TravelDestinationPurpose::Mail:
                 case TravelDestinationPurpose::Bank:
+                case TravelDestinationPurpose::GuildBank:
                     dests.push_back(AddDestination<RpgTravelDestination>(entry, purposeFlag));
                     if(purposeFlag==TravelDestinationPurpose::Vendor && entry>0)
                         LivingActivity::RegisterNativeVendorSource(uint32(entry));

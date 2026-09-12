@@ -46,7 +46,7 @@ bool PlanNativeGuildDeposit(Player& actor,const Task& task,GuildDepositQuote& q,
     if(!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,batch,blocker))return false;
     auto items=actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
     items.sort([](const Item* a,const Item* b){return a->GetGUIDLow()<b->GetGUIDLow();});
-    Item* selected=nullptr;
+    Item* selected=nullptr;const auto maximum=q.amount;
     for(auto* item:items) {
         if(!item || item->GetEntry()!=q.job.entry || (!q.job.incomingMail && item->GetGUIDLow()!=q.item) ||
             !item->CanBeTraded() || item->IsConjuredConsumable() || sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
@@ -61,7 +61,7 @@ bool PlanNativeGuildDeposit(Player& actor,const Task& task,GuildDepositQuote& q,
             {task.actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,"bags"},available,blocker))return false;
         if(!available || (!own.id.empty() && own.quantity>available))continue;
         if(!selected || !own.id.empty()) {
-            selected=item;held=own;q.amount=std::min(q.amount,available);
+            selected=item;held=own;q.amount=std::min(maximum,available);
             if(!own.id.empty())break;
         }
     }
@@ -128,25 +128,6 @@ std::string NativeGuildDeposit::PersistedNativeProof(Player& actor,const Operati
     const auto bankAfter=guild?GuildCount(*guild,quote.job.entry):UINT32_MAX;
     const auto* source=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item));
     const uint32_t count=source?source->GetCount():0;
-    const bool moved=VerifyGuildDeposit(quote,count,actor.GetItemCount(quote.job.entry,false),bankAfter,actor.GetMoney());
-    const auto deposited=quote.deposited+(moved?quote.amount:0);
-    std::string proof="SELECT "+SqlValue(outcome.id)+','+std::to_string(outcome.revision)+
-        " FROM characters c JOIN guild_society_supply_delivery d ON d.carrier_guid=c.guid "
-        "JOIN guild_society_supply_goal g ON g.guild_id=d.guild_id AND g.goal_id=d.goal_id "
-        "JOIN guild_society_supply_execution e ON e.guild_id=d.guild_id WHERE c.guid="+std::to_string(quote.actor)+
-        " AND c.money="+std::to_string(quote.money)+" AND d.delivery_id="+std::to_string(quote.job.delivery)+
-        " AND d.guild_id="+std::to_string(quote.job.guild)+" AND d.goal_id="+SqlValue(quote.job.goal)+
-        " AND d.donor_guid="+std::to_string(quote.job.donor)+" AND d.item_entry="+std::to_string(quote.job.entry)+
-        " AND d.quantity="+std::to_string(quote.job.quantity)+" AND d.mail_id="+std::to_string(quote.job.incomingMail)+
-        " AND d.deposited_quantity="+std::to_string(deposited)+" AND d.phase="+SqlValue(deposited==quote.job.quantity?"completed":"carried")+
-        " AND g.state='active' AND g.request_kind='item' AND g.item_entry="+std::to_string(quote.job.entry)+
-        " AND g.required_quantity="+std::to_string(quote.goalTarget)+" AND g.reserved_quantity="+std::to_string(quote.goalReserved)+
-        " AND e.enabled=1 AND (SELECT COALESCE(SUM(i.count),0) FROM guild_bank_item b JOIN item_instance i ON i.guid=b.item_guid "
-        "WHERE b.guildid="+std::to_string(quote.job.guild)+" AND b.item_entry="+std::to_string(quote.job.entry)+")="+std::to_string(bankAfter);
-    if(count)proof+=" AND EXISTS(SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+
-        std::to_string(quote.actor)+" AND v.item="+std::to_string(quote.item)+" AND i.itemEntry="+std::to_string(quote.job.entry)+
-        " AND i.count="+std::to_string(count)+" AND i.owner_guid="+std::to_string(quote.actor)+')';
-    else proof+=" AND NOT EXISTS(SELECT 1 FROM character_inventory WHERE item="+std::to_string(quote.item)+')';
-    return proof;
+    return GuildDepositNativeProof(quote,outcome,count,actor.GetItemCount(quote.job.entry,false),bankAfter,actor.GetMoney());
 }
 }

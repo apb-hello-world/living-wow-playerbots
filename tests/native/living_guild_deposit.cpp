@@ -30,6 +30,14 @@ int main() {
     assert(!VerifyGuildDeposit(q,10,12,6,500)); // A deposit log alone is not proof.
     assert(!VerifyGuildDeposit(q,6,8,6,501));
     assert(!VerifyGuildDeposit(q,0,2,6,500)); // Do not consume the unassigned remainder.
+    Task outcome;outcome.id=TaskId;outcome.actor=q.actor;outcome.revision=4;
+    const auto delivered=GuildDepositNativeProof(q,outcome,6,8,6,500);
+    assert(delivered.find("g.state='active'")!=std::string::npos);
+    const auto rejected=GuildDepositNativeProof(q,outcome,10,12,2,500);
+    assert(!rejected.empty() && rejected.find("g.state='active'")==std::string::npos);
+    assert(rejected.find("d.deposited_quantity=0")!=std::string::npos);
+    assert(GuildDepositNativeProof(q,outcome,6,8,2,500).empty());
+    assert(GuildDepositNativeProof(q,outcome,6,8,6,501).empty());
     ResourceClaim claim;claim.id=Operation;claim.task=TaskId;claim.actor=q.actor;claim.itemGuid=q.item;
     claim.itemEntry=q.job.entry;claim.quantity=4;claim.location="bags";claim.state="held";
     assert(ExactGuildDepositClaim(q,claim,TaskId));

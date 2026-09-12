@@ -585,7 +585,8 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
     using namespace LivingActivity;
     if(!sLivingActivityCoordinator.OnWorldThread()) return {false,"world_thread_required"};
     const auto saved=sLivingActivityCoordinator.ReadSavedTask(id);
-    if(!saved || saved->actor!=actor || saved->revision!=revision || (!IsProfessionJob(*saved) && !IsRecipeLearningTask(*saved)) ||
+    if(!saved || saved->actor!=actor || saved->revision!=revision ||
+        (!IsProfessionJob(*saved) && !IsRecipeLearningTask(*saved) && !IsManagedGuildDelivery(*saved)) ||
         saved->mode!=Mode::Active || !saved->accepted || saved->phase!=LivingActivity::Phase::Traveling ||
         saved->checkpoint.step!=ServiceStep(service)) return {false,"saved_service_step_changed"};
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
@@ -594,6 +595,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
         uint32(ai::TravelDestinationPurpose::Bank);
     if(service==ServiceDestination::Vendor)purpose=uint32(ai::TravelDestinationPurpose::Vendor);
     if(service==ServiceDestination::AuctionHouse)purpose=uint32(ai::TravelDestinationPurpose::AH);
+    if(service==ServiceDestination::GuildBank)purpose=uint32(ai::TravelDestinationPurpose::GuildBank);
     if(service==ServiceDestination::PurchaseVendor) {
         ProfessionReagent need;std::vector<int32_t> vendors;std::string blocker;
         if(!NextNativeProfessionVendorItem(*bot,*saved,need,vendors,blocker)) {
@@ -739,11 +741,12 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     WorldObject* service=nullptr;float distance=1e30f;
     const bool focus=(purpose&FocusService)!=0;
     const bool mail=purpose==uint32(ai::TravelDestinationPurpose::Mail);
+    const bool guildBank=purpose==uint32(ai::TravelDestinationPurpose::GuildBank);
     const uint32 flag=purpose==uint32(ai::TravelDestinationPurpose::Bank)?UNIT_NPC_FLAG_BANKER:
         purpose==uint32(ai::TravelDestinationPurpose::Vendor)?UNIT_NPC_FLAG_VENDOR:UNIT_NPC_FLAG_AUCTIONEER;
-    for(auto id:context->GetValue<std::list<ObjectGuid>>((mail||focus)?"nearest game objects no los":"nearest npcs no los")->Get()) {
+    for(auto id:context->GetValue<std::list<ObjectGuid>>((mail||focus||guildBank)?"nearest game objects no los":"nearest npcs no los")->Get()) {
         WorldObject* candidate=nullptr;
-        if(mail||focus) {auto* go=ai->GetGameObject(id);if(go && (mail?go->GetGoType()==GAMEOBJECT_TYPE_MAILBOX:
+        if(mail||focus||guildBank) {auto* go=ai->GetGameObject(id);if(go && (guildBank?go->GetGoType()==GAMEOBJECT_TYPE_GUILD_BANK:mail?go->GetGoType()==GAMEOBJECT_TYPE_MAILBOX:
             go->GetGoType()==GAMEOBJECT_TYPE_SPELL_FOCUS && go->GetGOInfo()->spellFocus.focusId==(purpose&~FocusService))) candidate=go;}
         else {auto* npc=ai->GetUnit(id);if(npc && npc->HasFlag(UNIT_NPC_FLAGS,flag) && !sServerFacade.IsHostileTo(npc,bot) &&
             (!purchaseItem || std::binary_search(purchaseVendors.begin(),purchaseVendors.end(),int32(id.GetEntry())))) candidate=npc;}
@@ -753,7 +756,8 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     }
     trip.local=focus||service!=nullptr;
     if(service) {
-        const bool interact=mail ? bot->GetGameObjectIfCanInteractWith(service->GetObjectGuid(),GAMEOBJECT_TYPE_MAILBOX)!=nullptr :
+        const bool interact=guildBank ? bot->GetGameObjectIfCanInteractWith(service->GetObjectGuid(),GAMEOBJECT_TYPE_GUILD_BANK)!=nullptr :
+            mail ? bot->GetGameObjectIfCanInteractWith(service->GetObjectGuid(),GAMEOBJECT_TYPE_MAILBOX)!=nullptr :
             focus ? distance<=INTERACTION_DISTANCE : bot->GetNPCIfCanInteractWith(service->GetObjectGuid(),flag)!=nullptr;
         if(saved && interact) {
             if(!bot->IsStopped()) bot->StopMoving();
