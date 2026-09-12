@@ -1,11 +1,24 @@
 #include "LivingActivityAcquisition.h"
 #include "LivingActivityWorkClock.h"
 #include "LivingServiceTravel.h"
+#include "LivingServiceSelection.h"
 #include <cassert>
 #include <limits>
 #include <type_traits>
 using namespace LivingActivity;
 int main() {
+    {
+        assert(PreferNearbyService("profession_service_travel"));
+        assert(!PreferNearbyService("autonomous") && !PreferNearbyService("player_command") && !PreferNearbyService(""));
+        assert(ServiceChoiceRank(863,143982,1,1,2,3)<ServiceChoiceRank(2684,143982,1,1,2,3));
+        const auto a=ServiceChoiceRank(100,10,1,1,2,3),b=ServiceChoiceRank(100,20,1,1,2,3);
+        assert(a<b && !(b<a)); // Stable service identity breaks equal-distance ties.
+        assert(a<ServiceChoiceRank(-1,0,0,0,0,0));
+        assert(a<ServiceChoiceRank(std::numeric_limits<double>::quiet_NaN(),0,0,0,0,0));
+        assert(a<ServiceChoiceRank(1,0,0,std::numeric_limits<double>::infinity(),0,0));
+        std::vector<decltype(ServiceChoiceRank(0,0,0,0,0,0))> choices{b,a,ServiceChoiceRank(-1,0,0,0,0,0)};
+        std::stable_sort(choices.begin(),choices.end());assert(choices.front()==a && choices[1]==b);
+    }
     {
         const ServicePathPoint service{1,100,200,10};
         assert(ServiceInteractionApproach({1,100,200,7.5},service,5));

@@ -11,6 +11,8 @@
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include "Guilds/GuildMgr.h"
 #include "playerbot/LivingActivityCoordinator.h"
+#include "playerbot/LivingActivityScope.h"
+#include "playerbot/LivingServiceSelection.h"
 #include <iomanip>
 
 using namespace ai;
@@ -400,6 +402,16 @@ inline std::string PrintPartion(uint32 sqPartition)
 //Sets the target to the best destination.
 bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* target, PartitionedTravelList& partitionedList, bool onlyActive)
 {
+    const bool nearbyService=LivingActivity::PreferNearbyService(LivingActivity::ExecutionScope::Origin(bot->GetGUIDLow()));
+    if (nearbyService) for (auto& partition:partitionedList) {
+        auto rank=[](const TravelPoint& point) {
+            const auto* destination=std::get<0>(point);const auto* position=std::get<1>(point);
+            return LivingActivity::ServiceChoiceRank(destination && position ? std::get<2>(point) : -1,
+                destination?destination->GetEntry():0,position?position->getMapId():0,
+                position?position->getX():0,position?position->getY():0,position?position->getZ():0);
+        };
+        std::stable_sort(partition.second.begin(),partition.second.end(),[&](const auto& a,const auto& b){return rank(a)<rank(b);});
+    }
     auto unsafeObjective = [this](TravelDestination* destination, WorldPosition* position)
     {
         return position && (dynamic_cast<QuestObjectiveTravelDestination*>(destination) ||
@@ -414,7 +426,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
     // a forced command. Prefer an active destination for that quest when one
     // exists; otherwise retain the normal autonomous selection below.
     uint32 preferredQuest = sPlayerbotSocialActionBroker.PreferredQuest(bot->GetGUIDLow());
-    if (preferredQuest)
+    if (preferredQuest && !nearbyService)
     {
         for (auto& [partition, travelPointList] : partitionedList)
         {
@@ -437,6 +449,7 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
 
         for (auto& [destination, position, distance] : travelPointList)
         {
+            if (!destination || !position) continue;
             if (!target->IsForced() && unsafeObjective(destination, position)) continue;
             if (!target->IsForced() && isActive.find(destination) != isActive.end() && !isActive[destination])
                 continue;
@@ -455,7 +468,9 @@ bool ChooseTravelTargetAction::SetBestTarget(Player* requester, TravelTarget* ta
 
             if (target->IsForced() || (isActive[destination] = destination->IsActive(bot, PlayerTravelInfo(bot))))
             {
-                if (partition != std::prev(partitionedList.end())->first && !urand(0, 10)) //10% chance to skip to a longer partition.
+                // Optional roaming may vary its distance; an accepted service
+                // trip must not randomly skip an eligible nearer partition.
+                if (!nearbyService && partition != std::prev(partitionedList.end())->first && !urand(0, 10))
                 {
                     ai->TellDebug(requester, "Skipping range " + PrintPartion(partition), "debug travel");
                     break;
