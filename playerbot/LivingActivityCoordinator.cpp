@@ -281,6 +281,14 @@ struct LivingActivityCoordinator::State {
     uint64_t combatFixtureDeadline = 0;
     uint64_t petFixtureDeadline = 0;
     uint64_t professionFixtureDeadline = 0;
+    struct RecipeLearningFixture {
+        uint32_t actor=0,item=0,recipe=0,skill=0,skillBefore=0,moneyBefore=0,countBefore=0;
+        uint64_t deadline=0;
+        bool started=false,requestedLogin=false;
+        std::string blocker;
+        std::map<uint32_t,uint32_t> beforeStacks;
+        boost::property_tree::ptree checks;
+    } recipeLearningFixture;
     NativeVendorQuote vendorFixtureQuote;
     uint32_t vendorFixtureSpawn=0,vendorFixtureEntry=0;
     struct CraftFixture {

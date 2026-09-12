@@ -31,10 +31,15 @@ namespace {
 }
 
 #include "ActivityProfessionFixture.inc"
+#include "ActivityUsefulRecipeFixture.inc"
 
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if (requested && std::string(requested)=="activity-useful-recipe-v1") {
+        RequireIsolatedNativeFixtureEnvironment();
+        RunIsolatedUsefulRecipeFixture(*state);return;
+    }
     if (requested && std::string(requested)=="activity-off-ownership-v1") {
         RequireIsolatedNativeFixtureEnvironment();
         if (state->fixtureFinished || NowMs()<state->fixtureNext) return;
