@@ -4,6 +4,7 @@
 #include "LivingActivityCoordinator.h"
 #include "LivingProfessionNative.h"
 #include "LivingTaskItemRequirements.h"
+#include "LivingNativeAuctionPurchase.h"
 #include "TravelMgr.h"
 #include <algorithm>
 #include <tuple>
@@ -11,6 +12,20 @@
 namespace LivingActivity {
     namespace {
         VendorSourceIndex sources;
+        std::pair<double,int32_t> NearestService(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries) {
+            std::pair<double,int32_t> best{std::numeric_limits<double>::infinity(),0};
+            const ai::PlayerTravelInfo info(&actor);const WorldPosition here(&actor);
+            // Distance ranks candidates only. Do not reinstate the retired
+            // radius limit or claim a speculative route already succeeded.
+            for(const auto* dest:sTravelMgr.GetDestinations(info,purpose,entries,true,0,false)) {
+                if(dest->GetEntry()<=0 || GuidPosition(HIGHGUID_UNIT,dest->GetEntry()).IsHostileTo(&actor))continue;
+                const auto distance=double(dest->DistanceTo(here));
+                if(!std::isfinite(distance) || distance>=FLT_MAX)continue;
+                const auto candidate=std::make_pair(distance,dest->GetEntry());
+                if(candidate<best)best=candidate;
+            }
+            return best;
+        }
         const VendorItem* Listing(uint32_t vendor,uint32_t item) {
             const auto* info=sObjectMgr.GetCreatureTemplate(vendor);
             if(!info) return nullptr;
@@ -94,6 +109,37 @@ namespace LivingActivity {
         }
         if(quote.actor) {blocker.clear();return true;}
         blocker=nearbyBlocker.empty()?"profession_vendor_travel_required":nearbyBlocker;return false;
+    }
+    std::vector<int32_t> NearestNativePurchaseEntries(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries) {
+        const auto best=NearestService(actor,purpose,entries);
+        return best.second ? std::vector<int32_t>{best.second} : entries;
+    }
+    PurchaseSourcePreference PreferNativeProfessionSource(Player& actor,const Task& saved,
+        const ProfessionReagent& need,const NativeVendorQuote* localVendor,bool vendorOutOfStock,std::string& blocker) {
+        std::vector<NativeAuctionOffer> offers;
+        if(!NativeAuctionOffers(actor,need.entry,need.perAttempt,offers,blocker))
+            return blocker=="profession_purchase_market_snapshot_busy" ? PurchaseSourcePreference::Wait : PurchaseSourcePreference::Vendor;
+        const auto auctionDistance=NearestService(actor,uint32_t(ai::TravelDestinationPurpose::AH),{}).first;
+        const auto& offer=offers.front();
+        PurchaseSourceCandidate auction{offer.copper,offer.quantity,auctionDistance,true},vendor;
+        if(localVendor)vendor={localVendor->copper,localVendor->quantity,0,true};
+        else if(!vendorOutOfStock) {
+            ProfessionReagent actual;std::vector<int32_t> vendors;
+            if(NextNativeProfessionVendorItem(actor,saved,actual,vendors,blocker) && actual.entry==need.entry) {
+                const auto* item=sObjectMgr.GetItemPrototype(actual.entry);
+                const uint64_t price=item && item->BuyCount ? uint64_t(item->BuyPrice)*actual.perAttempt/item->BuyCount : 0;
+                if(price && price<=UINT32_MAX)
+                    vendor={uint32_t(price),actual.perAttempt,NearestService(actor,uint32_t(ai::TravelDestinationPurpose::Vendor),vendors).first,true};
+            }
+        }
+        if(!PreferAuctionSource(vendor,auction)) {blocker="vendor_price_and_travel_preferred";return PurchaseSourcePreference::Vendor;}
+        const auto operation=SourceId("profession_auction_operation",saved.id+":"+std::to_string(saved.revision));
+        PurchaseSpend spend;
+        if(!sLivingActivityCoordinator.ReadPurchaseBudget(actor.GetGUIDLow(),saved.id,saved.revision,operation,spend,blocker,offer.seller))
+            return PurchaseSourcePreference::Wait;
+        // A travel preference cannot authorize unaffordable optional spending.
+        if(!ValidateNativeAuctionBudget(actor,saved,operation,offer.copper,offer.seller,blocker))return PurchaseSourcePreference::Vendor;
+        blocker="auction_price_and_travel_preferred";return PurchaseSourcePreference::Auction;
     }
     bool NativeProfessionMoneyReservation::ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& blocker) {
         const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);

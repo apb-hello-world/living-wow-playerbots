@@ -1777,6 +1777,13 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(!PlanNativeProfessionPurchase(*bot,*saved,need,quote,blocker)) {
             if(blocker=="profession_vendor_source_unavailable" || blocker=="profession_vendor_item_or_bundle_invalid")
                 return purchaseAuction();
+            if(blocker=="profession_vendor_travel_required" || blocker=="vendor_limited_stock_unavailable") {
+                const auto vendorBlocker=blocker;
+                const auto choice=PreferNativeProfessionSource(*bot,*saved,need,nullptr,vendorBlocker=="vendor_limited_stock_unavailable",blocker);
+                if(choice==PurchaseSourcePreference::Auction)return purchaseAuction();
+                if(choice==PurchaseSourcePreference::Wait)return stop(blocker);
+                blocker=vendorBlocker;
+            }
             if(blocker=="profession_vendor_travel_required" || blocker=="vendor_actor_not_safely_available")
                 return beginService(ServiceDestination::PurchaseVendor);
             if(blocker=="vendor_inventory_capacity_required") return prepareCapacity();
@@ -1790,6 +1797,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             }
             return stop(blocker);
         }
+        const auto choice=PreferNativeProfessionSource(*bot,*saved,need,&quote,false,blocker);
+        if(choice==PurchaseSourcePreference::Auction)return purchaseAuction();
+        if(choice==PurchaseSourcePreference::Wait)return stop(blocker);
         UnsettledClaimBatch batch;ResourceClaim held;
         if(!ReadTaskClaims(actor,id,saved->revision,batch,blocker)) return stop(blocker);
         for(const auto& claim:batch.claims) if(claim.location=="money") {

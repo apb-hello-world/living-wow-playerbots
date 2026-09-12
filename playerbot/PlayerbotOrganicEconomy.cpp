@@ -816,7 +816,9 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
                 // Accepted work does not inherit volatile RPG desire checks.
                 // Native source eligibility and action authority remain required.
                 ai::RequestTravelTargetAction request(ai);Event event("","",bot);
-                requested=request.RequestForEntries(event,ai::TravelDestinationPurpose(purpose),purchaseVendors);
+                const auto entries=(purchaseItem || purpose==uint32(ai::TravelDestinationPurpose::AH)) ?
+                    NearestNativePurchaseEntries(*bot,purpose,purchaseVendors) : purchaseVendors;
+                requested=request.RequestForEntries(event,ai::TravelDestinationPurpose(purpose),entries);
             } else requested=ai->DoSpecificAction("request travel target::"+std::to_string(purpose),Event("can move around","",bot),true);
             trip.requesting=false;
             if(saved && requested) {trip.searchLease=trip.lease;trip.searchRevision=saved->revision;}

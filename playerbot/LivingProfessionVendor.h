@@ -2,6 +2,7 @@
 #define LIVING_PROFESSION_VENDOR_H
 #include "LivingActivityReservations.h"
 #include "LivingProfessionDemand.h"
+#include "LivingPurchaseSourceChoice.h"
 namespace LivingActivity {
     // Startup/reload hooks on the native travel table; no per-tick DB work.
     void ClearNativeVendorSources();
@@ -13,6 +14,11 @@ namespace LivingActivity {
         ProfessionReagent& need,std::vector<int32_t>& vendors,std::string& blocker);
     bool PlanNativeProfessionPurchase(Player& actor,const Task& saved,const ProfessionReagent& need,
         NativeVendorQuote& quote,std::string& blocker);
+    PurchaseSourcePreference PreferNativeProfessionSource(Player& actor,const Task& saved,
+        const ProfessionReagent& need,const NativeVendorQuote* localVendor,bool vendorOutOfStock,std::string& blocker);
+    // Existing cached native destinations, no DB or extra route worker. Empty
+    // discovery preserves the normal unrestricted travel fallback.
+    std::vector<int32_t> NearestNativePurchaseEntries(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries);
     class NativeProfessionMoneyReservation final : public NativeReservationAdapter {
     public:
         NativeProfessionMoneyReservation(NativeVendorQuote quote,std::string operation)

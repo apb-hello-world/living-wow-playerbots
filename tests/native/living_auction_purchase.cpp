@@ -1,8 +1,21 @@
 #include "LivingAuctionQuote.h"
+#include "LivingPurchaseSourceChoice.h"
 #include <cassert>
 #include <algorithm>
 using namespace LivingActivity;
 int main() {
+    assert(PreferAuctionSource({40,1,4000,true},{83,1,50,true})); // local market, distant shop
+    assert(!PreferAuctionSource({40,1,0,true},{83,1,50,true})); // affordable native shop wins
+    assert(PreferAuctionSource({40,1,0,true},{15,1,50,true})); // genuinely cheaper nearby listing
+    assert(!PreferAuctionSource({40,1,0,true},{40,1,0,true})); // stable tie
+    assert(!PreferAuctionSource({40,1,4000,true},{1000,1,0,true})); // distance is not unlimited markup
+    assert(PreferAuctionSource({40,1,0,false},{83,1,0,true})); // actual exhausted stock
+    assert(!PreferAuctionSource({40,1,4000,true},{83,1,0,false}));
+    assert(!PreferAuctionSource({40,1,0,true},{0,1,0,true}));
+    assert(!PreferAuctionSource({40,1,0,true},{1,0,0,true}));
+    assert(!PreferAuctionSource({40,1,0,true},{1,1,-1,true}));
+    assert(!PreferAuctionSource({40,1,0,true},{1,1,std::numeric_limits<double>::infinity(),true}));
+    assert(PreferAuctionSource({200,5,4000,true},{83,1,50,true})); // compare unit prices, including partial buys
     NativeAuctionQuote q;q.actor=7;q.seller=8;q.house=1;q.auction=99;q.guid=123;q.entry=765;q.quantity=2;
     q.copper=20;q.moneyBefore=100;q.proceeds=19;q.auctioneerEntry=8661;q.auctioneer=10000;q.expiresAt=9000;
     std::string why;NativeAuctionQuote decoded;
