@@ -68,13 +68,13 @@ void RunIsolatedEnchantFixture(FixtureState& state) {
                 std::ifstream setup("/isolated/evidence/enchant-setup-"+f.task+".json",std::ios::ate);
                 require(setup && setup.tellg()>0 && setup.tellg()<32768,"original_enchant_setup_required");
                 setup.seekg(0);boost::property_tree::read_json(setup,f.setup);
-                require(f.setup.get<uint32_t>("actor")==f.actor && f.setup.get<std::string>("task")==f.task &&
-                    f.setup.get<std::string>("job")==saved->checkpoint.data &&
+                require(f.setup.template get<uint32_t>("actor")==f.actor && f.setup.template get<std::string>("task")==f.task &&
+                    f.setup.template get<std::string>("job")==saved->checkpoint.data &&
                     DecodeProfessionJob(saved->checkpoint.data,f.job,f.blocker),"original_enchant_identity_changed");
                 f.subject=EnchantCodec::Subject(f.setup.get_child("subject_before"));
-                f.before.actor=f.actor;f.before.money=f.setup.get<uint32_t>("money_before");f.before.skill=f.setup.get<uint32_t>("skill_before");
-                f.toolBefore=f.setup.get<uint32_t>("tool_before");f.toolGrant=f.setup.get<uint32_t>("tool_grant");
-                f.toolGuid=f.setup.get<uint32_t>("tool_guid");
+                f.before.actor=f.actor;f.before.money=f.setup.template get<uint32_t>("money_before");f.before.skill=f.setup.template get<uint32_t>("skill_before");
+                f.toolBefore=f.setup.template get<uint32_t>("tool_before");f.toolGrant=f.setup.template get<uint32_t>("tool_grant");
+                f.toolGuid=f.setup.template get<uint32_t>("tool_guid");
                 require(ReadNativeEnchantSpec(*actor,f.job,f.enchant,f.blocker),"original_enchant_recipe_required");
                 state.enforceEffects.store(true,std::memory_order_release);f.started=true;return;
             }

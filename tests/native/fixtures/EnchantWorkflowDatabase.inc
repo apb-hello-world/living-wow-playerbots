@@ -68,7 +68,7 @@ static void EnchantWorkflowDatabase(Connection& db) {
     {Connection restarted;assert(restarted.Write(recovery.plan));}
     assert(db.Write(recovery.plan)); // Lost acknowledgement does not consume the reagent or enchant the target.
     task=recovery.task;
-    assert(db.Scalar("SELECT JSON_EXTRACT(after_state,'$.prior_observation.recipe') FROM living_activity_operation WHERE operation_id="+
+    assert(db.Scalar("SELECT JSON_UNQUOTE(JSON_EXTRACT(after_state,'$.prior_observation.recipe')) FROM living_activity_operation WHERE operation_id="+
         SqlValue(pending.receipt.id))=="7443");
     assert(db.Scalar("SELECT enchantments FROM item_instance WHERE guid=906")==blank);
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+id+" AND state='held'")=="2");
