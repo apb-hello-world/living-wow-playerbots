@@ -2,6 +2,7 @@
 #include "playerbot/playerbot.h"
 #include "ItemUsageValue.h"
 #include "playerbot/PlayerbotGuildSupplies.h"
+#include "playerbot/LivingUsefulRecipe.h"
 #include "CraftValues.h"
 #include "MountValues.h"
 #include "BudgetValues.h"
@@ -193,6 +194,12 @@ ItemUsage ItemUsageValue::CalculateUsage(bool acquiringBankItem)
         if (questUsage != ItemUsage::ITEM_USAGE_NONE) return questUsage;
     }
 
+    // Use the same native learning eligibility as the owned-book action. One
+    // carried OR banked copy is enough; a recipe is not reagent stock.
+    if (proto->Class==ITEM_CLASS_RECIPE &&
+        LivingActivity::EvaluateUsefulRecipe(LivingActivity::InspectUsefulRecipe(*bot,proto)).useful)
+        return !acquiringBankItem && bot->GetItemCount(itemId,true)>0 ? ItemUsage::ITEM_USAGE_KEEP : ItemUsage::ITEM_USAGE_SKILL;
+
     //SKILL
     if (ai->HasActivePlayerMaster())
     {
@@ -222,10 +229,7 @@ ItemUsage ItemUsageValue::CalculateUsage(bool acquiringBankItem)
                 needItem =!ai->HasCheat(BotCheatMask::item) && IsItemNeededForUsefullCraft(proto, lowBagSpace);
             else if (proto->Class == ITEM_CLASS_RECIPE)
             {
-                if (bot->HasSpell(GetRecipeSpell(proto)))
-                    needItem = false;
-                else
-                    needItem = bot->CanUseItem(proto) == EQUIP_ERR_OK;
+                needItem = LivingActivity::EvaluateUsefulRecipe(LivingActivity::InspectUsefulRecipe(*bot,proto)).useful;
             }
         }
 
@@ -1049,30 +1053,7 @@ bool ItemUsageValue::IsItemUsefulForSkill(ItemPrototype const* proto)
     }
     case ITEM_CLASS_RECIPE:
     {
-        if (bot->HasSpell(GetRecipeSpell(proto)))
-            break;
-
-        switch (proto->SubClass)
-        {
-        case ITEM_SUBCLASS_LEATHERWORKING_PATTERN:
-            return ai->HasSkill(SKILL_LEATHERWORKING);
-        case ITEM_SUBCLASS_TAILORING_PATTERN:
-            return ai->HasSkill(SKILL_TAILORING);
-        case ITEM_SUBCLASS_ENGINEERING_SCHEMATIC:
-            return ai->HasSkill(SKILL_ENGINEERING);
-        case ITEM_SUBCLASS_BLACKSMITHING:
-            return ai->HasSkill(SKILL_BLACKSMITHING);
-        case ITEM_SUBCLASS_COOKING_RECIPE:
-            return ai->HasSkill(SKILL_COOKING);
-        case ITEM_SUBCLASS_ALCHEMY_RECIPE:
-            return ai->HasSkill(SKILL_ALCHEMY);
-        case ITEM_SUBCLASS_FIRST_AID_MANUAL:
-            return ai->HasSkill(SKILL_FIRST_AID);
-        case ITEM_SUBCLASS_ENCHANTING_FORMULA:
-            return ai->HasSkill(SKILL_ENCHANTING);
-        case ITEM_SUBCLASS_FISHING_MANUAL:
-            return ai->HasSkill(SKILL_FISHING);
-        }
+        return LivingActivity::EvaluateUsefulRecipe(LivingActivity::InspectUsefulRecipe(*bot,proto)).useful;
     }
     }
     return false;

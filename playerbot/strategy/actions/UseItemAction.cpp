@@ -1,6 +1,8 @@
 
 #include "playerbot/playerbot.h"
 #include "UseItemAction.h"
+#include "playerbot/LivingUsefulRecipe.h"
+#include "playerbot/LivingActivityCoordinator.h"
 
 #include "playerbot/PlayerbotAIConfig.h"
 #include "Database/DBCStore.h"
@@ -1359,37 +1361,37 @@ bool UseRandomRecipeAction::isUseful()
 
 bool UseRandomRecipeAction::Execute(Event& event)
 {
-    Player* requester = event.getOwner() ? event.getOwner() : GetMaster();
-
-    std::list<Item*> recipes = AI_VALUE2(std::list<Item*>, "inventory items", "recipe"); 
-
-    std::string recipeName = "";
-    for (auto& recipe : recipes)
-    {
-        if (bot->HasSpell(ItemUsageValue::GetRecipeSpell(recipe->GetProto())))
-            continue;
-
-        recipeName = chat->formatItem(recipe);
-        if (!urand(0, 10))
-            break;
+    const auto claims=sLivingActivityCoordinator.ResourceReservations().Inspect();
+    if (!claims || !isUseful()) return false;
+    const std::list<Item*> recipes = AI_VALUE2(std::list<Item*>, "inventory items", "recipe");
+    Item* selected=nullptr;LivingActivity::RecipeLearningFacts selectedFacts;
+    for (auto* recipe : recipes) {
+        if (!recipe || recipe->IsInTrade()) continue;
+        bool protectedEntry=false;
+        // Native item-use chooses by entry. Do not let another copy hide a
+        // claimed stack and make that native selection consume promised stock.
+        for (auto* copy : recipes) if (copy && copy->GetEntry()==recipe->GetEntry() &&
+            claims->UnreservedItem(bot->GetGUIDLow(),copy->GetGUIDLow(),copy->GetEntry(),copy->GetCount())!=copy->GetCount())
+            protectedEntry=true;
+        if (protectedEntry) continue;
+        const auto facts=LivingActivity::InspectUsefulRecipe(*bot,recipe->GetProto());
+        if (LivingActivity::PreferUsefulRecipe(facts,selectedFacts) ||
+            (selected && facts.item==selectedFacts.item && facts.recipe==selectedFacts.recipe &&
+             LivingActivity::EvaluateUsefulRecipe(facts).useful && recipe->GetGUIDLow()<selected->GetGUIDLow())) {
+            selected=recipe;selectedFacts=facts;
+        }
     }
-
-    if (recipeName.empty())
-        return false;
+    if (!selected) return false;
 
     if (bot->IsMoving())
     {
         ai->StopMoving();
     }
 
-    Event rEvent = Event(name, recipeName);
-
-    bool didUse = UseAction::Execute(rEvent);
-
-    if (didUse && bot->GetCurrentSpell(CURRENT_GENERIC_SPELL))
-        ai->TellPlayerNoFacing(requester, "Learning " + recipeName, PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, false);
-
-    return didUse;
+    Event rEvent = Event(name, chat->formatItem(selected));
+    // The existing native use path owns the cast. A queued cast is not a
+    // learned-spell receipt and does not merit an operational whisper.
+    return UseAction::Execute(rEvent);
 }
 
 bool OpenRandomItemAction::isUseful()
