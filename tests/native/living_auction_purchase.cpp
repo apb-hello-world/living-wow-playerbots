@@ -4,6 +4,11 @@
 #include <algorithm>
 using namespace LivingActivity;
 int main() {
+    assert(AuctionEscrowOwnerMatches(290,290)); // newly posted native item
+    assert(AuctionEscrowOwnerMatches(290,0));   // restart-loaded native escrow
+    assert(!AuctionEscrowOwnerMatches(290,319));
+    assert(!AuctionEscrowOwnerMatches(0,0));
+    assert(!AuctionEscrowOwnerMatches(0,290));
     // Replay the real false-local comparison: Brill's geometric transfer
     // distance was 496yd versus Orgrimmar's 97yd auction, with 861c available.
     assert(!PreferAuctionSource({40,1,496.134,true},{83,1,97.443,true}));

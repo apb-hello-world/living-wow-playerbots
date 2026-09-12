@@ -3,6 +3,12 @@
 #include "LivingAuctionCapture.h"
 
 namespace LivingActivity {
+// LoadAuctionItems deliberately calls Item::LoadFromDB without an owner.
+// The native auction record owns escrow authority; a freshly posted item may
+// still carry its seller, while a restart-loaded item has an empty owner.
+inline bool AuctionEscrowOwnerMatches(uint32_t seller,uint32_t loadedOwner) {
+    return seller && (!loadedOwner || loadedOwner==seller);
+}
 struct NativeAuctionQuote {
     uint32_t actor=0,seller=0,house=0,auction=0,guid=0,entry=0,quantity=0;
     uint32_t copper=0,moneyBefore=0,bidder=0,bid=0,proceeds=0,auctioneerEntry=0;

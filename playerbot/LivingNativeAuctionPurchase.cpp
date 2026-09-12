@@ -64,8 +64,11 @@ bool InspectLocked(Player& actor,uint64_t auctioneer,uint32_t id,NativeAuctionQu
     if(offer->bidder && !sObjectMgr.GetPlayerAccountIdByGUID(ObjectGuid(HIGHGUID_PLAYER,offer->bidder)))
         return reject("auction_refund_recipient_unavailable");
     const auto* item=sAuctionMgr.GetAItem(offer->itemGuidLow);
-    if(!item || item->GetEntry()!=offer->itemTemplate || item->GetCount()!=offer->itemCount ||
-        item->GetOwnerGuid()!=ObjectGuid(HIGHGUID_PLAYER,offer->owner))return reject("auction_native_stack_changed");
+    if(!item || item->GetGUIDLow()!=offer->itemGuidLow || item->GetEntry()!=offer->itemTemplate || item->GetCount()!=offer->itemCount)
+        return reject("auction_native_stack_changed");
+    const auto owner=item->GetOwnerGuid();
+    if((owner && !owner.IsPlayer()) || !AuctionEscrowOwnerMatches(offer->owner,owner.GetCounter()))
+        return reject("auction_native_escrow_owner_changed");
     auto priced=*offer;priced.bid=offer->buyout;
     const auto cut=priced.GetAuctionCut();const uint64_t gross=uint64_t(offer->buyout)+offer->deposit;
     if(cut>gross || gross-cut>UINT32_MAX)return reject("auction_native_proceeds_out_of_range");
