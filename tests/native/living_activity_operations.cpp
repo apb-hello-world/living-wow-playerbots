@@ -149,6 +149,7 @@ int main() {
         assert(write.changes.size()==1 && write.changes[0].after.id==claim.id &&
             write.changes[0].after.itemGuid==45 && write.changes[0].after.quantity==5 &&
             write.changes[0].after.location=="bags" && write.changes[0].after.state=="held");
+        assert(write.journal.statements.back().find("c.location='bags'")!=std::string::npos);
         assert(bank.InstallReceipt(write.changes)==ClaimInstall::Installed);
         assert(bank.InstallReceipt(write.changes)==ClaimInstall::Duplicate);
         assert(bank.Protection().ProtectedItem(saved.actor,45,2880)==5);

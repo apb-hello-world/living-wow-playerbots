@@ -64,7 +64,10 @@ inline ClaimedOutcome ItemTransferWrite(const Task& task,uint64_t expected,const
     const auto accepted=out.journal.receiptQuery;
     const auto identityUpdate=after.itemGuid==before.itemGuid ? std::string() :
         "c.item_guid="+std::to_string(after.itemGuid)+',';
-    out.journal.statements.push_back("UPDATE living_activity_claim c SET "+identityUpdate+"c.location="+SqlValue(after.location)+",c.native_reference=0,c.revision="+
+    // These are fixed internal destinations. Preserve historical withdrawal
+    // SQL bytes so retrying an old receipt keeps its exact fingerprint.
+    const std::string destination=after.location=="bank"?"'bank'":"'bags'";
+    out.journal.statements.push_back("UPDATE living_activity_claim c SET "+identityUpdate+"c.location="+destination+",c.native_reference=0,c.revision="+
         std::to_string(after.revision)+",c.updated_at_ms="+std::to_string(task.updatedAtMs)+" WHERE "+
         TransferClaimPredicate(before)+" AND EXISTS ("+accepted+')');
     out.journal.receiptQuery+=" AND EXISTS (SELECT 1 FROM living_activity_claim c WHERE "+TransferClaimPredicate(after)+')';
