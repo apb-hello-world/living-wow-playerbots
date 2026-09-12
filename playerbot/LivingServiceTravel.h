@@ -73,6 +73,15 @@ namespace LivingActivity {
             before.checkpoint.data==after.checkpoint.data;
     }
     struct ServicePathPoint { uint32_t map=0; double x=0,y=0,z=0; };
+    // Service routes end at a reachable interaction position, not necessarily
+    // the NPC's centre (which can sit above the navmesh). This is geometry only;
+    // the caller must prove its current owner and native service access again.
+    inline bool ServiceInteractionApproach(const ServicePathPoint& end,const ServicePathPoint& service,double range) {
+        if(end.map!=service.map || !std::isfinite(range) || range<=0 ||
+            !std::isfinite(end.x) || !std::isfinite(end.y) || !std::isfinite(end.z) ||
+            !std::isfinite(service.x) || !std::isfinite(service.y) || !std::isfinite(service.z))return false;
+        return std::hypot(end.x-service.x,end.y-service.y,end.z-service.z)<=range;
+    }
     // Project onto the native remaining path: a valid road/dock approach can
     // initially lead away from the final goal. No new pathfinding or pointers.
     template<class PointAt>

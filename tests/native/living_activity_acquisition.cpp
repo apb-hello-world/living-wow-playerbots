@@ -7,6 +7,18 @@
 using namespace LivingActivity;
 int main() {
     {
+        const ServicePathPoint service{1,100,200,10};
+        assert(ServiceInteractionApproach({1,100,200,7.5},service,5));
+        assert(ServiceInteractionApproach({1,103,204,10},service,5));
+        assert(!ServiceInteractionApproach({1,103,204,11},service,5));
+        assert(!ServiceInteractionApproach({1,100,200,4.9},service,5));
+        assert(!ServiceInteractionApproach({0,100,200,10},service,5));
+        assert(!ServiceInteractionApproach(service,service,0));
+        assert(!ServiceInteractionApproach(service,service,std::numeric_limits<double>::infinity()));
+        auto invalid=service;invalid.x=std::numeric_limits<double>::quiet_NaN();
+        assert(!ServiceInteractionApproach(invalid,service,5));
+    }
+    {
         assert(!LegacyProfessionInFlight(false,true,true,false)); // A saved trip must not deadlock its own runner.
         assert(LegacyProfessionInFlight(false,true,false,false));
         assert(LegacyProfessionInFlight(true,true,true,false));

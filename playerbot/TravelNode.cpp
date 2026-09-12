@@ -2,9 +2,9 @@
 #include "TravelRouteQueue.h"
 #include "playerbot/TravelMgr.h"
 #include "LivingTravelRegion.h"
-#ifdef LIVING_ISOLATED_NATIVE_TESTS
+#include "PlayerbotOrganicEconomy.h"
+#include "LivingServiceTravel.h"
 #include "LivingActivityCoordinator.h"
-#endif
 
 #include <iomanip>
 #include <regex>
@@ -22,6 +22,23 @@
 
 using namespace ai;
 using namespace MaNGOS;
+
+namespace {
+bool OwnedServiceDestination(Unit* unit,const WorldPosition& end) {
+    if(!sLivingActivityCoordinator.OnWorldThread())return false;
+    auto* bot=dynamic_cast<Player*>(unit);
+    if(!bot || !bot->GetPlayerbotAI())return false;
+    auto* target=bot->GetPlayerbotAI()->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get();
+    return target && target->GetPosition() && target->GetDestination() &&
+        target->GetPosition()->getMapId()==end.getMapId() && target->GetPosition()->distance(end)<0.01f &&
+        sPlayerbotOrganicEconomy.HasOwnedServiceRoute(bot->GetGUIDLow(),uint32(target->GetDestination()->GetPurpose()));
+}
+bool ServiceEndReached(const WorldPosition& service,const std::vector<WorldPosition>& path) {
+    if(path.empty())return false;
+    const auto point=[](const WorldPosition& p){return LivingActivity::ServicePathPoint{p.getMapId(),p.getX(),p.getY(),p.getZ()};};
+    return LivingActivity::ServiceInteractionApproach(point(path.back()),point(service),INTERACTION_DISTANCE);
+}
+}
 
 //TravelNodePath(float distance = 0.1f, float extraCost = 0, TravelNodePathType pathType = TravelNodePathType::walk, uint64 pathObject = 0, bool calculated = false, std::vector<uint8> maxLevelCreature = { 0,0,0 }, float swimDistance = 0)
 std::string TravelNodePath::print()
@@ -1737,6 +1754,7 @@ TravelNodeRoute TravelNodeMap::getRoute(WorldPosition startPos, WorldPosition en
 {
     if (m_nodes.empty())
         return TravelNodeRoute();
+    const bool ownedService=OwnedServiceDestination(unit,endPos);
 
     uint32 transportEntry = 0;
 
@@ -1790,7 +1808,7 @@ TravelNodeRoute TravelNodeMap::getRoute(WorldPosition startPos, WorldPosition en
                 {
                     endPath = endNodePosition.getPathTo(endPos, unit);
 
-                    bool hasPath = endPos.isPathTo(endPath, 1.0f);
+                    bool hasPath = endPos.isPathTo(endPath, 1.0f) || (ownedService && ServiceEndReached(endPos,endPath));
 
                     if (!hasPath)
                     {
@@ -1799,12 +1817,19 @@ TravelNodeRoute TravelNodeMap::getRoute(WorldPosition startPos, WorldPosition en
                         if (surfaceNode.setAtWaterSurface() || surfaceEnd.setAtWaterSurface())
                         {
                             endPath = surfaceNode.getPathTo(surfaceEnd, unit);
-                            hasPath = surfaceEnd.isPathTo(endPath, 1.0f);
+                            hasPath = surfaceEnd.isPathTo(endPath, 1.0f) || (ownedService && ServiceEndReached(endPos,endPath));
                         }
                     }
 
                     if (!hasPath)
                     {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+                        if(unit && unit->GetTypeId()==TYPEID_PLAYER && sLivingActivityCoordinator.IsolatedGameplayActor(unit->GetGUIDLow()))
+                            sLog.outString("Living isolated native bank approach rejected: actor=%u owned=%u node=%s endpoint=%s distance=%.3f",
+                                unit->GetGUIDLow(),uint32(ownedService),endNode->getName().c_str(),
+                                endPath.empty()?"empty":endPath.back().to_string().c_str(),
+                                endPath.empty()?-1.0f:endPath.back().distance(endPos));
+#endif
                         endPath.clear();
                         badEndNodes.push_back(endNode);
                         break;
@@ -1921,7 +1946,11 @@ TravelPath TravelNodeMap::getFullPath(WorldPosition startPos, WorldPosition endP
 
     beginPath = endPos.getPathFromPath({ startPos }, unit, 40);
 
-    if (endPos.isPathTo(beginPath,sPlayerbotAIConfig.spellDistance)) //If we can get within spell distance a longer route won't help.
+    // A spell-sized neighbourhood is insufficient for a concrete service.
+    // Conversely the NPC centre need not lie on the walkable mesh: a point
+    // within actual interaction distance can be validated at service execution.
+    if (OwnedServiceDestination(unit,endPos) ? ServiceEndReached(endPos,beginPath) :
+        endPos.isPathTo(beginPath,sPlayerbotAIConfig.spellDistance))
         return TravelPath(beginPath);
 
     //[[Node pathfinding system]]
