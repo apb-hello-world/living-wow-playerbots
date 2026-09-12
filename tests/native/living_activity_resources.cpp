@@ -355,7 +355,8 @@ int main() {
         ResourceClaimBook storage;
         assert(storage.RestoreBatch({carried})==ClaimInstall::Installed && storage.FinishRestore());
         auto banked=carried;++banked.revision;banked.location="bank";
-        NativeResourceBalance actual{carried.actor,carried.itemGuid,carried.itemEntry,carried.quantity,0,"bank"};
+        assert(carried.quantity<=UINT32_MAX);
+        NativeResourceBalance actual{carried.actor,carried.itemGuid,carried.itemEntry,uint32_t(carried.quantity),0,"bank"};
         assert(storage.ReservePending(receipt,{{banked,1}},{actual})==ClaimInstall::Invalid);
         assert(storage.ReserveTransferred(receipt,{banked,1},actual)==ClaimInstall::Installed);
         assert(storage.ReserveTransferred(receipt,{banked,1},actual)==ClaimInstall::Duplicate);
