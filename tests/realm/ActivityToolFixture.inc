@@ -1,6 +1,7 @@
 // Copied realm only: one exact native blacksmithing job, ordinary due queue.
-// Up to four recorded copper bars may be supplied as a test input. No tool,
-// gold, skill, spell, equipment or position is granted or rewritten.
+// Up to four recorded copper bars and exactly ten gold are test inputs. The
+// wallet grant is recorded before use; ordinary purchase budget checks remain
+// unchanged. No tool, skill, spell, equipment or position is granted.
 namespace {
 template<class FixtureState>
 void RunIsolatedToolFixture(FixtureState& state) {
@@ -57,15 +58,19 @@ void RunIsolatedToolFixture(FixtureState& state) {
             f.setup.put("tool_entry",5956);f.setup.put("tool_before",0);f.setup.put("tool_grants",0);
             f.setup.put("reagent_before",owned);f.setup.put("reagent_grants",owned?0:4);
             f.setup.put("output_before",actor->GetItemCount(f.job.outputEntry,true));
-            f.setup.put("money_grants",0);f.setup.put("skill_grants",0);f.setup.put("spell_grants",0);
+            require(actor->GetMoney()<=10000000,"funded_tool_fixture_wallet_bound");
+            f.setup.put("money_grants",100000);f.setup.put("skill_grants",0);f.setup.put("spell_grants",0);
             f.setup.put("equipment_grants",0);f.setup.put("fixture_relocations",0);
             std::ofstream intent("/isolated/evidence/tool-setup-intent-"+f.task+".json");intent<<Json(f.setup);intent.close();
             require(bool(intent),"tool_fixture_intent_saved");
+            actor->ModifyMoney(100000);
+            require(actor->GetMoney()==f.setup.template get<uint32_t>("money_before")+100000,"tool_fixture_funds_recorded");
             if (!owned) {
                 ItemPosCountVec positions;require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,2840,4)==EQUIP_ERR_OK,"tool_fixture_input_capacity");
                 auto* item=actor->StoreNewItem(positions,2840,true);require(item!=nullptr,"tool_fixture_input_supplied");
-                f.setup.put("fixture_reagent_guid",item->GetGUIDLow());actor->SaveToDB();
+                f.setup.put("fixture_reagent_guid",item->GetGUIDLow());
             }
+            actor->SaveToDB();
             std::ofstream setup("/isolated/evidence/tool-setup-"+f.task+".json");setup<<Json(f.setup);setup.close();
             require(bool(setup),"tool_fixture_setup_saved");
             TaskRequest request;auto& task=request.task;task.id=task.root=f.task;task.actor=f.actor;
