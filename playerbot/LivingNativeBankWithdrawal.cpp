@@ -230,8 +230,16 @@ bool NativeBankTransfer::ValidateNative(Player& actor,const OperationRequest& r,
         !(deposit?ExactEmptyBankDestination(actor,*item,quote.to):ExactDestination(actor,*item,quote)))
         return reject("profession_bank_destination_changed");
     if (deposit) {
+        // Validation runs both before intent persistence and again at native
+        // dispatch. Read claims against whichever of those exact saved states
+        // exists, never the proposed next revision before it has been saved.
+        const auto saved=sLivingActivityCoordinator.ReadSavedTask(r.transition.task.id);
+        if(!saved || saved->actor!=actor.GetGUIDLow() || saved->root!=r.transition.task.root ||
+            saved->checkpoint.data!=r.transition.task.checkpoint.data ||
+            (saved->revision!=r.transition.expectedRevision && saved->revision!=r.transition.task.revision))
+            return reject("capacity_bank_saved_intent_changed");
         NativeBankQuote current;ResourceClaim held;
-        if (!PlanNativeBankDeposit(actor,r.transition.task,current,held,blocker)) return false;
+        if (!PlanNativeBankDeposit(actor,*saved,current,held,blocker)) return false;
         if (held.id!=c.id || EncodeNativeBankQuote(current)!=EncodeNativeBankQuote(quote))
             return reject("capacity_bank_quote_changed");
     }
