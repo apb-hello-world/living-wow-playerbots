@@ -1,5 +1,7 @@
 #include "botpch.h"
 #include "LivingProfessionDemand.h"
+#include "LivingTaskItemRequirements.h"
+#include "LivingNativeRecipeLearning.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingNativeMailCollection.h"
 #include "LivingActivityTransfer.h"
@@ -18,12 +20,12 @@ namespace LivingActivity {
         demand={};
         auto reject=[&](const char* why,uint64_t reference=0){demand.blocker=why; demand.nativeReference=reference; return false;};
         if (!sLivingActivityCoordinator.OnWorldThread() || !actor.GetPlayerbotAI() || !actor.IsInWorld() ||
-            actor.IsBeingTeleported() || actor.GetGUIDLow()!=saved.actor || !IsProfessionJob(saved))
+            actor.IsBeingTeleported() || actor.GetGUIDLow()!=saved.actor)
             return reject("profession_demand_native_context_unavailable");
-        ProfessionJob job;
-        if (!DecodeProfessionJob(saved.checkpoint.data,job,demand.blocker)) return false;
+        std::vector<ProfessionReagent> requirements;
+        if (!ReadTaskItemRequirements(saved,requirements,demand.blocker)) return false;
         std::map<uint32_t,ProfessionStock> stock;
-        for (const auto& reagent : job.reagents) stock.emplace(reagent.entry,ProfessionStock{reagent.entry});
+        for (const auto& reagent : requirements) stock.emplace(reagent.entry,ProfessionStock{reagent.entry});
         unsigned scanned=0; std::set<uint32_t> seen;
         for (unsigned bank=0;bank!=2;++bank) {
             for (Item* item : actor.GetPlayerbotAI()->InventoryParseItems("all",bank ?
@@ -102,19 +104,25 @@ namespace LivingActivity {
         if (!saved || saved->actor!=actor.GetGUIDLow() || saved->checkpoint.data!=request.transition.task.checkpoint.data ||
             (saved->revision!=request.transition.expectedRevision && saved->revision!=request.transition.task.revision))
             return reject("profession_purchase_saved_intent_changed");
-        ProfessionJob job;
-        if (!DecodeProfessionJob(saved->checkpoint.data,job,blocker)) return false;
-        if (job.purpose==ProfessionPurpose::SkillGain && actor.GetSkillValuePure(job.skill)>=job.targetSkill)
-            return reject("profession_target_met_requires_settlement");
+        std::vector<ProfessionReagent> requirements;
+        if (!ReadTaskItemRequirements(*saved,requirements,blocker)) return false;
+        if (IsRecipeLearningTask(*saved)) {
+            if (!ValidateNativeRecipeLearningTask(actor,*saved,blocker)) return false;
+        } else {
+            ProfessionJob job;
+            if (!DecodeProfessionJob(saved->checkpoint.data,job,blocker)) return false;
+            if (job.purpose==ProfessionPurpose::SkillGain && actor.GetSkillValuePure(job.skill)>=job.targetSkill)
+                return reject("profession_target_met_requires_settlement");
+        }
         NativeProfessionDemand demand;
         if (!InspectNativeProfessionDemand(actor,*saved,demand)) {blocker=demand.blocker; return false;}
-        for (size_t i=0;i<job.reagents.size();++i) {
-            if (demand.stock[i].bank && demand.stock[i].bag<job.reagents[i].perAttempt)
+        for (size_t i=0;i<requirements.size();++i) {
+            if (demand.stock[i].bank && demand.stock[i].bag<requirements[i].perAttempt)
                 return reject("profession_banked_material_requires_collection");
         }
-        const auto reagent=std::find_if(job.reagents.begin(),job.reagents.end(),[&](const auto& r){return r.entry==quote.entry;});
-        if (reagent==job.reagents.end()) return reject("profession_purchase_material_not_required");
-        const auto& have=demand.stock[size_t(reagent-job.reagents.begin())];
+        const auto reagent=std::find_if(requirements.begin(),requirements.end(),[&](const auto& r){return r.entry==quote.entry;});
+        if (reagent==requirements.end()) return reject("profession_purchase_material_not_required");
+        const auto& have=demand.stock[size_t(reagent-requirements.begin())];
         const auto* proto=sObjectMgr.GetItemPrototype(quote.entry);
         if (!proto) return reject("profession_purchase_native_item_unavailable");
         // Buy only the next attempt's unmet demand, rounded once for a real

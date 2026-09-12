@@ -4,6 +4,9 @@
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingActivityGameplay.h"
+#include "LivingNativeMailCollection.h"
+#include "Mails/Mail.h"
+#include "strategy/values/ItemUsageValue.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
 #include "Spells/Spell.h"
@@ -51,6 +54,43 @@ namespace LivingActivity {
             blocker="recipe_native_learning_identity_changed";return false;
         }
         blocker.clear();return true;
+    }
+    bool FindNativeRecipeBook(Player& actor,const Task& task,NativeResourceBalance& selected,std::string& blocker) {
+        selected={};RecipeLearningJob job;
+        if (!sLivingActivityCoordinator.OnWorldThread() || !ValidateNativeRecipeLearningTask(actor,task,blocker) ||
+            !DecodeRecipeLearningJob(task.checkpoint.data,job,blocker)) return false;
+        bool ownedButUnavailable=false;unsigned inspected=0;
+        auto consider=[&](Item* item,const char* location,uint32_t mail) {
+            if (!item || item->GetEntry()!=job.book) return;
+            ownedButUnavailable=true;
+            if (item->GetOwnerGuid()!=actor.GetObjectGuid() || item->GetCount()!=1 || item->IsInTrade() ||
+                sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) || sGuildSupplies.ReservedEntry(task.actor,job.book) ||
+                ai::ItemUsageValue::IsNeededForQuest(&actor,job.book,true)) return;
+            NativeResourceBalance native{task.actor,item->GetGUIDLow(),job.book,1,0,location,mail};uint32_t available=0;
+            if (!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,native,available,blocker) || available!=1) return;
+            if (!selected.itemGuid || native.itemGuid<selected.itemGuid) selected=native;
+        };
+        for (unsigned bank=0;bank!=2;++bank) {
+            for (auto* item:actor.GetPlayerbotAI()->InventoryParseItems("all",bank ?
+                IterateItemsMask::ITERATE_ITEMS_IN_BANK:IterateItemsMask::ITERATE_ITEMS_IN_BAGS)) {
+                if (++inspected>256) {blocker="recipe_book_inventory_snapshot_limit";return false;}
+                consider(item,bank?"bank":"bags",0);
+            }
+            if (selected.itemGuid) {blocker.clear();return true;}
+        }
+        if (actor.GetMailSize()>256) {blocker="recipe_book_mail_snapshot_limit";return false;}
+        for (auto it=actor.GetMailBegin();it!=actor.GetMailEnd();++it) {
+            const auto* mail=*it;
+            if (!mail || mail->receiverGuid!=actor.GetObjectGuid() || mail->state==MAIL_STATE_DELETED ||
+                mail->expire_time<=time(nullptr)) continue;
+            for (const auto& attachment:mail->items) if (attachment.item_template==job.book) {
+                ownedButUnavailable=true;
+                if (mail->COD) continue; // Never accept a COD invoice implicitly.
+                consider(actor.GetMItem(attachment.item_guid),"mail",mail->messageID);
+            }
+        }
+        if (selected.itemGuid) {blocker.clear();return true;}
+        blocker=ownedButUnavailable?"recipe_owned_book_requires_reconciliation":"recipe_book_not_owned";return false;
     }
     namespace {
         std::string FrameJson(const RecipeLearningFrame& f) {
@@ -195,12 +235,24 @@ namespace LivingActivity {
             !DecodeRecipeLearningJob(request.transition.task.checkpoint.data,job,blocker)) return false;
         if (request.changes.size()!=1) {blocker="recipe_single_book_reservation_required";return false;}
         const auto& change=request.changes.front();const auto& claim=change.after;
-        RecipeLearningFrame frame;
-        if (change.expectedRevision || claim.revision!=1 || claim.state!="held" || claim.location!="bags" ||
-            claim.quantity!=1 || claim.copper || claim.nativeReference || claim.task!=request.transition.task.root ||
-            claim.actor!=actor.GetGUIDLow() || claim.itemEntry!=job.book ||
-            !ReadFrame(actor,job,claim.itemGuid,frame) || !frame.count || frame.known) {
-            blocker="recipe_existing_carried_book_required";return false;
+        if (change.expectedRevision || claim.revision!=1 || claim.state!="held" ||
+            claim.quantity!=1 || claim.copper || claim.task!=request.transition.task.root ||
+            claim.actor!=actor.GetGUIDLow() || claim.itemEntry!=job.book || !claim.itemGuid) {
+            blocker="recipe_existing_book_required";return false;
+        }
+        if (claim.location=="mail") {
+            NativeResourceBalance balance;
+            if (!ReadNativeMailBalance(actor,claim,balance) || actor.GetMail(uint32_t(claim.nativeReference))->COD) {
+                blocker="recipe_original_mail_book_required";return false;
+            }
+        } else {
+            const auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,claim.itemGuid));
+            if (claim.nativeReference || !item || item->GetOwnerGuid()!=actor.GetObjectGuid() ||
+                item->GetEntry()!=job.book || item->GetCount()!=1 ||
+                !((claim.location=="bags" && Player::IsInventoryPos(item->GetBagSlot(),item->GetSlot())) ||
+                  (claim.location=="bank" && Player::IsBankPos(item->GetBagSlot(),item->GetSlot())))) {
+                blocker="recipe_original_owned_book_required";return false;
+            }
         }
         blocker.clear();return true;
     }

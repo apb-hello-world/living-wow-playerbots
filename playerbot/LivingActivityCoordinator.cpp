@@ -24,6 +24,7 @@
 #include "LivingNativeMailCollection.h"
 #include "LivingNativeVendorSale.h"
 #include "LivingProfessionDemand.h"
+#include "LivingTaskItemRequirements.h"
 #include "LivingProfessionVendor.h"
 #include "Mails/Mail.h"
 #include "LivingActivityTransfer.h"
@@ -1525,26 +1526,12 @@ AdmissionResult LivingActivityCoordinator::AdmitEconomyProfession(uint32_t actor
     task.checkpoint.data=EncodeProfessionJob(job);request.receipt=NewId();
     return SubmitTask(request);
 }
-LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceProfessionJob(uint32_t actor,const std::string& id) {
-    ProfessionProgress progress;
-    if (!OnWorldThread()) {progress.blocker="world_thread_required";return progress;}
+std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoordinator::DispatchPendingItemService(
+    uint32_t actor,const std::string& id) {
     const auto saved=ReadSavedTask(id);
-    auto stop=[&](const std::string& why) {
-        progress.blocker=why;
-        const auto binding=state->bindings.find(actor);
-        if (saved && saved->actor==actor && binding!=state->bindings.end()) {
-            auto& decision=binding->second;
-            decision.professionTask=id;decision.professionRevision=saved->revision;
-            decision.professionDecision=why;decision.professionDecisionAt=NowMs();
-        }
-        return progress;
-    };
-    if (!saved || !actor || saved->actor!=actor || saved->mode!=Mode::Active || !saved->accepted || !IsProfessionJob(*saved))
-        return stop("profession_saved_job_unavailable");
-    if (saved->phase==Phase::Completed) {progress.completed=true;return stop("");}
-    if (Terminal(saved->phase)) return stop("profession_job_terminal_requires_projection");
-    if (!EffectEnforcementEnabled()) return stop("execution_disabled");
-    for (const auto& write : state->pending) if (write.task.actor==actor) return stop("profession_transition_pending");
+    auto stop=[](const std::string& why){return ProfessionProgress{false,why};};
+    if (!OnWorldThread() || !EffectEnforcementEnabled() || !saved || saved->actor!=actor)
+        return stop("item_service_saved_task_required");
     for (const auto& row : state->operations) if (row.second.request.transition.task.actor==actor) {
         if (row.second.request.transition.task.id!=id) return stop("profession_operation_requires_reconciliation");
         if (row.second.dispatched || !row.second.ready) return stop("profession_native_result_pending");
@@ -1589,14 +1576,21 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             NativeVendorPurchase adapter(quote,prerequisites);
             return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
         }
-        if (row.second.request.kind!="profession_craft") return stop("profession_operation_requires_reconciliation");
-        return stop(DispatchProfessionAttempt(actor,row.first).admission.blocker);
+        return {}; // Craft/learning casts are dispatched by their typed executor.
     }
-    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
-    if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) return stop("profession_native_actor_unavailable");
-    const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
-    if (!(current==saved->context))
-        return stop(RevalidateProfessionPreparation(actor,id,saved->revision,NewId()).blocker);
+    return {};
+}
+
+LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceItemPreparation(
+    uint32_t actor,const std::string& id,ProfessionStep step,const ProfessionReagent& need) {
+    auto stop=[](const std::string& why){return ProfessionProgress{false,why};};
+    const auto saved=ReadSavedTask(id);auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);std::string blocker;
+    std::vector<ProfessionReagent> requirements;
+    if (!OnWorldThread() || !EffectEnforcementEnabled() || !saved || saved->actor!=actor ||
+        saved->mode!=Mode::Active || !saved->accepted || !bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() ||
+        !ReadTaskItemRequirements(*saved,requirements,blocker)) return stop("item_service_saved_task_required");
+    if (!(saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot))) return stop("item_service_context_changed");
+    for (const auto& write:state->pending) if (write.task.actor==actor) return stop("item_service_transition_pending");
     auto advance=[&](Phase phase) {
         TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
         ++request.task.revision;request.task.phase=phase;request.task.updatedAtMs=NowMs();request.receipt=NewId();
@@ -1605,18 +1599,6 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         }
         return stop(SubmitTask(request).blocker);
     };
-    if (saved->phase==Phase::Queued) return advance(Phase::Preparing);
-    ProfessionSnapshot snapshot;std::string blocker;
-    if (!ReadProfessionSnapshot(actor,id,saved->revision,snapshot,blocker)) return stop(blocker);
-    const auto next=NextProfessionStep(*saved,snapshot);
-    if (next.step==ProfessionStep::Finalize)
-        return stop(SettleProfessionJob(actor,id,saved->revision,NewId()).blocker);
-    if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal) {
-        if(!snapshot.safe) return stop("profession_safety_pause");
-        if(!snapshot.retryReady) return stop("profession_retry_not_due");
-        return advance(Phase::Reconciling);
-    }
-    if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
     auto beginService=[&](ServiceDestination service) {
         if(saved->phase==Phase::Verifying) return advance(Phase::Preparing);
         if(saved->phase!=Phase::Preparing)
@@ -1704,14 +1686,14 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         request.beforeState=EncodeNativeSaleQuote(quote);request.consumption.push_back({held,quote.item.quantity});
         NativeVendorSale adapter(quote);return stop(SubmitOperationIntent(request,adapter).blocker);
     };
-    if(next.step==ProfessionStep::PrepareCapacity)return prepareCapacity();
-    if(next.step==ProfessionStep::ReachBank) return beginService(ServiceDestination::PersonalBank);
-    if(next.step==ProfessionStep::ReachStation) return beginService(ServiceDestination::CraftingStation);
-    if(next.step==ProfessionStep::Purchase && !next.quantities.empty()) {
+    if(step==ProfessionStep::PrepareCapacity)return prepareCapacity();
+    if(step==ProfessionStep::ReachBank) return beginService(ServiceDestination::PersonalBank);
+    if(step==ProfessionStep::ReachStation) return beginService(ServiceDestination::CraftingStation);
+    if(step==ProfessionStep::Purchase && need.entry!=0) {
         if(saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
         if(saved->phase!=Phase::Preparing) return stop("profession_purchase_preparation_required");
         NativeVendorQuote quote;
-        if(!PlanNativeProfessionPurchase(*bot,*saved,next.quantities.front(),quote,blocker)) {
+        if(!PlanNativeProfessionPurchase(*bot,*saved,need,quote,blocker)) {
             if(blocker=="profession_vendor_travel_required" || blocker=="vendor_actor_not_safely_available")
                 return beginService(ServiceDestination::PurchaseVendor);
             if(blocker=="vendor_inventory_capacity_required") return prepareCapacity();
@@ -1760,12 +1742,12 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         NativeProfessionPurchasePrerequisites prerequisites;NativeVendorPurchase adapter(quote,prerequisites);
         return stop(SubmitOperationIntent(request,adapter).blocker);
     }
-    if (next.step==ProfessionStep::Collect && !next.quantities.empty()) {
+    if (step==ProfessionStep::Collect && need.entry!=0) {
         if (saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
         if (saved->phase!=Phase::Preparing) return stop("profession_mail_preparation_required");
         UnsettledClaimBatch batch;
         if (!ReadTaskClaims(actor,id,saved->revision,batch,blocker)) return stop(blocker);
-        for (const auto& claim : batch.claims) if (ValidMailTransfer(claim) && claim.itemEntry==next.quantities.front().entry) {
+        for (const auto& claim : batch.claims) if (ValidMailTransfer(claim) && claim.itemEntry==need.entry) {
             if(!bot->IsStopped()) return beginService(ServiceDestination::Mailbox);
             NativeMailQuote quote;
             if (!PlanNativeMailCollection(*bot,*saved,claim,quote,blocker)) {
@@ -1785,11 +1767,11 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         }
         return stop("profession_mail_link_requires_reconciliation");
     }
-    if (next.step==ProfessionStep::Withdraw && !next.quantities.empty()) {
+    if (step==ProfessionStep::Withdraw && need.entry!=0) {
         if (saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
         if (saved->phase!=Phase::Preparing) return stop("profession_bank_preparation_required");
         NativeBankQuote quote;
-        if (!PlanNativeBankWithdrawal(*bot,*saved,next.quantities.front(),quote,blocker)) {
+        if (!PlanNativeBankWithdrawal(*bot,*saved,need,quote,blocker)) {
             if(blocker=="profession_banker_travel_required") return beginService(ServiceDestination::PersonalBank);
             if(blocker=="profession_bank_single_destination_required")return prepareCapacity();
             return stop(blocker);
@@ -1811,6 +1793,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
             ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
             request.authorization=grant.action;request.changes.push_back({claim,0});
+            if (IsRecipeLearningTask(*saved)) {
+                NativeRecipeBookReservation adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
+            }
             ProfessionMaterialReservationAdapter adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
         }
         OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
@@ -1821,6 +1806,66 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         request.beforeState=EncodeNativeBankQuote(quote);request.itemTransfer=claim;
         NativeBankWithdrawal adapter(quote);return stop(SubmitOperationIntent(request,adapter).blocker);
     }
+    return stop("item_preparation_step_not_supported");
+}
+
+LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceProfessionJob(uint32_t actor,const std::string& id) {
+    ProfessionProgress progress;
+    if (!OnWorldThread()) {progress.blocker="world_thread_required";return progress;}
+    const auto saved=ReadSavedTask(id);
+    auto stop=[&](const std::string& why) {
+        progress.blocker=why;
+        const auto binding=state->bindings.find(actor);
+        if (saved && saved->actor==actor && binding!=state->bindings.end()) {
+            auto& decision=binding->second;
+            decision.professionTask=id;decision.professionRevision=saved->revision;
+            decision.professionDecision=why;decision.professionDecisionAt=NowMs();
+        }
+        return progress;
+    };
+    if (!saved || !actor || saved->actor!=actor || saved->mode!=Mode::Active || !saved->accepted || !IsProfessionJob(*saved))
+        return stop("profession_saved_job_unavailable");
+    if (saved->phase==Phase::Completed) {progress.completed=true;return stop("");}
+    if (Terminal(saved->phase)) return stop("profession_job_terminal_requires_projection");
+    if (!EffectEnforcementEnabled()) return stop("execution_disabled");
+    for (const auto& write : state->pending) if (write.task.actor==actor) return stop("profession_transition_pending");
+    if (const auto service=DispatchPendingItemService(actor,id)) return stop(service->blocker);
+    for (const auto& row:state->operations) if (row.second.request.transition.task.actor==actor) {
+        if (row.second.request.transition.task.id!=id || row.second.request.kind!="profession_craft")
+            return stop("profession_operation_requires_reconciliation");
+        if (row.second.dispatched || !row.second.ready) return stop("profession_native_result_pending");
+        return stop(DispatchProfessionAttempt(actor,row.first).admission.blocker);
+    }
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) return stop("profession_native_actor_unavailable");
+    const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    if (!(current==saved->context))
+        return stop(RevalidateProfessionPreparation(actor,id,saved->revision,NewId()).blocker);
+    auto advance=[&](Phase phase) {
+        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
+        ++request.task.revision;request.task.phase=phase;request.task.updatedAtMs=NowMs();request.receipt=NewId();
+        if(phase==Phase::Preparing || phase==Phase::Traveling) {
+            request.task.checkpoint.blocker.clear();request.task.retryAtMs=0;
+        }
+        return stop(SubmitTask(request).blocker);
+    };
+    if (saved->phase==Phase::Queued) return advance(Phase::Preparing);
+    ProfessionSnapshot snapshot;std::string blocker;
+    if (!ReadProfessionSnapshot(actor,id,saved->revision,snapshot,blocker)) return stop(blocker);
+    const auto next=NextProfessionStep(*saved,snapshot);
+    if (next.step==ProfessionStep::Finalize)
+        return stop(SettleProfessionJob(actor,id,saved->revision,NewId()).blocker);
+    if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal) {
+        if(!snapshot.safe) return stop("profession_safety_pause");
+        if(!snapshot.retryReady) return stop("profession_retry_not_due");
+        return advance(Phase::Reconciling);
+    }
+    if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
+    ServiceDestination service;
+    if (ParseServiceStep(saved->checkpoint.step,service) || next.step==ProfessionStep::PrepareCapacity ||
+        next.step==ProfessionStep::ReachBank || next.step==ProfessionStep::ReachStation ||
+        next.step==ProfessionStep::Purchase || next.step==ProfessionStep::Collect || next.step==ProfessionStep::Withdraw)
+        return stop(AdvanceItemPreparation(actor,id,next.step,next.quantities.empty()?ProfessionReagent{}:next.quantities.front()).blocker);
     if (next.step!=ProfessionStep::Execute) return stop(next.blocker.empty()?"profession_service_adapter_required":next.blocker);
     if (saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
     if (saved->phase!=Phase::Preparing) return stop("profession_preparation_requires_reconciliation");
@@ -2289,11 +2334,16 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if (Terminal(saved->phase)) return stop("recipe_task_terminal");
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
     if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || bot->IsBeingTeleported()) return stop("recipe_actor_unavailable");
+    for (const auto& write:state->pending) if (write.task.actor==actor) return stop("recipe_task_write_pending");
     const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
-    if (!(saved->context==current)) {
+    const bool serviceResult=saved->phase==Phase::Verifying && saved->checkpoint.step!="recipe_learning";
+    const bool resumeWait=saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal;
+    if (!(saved->context==current) || serviceResult || resumeWait) {
         // A committed receipt can settle after restart. Uncertain effects are
         // never retried, and collection/permission reconciliation stays explicit.
         if (bot->HasSpell(job.recipe)) return stop(SettleRecipeLearning(actor,id,saved->revision,SourceId("recipe_settlement",id)).blocker);
+        if (saved->retryAtMs>NowMs()) return stop("recipe_retry_wait");
+        if (NativeSafety(bot) || !bot->GetMap() || bot->GetMap()->IsDungeon() || bot->GetTradeData()) return stop("recipe_safety_pause");
         if (state->operationDispatching || DefersNativeSave(actor) || state->ioPending) return stop("recipe_restart_native_save_pending");
         for (const auto& write:state->pending) if (write.task.actor==actor) return stop("recipe_restart_task_write_pending");
         for (const auto& operation:state->operations) if (operation.second.request.transition.task.actor==actor)
@@ -2313,6 +2363,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     }
     if (saved->retryAtMs>NowMs()) return stop("recipe_retry_wait");
     if (DefersNativeSave(actor)) return stop("native_save_pending");
+    if (const auto service=DispatchPendingItemService(actor,id)) return stop(service->blocker);
     NativeRecipeLearningOperation adapter;
     for (const auto& row:state->operations) if (row.second.request.transition.task.actor==actor) {
         if (row.second.request.transition.task.id!=id || row.second.request.kind!="recipe_learning") return stop("native_operation_pending");
@@ -2331,8 +2382,11 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         request.task.phase=Phase::Preparing;request.task.updatedAtMs=NowMs();request.receipt=NewId();
         return stop(SubmitTask(request).blocker);
     }
+    ServiceDestination service;
+    if (ParseServiceStep(saved->checkpoint.step,service))
+        return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.book,1}).blocker);
     if (saved->phase!=Phase::Preparing) return stop("recipe_preparation_required");
-    const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects()|Mask(Effect::Movement),60000,"recipe_prepare");
+    const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects()|Mask(Effect::Movement)|Mask(Effect::Money),60000,"recipe_prepare");
     if (!grant.Permitted()) return stop(grant.blocker);
     if (!bot->IsStopped()) {ExecutionScope scope(grant.task,grant.action);bot->GetPlayerbotAI()->StopMoving();return stop("recipe_stopping_for_cast");}
     UnsettledClaimBatch claims;
@@ -2343,22 +2397,41 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         bookClaim=claim;
     }
     if (bookClaim.id.empty()) {
-        Item* selected=nullptr;
-        for (auto* book:bot->GetPlayerbotAI()->InventoryParseItems(std::to_string(job.book),IterateItemsMask::ITERATE_ITEMS_IN_BAGS)) {
-            if (!book || book->IsInTrade()) continue;
-            NativeResourceBalance native{actor,book->GetGUIDLow(),book->GetEntry(),book->GetCount(),0,"bags",0};
-            uint32_t available=0;
-            if (!TaskResourceAvailability(id,saved->revision,native,available,blocker) || !available) continue;
-            if (!selected || book->GetGUIDLow()<selected->GetGUIDLow()) selected=book;
+        NativeResourceBalance selected;
+        if (!FindNativeRecipeBook(*bot,*saved,selected,blocker)) {
+            if (blocker!="recipe_book_not_owned") return stop(blocker);
+            return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Purchase,{job.book,1}).blocker);
         }
-        if (!selected) return stop("recipe_book_collection_or_purchase_required");
-        ResourceClaim claim;claim.id=NewId();claim.task=id;claim.actor=actor;claim.itemGuid=selected->GetGUIDLow();
-        claim.itemEntry=job.book;claim.quantity=1;claim.location="bags";claim.state="held";
+        ResourceClaim claim;claim.id=NewId();claim.task=id;claim.actor=actor;claim.itemGuid=selected.itemGuid;
+        claim.itemEntry=job.book;claim.quantity=1;claim.location=selected.location;claim.nativeReference=selected.nativeReference;claim.state="held";
         ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
         ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
         request.authorization=grant.action;request.changes.push_back({claim,0});NativeRecipeBookReservation reservation;
         return stop(SubmitResourceReservation(request,reservation).blocker);
     }
+    // A book can arrive while an unused purchase hold exists. Release only
+    // that acknowledged hold; never buy a second book or strand its money.
+    for (const auto& held:claims.claims) if (held.location=="money" && held.state=="held") {
+        auto released=held;++released.revision;released.state="released";
+        ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+        ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+        request.authorization=grant.action;request.changes.push_back({released,held.revision});
+        NativeProfessionMoneyReservation reservation({},NewId());
+        return stop(SubmitResourceReservation(request,reservation).blocker);
+    }
+    if (bookClaim.location=="bank")
+        return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Withdraw,{job.book,1}).blocker);
+    if (bookClaim.location=="mail") {
+        const auto* mail=bot->GetMail(uint32_t(bookClaim.nativeReference));
+        if (mail && mail->deliver_time>time(nullptr)) {
+            TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
+            request.task.phase=Phase::WaitingExternal;request.task.updatedAtMs=NowMs();request.receipt=NewId();
+            request.task.retryAtMs=uint64_t(mail->deliver_time)*1000;request.task.checkpoint.blocker="recipe_book_mail_delivery_pending";
+            return stop(SubmitTask(request).blocker);
+        }
+        return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.book,1}).blocker);
+    }
+    if (bookClaim.location!="bags") return stop("recipe_book_location_requires_reconciliation");
     OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
     ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;request.transition.task.checkpoint.step="recipe_learning";
     request.transition.task.updatedAtMs=NowMs();request.transition.receipt=SourceId("recipe_native_operation",id);

@@ -1,6 +1,7 @@
 #include "LivingRecipeLearningSettlement.h"
 #include "LivingActivityRequests.h"
 #include "LivingProfessionJob.h"
+#include "LivingTaskItemRequirements.h"
 #include <cassert>
 using namespace LivingActivity;
 int main() {
@@ -43,6 +44,11 @@ int main() {
     task.context.boot="69e55001-c9b0-4d34-9e15-4351e3e4af2a";
     task.context.actorGeneration=task.context.mapGeneration=task.context.policyRevision=1;
     assert(ValidateProfessionTask(task,blocker));
+    std::vector<ProfessionReagent> items;
+    assert(ReadTaskItemRequirements(task,items,blocker) && items==std::vector<ProfessionReagent>({{6326,1}}));
+    auto service=task;service.checkpoint.step="profession_service_mail";
+    assert(ValidateProfessionTask(service,blocker) && !IsProfessionJob(service) && IsRecipeLearningTask(service));
+    assert(ReadTaskItemRequirements(service,items,blocker) && items.front().entry==6326);
     auto changed=task;changed.checkpoint.data=EncodeRecipeLearningJob({6325,7751,185,483});
     assert(!PreserveProfessionIntent(task,changed,blocker));
     changed=task;changed.source="other";changed.checkpoint.step="other";changed.checkpoint.data="{}";
@@ -70,4 +76,23 @@ int main() {
     claims.claims={original};std::vector<NativeResourceBalance> stock{{79,440051,6326,1,0,"bags"}};
     assert(PrepareRecipeLearningResumption(task,current,claims,stock,2000,receipt,settlement,blocker));
     ++stock[0].itemGuid;assert(!PrepareRecipeLearningResumption(task,current,claims,stock,2000,receipt,settlement,blocker));
+    --stock[0].itemGuid;stock[0].location="bank";claims.claims[0].location="bank";
+    assert(PrepareRecipeLearningResumption(task,current,claims,stock,2000,receipt,settlement,blocker));
+    stock[0].location="mail";stock[0].nativeReference=8190;
+    claims.claims[0].location="mail";claims.claims[0].nativeReference=8190;
+    assert(PrepareRecipeLearningResumption(task,current,claims,stock,2000,receipt,settlement,blocker));
+    ++stock[0].nativeReference;assert(!PrepareRecipeLearningResumption(task,current,claims,stock,2000,receipt,settlement,blocker));
+    --stock[0].nativeReference;
+    auto funds=original;funds.id="ff2efbdf-f0ec-4539-b840-299847979002";funds.itemGuid=funds.itemEntry=funds.quantity=0;
+    funds.copper=50;funds.location="money";claims.claims.push_back(funds);
+    stock.insert(stock.begin(),NativeResourceBalance{79,0,0,0,100,"money"});
+    assert(PrepareRecipeLearningResumption(task,current,claims,stock,2000,receipt,settlement,blocker));
+    stock[0].copper=49;assert(!PrepareRecipeLearningResumption(task,current,claims,stock,2000,receipt,settlement,blocker));
+    stock[0].copper=100;task.phase=Phase::Verifying;task.checkpoint.step="profession_mail_collect";task.retryAtMs=2500;
+    assert(PrepareRecipeLearningResumption(task,task.context,claims,stock,2000,receipt,settlement,blocker));
+    assert(settlement.task.retryAtMs==2500);
+    sql.clear();for (const auto& line:settlement.plan.statements) sql+=line;
+    assert(sql.find("o.kind NOT IN ('vendor_purchase','mail_collect'")!=std::string::npos);
+    assert(sql.find("OR o.state NOT IN ('verified','rejected')")!=std::string::npos);
+    assert(sql.find("mail_items")!=std::string::npos && sql.find("m.cod=0")!=std::string::npos);
 }

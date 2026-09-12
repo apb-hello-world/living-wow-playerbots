@@ -6,6 +6,7 @@
 namespace LivingActivity {
     bool BuildNativeRecipeLearningJob(Player& actor,uint32_t book,RecipeLearningJob& job,std::string& blocker);
     bool ValidateNativeRecipeLearningTask(Player& actor,const Task& task,std::string& blocker);
+    bool FindNativeRecipeBook(Player& actor,const Task& task,NativeResourceBalance& book,std::string& blocker);
     class NativeRecipeBookReservation final : public NativeReservationAdapter {
     public:
         bool ValidatePurpose(Player&,const ReservationRequest&,std::string&) override;

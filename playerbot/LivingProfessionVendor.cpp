@@ -3,6 +3,7 @@
 #include "LivingVendorSources.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingProfessionNative.h"
+#include "LivingTaskItemRequirements.h"
 #include "TravelMgr.h"
 #include <algorithm>
 #include <tuple>
@@ -59,11 +60,11 @@ namespace LivingActivity {
     }
     bool NextNativeProfessionVendorItem(Player& actor,const Task& saved,
         ProfessionReagent& need,std::vector<int32_t>& vendors,std::string& blocker) {
-        need={};vendors.clear();ProfessionJob job;NativeProfessionDemand demand;
-        if(!DecodeProfessionJob(saved.checkpoint.data,job,blocker)) return false;
+        need={};vendors.clear();std::vector<ProfessionReagent> requirements;NativeProfessionDemand demand;
+        if(!ReadTaskItemRequirements(saved,requirements,blocker)) return false;
         if(!InspectNativeProfessionDemand(actor,saved,demand)) {blocker=demand.blocker;return false;}
-        for(size_t i=0;i<job.reagents.size();++i) {
-            const auto& required=job.reagents[i];const auto& have=demand.stock[i];
+        for(size_t i=0;i<requirements.size();++i) {
+            const auto& required=requirements[i];const auto& have=demand.stock[i];
             if(have.bag>=required.perAttempt) continue;
             const auto* item=sObjectMgr.GetItemPrototype(required.entry);uint32_t quantity=0;
             if(!item || !RequiredProfessionVendorQuantity(required,have,item->BuyCount,quantity,blocker)) return false;

@@ -127,7 +127,10 @@ namespace LivingActivity {
         } catch (const std::exception&) { return false; }
     }
     bool IsProfessionJob(const Task& task) {
-        return task.source == "profession_job" || task.checkpoint.step.compare(0, 11, "profession_") == 0;
+        // Service step names are backward compatible and shared by learning.
+        // The typed root retains its identity while using the same adapter.
+        return !IsRecipeLearningTask(task) &&
+            (task.source == "profession_job" || task.checkpoint.step.compare(0, 11, "profession_") == 0);
     }
     bool MatchNativeProfessionRecipe(const ProfessionJob& job, const NativeProfessionRecipe& native,
         std::string& blocker) {

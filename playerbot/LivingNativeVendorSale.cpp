@@ -5,6 +5,7 @@
 #include "LivingNativeMailCollection.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingProfessionNative.h"
+#include "LivingTaskItemRequirements.h"
 #include "LivingServiceExecution.h"
 #include "LivingPurchaseBudget.h"
 #include "PlayerbotActionBroker.h"
@@ -21,7 +22,7 @@ bool SafeActor(Player& actor) {
         !actor.IsBeingTeleported() && !ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) &&
         !actor.GetMap()->IsDungeon() && !LivingServiceExecution::Busy(&actor);
 }
-bool NeededCapacity(Player& actor,const Task& task,const ProfessionJob& job,const UnsettledClaimBatch& claims,
+bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& claims,
     ItemGainSpec& need,std::string& blocker) {
     auto missing=[&](uint32_t entry,uint32_t quantity) {
         ItemPosCountVec positions;
@@ -30,8 +31,14 @@ bool NeededCapacity(Player& actor,const Task& task,const ProfessionJob& job,cons
         }
         return false;
     };
+    std::vector<ProfessionReagent> requirements;
+    if (!ReadTaskItemRequirements(task,requirements,blocker)) return false;
     ItemGainSpec output;
-    if (!ReadNativeCraftOutput(actor,job,output,blocker)) return false;
+    if (IsRecipeLearningTask(task)) output={requirements.front().entry,1};
+    else {
+        ProfessionJob job;
+        if (!DecodeProfessionJob(task.checkpoint.data,job,blocker) || !ReadNativeCraftOutput(actor,job,output,blocker)) return false;
+    }
     if (missing(output.entry,output.quantity)) return true;
     // Paid/committed attachments may require space even when the craft output
     // fits an existing stack. Only exact native attachments count as demand.
@@ -40,7 +47,7 @@ bool NeededCapacity(Player& actor,const Task& task,const ProfessionJob& job,cons
         if (!ReadNativeMailBalance(actor,c,balance)) {blocker="capacity_mail_requires_reconciliation";return false;}
         if (missing(c.itemEntry,balance.quantity)) return true;
     }
-    for (const auto& reagent : job.reagents) if(actor.GetItemCount(reagent.entry,false)<reagent.perAttempt)
+    for (const auto& reagent : requirements) if(actor.GetItemCount(reagent.entry,false)<reagent.perAttempt)
         for(auto* item : actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BANK)) {
             if (!item || item->GetEntry()!=reagent.entry) continue;
             uint32_t available=0;
@@ -50,7 +57,13 @@ bool NeededCapacity(Player& actor,const Task& task,const ProfessionJob& job,cons
         }
     blocker="capacity_already_available";return false;
 }
-bool JobProtected(Player& actor,const ProfessionJob& job,Item& item) {
+bool JobProtected(Player& actor,const Task& task,Item& item) {
+    if (IsRecipeLearningTask(task)) {
+        RecipeLearningJob learning;std::string blocker;
+        return !DecodeRecipeLearningJob(task.checkpoint.data,learning,blocker) || item.GetEntry()==learning.book;
+    }
+    ProfessionJob job;std::string why;
+    if (!DecodeProfessionJob(task.checkpoint.data,job,why)) return true;
     ItemGainSpec output;std::string blocker;
     if (!ReadNativeCraftOutput(actor,job,output,blocker) || item.GetEntry()==output.entry) return true;
     for (const auto& reagent : job.reagents) if (item.GetEntry()==reagent.entry) return true;
@@ -62,7 +75,7 @@ bool JobProtected(Player& actor,const ProfessionJob& job,Item& item) {
     for (const auto category : spell->TotemCategory) if (category) return true;
     return false;
 }
-CapacitySaleFacts Facts(Player& actor,const ProfessionJob& job,Item& item) {
+CapacitySaleFacts Facts(Player& actor,const Task& task,Item& item) {
     CapacitySaleFacts f;
     f.actor=actor.GetGUIDLow();f.guid=item.GetGUIDLow();f.entry=item.GetEntry();f.quantity=item.GetCount();f.money=actor.GetMoney();
     f.ownedBag=item.GetOwnerGuid()==actor.GetObjectGuid() && Player::IsInventoryPos(item.GetBagSlot(),item.GetSlot()) && !item.IsBag();
@@ -70,7 +83,7 @@ CapacitySaleFacts Facts(Player& actor,const ProfessionJob& job,Item& item) {
     f.unitCopper=proto->SellPrice;
     f.legacyProtected=sPlayerbotActionBroker.IsItemReserved(f.guid) || sGuildSupplies.Reserved(f.guid) ||
         sGuildSupplies.ReservedEntry(f.actor,f.entry) || ai::ItemUsageValue::IsNeededForQuest(&actor,f.entry,true) ||
-        actor.GetLootGuid()==item.GetObjectGuid() || item.IsInTrade() || JobProtected(actor,job,item);
+        actor.GetLootGuid()==item.GetObjectGuid() || item.IsInTrade() || JobProtected(actor,task,item);
     for (const auto& spell : proto->Spells) if (spell.SpellId && spell.SpellCharges<0) f.charged=true;
     // Reuse the established gear/profession/quest classification, refreshed
     // for this one item. The activity claim is validated separately below.
@@ -81,12 +94,12 @@ CapacitySaleFacts Facts(Player& actor,const ProfessionJob& job,Item& item) {
     return f;
 }
 }
-bool NativeCapacityNeed(Player& actor,const Task& task,const ProfessionJob& job,
+bool NativeCapacityNeed(Player& actor,const Task& task,
     const UnsettledClaimBatch& claims,ItemGainSpec& need,std::string& blocker) {
-    return NeededCapacity(actor,task,job,claims,need,blocker);
+    return NeededCapacity(actor,task,claims,need,blocker);
 }
-bool NativeCapacityItemProtected(Player& actor,const ProfessionJob& job,Item& item) {
-    const auto facts=Facts(actor,job,item);
+bool NativeCapacityItemProtected(Player& actor,const Task& task,Item& item) {
+    const auto facts=Facts(actor,task,item);
     return !facts.ownedBag || facts.legacyProtected || facts.charged;
 }
 std::string EncodeNativeSaleQuote(const NativeSaleQuote& q) {
@@ -115,12 +128,11 @@ bool DecodeNativeSaleQuote(const std::string& value,NativeSaleQuote& q) {
 bool PlanNativeCapacitySale(Player& actor,const Task& task,NativeSaleQuote& q,ResourceClaim& held,std::string& blocker) {
     q={};held={};auto reject=[&](const char* why){blocker=why;return false;};
     if (!sLivingActivityCoordinator.OnWorldThread() || !SafeActor(actor) || actor.GetGUIDLow()!=task.actor ||
-        !IsProfessionJob(task) || task.mode!=Mode::Active || !task.accepted || task.root!=task.id)
+        (!IsProfessionJob(task) && !IsRecipeLearningTask(task)) || task.mode!=Mode::Active || !task.accepted || task.root!=task.id)
         return reject("capacity_safety_or_task_pause");
-    ProfessionJob job;UnsettledClaimBatch claims;ItemGainSpec need;
-    if(!DecodeProfessionJob(task.checkpoint.data,job,blocker) ||
-        !sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,blocker) ||
-        !NeededCapacity(actor,task,job,claims,need,blocker))return false;
+    UnsettledClaimBatch claims;ItemGainSpec need;
+    if(!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,blocker) ||
+        !NeededCapacity(actor,task,claims,need,blocker))return false;
     const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
     if(!view || !view->ready)return reject("capacity_reservations_unavailable");
     auto items=actor.GetPlayerbotAI()->InventoryParseItems("inventory",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
@@ -128,7 +140,7 @@ bool PlanNativeCapacitySale(Player& actor,const Task& task,NativeSaleQuote& q,Re
     Item* selected=nullptr;
     for(auto* item : items) {
         if(!item)continue;
-        auto facts=Facts(actor,job,*item);uint32_t price=0;
+        auto facts=Facts(actor,task,*item);uint32_t price=0;
         if(!QuoteCapacitySale(facts,price) || view->HasUncertainItem(task.actor,facts.entry))continue;
         ResourceClaim own;
         for(const auto& c : claims.claims) if(c.itemGuid==facts.guid) {

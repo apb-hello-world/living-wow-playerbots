@@ -6,6 +6,7 @@
 #include "LivingActivityStackTransfer.h"
 #include "LivingNativeVendorSale.h"
 #include "LivingServiceExecution.h"
+#include "LivingTaskItemRequirements.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
@@ -41,9 +42,9 @@ bool EmptyBankDestination(Player& actor,Item& item,uint16_t& destination) {
     }
     return false;
 }
-bool SafeStoredMaterial(Player& actor,const ProfessionJob& job,Item& item) {
+bool SafeStoredMaterial(Player& actor,const Task& task,Item& item) {
     const auto* proto=item.GetProto();
-    if (!proto || proto->Class!=ITEM_CLASS_TRADE_GOODS || NativeCapacityItemProtected(actor,job,item)) return false;
+    if (!proto || proto->Class!=ITEM_CLASS_TRADE_GOODS || NativeCapacityItemProtected(actor,task,item)) return false;
     ai::ItemQualifier qualifier(&item);
     auto* value=actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<ai::ItemUsage>("item usage",qualifier.GetQualifier());
     value->Reset();const auto usage=value->Get();
@@ -146,10 +147,10 @@ bool PlanNativeBankWithdrawal(Player& actor,const Task& task,const ProfessionRea
         return reject("profession_bank_safety_pause");
     const auto banker=NativeNearbyBanker(actor);
     if (!banker) return reject("profession_banker_travel_required");
-    ProfessionJob job;
-    if (!DecodeProfessionJob(task.checkpoint.data,job,blocker)) return false;
-    const auto reagent=std::find_if(job.reagents.begin(),job.reagents.end(),[&](const auto& r){return r.entry==need.entry;});
-    if (reagent==job.reagents.end() || !need.perAttempt || need.perAttempt>reagent->perAttempt)
+    std::vector<ProfessionReagent> requirements;
+    if (!ReadTaskItemRequirements(task,requirements,blocker)) return false;
+    const auto reagent=std::find_if(requirements.begin(),requirements.end(),[&](const auto& r){return r.entry==need.entry;});
+    if (reagent==requirements.end() || !need.perAttempt || need.perAttempt>reagent->perAttempt)
         return reject("profession_bank_exact_demand_required");
     for (auto* item : actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BANK)) {
         if (!item || item->GetEntry()!=need.entry || ProtectedLegacy(actor,*item)) continue;
@@ -169,20 +170,19 @@ bool PlanNativeBankWithdrawal(Player& actor,const Task& task,const ProfessionRea
 bool PlanNativeBankDeposit(Player& actor,const Task& task,NativeBankQuote& q,ResourceClaim& held,std::string& blocker) {
     q={};held={};auto reject=[&](const char* why){blocker=why;return false;};
     if (!sLivingActivityCoordinator.OnWorldThread() || actor.GetGUIDLow()!=task.actor ||
-        !IsProfessionJob(task) || task.mode!=Mode::Active || !task.accepted || task.root!=task.id)
+        (!IsProfessionJob(task) && !IsRecipeLearningTask(task)) || task.mode!=Mode::Active || !task.accepted || task.root!=task.id)
         return reject("capacity_bank_task_unavailable");
     if (!SafeBankActor(actor)) return reject(actor.IsStopped()?"capacity_bank_safety_pause":"capacity_bank_travel_required");
-    ProfessionJob job;UnsettledClaimBatch claims;ItemGainSpec need;
-    if (!DecodeProfessionJob(task.checkpoint.data,job,blocker) ||
-        !sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,blocker) ||
-        !NativeCapacityNeed(actor,task,job,claims,need,blocker)) return false;
+    UnsettledClaimBatch claims;ItemGainSpec need;
+    if (!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,blocker) ||
+        !NativeCapacityNeed(actor,task,claims,need,blocker)) return false;
     const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
     if (!view || !view->ready) return reject("capacity_reservations_unavailable");
     auto items=actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
     items.sort([](const Item* a,const Item* b){return a->GetGUIDLow()<b->GetGUIDLow();});
     Item* selected=nullptr;
     for (auto* item:items) {
-        if (!item || !SafeStoredMaterial(actor,job,*item) || view->HasUncertainItem(task.actor,item->GetEntry())) continue;
+        if (!item || !SafeStoredMaterial(actor,task,*item) || view->HasUncertainItem(task.actor,item->GetEntry())) continue;
         ResourceClaim own;
         for (const auto& c:claims.claims) if (c.itemGuid==item->GetGUIDLow()) {
             if (!own.id.empty() || !ValidBankDeposit(c) || c.quantity!=item->GetCount())
