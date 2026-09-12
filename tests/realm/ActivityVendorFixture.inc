@@ -173,7 +173,7 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
                     } while(rows->NextRow());
                 },"SELECT c.guid,c.account FROM characters c JOIN character_spell s ON s.guid=c.guid AND s.spell=2329 AND s.disabled=0 "
                   "JOIN character_skills k ON k.guid=c.guid AND k.skill=171 AND k.value BETWEEN 1 AND 9 "
-                  "WHERE c.online=0 AND c.money>=100 AND NOT EXISTS(SELECT 1 FROM item_instance i WHERE i.owner_guid=c.guid AND i.itemEntry=3371) "
+                  "WHERE c.online=0 AND c.map IN (0,1) AND c.money>=100 AND NOT EXISTS(SELECT 1 FROM item_instance i WHERE i.owner_guid=c.guid AND i.itemEntry=3371) "
                   "AND NOT EXISTS(SELECT 1 FROM group_member g WHERE g.memberGuid=c.guid) "
                   "AND NOT EXISTS(SELECT 1 FROM living_activity_task t WHERE t.actor_guid=c.guid AND t.mode='active' AND t.phase NOT IN ('completed','cancelled','failed')) ORDER BY c.guid LIMIT 4");
             }
