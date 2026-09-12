@@ -11,6 +11,7 @@
 #include "LivingActivityAuthority.h"
 #include "LivingActivityPermissions.h"
 #include "LivingActivityScope.h"
+#include "LivingGuildSaveFence.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingActivityCommitments.h"
 #include "LivingProfessionNative.h"
@@ -145,12 +146,12 @@ namespace {
             // "inventory" is the parser's bags-only selector, even with a
             // bank mask. "all" applies this explicit native location mask.
             for (Item* item : bot.GetPlayerbotAI()->InventoryParseItems("all",service.second)) {
-                if (!item || (admission && (sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
-                    sGuildSupplies.ReservedEntry(actor,item->GetEntry())))) continue;
+                if (!item || (admission && sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()))) continue;
                 const std::string location=service.second == IterateItemsMask::ITERATE_ITEMS_IN_BAGS ? "bags" :
                     service.second==IterateItemsMask::ITERATE_ITEMS_IN_EQUIP ? "equipment" : "bank";
                 for (const auto& claim : claims) if (claim.state == "held" && claim.itemGuid == item->GetGUIDLow() &&
-                    claim.itemEntry == item->GetEntry() && claim.location == location)
+                    claim.itemEntry == item->GetEntry() && claim.location == location &&
+                    (!admission || !sGuildSupplies.ReservedEntry(actor,item->GetEntry()) || sGuildSupplies.AllowsManagedClaim(claim)))
                     owned.emplace(item->GetGUIDLow(),NativeResourceBalance{actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,location});
             }
         for (const auto& claim : claims) if (claim.state=="held" && claim.location=="mail") {
@@ -268,6 +269,7 @@ struct LivingActivityCoordinator::State {
     std::atomic<bool> observeEffects{false};
     std::atomic<bool> enforceEffects{false}; // No configuration can enable it before Stage 3 acceptance.
     std::shared_ptr<const std::set<uint32_t>> nativeSaveHolds = std::make_shared<const std::set<uint32_t>>();
+    GuildSaveFence guildSaveHolds;
     std::atomic<uint64_t> publishedPolicyRevision{0};
     std::atomic<uint64_t> leaseBoundaries[3][2]{};
     std::thread::id worldThread;
@@ -462,6 +464,7 @@ struct LivingActivityCoordinator::State {
         std::string completionBlocker;
         uint64_t completionRetryAt=0;
         std::vector<uint32_t> relatedSaveHolds;
+        uint32_t relatedGuild=0;
     };
     // Bounded transient admission state. An entry is created before its intent
     // write; it is NEVER reconstructed as dispatchable from a persisted intent.
@@ -749,6 +752,8 @@ struct LivingActivityCoordinator::State {
                             authority.Release(held);
                             HoldNativeSave(held.actor,false);
                             for(const auto actor:operation->second.relatedSaveHolds)HoldNativeSave(actor,false);
+                            if(operation->second.relatedGuild)
+                                guildSaveHolds.Release(operation->second.relatedGuild,held.actor,operation->first);
                         }
                         const auto binding = bindings.find(held.actor);
                         if (binding != bindings.end()) binding->second.publisher.Publish(authority.Read(held.actor));
@@ -2129,6 +2134,9 @@ bool LivingActivityCoordinator::DefersNativeSave(uint32_t actor) const {
     const auto held = std::atomic_load_explicit(&state->nativeSaveHolds, std::memory_order_acquire);
     return actor && held && held->count(actor);
 }
+bool LivingActivityCoordinator::DefersGuildMutation(uint32_t guild,uint32_t actor) const {
+    return state->guildSaveHolds.Blocks(guild,actor,ExecutionScope::NativeOperationId(actor));
+}
 
 bool LivingActivityCoordinator::AcknowledgedResourceClaim(const ResourceClaim& claim) const {
     if (!OnWorldThread() || !state->resources.Protection().ready || !ValidResourceClaim(claim)) return false;
@@ -3058,6 +3066,11 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         return reject(AdmissionCode::InvalidRequest,"native_related_actor_scope_invalid");
     for(const auto actor:related)if(DefersNativeSave(actor))
         return reject(AdmissionCode::Backpressure,"native_related_operation_pending");
+    const auto relatedGuild=adapter.RelatedGuild();
+    if(relatedGuild && (!(request.effects&Mask(Effect::Guild)) || request.persistence==NativePersistence::JournalOnly))
+        return reject(AdmissionCode::InvalidRequest,"native_guild_contract_invalid");
+    if(relatedGuild && state->guildSaveHolds.Blocks(relatedGuild))
+        return reject(AdmissionCode::Backpressure,"native_guild_save_pending");
     if (!request.itemTransfer.id.empty() && !state->resources.CanAdmitNewClaims(0))
         return reject(AdmissionCode::Backpressure,"native_transfer_protection_capacity");
     const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -3121,6 +3134,11 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                     if (nativeTransactionOpen) {
                         state->HoldNativeSave(intended.actor,true);pending.relatedSaveHolds=related;
                         for(const auto actor:related)state->HoldNativeSave(actor,true);
+                        if(relatedGuild) {
+                            if(!state->guildSaveHolds.Hold(relatedGuild,intended.actor,id))
+                                throw std::runtime_error("native_guild_save_hold_failed");
+                            pending.relatedGuild=relatedGuild;
+                        }
                     }
                 }
                 if (request.persistence == NativePersistence::JournalOnly || nativeTransactionOpen) {
@@ -3221,6 +3239,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     if (!ValidateNativeObservation(observation)) observation = {};
     Task after = saved->second; ++after.revision; after.updatedAtMs = NowMs();
     pending.uncertain = observation.state == OperationState::Reconciling;
+    if(pending.uncertain && pending.relatedGuild)pending.saveBlocked=true;
     if (pending.uncertain && (!request.itemGain.Empty() || !request.mailGain.Empty())) pending.saveBlocked=true;
     if (pending.uncertain && !request.itemTransfer.id.empty()) {
         // An uncertain merge may have consumed the old GUID. Protecting that

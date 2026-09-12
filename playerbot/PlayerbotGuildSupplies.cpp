@@ -355,6 +355,71 @@ void PlayerbotGuildSupplies::RecordDeposit(uint32 guild,uint32 actor,uint32 entr
     // credit an attempt that did not commit. Donor remains distinct from courier.
     CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET phase=IF(deposited_quantity+%u>=quantity,'completed','carried'),deposited_quantity=deposited_quantity+%u,blocker='',updated_at=%u WHERE delivery_id=%llu AND phase='carried' AND deposited_quantity=%u",count,count,uint32(time(nullptr)),(unsigned long long)d.id,d.deposited);
 }
+bool PlayerbotGuildSupplies::ReadManagedDeposit(const LivingActivity::Task& task,LivingActivity::GuildDepositQuote& q,
+    std::string& blocker) const {
+    using namespace LivingActivity;
+    q={};auto reject=[&](const char* why){blocker=why;return false;};
+    if(!sLivingActivityCoordinator.OnWorldThread() || !state_->ready || !ValidateGuildDeliveryTask(task,blocker) ||
+        !IsManagedGuildDelivery(task) || !DecodeGuildDeliveryJob(task.checkpoint.data,q.job,blocker))
+        return reject("guild_delivery_saved_task_unavailable");
+    const auto found=state_->deliveries.find(q.job.delivery);
+    if(found==state_->deliveries.end())return reject("guild_delivery_projection_pending");
+    const auto& d=found->second;
+    if(d.guild!=q.job.guild || d.goal!=q.job.goal || d.donor!=q.job.donor || d.carrier!=task.actor ||
+        d.entry!=q.job.entry || d.quantity!=q.job.quantity || d.mail!=q.job.incomingMail || q.job.money)
+        return reject("guild_delivery_native_identity_changed");
+    if(d.phase!="carried" || d.deposited>=d.quantity)return reject("guild_delivery_not_carried");
+    auto* guild=sGuildMgr.GetGuildById(d.guild);
+    const auto enabled=state_->enabled.find(d.guild);
+    if(!guild || enabled==state_->enabled.end() || !enabled->second || !sGuildGovernance.Allows(guild,"supplies"))
+        return reject("guild_delivery_automation_paused");
+    if(!guild->GetMemberSlot(ObjectGuid(HIGHGUID_PLAYER,task.actor)))return reject("guild_delivery_member_departed");
+    if(!MayDeposit(guild,task.actor))return reject("guild_delivery_deposit_permission_revoked");
+    const auto goal=state_->goals.find(d.goal);
+    if(goal==state_->goals.end() || goal->second.guild!=d.guild || goal->second.money)
+        return reject("guild_delivery_goal_cancelled");
+    q.actor=task.actor;q.item=d.item;q.deposited=d.deposited;
+    q.goalTarget=goal->second.required;q.goalReserved=goal->second.reserved;
+    const auto counts=guild->GetBankItemCounts();const auto entry=counts.find(d.entry);
+    q.bankCount=entry==counts.end()?0:entry->second;
+    q.amount=std::min(255u,std::min(d.quantity-d.deposited,
+        SupplyOutstanding(q.goalTarget,q.bankCount,q.goalReserved,0)));
+    if(!q.amount)return reject("guild_delivery_target_already_satisfied");
+    blocker.clear();return true;
+}
+bool PlayerbotGuildSupplies::AllowsManagedClaim(const LivingActivity::ResourceClaim& claim) const {
+    using namespace LivingActivity;
+    if(!sLivingActivityCoordinator.OnWorldThread() || claim.copper || claim.state!="held" || !claim.quantity ||
+        claim.location!="bags" || claim.nativeReference)return false;
+    const auto task=sLivingActivityCoordinator.ReadSavedTask(claim.task);GuildDeliveryJob job;std::string why;
+    if(!task || task->actor!=claim.actor || !IsManagedGuildDelivery(*task) || !ValidateGuildDeliveryTask(*task,why) ||
+        !DecodeGuildDeliveryJob(task->checkpoint.data,job,why) || job.money || job.entry!=claim.itemEntry)return false;
+    const auto found=state_->deliveries.find(job.delivery);
+    if(found==state_->deliveries.end())return false;
+    const auto& d=found->second;
+    if(d.phase!="carried" || d.carrier!=claim.actor || d.guild!=job.guild || d.goal!=job.goal ||
+        d.donor!=job.donor || d.mail!=job.incomingMail || d.quantity!=job.quantity || d.deposited>=d.quantity ||
+        claim.quantity>d.quantity-d.deposited || (!d.mail && d.item!=claim.itemGuid))return false;
+    // The legacy entry-wide reservation is waived only for its exact saved
+    // owner. Another delivery of the same entry remains conservatively held.
+    for(const auto& other:state_->deliveries) if(other.first!=d.id && !SupplyTerminal(other.second.phase) &&
+        other.second.carrier==claim.actor && other.second.entry==claim.itemEntry)return false;
+    return true;
+}
+bool PlayerbotGuildSupplies::BeginManagedDeposit(const LivingActivity::GuildDepositQuote& q) {
+    if(!sLivingActivityCoordinator.OnWorldThread() || !LivingActivity::ValidGuildDepositQuote(q) ||
+        state_->depositing || state_->mailing)return false;
+    const auto found=state_->deliveries.find(q.job.delivery);
+    if(found==state_->deliveries.end())return false;
+    const auto& d=found->second;
+    if(d.carrier!=q.actor || d.guild!=q.job.guild || d.goal!=q.job.goal || d.donor!=q.job.donor ||
+        d.entry!=q.job.entry || d.quantity!=q.job.quantity || d.deposited!=q.deposited ||
+        d.mail!=q.job.incomingMail || d.phase!="carried")return false;
+    state_->depositing=d.id;state_->depositCount=q.amount;return true;
+}
+void PlayerbotGuildSupplies::EndManagedDeposit() {
+    state_->depositing=0;state_->depositCount=0;state_->load=0;
+}
 void PlayerbotGuildSupplies::RecordMoneyDeposit(uint32 guild,uint32 actor,uint32 copper) {
     auto found=state_->deliveries.find(state_->depositing);if(found==state_->deliveries.end()) return;
     const auto& d=found->second;

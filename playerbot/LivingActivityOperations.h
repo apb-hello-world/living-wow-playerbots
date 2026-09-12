@@ -46,6 +46,9 @@ namespace LivingActivity {
         // Native mail may pay a seller/refund another bidder. Hold their later
         // native saves/mail mutations until this same receipt is acknowledged.
         virtual std::vector<uint32_t> RelatedActors() const {return {};}
+        // Shared native bank state must not be changed by another actor before
+        // this operation's retained transaction and receipt are acknowledged.
+        virtual uint32_t RelatedGuild() const {return 0;}
         virtual NativePersistence PersistencePolicy() const { return NativePersistence::JournalOnly; }
         // Compiled native after-state predicate, checked in the SAME transaction
         // as the native save and journal. No player/model SQL enters this API.

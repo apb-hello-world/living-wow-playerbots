@@ -65,4 +65,7 @@ namespace LivingActivity {
             IsUuid(action.operation) && (action.permittedEffects&(Mask(Effect::Inventory)|Mask(Effect::Money))) &&
             Fresh(task,action,task.context);
     }
+    std::string ExecutionScope::NativeOperationId(uint32_t actor) {
+        return OwnsNativeOperation(actor) ? head->action->operation : "";
+    }
 }

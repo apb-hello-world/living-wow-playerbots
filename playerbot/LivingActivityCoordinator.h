@@ -31,6 +31,7 @@ public:
     // The same boundary serves engine calls and direct native mutations. Until
     // the cutover gate is accepted it records decisions without rejecting work.
     bool PermitEffects(PlayerbotAI& ai, const LivingActivity::Effects& effects, const std::string& origin);
+    bool DefersGuildMutation(uint32_t guild,uint32_t actor=0) const;
     // Value-only current context for a compiled native validator. This alone
     // grants nothing; the validator must establish native eligibility and the
     // common effect boundary rechecks scope, safety and pending operations.

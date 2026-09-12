@@ -106,6 +106,8 @@ int main() {
         ExecutionScope craft(task,action);
         assert(ExecutionScope::RequiresNativeSpellItems(task.actor));
         assert(ExecutionScope::OwnsNativeOperation(task.actor));
+        assert(ExecutionScope::NativeOperationId(task.actor)==action.operation);
+        assert(ExecutionScope::NativeOperationId(task.actor+1).empty());
         assert(!ExecutionScope::OwnsNativeOperation(task.actor+1));
         {EvaluationScope inspecting(true);assert(!ExecutionScope::OwnsNativeOperation(task.actor));}
         assert(!ExecutionScope::RequiresNativeSpellItems(task.actor+1));
