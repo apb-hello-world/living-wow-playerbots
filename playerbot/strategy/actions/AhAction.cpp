@@ -123,7 +123,7 @@ namespace
         return (*result)[0].GetUInt32();
     }
 
-    LivingActivity::PurchaseSpend RecentSpending(uint32 guid)
+    LivingActivity::PurchaseSpend RecentSpending(uint32 guid, uint32 seller = 0)
     {
         LivingActivity::PurchaseSpend spend;
         // Baseline/off deployments may not yet have the additive task schema.
@@ -131,27 +131,38 @@ namespace
         if (!sLivingActivityCoordinator.PurchaseLedgerReady())
         {
             uint32 paid=0;
-            const auto count=RecentPurchases(guid,DAY,&paid);
-            if (count!=std::numeric_limits<uint32>::max()) spend={true,0,paid,0};
+            const auto dayCount=RecentPurchases(guid,DAY,&paid);
+            const auto hourCount=RecentPurchases(guid,HOUR);
+            if (dayCount==std::numeric_limits<uint32>::max() || hourCount==std::numeric_limits<uint32>::max())
+                return spend;
+            spend={true,hourCount,paid,0};
+            if (seller)
+            {
+                std::unique_ptr<QueryResult> pair=CharacterDatabase.PQuery(
+                    "SELECT COUNT(*) FROM organic_economy_auction_history WHERE seller_guid='%u' AND buyer_guid='%u' "
+                    "AND outcome='sold' AND occurred_at>DATE_SUB(NOW(),INTERVAL 7 DAY)",seller,guid);
+                if (!pair || !LivingActivity::DecodeSellerPurchaseCount((*pair)[0].GetCppString(),spend)) return {};
+            }
             return spend;
         }
         const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-        std::unique_ptr<QueryResult> result=CharacterDatabase.Query(LivingActivity::PurchaseSpendQuery(guid,now).c_str());
-        if (result && result->GetFieldCount()==4)
+        std::unique_ptr<QueryResult> result=CharacterDatabase.Query(LivingActivity::PurchaseSpendQuery(guid,now,"",seller).c_str());
+        if (result && result->GetFieldCount()==(seller ? 5 : 4))
         {
             auto* f=result->Fetch();
             LivingActivity::DecodePurchaseSpend({f[0].GetCppString(),f[1].GetCppString(),f[2].GetCppString(),f[3].GetCppString()},spend);
+            if (seller) LivingActivity::DecodeSellerPurchaseCount(f[4].GetCppString(),spend);
         }
         return spend;
     }
 
-    bool DailyPurchaseAllowed(const LivingActivity::PurchaseSpend& spend,const OrganicAuctionPolicy& policy,
+    bool AuctionPurchaseAllowed(const LivingActivity::PurchaseSpend& spend,const OrganicAuctionPolicy& policy,
         uint32 wallet,uint32 available,uint32 price)
     {
         std::string blocker;
         return LivingActivity::WithinPurchaseBudget(spend,{policy.maxPurchasesPerHour,policy.maxDailySpendPercent},
-            wallet,available,price,false,blocker);
+            wallet,available,price,true,blocker);
     }
 
     struct MaterialOffer { uint32 id, entry, count, price, owner; };
@@ -339,9 +350,10 @@ bool AhBidAction::BuyRecipeMaterial(uint32 entry, uint32 requiredCount, std::str
     const auto* houseEntry = bot->GetSession()->GetCheckedAuctionHouseForAuctioneer(auctioneer->GetObjectGuid());
     auto* house = houseEntry ? sAuctionMgr.GetAuctionsMap(houseEntry) : nullptr;
     if (!house) { blocker = "recipe_auction_unavailable"; return false; }
-    if (RecentPurchases(bot->GetGUIDLow(), HOUR) >= policy.maxPurchasesPerHour)
-    { blocker = "recipe_purchase_hourly_limit"; return false; }
     const auto spent=RecentSpending(bot->GetGUIDLow());
+    if (!spent.complete) { blocker = "recipe_purchase_budget_unavailable"; return false; }
+    if (spent.auctionCountHour >= policy.maxPurchasesPerHour)
+    { blocker = "recipe_purchase_hourly_limit"; return false; }
     const uint32 budget = AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::tradeskill));
     AuctionEntry* selected = nullptr;
     blocker = "recipe_no_affordable_exact_listing";
@@ -352,11 +364,8 @@ bool AhBidAction::BuyRecipeMaterial(uint32 entry, uint32 requiredCount, std::str
             auction->expireTime <= time(nullptr) || auction->itemCount > requiredCount - owned ||
             auction->bidder == bot->GetGUIDLow() || !MaterialSeller(bot, auction->owner)) continue;
         const uint32 price = auction->buyout;
-        if (!DailyPurchaseAllowed(spent,policy,bot->GetMoney(),budget,price)) continue;
-        std::unique_ptr<QueryResult> pairHistory = CharacterDatabase.PQuery(
-            "SELECT COUNT(*) FROM organic_economy_auction_history WHERE seller_guid='%u' AND buyer_guid='%u' "
-            "AND outcome='sold' AND occurred_at>DATE_SUB(NOW(),INTERVAL 7 DAY)", auction->owner, bot->GetGUIDLow());
-        if (!pairHistory || (*pairHistory)[0].GetUInt32() >= 3) continue;
+        const auto offerSpend=RecentSpending(bot->GetGUIDLow(),auction->owner);
+        if (!AuctionPurchaseAllowed(offerSpend,policy,bot->GetMoney(),budget,price)) continue;
         if (!selected || uint64(price) * selected->itemCount < uint64(selected->buyout) * auction->itemCount)
             selected = auction;
     }
@@ -643,12 +652,10 @@ bool AhBidAction::ExecuteCommand(Player* requester, std::string text, Unit* auct
             uint32 sellerAccount = CharacterAccount(auction->owner);
             if (!sellerAccount || sellerAccount == bot->GetSession()->GetAccountId())
                 continue;
-            if (RecentPurchases(bot->GetGUIDLow(), HOUR) >= policy.maxPurchasesPerHour)
+            const auto spentToday=RecentSpending(bot->GetGUIDLow(),auction->owner);
+            if (!spentToday.complete || spentToday.auctionCountHour >= policy.maxPurchasesPerHour)
                 break;
-            std::unique_ptr<QueryResult> loop = CharacterDatabase.PQuery(
-                "SELECT COUNT(*) FROM organic_economy_auction_history WHERE seller_guid='%u' AND buyer_guid='%u' "
-                "AND outcome='sold' AND occurred_at>DATE_SUB(NOW(),INTERVAL 7 DAY)", auction->owner, bot->GetGUIDLow());
-            if (loop && (*loop)[0].GetUInt32() >= 3)
+            if (spentToday.sellerPurchasesWeek >= 3)
                 continue;
 
             uint32 totalCost = LivingAuctionMinimumBid(auction->startbid, auction->bid, auction->GetAuctionOutBid(), auction->buyout);
@@ -696,8 +703,7 @@ bool AhBidAction::ExecuteCommand(Player* requester, std::string text, Unit* auct
             power /= (totalCost +1);
             if (!sPlayerbotAIConfig.IsInRandomAccountList(sellerAccount))
                 power = uint32(double(power) * (1.0 + double(policy.humanPreference) / 100.0));
-            const auto spentToday=RecentSpending(bot->GetGUIDLow());
-            if (!DailyPurchaseAllowed(spentToday,policy,bot->GetMoney(),bot->GetMoney(),totalCost)) continue;
+            if (!AuctionPurchaseAllowed(spentToday,policy,bot->GetMoney(),bot->GetMoney(),totalCost)) continue;
 
             auctionPowers.push_back(std::make_pair(auction, power));
         }
@@ -768,11 +774,11 @@ bool AhBidAction::ExecuteCommand(Player* requester, std::string text, Unit* auct
 
             // Recheck the actual chosen price: the candidate may have been ranked
             // by a smaller bid, or earlier purchases may have consumed the budget.
-            if (RecentPurchases(bot->GetGUIDLow(), HOUR) >= policy.maxPurchasesPerHour) break;
-            const auto spentToday=RecentSpending(bot->GetGUIDLow());
+            const auto spentToday=RecentSpending(bot->GetGUIDLow(),auction->owner);
+            if (!spentToday.complete || spentToday.auctionCountHour >= policy.maxPurchasesPerHour) break;
             if (!price || price > bot->GetMoney() || freeMoney.find(usage) == freeMoney.end() ||
                 price > AI_VALUE2(uint32, "free money for", freeMoney[usage]) ||
-                !DailyPurchaseAllowed(spentToday,policy,bot->GetMoney(),bot->GetMoney(),price))
+                !AuctionPurchaseAllowed(spentToday,policy,bot->GetMoney(),bot->GetMoney(),price))
                 continue;
             if (recipeBlocked(*auction)) continue;
             const uint32_t orderedEntry=auction->itemTemplate; // Buyout destroys the native listing.
