@@ -115,7 +115,8 @@ namespace LivingActivity {
         return best.second ? std::vector<int32_t>{best.second} : entries;
     }
     PurchaseSourcePreference PreferNativeProfessionSource(Player& actor,const Task& saved,
-        const ProfessionReagent& need,const NativeVendorQuote* localVendor,bool vendorOutOfStock,std::string& blocker) {
+        const ProfessionReagent& need,const std::string& operation,const NativeVendorQuote* localVendor,
+        bool vendorOutOfStock,std::string& blocker) {
         std::vector<NativeAuctionOffer> offers;
         if(!NativeAuctionOffers(actor,need.entry,need.perAttempt,offers,blocker))
             return blocker=="profession_purchase_market_snapshot_busy" ? PurchaseSourcePreference::Wait : PurchaseSourcePreference::Vendor;
@@ -133,7 +134,6 @@ namespace LivingActivity {
             }
         }
         if(!PreferAuctionSource(vendor,auction)) {blocker="vendor_price_and_travel_preferred";return PurchaseSourcePreference::Vendor;}
-        const auto operation=SourceId("profession_auction_operation",saved.id+":"+std::to_string(saved.revision));
         PurchaseSpend spend;
         if(!sLivingActivityCoordinator.ReadPurchaseBudget(actor.GetGUIDLow(),saved.id,saved.revision,operation,spend,blocker,offer.seller))
             return PurchaseSourcePreference::Wait;

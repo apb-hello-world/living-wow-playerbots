@@ -1773,13 +1773,14 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(step==ProfessionStep::Purchase && need.entry!=0) {
         if(saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
         if(saved->phase!=Phase::Preparing) return stop("profession_purchase_preparation_required");
+        const auto auctionOperation=SourceId("profession_auction_operation",id+":"+std::to_string(saved->revision));
         NativeVendorQuote quote;
         if(!PlanNativeProfessionPurchase(*bot,*saved,need,quote,blocker)) {
             if(blocker=="profession_vendor_source_unavailable" || blocker=="profession_vendor_item_or_bundle_invalid")
                 return purchaseAuction();
             if(blocker=="profession_vendor_travel_required" || blocker=="vendor_limited_stock_unavailable") {
                 const auto vendorBlocker=blocker;
-                const auto choice=PreferNativeProfessionSource(*bot,*saved,need,nullptr,vendorBlocker=="vendor_limited_stock_unavailable",blocker);
+                const auto choice=PreferNativeProfessionSource(*bot,*saved,need,auctionOperation,nullptr,vendorBlocker=="vendor_limited_stock_unavailable",blocker);
                 if(choice==PurchaseSourcePreference::Auction)return purchaseAuction();
                 if(choice==PurchaseSourcePreference::Wait)return stop(blocker);
                 blocker=vendorBlocker;
@@ -1797,7 +1798,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             }
             return stop(blocker);
         }
-        const auto choice=PreferNativeProfessionSource(*bot,*saved,need,&quote,false,blocker);
+        const auto choice=PreferNativeProfessionSource(*bot,*saved,need,auctionOperation,&quote,false,blocker);
         if(choice==PurchaseSourcePreference::Auction)return purchaseAuction();
         if(choice==PurchaseSourcePreference::Wait)return stop(blocker);
         UnsettledClaimBatch batch;ResourceClaim held;

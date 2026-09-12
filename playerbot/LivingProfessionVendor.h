@@ -15,7 +15,8 @@ namespace LivingActivity {
     bool PlanNativeProfessionPurchase(Player& actor,const Task& saved,const ProfessionReagent& need,
         NativeVendorQuote& quote,std::string& blocker);
     PurchaseSourcePreference PreferNativeProfessionSource(Player& actor,const Task& saved,
-        const ProfessionReagent& need,const NativeVendorQuote* localVendor,bool vendorOutOfStock,std::string& blocker);
+        const ProfessionReagent& need,const std::string& operation,const NativeVendorQuote* localVendor,
+        bool vendorOutOfStock,std::string& blocker);
     // Existing cached native destinations, no DB or extra route worker. Empty
     // discovery preserves the normal unrestricted travel fallback.
     std::vector<int32_t> NearestNativePurchaseEntries(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries);
