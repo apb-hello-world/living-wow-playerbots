@@ -3,6 +3,7 @@
 #include "PlayerbotRendezvousManager.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingProfessionVendor.h"
+#include "PlayerbotOrganicEconomy.h"
 #include <numeric>
 #include <iomanip>
 
@@ -886,6 +887,7 @@ bool TravelTarget::AllowActivityMutation() const {
 
 void TravelTarget::SetTarget(TravelDestination* tDestination1, WorldPosition* wPosition1) {
     if (!AllowActivityMutation()) return;
+    MarkRouteChanged();
     if (dynamic_cast<TemporaryTravelDestination*>(tDestination) && tDestination1 != tDestination)
         delete tDestination;
 
@@ -906,6 +908,8 @@ void TravelTarget::CopyTarget(TravelTarget* const target) {
 
 void TravelTarget::SetStatus(TravelStatus status) {
     if (!AllowActivityMutation()) return;
+    if(status==TravelStatus::TRAVEL_STATUS_NONE || status==TravelStatus::TRAVEL_STATUS_PREPARE ||
+        status==TravelStatus::TRAVEL_STATUS_EXPIRED) MarkRouteChanged();
     m_status = status;
     startTime = WorldTimer::getMSTime();
 
@@ -1013,8 +1017,10 @@ void TravelTarget::CheckStatus()
         }
     }
 
-    // The verified errand manager owns this route even with autonomous travel disabled.
-    const bool verifiedErrand = sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow());
+    // Accepted service work is independent of optional autonomous travel.
+    // The managed predicate checks the exact saved task, scope and route.
+    const bool verifiedErrand = sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow()) ||
+        sPlayerbotOrganicEconomy.HasOwnedServiceRoute(bot->GetGUIDLow(),uint32(tDestination->GetPurpose()));
     if (!verifiedErrand && !ai->HasStrategy("travel", BotState::BOT_STATE_NON_COMBAT) && !ai->HasStrategy("travel once", BotState::BOT_STATE_NON_COMBAT))
     {
         ai->TellDebug(ai->GetMaster(), "The target is clearing because it was a travel once destination.", "debug travel");

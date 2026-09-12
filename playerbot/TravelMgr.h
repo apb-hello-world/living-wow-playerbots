@@ -352,6 +352,7 @@ namespace ai
 
 		int32 GetEntry() const { if (!tDestination) return 0; return tDestination->GetEntry(); }
 		TravelStatus GetStatus() const { return m_status; }
+        uint64 GetRouteRevision() const { return routeRevision; }
 		TravelState GetTravelState();
 		GuidPosition GetGroupmember() { return groupMember; }
 
@@ -378,14 +379,14 @@ namespace ai
 
 		void SetTarget(TravelDestination* tDestination1, WorldPosition* wPosition1);
 		
-        void AddCondition(std::string condition) { if (AllowActivityMutation()) travelConditions.push_back(condition); }
-        void SetConditions(std::vector<std::string> conditions) { if (AllowActivityMutation()) travelConditions = conditions; }
+        void AddCondition(std::string condition) { if (AllowActivityMutation()) { MarkRouteChanged(); travelConditions.push_back(condition); } }
+        void SetConditions(std::vector<std::string> conditions) { if (AllowActivityMutation()) { MarkRouteChanged(); travelConditions = conditions; } }
 		std::vector<std::string> GetConditions() { return travelConditions; }
 
 		void SetStatus(TravelStatus status);
         void SetExpireIn(uint32 expireMs) { if (AllowActivityMutation()) statusTime = GetExpiredTime() + expireMs; }
-        void SetForced(bool forced1) { if (AllowActivityMutation()) forced = forced1; }
-        void SetGroupCopy(GuidPosition member) { if (AllowActivityMutation()) groupMember = member; }
+        void SetForced(bool forced1) { if (AllowActivityMutation()) { if(forced!=forced1) MarkRouteChanged(); forced = forced1; } }
+        void SetGroupCopy(GuidPosition member) { if (AllowActivityMutation()) { MarkRouteChanged(); groupMember = member; } }
 
         void IncRetry(bool isMove) { if (!AllowActivityMutation()) return; if (isMove) moveRetryCount+=2; else extendRetryCount++; }
         void DecRetry(bool isMove) { if (!AllowActivityMutation()) return; if (isMove && moveRetryCount > 0) moveRetryCount--; else if (extendRetryCount > 0) extendRetryCount--; }
@@ -396,6 +397,10 @@ namespace ai
         // Temporary planner candidates are values, not the bot's installed route.
         bool activityBound = false;
         bool AllowActivityMutation() const;
+        // Intervening replacements invalidate retained route attribution.
+        // Exhaustion disables retention instead of wrapping the identity.
+        void MarkRouteChanged() { if(routeRevision!=UINT64_MAX) ++routeRevision; }
+        uint64 routeRevision=0;
 		uint32 GetMaxTravelTime() const { return (1000.0 * Distance(bot)) / bot->GetSpeed(MOVE_RUN); }
 
 		TravelStatus m_status = TravelStatus::TRAVEL_STATUS_NONE;

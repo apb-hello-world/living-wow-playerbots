@@ -35,6 +35,8 @@ namespace LivingActivity {
         static AuthorityCode Check(const PermissionReader& reader, const Effects& effects,
             const WorldContext& current, uint64_t now, uint32_t nativeSafety = 0);
         static std::string Origin(uint32_t actor);
+        // Attribution only; the caller still checks current permissions.
+        static bool Matches(const Task& task, const ActionContext& action);
         // Attribute a direct native helper to the explicitly supplied top
         // scope only. Never infer permission from the actor's current owner.
         static Effects MutationEffects(uint32_t actor,uint32_t mask);

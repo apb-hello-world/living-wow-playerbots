@@ -20,14 +20,22 @@ int main() {
     assert(check() == AuthorityCode::StaleLease);
     assert(ExecutionScope::MutationEffects(task.actor,Mask(Effect::Movement)).lane == Lane::Managed);
     assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));
+    assert(!ExecutionScope::Matches(task,action));
     {
         ExecutionScope scope(task, action);
         assert(check() == AuthorityCode::Allowed);
+        assert(ExecutionScope::Matches(task,action));
+        auto differentAction=action;++differentAction.ownerGeneration;
+        assert(!ExecutionScope::Matches(task,differentAction));
+        auto differentTask=task;++differentTask.revision;
+        assert(!ExecutionScope::Matches(differentTask,action));
         assert(ExecutionScope::MutationEffects(task.actor,Mask(Effect::Movement)).lane == Lane::Managed);
         assert(ExecutionScope::Origin(task.actor) == "service_adapter");
         assert(!ExecutionScope::RequiresNativeSpellItems(task.actor)); // Ordinary movement is unchanged.
         {
             EvaluationScope evaluation(true);
+            assert(ExecutionScope::Matches(task,action));
+            assert(!evaluation.Rejected()); // Attribution inspection has no effect.
             assert(ExecutionScope::Origin(task.actor) == "eligibility_evaluation");
             assert(ExecutionScope::Check(reader,{0,Lane::Inspection,true},task.context,200) == AuthorityCode::Allowed);
             assert(!evaluation.Rejected());
@@ -58,6 +66,7 @@ int main() {
         {
             auto otherTask = task; otherTask.actor = 498;
             ExecutionScope other(otherTask, action);
+            assert(!ExecutionScope::Matches(task,action));
             assert(check() == AuthorityCode::StaleLease);
         }
         assert(check() == AuthorityCode::Allowed);
@@ -75,6 +84,7 @@ int main() {
     NativePermit native{task.context, Lane::Combat, Mask(Effect::Movement), 0, true};
     {
         ExecutionScope combat(native);
+        assert(!ExecutionScope::Matches(task,action));
         assert(!ExecutionScope::RequiresNativeSpellItems(task.actor)); // Preserve native combat policy.
         const auto nativeMovement=ExecutionScope::MutationEffects(task.actor,Mask(Effect::Movement));
         assert(nativeMovement.lane == Lane::Combat);

@@ -118,6 +118,11 @@
             row.put("travel_status_before",travelBefore);row.put("travel_status_after",travel?int(travel->GetStatus()):-1);
             row.put("travel_purpose",travel && travel->GetDestination()?uint32_t(travel->GetDestination()->GetPurpose()):0);
             row.put("route_generation",state->authority.Read(saved->actor).lease.generation);
+            row.put("native_route_revision",travel?travel->GetRouteRevision():0);
+            if(travel && travel->GetPosition()) {
+                row.put("destination_map",travel->GetPosition()->getMapId());row.put("destination",travel->GetPosStr());
+                row.put("destination_entry",travel->GetEntry());
+            }
             auto* future=actor->GetPlayerbotAI()->GetAiObjectContext()->GetValue<ai::FutureDestinations*>("future travel destinations")->Get();
             row.put("future_valid",future && future->valid());
             row.put("future_ready",future && future->valid() && future->wait_for(std::chrono::seconds(0))==std::future_status::ready);

@@ -7,6 +7,7 @@
 #include "MotionGenerators/PathFinder.h"
 #include "playerbot/TravelMgr.h"
 #include "playerbot/PlayerbotRendezvousManager.h"
+#include "playerbot/PlayerbotOrganicEconomy.h"
 #include "playerbot/strategy/values/FreeMoveValues.h"
 #include <iomanip>
 
@@ -29,9 +30,11 @@ bool MoveToTravelTargetAction::Execute(Event& event)
 
     WorldPosition botLocation(bot);
     WorldPosition location = *target->GetPosition();
+    const bool managedService=sPlayerbotOrganicEconomy.HasOwnedServiceRoute(bot->GetGUIDLow(),
+        uint32(target->GetDestination()->GetPurpose()));
     
     Group* group = bot->GetGroup();
-    if (ai->IsGroupLeader() && !urand(0, 1) && !bot->IsInCombat())
+    if (!managedService && ai->IsGroupLeader() && !urand(0, 1) && !bot->IsInCombat())
     {        
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
         {
@@ -120,7 +123,7 @@ bool MoveToTravelTargetAction::Execute(Event& event)
     {
         // A service interaction needs the actual mailbox/vendor, not a random
         // point on the broad RPG arrival radius.
-        float maxDistance = sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow()) ?
+        float maxDistance = (managedService || sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow())) ?
             0.0f : target->GetDestination()->GetRadiusMin();
 
         float angle = 2 * M_PI * urand(0, 100) / 100.0;
@@ -195,6 +198,8 @@ bool MoveToTravelTargetAction::Execute(Event& event)
 bool MoveToTravelTargetAction::isUseful()
 {
     TravelTarget* travelTarget = AI_VALUE(TravelTarget*, "travel target");
+    const bool managedService=travelTarget->GetDestination() && sPlayerbotOrganicEconomy.HasOwnedServiceRoute(
+        bot->GetGUIDLow(),uint32(travelTarget->GetDestination()->GetPurpose()));
     bool progressionRecoveryTarget = false;
     if (!travelTarget->IsForced() && travelTarget->GetRelevance() >= 199)
         progressionRecoveryTarget = true;
@@ -223,7 +228,7 @@ bool MoveToTravelTargetAction::isUseful()
     // stalled must be allowed to act on its bounded recovery route. All of the
     // normal taxi, movement, group, loot, and CanFreeMove guards below remain
     // authoritative.
-    if (!progressionRecoveryTarget && !sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow()) && !ai->AllowActivity(TRAVEL_ACTIVITY))
+    if (!managedService && !progressionRecoveryTarget && !sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow()) && !ai->AllowActivity(TRAVEL_ACTIVITY))
         return false;
 
     if (!AI_VALUE(bool, "travel target traveling") && AI_VALUE(TravelTarget*, "travel target")->GetStatus() != TravelStatus::TRAVEL_STATUS_READY)
@@ -241,7 +246,7 @@ bool MoveToTravelTargetAction::isUseful()
             return false;
 #endif
 
-    const bool verifiedErrand = sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow());
+    const bool verifiedErrand = managedService || sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow());
     // A released party member need not wait for somebody else's mana or loot.
     // Its own combat, trade, and spell still prevent service travel.
     if (verifiedErrand ? (bot->IsInCombat() || bot->GetTradeData() || bot->IsNonMeleeSpellCasted(false)) :
@@ -258,7 +263,7 @@ bool MoveToTravelTargetAction::isUseful()
         }
     }
 
-    if (bot->GetGroup() && !bot->GetGroup()->IsLeader(bot->GetObjectGuid()))
+    if (!managedService && bot->GetGroup() && !bot->GetGroup()->IsLeader(bot->GetObjectGuid()))
         if (ai->HasStrategy("follow", BotState::BOT_STATE_NON_COMBAT) ||
             ai->HasStrategy("stay", BotState::BOT_STATE_NON_COMBAT) ||
             ai->HasStrategy("guard", BotState::BOT_STATE_NON_COMBAT))
@@ -277,7 +282,9 @@ bool MoveToTravelTargetAction::isUseful()
             return false;
     }
 
-    if (!travelTarget->IsForced())
+    // The fresh managed grant already checks human-party protection. A bot-only
+    // follow/stay leash is not physical path safety and cannot trap maintenance.
+    if (!managedService && !travelTarget->IsForced())
         if (!CanFreeMoveValue::CanFreeMoveTo(ai, *travelTarget->GetPosition()))
             return false;
 

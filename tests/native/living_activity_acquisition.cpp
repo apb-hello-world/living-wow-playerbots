@@ -48,8 +48,41 @@ int main() {
         assert(CanTransition(moved,Phase::Reconciling));
         moved.phase=Phase::Reconciling;assert(CanTransition(moved,Phase::Preparing));
         moved.phase=Phase::Preparing;assert(CanTransition(moved,Phase::Traveling));
+        task.checkpoint.step="profession_service_bank";task.checkpoint.data="exact_saved_job";
+        moved=task;++moved.revision;moved.checkpoint.activeElapsedMs+=30000;
+        assert(SameServiceIntent(task,moved));
+        assert(!SameServiceSearch(moved,action,lease,task.revision)); // Fresh grant still required.
+        auto other=moved;other.checkpoint.step="profession_service_mail";assert(!SameServiceIntent(task,other));
+        other=moved;other.checkpoint.data="different_job";assert(!SameServiceIntent(task,other));
+        other=moved;other.phase=Phase::Paused;assert(!SameServiceIntent(task,other));
+        other=moved;++other.context.mapGeneration;assert(!SameServiceIntent(task,other));
+        other=moved;other.accepted=false;assert(!SameServiceIntent(task,other));
+        other=moved;other.revision=task.revision-1;assert(!SameServiceIntent(task,other));
         WorkClock resumed(900000);resumed.Observe(1000,true);resumed.Observe(2000,true);
         assert(resumed.ActiveMs()==901000 && resumed.NoProgressMs()==1000);
+    }
+    {
+        const std::vector<ServicePathPoint> road{{1,0,0,0},{1,-100,0,0},{1,-100,100,0},{1,100,100,0},{1,100,0,0}};
+        auto remaining=[&](ServicePathPoint here){return ServicePathRemaining(here,road.size(),[&](size_t n){return road[n];});};
+        assert(remaining({1,0,0,0})==500);
+        assert(remaining({1,-20,0,0})==480); // Further from goal, but forward on road.
+        assert(remaining({1,-100,30,0})==370);
+        assert(remaining({1,100,10,0})==10);
+        assert(!remaining({530,0,0,0}));
+        assert(!remaining({1,std::numeric_limits<double>::quiet_NaN(),0,0}));
+        assert(!ServicePathRemaining(road[0],4097,[&](size_t n){return road.at(n);}));
+        ServicePathProgress progress;
+        assert(!progress.Observe(*remaining(road[0]))); // Installing a route is not progress.
+        assert(progress.Observe(*remaining({1,-20,0,0})));
+        for(unsigned n=0;n<20;++n) { // Circling/repeating the same segment earns no progress.
+            assert(!progress.Observe(*remaining(road[0])));
+            assert(!progress.Observe(*remaining({1,-20,0,0})));
+        }
+        assert(progress.Observe(*remaining({1,-100,30,0})));
+        assert(!progress.Observe(-1));assert(!progress.Observe(std::numeric_limits<double>::infinity()));
+        const std::vector<ServicePathPoint> crossing{{1,0,0,0},{1,10,0,0},{0,0,0,0},{0,20,0,0}};
+        const auto after=ServicePathRemaining({0,5,0,0},crossing.size(),[&](size_t n){return crossing[n];});
+        assert(after==15); // No invented walking distance between maps.
     }
     static_assert(!std::is_convertible<Acquisition,bool>::value,"Waiting must not collapse into failure");
     for(auto code:{AdmissionCode::Pending,AdmissionCode::NotReady,AdmissionCode::ConflictingWrite,

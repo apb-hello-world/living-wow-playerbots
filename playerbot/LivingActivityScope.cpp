@@ -35,6 +35,14 @@ namespace LivingActivity {
         if (head->permit) return "native_validated";
         return head->action && IsToken(head->action->origin) ? head->action->origin : "invalid_scope";
     }
+    bool ExecutionScope::Matches(const Task& task, const ActionContext& action) {
+        return head && head->depth<=16 && head->actor==task.actor && head->task && head->action && !head->permit &&
+            head->task->id==task.id && head->task->root==task.root && head->task->revision==task.revision &&
+            head->task->context==task.context && head->action->task==action.task &&
+            head->action->rootTask==action.rootTask && head->action->revision==action.revision &&
+            head->action->ownerGeneration==action.ownerGeneration && head->action->world==action.world &&
+            head->action->permittedEffects==action.permittedEffects && head->action->operation==action.operation;
+    }
     Effects ExecutionScope::MutationEffects(uint32_t actor,uint32_t mask) {
         Effects result{mask,Lane::Managed,true};
         if (head && head->actor == actor && head->depth <= 16 && head->permit &&

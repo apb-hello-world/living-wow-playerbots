@@ -492,6 +492,29 @@ bool PlayerbotOrganicEconomy::AllowsServiceAction(uint32 guid, const std::string
         action.find("move random")==std::string::npos && action.find("grind")==std::string::npos && action!="go";
 }
 
+bool PlayerbotOrganicEconomy::HasOwnedServiceRoute(uint32 guid,uint32 purpose) const
+{
+    using namespace LivingActivity;
+    if(!sLivingActivityCoordinator.OnWorldThread())return false;
+    const auto found=serviceTrips.find(guid);if(found==serviceTrips.end())return false;
+    const auto& trip=found->second;
+    if(!trip.ready || !trip.routeOwned || trip.purpose!=purpose || !trip.routeRevision || trip.routeRevision==UINT64_MAX ||
+        !ExecutionScope::Matches(trip.managedTask,trip.action))return false;
+    const auto saved=sLivingActivityCoordinator.ReadSavedTask(trip.managedTask.id);
+    if(!saved || !SameServiceSearch(*saved,trip.action,trip.lease,trip.managedTask.revision))return false;
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(guid);if(!bot || !bot->GetPlayerbotAI())return false;
+    auto* ai=bot->GetPlayerbotAI();
+    auto* target=ai->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get();
+    if(!target || target->GetRouteRevision()!=trip.routeRevision || !target->GetDestination() ||
+        uint32(target->GetDestination()->GetPurpose())!=purpose)return false;
+    const auto effects=Mask(Effect::Movement)|Mask(Effect::TravelTarget);
+    const auto current=sLivingActivityCoordinator.NativeActionContext(*ai,Lane::Managed,effects,0).world;
+    const uint64 stamp=std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return ai->ActivityPermissions().Check({effects,Lane::Managed,true},current,stamp,&trip.managedTask,&trip.action,nullptr,
+        ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)))==AuthorityCode::Allowed;
+}
+
 void PlayerbotOrganicEconomy::ReleaseRecipeService(uint32 guid, const std::string& reason)
 {
     auto found=serviceTrips.find(guid);if(found==serviceTrips.end()) return;
@@ -642,7 +665,12 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
         if(!grant.Permitted()) {
             trip.ready=false;trip.work.Observe(stamp,false);return stop(grant.blocker);
         }
-        if(!retained) {trip.routeInitialized=false;trip.routeOwned=false;}
+        // A progress checkpoint replaces its old action grant, not an
+        // unchanged native destination. Rebind only after fresh acquisition.
+        const bool sameRoute=trip.routeOwned && target && target->IsActive() &&
+            trip.routeRevision && trip.routeRevision!=UINT64_MAX && target->GetRouteRevision()==trip.routeRevision &&
+            SameServiceIntent(trip.managedTask,grant.task);
+        if(!retained && !sameRoute) {trip.routeInitialized=false;trip.routeOwned=false;}
         trip.lease=grant.authority.lease;trip.managedTask=grant.task;trip.action=grant.action;
         scope=std::make_unique<ExecutionScope>(grant.task,grant.action);
     } else {
@@ -679,6 +707,11 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             trip.requesting=false;
             trip.routeOwned=selected;
             if(!selected) return stop("recipe_service_destination_unavailable");
+            // CopyTarget preserves old lifetime conditions; this exact service
+            // step is owned by its saved task rather than a prior RPG desire.
+            target->SetConditions({});
+            trip.routeRevision=target->GetRouteRevision();trip.pathProgress=ServicePathProgress();
+            trip.nextMove=now;
         } else {
             if(future->valid()) {
                 try {future->get();}
@@ -693,7 +726,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     if(saved && !trip.routeInitialized && target) {
         target->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
         context->ClearValues("travel target active");context->ClearValues("no active travel destinations");
-        trip.routeInitialized=true;trip.routeOwned=true;
+        trip.routeInitialized=true;trip.routeOwned=false;trip.routeRevision=0;
     }
     // Generic RPG destinations consider the neighbourhood an arrival. Finish
     // the last metres against an actual service, not the RPG work/idle loop.
@@ -756,15 +789,28 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             const float remaining=target->Distance(bot);
             if(remaining+2<trip.distance) {trip.distance=remaining;trip.progress=now;trip.work.Progress();}
         }
+        if(saved && same && target->GetPosition()) {
+            auto& nativePath=context->GetValue<ai::LastMovement&>("last movement")->Get().lastPath;
+            if(!nativePath.empty() && nativePath.getBack().getMapId()==target->GetPosition()->getMapId() &&
+                nativePath.getBack().distance(*target->GetPosition())<20) {
+                auto point=[](const WorldPosition& p){return ServicePathPoint{p.getMapId(),p.getX(),p.getY(),p.getZ()};};
+                const auto& path=nativePath.getPath();
+                const auto remaining=ServicePathRemaining(point(WorldPosition(bot)),path.size(),
+                    [&](size_t n){return point(path[n].point);});
+                if(remaining && trip.pathProgress.Observe(*remaining)){trip.progress=now;trip.work.Progress();}
+            }
+        }
         if(!same && target && target->GetStatus()!=ai::TravelStatus::TRAVEL_STATUS_PREPARE && now>=trip.nextMove) {
             trip.nextMove=now+15;
             target->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
             context->ClearValues("travel target active");context->ClearValues("no active travel destinations");
             trip.requesting=true;
             bool requested=false;
-            if(purchaseItem) {
-                ai::RequestTravelTargetAction request(ai);Event event("can move around","",bot);
-                requested=request.RequestForEntries(event,ai::TravelDestinationPurpose::Vendor,purchaseVendors);
+            if(saved) {
+                // Accepted work does not inherit volatile RPG desire checks.
+                // Native source eligibility and action authority remain required.
+                ai::RequestTravelTargetAction request(ai);Event event("","",bot);
+                requested=request.RequestForEntries(event,ai::TravelDestinationPurpose(purpose),purchaseVendors);
             } else requested=ai->DoSpecificAction("request travel target::"+std::to_string(purpose),Event("can move around","",bot),true);
             trip.requesting=false;
             if(saved && requested) {trip.searchLease=trip.lease;trip.searchRevision=saved->revision;}
