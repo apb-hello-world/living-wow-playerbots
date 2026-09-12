@@ -93,8 +93,9 @@ public:
     bool ProfessionAdmissionsEnabled() const;
     bool OwnsEconomyProfession(uint32_t actor,uint64_t goalRow) const;
     LivingActivity::AdmissionResult AdmitEconomyProfession(uint32_t actor,uint64_t goalRow,const std::string& capability);
-    // One bounded step, invoked by the existing economy work order. No new
-    // loop, timer, recipe choice or private executor state lives in the caller.
+    // The coordinator's existing due queue owns each bounded execution step.
+    // Calls from economy work orders only read progress; they cannot drive a
+    // second turn or postpone an accepted job when a planner row changes.
     struct ProfessionProgress { bool completed=false; std::string blocker; };
     ProfessionProgress AdvanceProfessionJob(uint32_t actor,const std::string& task);
     bool RecipeLearningAdmissionsEnabled() const;

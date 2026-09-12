@@ -427,6 +427,7 @@ struct LivingActivityCoordinator::State {
     // DB scan. Add domain adapters here as their old execution path is retired.
     std::set<std::pair<uint64_t,std::string>> executionDue;
     std::map<std::string,uint64_t> executionTimes;
+    std::string executingTask;
     std::map<std::string,std::string> executionBlockers;
     ResourceClaimBook resources;
     struct IncomingClaim { std::string id, payload; uint32_t taskActor; std::string taskPhase; };
@@ -492,11 +493,25 @@ struct LivingActivityCoordinator::State {
         if (effective == Mode::Off) blocker = why;
         else if (!schemaReady) blocker = "schema_verification_pending";
     }
+    bool ScheduledExecution(const Task& task) const {
+        if(task.mode!=Mode::Active || !task.accepted || Terminal(task.phase))return false;
+        if(IsRecipeLearningTask(task))return true;
+        if(!IsProfessionJob(task))return false;
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+        // Historical fault fixtures explicitly drive individual native steps.
+        // Keep that test-only path separate from the scheduled full workflow.
+        // Production has no canary actor, source-key or population exclusion.
+        const char* mode=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+        if(mode && *mode && std::string(mode)!="activity-profession-auction-v1" &&
+            std::string(mode)!="activity-profession-auction-restart-v1")return false;
+#endif
+        return true;
+    }
     void Remember(const Task& task) {
         cache[task.id] = task;
         const auto queued=executionTimes.find(task.id);
         if (queued!=executionTimes.end()) {executionDue.erase({queued->second,task.id});executionTimes.erase(queued);}
-        if (task.mode==Mode::Active && IsRecipeLearningTask(task) && !Terminal(task.phase)) {
+        if (ScheduledExecution(task)) {
             const auto at=std::max(NowMs()+1000,task.retryAtMs);
             executionTimes[task.id]=at;executionDue.emplace(at,task.id);
         } else executionBlockers.erase(task.id);
@@ -1079,8 +1094,16 @@ void LivingActivityCoordinator::Update() {
             const auto id=state->executionDue.begin()->second;state->executionDue.erase(state->executionDue.begin());
             state->executionTimes.erase(id);
             const auto saved=state->cache.find(id);
-            if (saved!=state->cache.end() && IsRecipeLearningTask(saved->second) && !Terminal(saved->second.phase)) {
-                const auto progress=AdvanceRecipeLearning(saved->second.actor,id);
+            if (saved!=state->cache.end() && state->ScheduledExecution(saved->second)) {
+                // Compatibility callers may inspect progress, but cannot run a
+                // second execution turn or refresh the due time on every tick.
+                struct Turn {
+                    std::string& current;
+                    Turn(std::string& value,const std::string& task):current(value){current=task;}
+                    ~Turn(){current.clear();}
+                } turn(state->executingTask,id);
+                const auto progress=IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
+                    AdvanceProfessionJob(saved->second.actor,id);
                 state->executionBlockers[id]=progress.blocker;
                 if (!progress.completed) {state->executionTimes[id]=now+5000;state->executionDue.emplace(now+5000,id);}
             }
@@ -1887,6 +1910,10 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if (saved->phase==Phase::Completed) {progress.completed=true;return stop("");}
     if (Terminal(saved->phase)) return stop("profession_job_terminal_requires_projection");
     if (!EffectEnforcementEnabled()) return stop("execution_disabled");
+    if(state->ScheduledExecution(*saved) && state->executingTask!=id) {
+        const auto prior=state->executionBlockers.find(id);
+        return stop(prior==state->executionBlockers.end()?"profession_queued":prior->second);
+    }
     for (const auto& write : state->pending) if (write.task.actor==actor) return stop("profession_transition_pending");
     if (const auto service=DispatchPendingItemService(actor,id)) return stop(service->blocker);
     for (const auto& row:state->operations) if (row.second.request.transition.task.actor==actor) {
