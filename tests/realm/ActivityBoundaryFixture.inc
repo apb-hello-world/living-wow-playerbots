@@ -79,7 +79,8 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     if (requested && std::string(requested)=="activity-profession-recover-v1") {
         RunIsolatedProfessionRecoveryFixture();return;
     }
-    if (requested && std::string(requested)=="activity-profession-paid-v1") {
+    if (requested && (std::string(requested)=="activity-profession-paid-v1" ||
+        std::string(requested)=="activity-profession-vendor-walk-v1")) {
         if (state->craftFixture.request.task.actor) RunIsolatedCraftFixture();
         else RunIsolatedVendorFixture();
         return;

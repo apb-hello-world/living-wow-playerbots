@@ -29,7 +29,9 @@ namespace {
 void LivingActivityCoordinator::RunIsolatedVendorFixture() {
     MANGOS_ASSERT(OnWorldThread());
     RequireIsolatedNativeFixtureEnvironment();
-    const bool paid=std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE"))=="activity-profession-paid-v1";
+    const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    const bool walk=suite=="activity-profession-vendor-walk-v1";
+    const bool paid=suite=="activity-profession-paid-v1" || walk;
     state->vendorFixtureFaults=std::string(std::getenv("LIVING_WOW_NATIVE_FIXTURE"))=="activity-vendor-failure-v1";
     if (state->fixtureFinished || NowMs()<state->fixtureNext) return;
     state->fixtureNext=NowMs()+1000;
@@ -42,7 +44,7 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
     auto& quote=state->vendorFixtureQuote;
     auto emit=[&](bool passed,const std::string& reason) {
         boost::property_tree::ptree report;
-        report.put("suite",paid ? "activity-profession-paid-v1" : state->vendorFixtureFaults ? "activity-vendor-failure-v1" : "activity-vendor-v1"); report.put("boot",state->boot);
+        report.put("suite",suite); report.put("boot",state->boot);
         report.put("test_only",true); report.put("outcome",passed ? "passed" : "failed");
         report.put("failure",reason); report.put("last_blocker",state->vendorFixtureBlocker);
         report.put("fixture_step",state->admissionFixtureStep);
@@ -58,6 +60,11 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
         report.put("entry",quote.entry); report.put("purchased_quantity",quote.quantity);
         report.put("native_count_before",state->vendorFixtureCountBefore);
         report.add_child("selection_rejections",state->vendorFixtureSelection);
+        if(walk) {
+            report.put("vendor_walk_requested",true);
+            report.put("fixture_initial_distance",state->craftFixture.travelInitialDistance);
+            report.add_child("vendor_walk_trace",state->craftFixture.travelTrace);
+        }
         report.put("fault_injection_requested",state->vendorFixtureFaults);
         if (state->vendorFixtureFaults) {
             report.put("native_save_attempts",state->nativeSaveFixtureAttempts);
@@ -220,6 +227,49 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
         if(paid && state->admissionFixtureStep<5) {
             require(saved!=state->cache.end(),"ordinary_purchase_saved_job_present");
             request.task=saved->second;
+            auto& movement=state->craftFixture;
+            const auto vendorGuid=ObjectGuid(HIGHGUID_UNIT,state->vendorFixtureEntry,state->vendorFixtureSpawn);
+            if(walk && !movement.travelPositioned) {
+                auto* vendor=bot->GetPlayerbotAI()->GetUnit(vendorGuid);
+                require(vendor,"vendor_walk_real_service");
+                float closest=90.0f,x=0,y=0,z=0;bool reachable=false;
+                for(const auto guid:bot->GetPlayerbotAI()->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("nearest npcs no los")->Get()) {
+                    auto* npc=bot->GetPlayerbotAI()->GetUnit(guid);
+                    if(!npc || !npc->IsAlive() || npc->GetMap()!=bot->GetMap() || sServerFacade.IsHostileTo(npc,bot)) continue;
+                    const auto distance=std::hypot(npc->GetPositionX()-vendor->GetPositionX(),npc->GetPositionY()-vendor->GetPositionY());
+                    if(distance<30.0f || distance>=closest) continue;
+                    PathFinder path(bot);path.calculate(npc->GetPositionX(),npc->GetPositionY(),npc->GetPositionZ(),false);
+                    const auto type=path.getPathType();
+                    if(!(type&PATHFIND_NORMAL) || type&(PATHFIND_NOPATH|PATHFIND_SHORTCUT|PATHFIND_INCOMPLETE|PATHFIND_NOT_USING_PATH)) continue;
+                    x=npc->GetPositionX();y=npc->GetPositionY();z=npc->GetPositionZ();closest=distance;reachable=true;
+                }
+                require(reachable,"vendor_walk_safe_outside_service_start");
+                movement.travelX=x;movement.travelY=y;movement.travelZ=z;
+                movement.travelInitialDistance=closest;movement.travelPositioned=true;movement.travelSampleAt=NowMs();
+                // Explicit setup only. All measured movement after this point
+                // comes from the ordinary saved service runner/pathfinder.
+                bot->NearTeleportTo(x,y,z,0);return;
+            }
+            if(walk && !movement.travelArrived) {
+                if(!movement.travelStarted) {
+                    NativeVendorQuote outside;std::string why;
+                    require(!PlanNativeProfessionPurchase(*bot,request.task,{3371,5},outside,why) &&
+                        why=="profession_vendor_travel_required","vendor_walk_starts_outside_any_usable_seller");
+                    movement.travelStarted=true;
+                }
+                require(bot->GetMapId()==request.task.context.map && !NativeSafety(bot),"vendor_walk_no_transfer_or_safety_bypass");
+                const float moved=std::hypot(bot->GetPositionX()-movement.travelX,bot->GetPositionY()-movement.travelY);
+                require(moved<=12.0f*float(NowMs()-movement.travelSampleAt)/1000.0f+1.0f,"vendor_walk_bounded_native_motion");
+                if(moved>0.2f) ++movement.travelSamples;
+                movement.travelSampleAt=NowMs();movement.travelX=bot->GetPositionX();movement.travelY=bot->GetPositionY();movement.travelZ=bot->GetPositionZ();
+                boost::property_tree::ptree sample;sample.put("at_ms",NowMs());sample.put("x",movement.travelX);sample.put("y",movement.travelY);
+                sample.put("z",movement.travelZ);sample.put("revision",request.task.revision);sample.put("step",request.task.checkpoint.step);
+                movement.travelTrace.push_back({"",sample});
+                if(bot->GetNPCIfCanInteractWith(vendorGuid,UNIT_NPC_FLAG_VENDOR) && request.task.phase==Phase::Preparing) {
+                    require(movement.travelSamples>=3 && movement.travelConflictChecked,"same_saved_job_walked_to_exact_vendor");
+                    movement.travelArrived=true;
+                }
+            }
             for(const auto& entry : state->operations) if(entry.second.request.transition.task.id==request.task.id) {
                 require(entry.second.request.kind=="vendor_purchase","ordinary_purchase_only_expected_native_operation");
                 operation=entry.second.request;
@@ -239,10 +289,21 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
             }
             const auto before=state->nativeDispatches;
             state->vendorFixtureBlocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+            if(walk && !movement.travelConflictChecked && request.task.phase==Phase::Traveling) {
+                const auto monotonic=uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+                const auto owner=state->authority.Inspect(request.task.actor,monotonic);
+                if(owner.code==AuthorityCode::Allowed && owner.lease.rootTask==request.task.id) {
+                    require(!PermitEffects(*bot->GetPlayerbotAI(),{Mask(Effect::Movement)|Mask(Effect::TravelTarget),Lane::Managed,true},
+                        "isolated_unowned_vendor_target"),"unowned_target_cannot_replace_vendor_travel");
+                    movement.travelConflictChecked=true;
+                }
+            }
             const auto dispatched=state->nativeDispatches-before;
             require(dispatched<=1,"ordinary_purchase_bounded_native_dispatch");
             state->operationFixtureCalls+=dispatched;
             if(dispatched) {
+                require(!walk || movement.travelArrived,"vendor_purchase_requires_proven_arrival");
                 require(!operation.transition.receipt.empty() && state->operationFixtureCalls==1,
                     "ordinary_purchase_dispatched_once_from_saved_intent");
                 require(state->pending.size()==1 && state->pending.front().nativeSave &&

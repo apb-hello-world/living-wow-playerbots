@@ -42,7 +42,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     auto& fixture=state->craftFixture;auto& request=fixture.request;auto& operation=fixture.operation;
     const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     const bool interrupted=suite=="activity-craft-interrupted-v1";
-    const bool paid=suite=="activity-profession-paid-v1";
+    const bool vendorWalk=suite=="activity-profession-vendor-walk-v1";
+    const bool paid=suite=="activity-profession-paid-v1" || vendorWalk;
     const bool banked=suite=="activity-profession-bank-v1";
     const bool checkpoint=suite=="activity-profession-mail-checkpoint-v1";
     const bool travelRetry=suite=="activity-profession-mail-travel-resume-v1";
@@ -116,7 +117,13 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         }
         if (paid) {
             report.put("ordinary_vendor_producer",true);
-            report.put("vendor_travel_proof",false); // Explicit starting fixture at a real shop.
+            report.put("vendor_travel_proof",passed && vendorWalk && fixture.travelArrived && fixture.travelConflictChecked);
+            if(vendorWalk) {
+                report.put("vendor_walk_samples",fixture.travelSamples);
+                report.put("fixture_initial_distance",fixture.travelInitialDistance);
+                report.put("vendor_walk_native_guid",ObjectGuid(HIGHGUID_UNIT,state->vendorFixtureEntry,state->vendorFixtureSpawn).GetRawValue());
+                report.add_child("vendor_walk_trace",fixture.travelTrace);
+            } // A local native walk still does not prove a long route/transport.
             report.put("vendor_operation",state->operationFixtureRequest.transition.receipt);
             report.put("vendor_dispatches",state->operationFixtureCalls);
             report.put("native_price",state->vendorFixtureQuote.copper);
