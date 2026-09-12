@@ -107,13 +107,29 @@ void RunIsolatedProfessionCohort(FixtureState& state) {
         if(!state.professionCohortDeadline)state.professionCohortDeadline=NowMs()+1800000;
         if(NowMs()>state.professionCohortDeadline){emit(false,"cohort_deadline_with_preserved_tasks");return;}
         state.enforceEffects.store(true,std::memory_order_release);
-        unsigned active=0,finished=0;
+        unsigned finished=0;state.professionCohortRunnable.clear();
+        // Waiting obligations retain their identity and goods but need not
+        // occupy a test execution slot. Already admitted atomic work wins over
+        // a waking wait; the fixture never raises native concurrency to rush.
+        for(const auto& f:state.professionCohort) {
+            const bool atomic=std::any_of(state.operations.begin(),state.operations.end(),[&](const auto& op) {
+                return op.second.request.transition.task.id==f.task;
+            });
+            const bool writing=std::any_of(state.pending.begin(),state.pending.end(),[&](const auto& write) {
+                return write.task.id==f.task;
+            });
+            if(atomic || writing)state.professionCohortRunnable.insert(f.task);
+        }
+        require(state.professionCohortRunnable.size()<=4,"cohort_atomic_concurrency_bound");
         for(auto& f:state.professionCohort) {
             auto saved=sLivingActivityCoordinator.ReadSavedTask(f.task);
             if(saved || f.restoredCompletedRevision)f.started=true;
             if(f.finished){++finished;continue;}
-            if(!f.started && active>=4)continue;
-            ++active;
+            if(saved && saved->phase==Phase::WaitingExternal && saved->retryAtMs>NowMs()) {
+                f.blocker=saved->checkpoint.blocker;continue;
+            }
+            if(!state.professionCohortRunnable.count(f.task) && state.professionCohortRunnable.size()>=4)continue;
+            state.professionCohortRunnable.insert(f.task);
             auto* actor=sRandomPlayerbotMgr.GetPlayerBot(f.actor);
             if(!actor) {
                 if(!f.requested && sRandomPlayerbotMgr.GetAllBots().size()<49) {
@@ -128,7 +144,7 @@ void RunIsolatedProfessionCohort(FixtureState& state) {
                 require(actor->GetSkillValuePure(f.skill)>f.skillBefore && actor->GetItemCount(f.output,true)>f.outputBefore &&
                     actor->GetMoney()<f.moneyBefore,"cohort_restored_native_state_changed");
                 require(!sLivingActivityCoordinator.DefersNativeSave(f.actor),"cohort_native_save_pending");
-                f.finished=true;f.blocker.clear();++finished;--active;continue;
+                f.finished=true;f.blocker.clear();++finished;state.professionCohortRunnable.erase(f.task);continue;
             }
             if(!f.started) {
                 require(actor->GetMoney()==f.moneyBefore && actor->GetSkillValuePure(f.skill)==f.skillBefore &&
@@ -160,7 +176,7 @@ void RunIsolatedProfessionCohort(FixtureState& state) {
                 require(actor->GetSkillValuePure(f.skill)>f.skillBefore && actor->GetItemCount(f.output,true)>f.outputBefore &&
                     actor->GetMoney()<f.moneyBefore,"cohort_native_paid_craft_required");
                 require(!sLivingActivityCoordinator.DefersNativeSave(f.actor),"cohort_native_save_pending");
-                f.finished=true;f.blocker.clear();++finished;--active;
+                f.finished=true;f.blocker.clear();++finished;state.professionCohortRunnable.erase(f.task);
             }
         }
         if(finished==state.professionCohort.size())emit(true,"");

@@ -17,6 +17,7 @@
 #include "LivingProfessionSettlement.h"
 #include "LivingProfessionResume.h"
 #include "LivingProfessionAttempt.h"
+#include "LivingPreparationWait.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingNativeRecipeLearning.h"
 #include "LivingRecipeLearningSettlement.h"
@@ -322,6 +323,7 @@ struct LivingActivityCoordinator::State {
     boost::property_tree::ptree professionCohortSetup;
     std::string professionCohortId;
     bool professionCohortRestored=false;
+    std::set<std::string> professionCohortRunnable; // World-thread-only copied fixture admission.
     uint64_t professionCohortDeadline=0;
     NativeVendorQuote vendorFixtureQuote;
     uint32_t vendorFixtureSpawn=0,vendorFixtureEntry=0;
@@ -1122,10 +1124,23 @@ void LivingActivityCoordinator::Update() {
                     Turn(std::string& value,const std::string& task):current(value){current=task;}
                     ~Turn(){current.clear();}
                 } turn(state->executingTask,id);
-                const auto progress=IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
+                auto progress=IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
                     AdvanceProfessionJob(saved->second.actor,id);
+                Task waiting;
+                if(!progress.completed && PrepareExternalPreparationWait(saved->second,progress.blocker,now,waiting)) {
+                    TaskRequest request;request.task=std::move(waiting);request.expectedRevision=saved->second.revision;
+                    request.receipt=NewId();
+                    // SubmitTask rejects outstanding native effects and releases
+                    // transient ownership without touching held resource claims.
+                    const auto parked=SubmitTask(request);
+                    if(parked.code!=AdmissionCode::Pending && parked.code!=AdmissionCode::Saved)
+                        progress.blocker=parked.blocker;
+                }
                 state->executionBlockers[id]=progress.blocker;
-                if (!progress.completed) {state->executionTimes[id]=now+5000;state->executionDue.emplace(now+5000,id);}
+                if (!progress.completed) {
+                    const auto next=NextPreparationDispatch(now,saved->second.retryAtMs);
+                    state->executionTimes[id]=next;state->executionDue.emplace(next,id);
+                }
             }
             return;
         }
@@ -1972,6 +1987,11 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return stop("profession_saved_job_unavailable");
     if (saved->phase==Phase::Completed) {progress.completed=true;return stop("");}
     if (Terminal(saved->phase)) return stop("profession_job_terminal_requires_projection");
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    if(!state->professionCohortId.empty() &&
+        saved->sourceKey.compare(0,30,"isolated_profession_cohort_v1:")==0 &&
+        !state->professionCohortRunnable.count(id))return stop("isolated_cohort_execution_slot_wait");
+#endif
     if (!EffectEnforcementEnabled()) return stop("execution_disabled");
     if(state->ScheduledExecution(*saved) && state->executingTask!=id) {
         const auto prior=state->executionBlockers.find(id);
@@ -1999,17 +2019,21 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return stop(SubmitTask(request).blocker);
     };
     if (saved->phase==Phase::Queued) return advance(Phase::Preparing);
+    if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal) {
+        // Waiting does not require another market/claim snapshot. In particular
+        // an unchanged legacy reservation must not prevent eventual revalidation.
+        if(ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) ||
+            bot->GetMap()->IsDungeon() || LivingServiceExecution::Busy(bot))return stop("profession_safety_pause");
+        if(saved->retryAtMs>NowMs())return stop(saved->checkpoint.blocker.empty() ?
+            "profession_retry_not_due" : saved->checkpoint.blocker);
+        return advance(Phase::Reconciling);
+    }
+    if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
     ProfessionSnapshot snapshot;std::string blocker;
     if (!ReadProfessionSnapshot(actor,id,saved->revision,snapshot,blocker)) return stop(blocker);
     const auto next=NextProfessionStep(*saved,snapshot);
     if (next.step==ProfessionStep::Finalize)
         return stop(SettleProfessionJob(actor,id,saved->revision,NewId()).blocker);
-    if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal) {
-        if(!snapshot.safe) return stop("profession_safety_pause");
-        if(!snapshot.retryReady) return stop("profession_retry_not_due");
-        return advance(Phase::Reconciling);
-    }
-    if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
     ServiceDestination service;
     if (ParseServiceStep(saved->checkpoint.step,service) || next.step==ProfessionStep::PrepareCapacity ||
         next.step==ProfessionStep::ReachBank || next.step==ProfessionStep::ReachStation ||

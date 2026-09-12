@@ -1,9 +1,42 @@
 #include "LivingProfessionJob.h"
 #include "LivingActivityRequests.h"
 #include "LivingProfessionEconomy.h"
+#include "LivingPreparationWait.h"
 #include <cassert>
 using namespace LivingActivity;
 int main() {
+    {
+        Task task;task.id=task.root="7da35c8f-3400-4219-8140-498088fc3092";
+        task.mode=Mode::Active;task.phase=Phase::Preparing;task.updatedAtMs=100;
+        task.checkpoint.data="{\"recipe\":2881}";task.checkpoint.activeElapsedMs=1500;
+        task.dueAtMs=150;Task waiting;
+        for(const auto* blocker:{"purchase_seller_weekly_limit","purchase_protected_money_shortfall",
+            "purchase_hourly_limit","purchase_daily_limit","profession_material_has_legacy_commitment",
+            "profession_paid_material_in_transit","profession_material_source_unavailable","vendor_limited_stock_unavailable"}) {
+            assert(PrepareExternalPreparationWait(task,blocker,200,waiting));
+            assert(waiting.phase==Phase::WaitingExternal && waiting.revision==task.revision+1);
+            assert(waiting.retryAtMs==300200 && waiting.checkpoint.blocker==blocker);
+            assert(waiting.id==task.id && waiting.checkpoint.data==task.checkpoint.data &&
+                waiting.checkpoint.activeElapsedMs==1500 && waiting.dueAtMs==150 && waiting.accepted);
+            assert(!ConsumesActiveTime(waiting.phase));
+            const auto alreadyWaiting=waiting;
+            assert(!PrepareExternalPreparationWait(alreadyWaiting,blocker,300,waiting));
+        }
+        for(const auto* unknown:{"purchase_budget_queued","native_save_postcondition_rejected",
+            "profession_operation_requires_reconciliation","profession_tool_required","profession_safety_pause",""})
+            assert(!PrepareExternalPreparationWait(task,unknown,200,waiting));
+        for(auto phase:{Phase::Executing,Phase::Completed,Phase::Cancelled,Phase::Failed,Phase::Reconciling}) {
+            auto changed=task;changed.phase=phase;
+            assert(!PrepareExternalPreparationWait(changed,"purchase_daily_limit",200,waiting));
+        }
+        assert(!PrepareExternalPreparationWait(task,"purchase_daily_limit",99,waiting));
+        assert(!PrepareExternalPreparationWait(task,"purchase_daily_limit",UINT64_MAX,waiting));
+        auto changed=task;changed.revision=UINT64_MAX;
+        assert(!PrepareExternalPreparationWait(changed,"purchase_daily_limit",200,waiting));
+        assert(NextPreparationDispatch(200,300200)==300200);
+        assert(NextPreparationDispatch(300200,300200)==305200);
+        assert(NextPreparationDispatch(UINT64_MAX,0)==UINT64_MAX);
+    }
     assert(EconomyOwnershipState(false,false,false)==EconomyOwnershipProjection::Pending);
     assert(EconomyOwnershipState(true,false,false)==EconomyOwnershipProjection::Pending); // Partial schema is not absence.
     assert(EconomyOwnershipState(false,true,false)==EconomyOwnershipProjection::Pending); // Failed probe cannot permit legacy.

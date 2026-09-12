@@ -150,8 +150,10 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
             const auto frame=Frame(task.actor,recovered.get_child("frame"));
             Require(frame.skill==decoded.skill && frame.money==decoded.money,"stored_craft_recovery_state_changed");
             InputBacking(job,decoded.inputs,frame);
-            for (const auto& use:decoded.inputs) for(const auto& stack:frame.stacks)
-                if(stack.guid==use.before.itemGuid) Require(stack.count==use.before.quantity,"stored_craft_recovery_quantity_changed");
+            std::map<uint32_t,uint64_t> reserved;
+            for(const auto& use:decoded.inputs)reserved[use.before.itemGuid]+=use.before.quantity;
+            for(const auto& stack:frame.stacks)if(reserved.count(stack.guid))
+                Require(stack.count==reserved[stack.guid],"stored_craft_recovery_quantity_changed");
             StoredCraftProof parsed;parsed.inputs=std::move(decoded.inputs);
             parsed.attempt.recipe=job.recipe;parsed.attempt.skillBefore=parsed.attempt.skillAfter=frame.skill;
             parsed.attempt.receipt=receipt;parsed.attempt.committed=true;

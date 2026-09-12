@@ -82,8 +82,24 @@ void TestInterruptedProfession() {
         ",\"item_gain\":"+ItemGainSpecJson(inputs.output)+'}';
     merged.history.interruptedCraft=pending;merged.batch.claims.clear();
     for(const auto& use:inputs.inputs)merged.batch.claims.push_back(use.before);
-    assert(prepare(merged));
+    assert(prepare(merged));const auto mergedAccepted=result.task;
     auto missing=merged;missing.frame.stacks.back().count=4;assert(!prepare(missing));
+
+    // On a later restart, the saved non-commit must remain readable with the
+    // two paid claims on one physical stack, not just at its first recovery.
+    auto recoveredMerged=pending;recoveredMerged.receipt.state=OperationState::Rejected;
+    recoveredMerged.receipt.evidence="native_craft_intent_not_committed";
+    recoveredMerged.receipt.nativeReference="spell:"+std::to_string(job.recipe)+":operation:"+pending.receipt.id;
+    recoveredMerged.afterState="{\"recovery\":{\"version\":1,\"basis\":\"atomic_native_save_absent\",\"boot\":\""+
+        merged.current.boot+"\"},\"frame\":"+FrameJson(merged.frame)+'}';
+    assert(DecodeStoredCraftProof(mergedAccepted,recoveredMerged,proof,blocker));
+    assert(proof.inputs.size()==4 && proof.attempt.committed && !proof.attempt.nativeEffectVerified);
+    for(const auto count:{4u,6u}) {
+        auto wrong=recoveredMerged;auto changedFrame=merged.frame;changedFrame.stacks.back().count=count;
+        wrong.afterState="{\"recovery\":{\"version\":1,\"basis\":\"atomic_native_save_absent\",\"boot\":\""+
+            merged.current.boot+"\"},\"frame\":"+FrameJson(changedFrame)+'}';
+        assert(!DecodeStoredCraftProof(mergedAccepted,wrong,proof,blocker));
+    }
 
     auto after=merged.frame;after.skill=2;after.stacks={{705,804,job.outputEntry,1,0,23}};
     auto success=SavedCraft(merged.task,job,merged.frame,after,false,true);
