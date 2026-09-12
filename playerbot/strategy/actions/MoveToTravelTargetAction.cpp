@@ -231,7 +231,11 @@ bool MoveToTravelTargetAction::isUseful()
     if (!managedService && !progressionRecoveryTarget && !sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow()) && !ai->AllowActivity(TRAVEL_ACTIVITY))
         return false;
 
-    if (!AI_VALUE(bool, "travel target traveling") && AI_VALUE(TravelTarget*, "travel target")->GetStatus() != TravelStatus::TRAVEL_STATUS_READY)
+    // The generic cached value follows the group leader's route. An explicitly
+    // released service step must inspect its own installed target instead.
+    if (travelTarget->GetStatus()!=TravelStatus::TRAVEL_STATUS_READY &&
+        (managedService ? travelTarget->GetStatus()!=TravelStatus::TRAVEL_STATUS_TRAVEL :
+            !AI_VALUE(bool, "travel target traveling")))
         return false;
 
     if (bot->IsTaxiFlying())
