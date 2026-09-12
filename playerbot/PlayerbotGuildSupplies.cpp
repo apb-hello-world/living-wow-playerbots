@@ -216,14 +216,30 @@ struct PlayerbotGuildSupplies::State {
         }
         return best;
     }
+    bool ClaimService(Player* p,Delivery& d,uint32 now) {
+        const auto acquisition=sPlayerbotRendezvousManager.AcquirePartyActivityLease(p->GetGUIDLow(),Owner::guild_supply,Phase::traveling,90,
+            "guild_supply_delivery",std::to_string(d.id),d.lease);
+        if(!acquisition.Permitted()) {
+            Block(d,acquisition.blocker,now);
+            return false; // Neither proximity nor an old route handle grants ownership.
+        }
+        moving[p->GetGUIDLow()]=d.id;
+        return true;
+    }
     WorldObject* Reach(Player* p,Delivery& d,bool mail,uint32 now,uint32 npcFlag=0) {
         const uint32 type=npcFlag?100000+npcFlag:uint32(mail?GAMEOBJECT_TYPE_MAILBOX:GAMEOBJECT_TYPE_GUILD_BANK);
         const std::string workingReason=npcFlag?(npcFlag==UNIT_NPC_FLAG_VENDOR?"clearing_bags_at_vendor":"clearing_bags_at_personal_bank"):"";
         auto working=[&]() {if(d.blocker!=workingReason) {d.blocker=workingReason;CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET blocker='%s',updated_at=%u WHERE delivery_id=%llu",workingReason.c_str(),now,(unsigned long long)d.id);}};
         const auto nearby=p->GetPlayerbotAI()->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>(npcFlag?"nearest npcs no los":"nearest game objects no los")->Get();
         for(auto guid:nearby) {
-            if(npcFlag) {if(auto* npc=p->GetNPCIfCanInteractWith(guid,npcFlag)) {working();return npc;}}
-            else if(auto* go=p->GetGameObjectIfCanInteractWith(guid,GameobjectTypes(type))) {working();return go;}
+            if(npcFlag) {if(auto* npc=p->GetNPCIfCanInteractWith(guid,npcFlag)) {
+                if(!ClaimService(p,d,now)) return nullptr;
+                working();return npc;
+            }}
+            else if(auto* go=p->GetGameObjectIfCanInteractWith(guid,GameobjectTypes(type))) {
+                if(!ClaimService(p,d,now)) return nullptr;
+                working();return go;
+            }
         }
         // Online town breaks may use a service already reached by normal
         // errands, but must not install a competing route or teleport.
@@ -232,14 +248,8 @@ struct PlayerbotGuildSupplies::State {
         for(const auto& s:services) if(s.guid==d.service&&s.type==type) {service=&s;break;}
         if(!service) {service=Destination(p,mail,npcFlag);if(service) {d.service=service->guid;d.distance=1e30f;d.progress=now;d.attempts=0;}}
         if(!service) {Block(d,"no_accessible_service",now,true);return nullptr;}
-        const auto acquisition=sPlayerbotRendezvousManager.AcquirePartyActivityLease(p->GetGUIDLow(),Owner::guild_supply,Phase::traveling,90,
-            "guild_supply_delivery",std::to_string(d.id),d.lease);
-        if(!acquisition.Permitted()) {
-            Block(d,acquisition.blocker,now);
-            return nullptr; // Keep native possessions and the accepted delivery.
-        }
+        if(!ClaimService(p,d,now)) return nullptr;
         working();
-        moving[p->GetGUIDLow()]=d.id;
         const float distance=p->GetMapId()==service->map?p->GetDistance(service->x,service->y,service->z):1e20f;
         if(distance+2<d.distance) {d.distance=distance;d.progress=now;}
         if(distance<=600&&now<d.progress+30&&now>=d.nextMove) {
