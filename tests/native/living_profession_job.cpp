@@ -162,6 +162,17 @@ int main() {
     snapshot.bankAccess=snapshot.tools=snapshot.atStation=true; snapshot.skill=1;
     snapshot.stock={{2934,3,0,0,0,false}};
     assert(NextProfessionStep(saved,snapshot).step==ProfessionStep::Execute);
+    auto sourceSnapshot=snapshot;sourceSnapshot.stock[0].bag=0;
+    sourceSnapshot.stock[0].sourceBlocker="profession_vendor_catalog_not_ready";
+    assert(NextProfessionStep(saved,sourceSnapshot).blocker=="profession_vendor_catalog_not_ready");
+    sourceSnapshot.stock[0].bank=3;
+    assert(NextProfessionStep(saved,sourceSnapshot).step==ProfessionStep::Withdraw);
+    sourceSnapshot.stock[0].bank=0;sourceSnapshot.stock[0].delivered=3;
+    assert(NextProfessionStep(saved,sourceSnapshot).step==ProfessionStep::Collect);
+    sourceSnapshot.stock[0].delivered=0;sourceSnapshot.stock[0].sourceAvailable=true;
+    assert(NextProfessionStep(saved,sourceSnapshot).step==ProfessionStep::Purchase);
+    sourceSnapshot.retryReady=false;
+    assert(NextProfessionStep(saved,sourceSnapshot).blocker=="profession_retry_not_due");
     auto changed=snapshot; changed.complete=false;
     assert(NextProfessionStep(saved,changed).step==ProfessionStep::Reconcile);
     changed=snapshot; ++changed.revision;

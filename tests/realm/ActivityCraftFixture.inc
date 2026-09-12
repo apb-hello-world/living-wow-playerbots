@@ -115,6 +115,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             }
         }
         if (paid) {
+            report.put("ordinary_vendor_producer",true);
+            report.put("vendor_travel_proof",false); // Explicit starting fixture at a real shop.
             report.put("vendor_operation",state->operationFixtureRequest.transition.receipt);
             report.put("vendor_dispatches",state->operationFixtureCalls);
             report.put("native_price",state->vendorFixtureQuote.copper);

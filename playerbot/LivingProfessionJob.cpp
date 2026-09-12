@@ -262,6 +262,7 @@ namespace LivingActivity {
         if (!snapshot.useful) return stop(ProfessionStep::Defer, "profession_recipe_no_longer_useful");
 
         bool withdraw = false, collect = false, incoming = false, unavailable = false;
+        std::string sourceBlocker;
         std::vector<ProfessionReagent> bank, mail, buy;
         for (size_t i = 0; i < job.reagents.size(); ++i) {
             const auto& need = job.reagents[i]; const auto& stock = snapshot.stock[i];
@@ -274,7 +275,10 @@ namespace LivingActivity {
             if (expected) { incoming = true; missing -= expected; }
             if (missing) {
                 if (stock.sourceAvailable) buy.push_back({need.entry,missing});
-                else unavailable = true;
+                else {
+                    unavailable = true;
+                    if(sourceBlocker.empty() && IsToken(stock.sourceBlocker)) sourceBlocker=stock.sourceBlocker;
+                }
             }
         }
         if (!snapshot.capacity) return stop(ProfessionStep::PrepareCapacity, "profession_capacity_required");
@@ -287,7 +291,7 @@ namespace LivingActivity {
         if (collect) { decision.step = ProfessionStep::Collect; decision.quantities = std::move(mail); return decision; }
         // Do not buy a partial speculative kit while a required reagent has no
         // valid source. Already paid/owned resources remain attached to this job.
-        if (unavailable) return stop(ProfessionStep::Defer, "profession_material_source_unavailable");
+        if (unavailable) return stop(ProfessionStep::Defer, sourceBlocker.empty()?"profession_material_source_unavailable":sourceBlocker.c_str());
         if (!buy.empty()) { decision.step = ProfessionStep::Purchase; decision.quantities = std::move(buy); return decision; }
         if (incoming) return stop(ProfessionStep::WaitForDelivery, "profession_paid_material_in_transit");
         if (!snapshot.tools) return stop(ProfessionStep::PrepareTools, "profession_tool_required");

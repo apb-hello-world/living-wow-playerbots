@@ -2,6 +2,7 @@
 #include "LivingTravelRegion.h"
 #include "PlayerbotRendezvousManager.h"
 #include "LivingActivityCoordinator.h"
+#include "LivingProfessionVendor.h"
 #include <numeric>
 #include <iomanip>
 
@@ -1114,6 +1115,7 @@ TravelState TravelTarget::GetTravelState() {
 
 void TravelMgr::Clear()
 {
+    LivingActivity::ClearNativeVendorSources();
 #ifndef MANGOSBOT_ZERO
     sObjectAccessor.ExecuteOnAllPlayers([this](Player* plr) { TravelMgr::SetNullTravelTarget(plr); });
 #else
@@ -1441,6 +1443,8 @@ void TravelMgr::LoadQuestTravelTable()
                 case TravelDestinationPurpose::Mail:
                 case TravelDestinationPurpose::Bank:
                     dests.push_back(AddDestination<RpgTravelDestination>(entry, purposeFlag));
+                    if(purposeFlag==TravelDestinationPurpose::Vendor && entry>0)
+                        LivingActivity::RegisterNativeVendorSource(uint32(entry));
                     break;
                 case TravelDestinationPurpose::GatherSkinning:
                 case TravelDestinationPurpose::GatherMining:
@@ -1473,6 +1477,7 @@ void TravelMgr::LoadQuestTravelTable()
         }       
     }     
 
+    LivingActivity::SealNativeVendorSources();
     sLog.outString("Loading Explore locations.");
 
     //Explore points

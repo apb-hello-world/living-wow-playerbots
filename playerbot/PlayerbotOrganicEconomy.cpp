@@ -7,6 +7,7 @@
 #include "LivingActivityScope.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingProfessionEconomy.h"
+#include "LivingProfessionVendor.h"
 #include "PlayerbotInventoryPressure.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
@@ -25,6 +26,7 @@
 #include "strategy/actions/BankAction.h"
 #include "strategy/actions/AhAction.h"
 #include "strategy/actions/MovementActions.h"
+#include "strategy/actions/ChooseTravelTargetAction.h"
 #include "Entities/GameObject.h"
 #include "Mails/Mail.h"
 
@@ -563,6 +565,16 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
     uint32 purpose=service==ServiceDestination::Mailbox ? uint32(ai::TravelDestinationPurpose::Mail) :
         uint32(ai::TravelDestinationPurpose::Bank);
     if(service==ServiceDestination::Vendor)purpose=uint32(ai::TravelDestinationPurpose::Vendor);
+    if(service==ServiceDestination::PurchaseVendor) {
+        ProfessionReagent need;std::vector<int32_t> vendors;std::string blocker;
+        if(!NextNativeProfessionVendorItem(*bot,*saved,need,vendors,blocker)) {
+            // Reinspect a changed prerequisite under preparation; it is not
+            // evidence of a completed purchase or permission to visit any shop.
+            ReleaseRecipeService(actor,"profession_vendor_demand_changed");
+            return {true,blocker,saved->checkpoint.activeElapsedMs};
+        }
+        return DriveRecipeService(bot,uint32(ai::TravelDestinationPurpose::Vendor),id,&*saved,need.entry,need.perAttempt);
+    }
     if(service==ServiceDestination::CraftingStation) {
         ProfessionJob job;std::string blocker;
         if(!DecodeProfessionJob(saved->checkpoint.data,job,blocker)) return {false,blocker,saved->checkpoint.activeElapsedMs};
@@ -574,13 +586,16 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
 }
 
 LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(Player* bot,uint32 purpose,
-    const std::string& goal,const LivingActivity::Task* saved)
+    const std::string& goal,const LivingActivity::Task* saved,uint32 purchaseItem,uint32 purchaseQuantity)
 {
     using namespace LivingActivity;
     using Owner=PlayerbotRendezvousManager::PartyActivityOwner;
     using Phase=PlayerbotRendezvousManager::PartyActivityPhase;
     ServiceTravelResult result;result.activeElapsedMs=saved?saved->checkpoint.activeElapsedMs:0;
     auto stop=[&](const std::string& blocker){result.blocker=blocker;return result;};
+    std::vector<int32_t> purchaseVendors;std::string sourceBlocker;
+    if(purchaseItem && (!saved || !NativeProfessionVendorSources(*bot,purchaseItem,purchaseQuantity,purchaseVendors,sourceBlocker)))
+        return stop(sourceBlocker.empty()?"profession_vendor_saved_source_required":sourceBlocker);
     const uint32 guid=bot->GetGUIDLow(), now=uint32(time(nullptr));
     const auto old=serviceTrips.find(guid);
     if(old!=serviceTrips.end()) result.activeElapsedMs=old->second.work.ActiveMs();
@@ -595,14 +610,14 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     if(serviceRetry[guid]>now) {result.retryAtMs=uint64(serviceRetry[guid])*1000;return stop("recipe_service_retry_wait");}
     auto* ai=bot->GetPlayerbotAI();auto* context=ai->GetAiObjectContext();
     auto* target=context->GetValue<ai::TravelTarget*>("travel target")->Get();
-    if(old!=serviceTrips.end() && (old->second.goal!=goal || old->second.purpose!=purpose)) {
+    if(old!=serviceTrips.end() && (old->second.goal!=goal || old->second.purpose!=purpose || old->second.purchaseItem!=purchaseItem)) {
         if(saved) return stop("saved_service_other_step_pending");
         ReleaseRecipeService(guid,"recipe_service_step_changed");
     }
     if(!serviceTrips.count(guid)) {
         if(!saved && target && (target->IsForced() || target->IsGroupCopy())) return stop("recipe_waiting_for_committed_route");
         if(serviceSequence==UINT64_MAX) return stop("recipe_service_queue_sequence_exhausted");
-        ServiceTrip trip;trip.goal=goal;trip.purpose=purpose;trip.started=trip.progress=now;
+        ServiceTrip trip;trip.goal=goal;trip.purpose=purpose;trip.purchaseItem=purchaseItem;trip.started=trip.progress=now;
         trip.ticket=++serviceSequence;
         if(saved) {trip.managedTask=*saved;trip.initialActiveMs=saved->checkpoint.activeElapsedMs;trip.work=WorkClock(trip.initialActiveMs);}
         serviceTrips.emplace(guid,trip);
@@ -691,7 +706,8 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
         WorldObject* candidate=nullptr;
         if(mail||focus) {auto* go=ai->GetGameObject(id);if(go && (mail?go->GetGoType()==GAMEOBJECT_TYPE_MAILBOX:
             go->GetGoType()==GAMEOBJECT_TYPE_SPELL_FOCUS && go->GetGOInfo()->spellFocus.focusId==(purpose&~FocusService))) candidate=go;}
-        else {auto* npc=ai->GetUnit(id);if(npc && npc->HasFlag(UNIT_NPC_FLAGS,flag) && !sServerFacade.IsHostileTo(npc,bot)) candidate=npc;}
+        else {auto* npc=ai->GetUnit(id);if(npc && npc->HasFlag(UNIT_NPC_FLAGS,flag) && !sServerFacade.IsHostileTo(npc,bot) &&
+            (!purchaseItem || std::binary_search(purchaseVendors.begin(),purchaseVendors.end(),int32(id.GetEntry())))) candidate=npc;}
         if(candidate && candidate->GetMap()==bot->GetMap() && bot->GetDistance(candidate)<distance) {
             service=candidate;distance=bot->GetDistance(candidate);
         }
@@ -701,6 +717,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
         const bool interact=mail ? bot->GetGameObjectIfCanInteractWith(service->GetObjectGuid(),GAMEOBJECT_TYPE_MAILBOX)!=nullptr :
             focus ? distance<=INTERACTION_DISTANCE : bot->GetNPCIfCanInteractWith(service->GetObjectGuid(),flag)!=nullptr;
         if(saved && interact) {
+            if(!bot->IsStopped()) bot->StopMoving();
             result.arrived=true;result.blocker="recipe_service_arrived";
             ReleaseRecipeService(guid,result.blocker);return result;
         }
@@ -733,7 +750,8 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
         result.blocker="recipe_traveling_to_crafting_station";
     } else {
         bool same=(!saved || trip.routeOwned) && target && target->GetDestination() &&
-            uint32(target->GetDestination()->GetPurpose())==purpose && target->IsActive();
+            uint32(target->GetDestination()->GetPurpose())==purpose && target->IsActive() &&
+            (!purchaseItem || std::binary_search(purchaseVendors.begin(),purchaseVendors.end(),target->GetDestination()->GetEntry()));
         if(same && target->GetPosition() && target->GetPosition()->getMapId()==bot->GetMapId()) {
             const float remaining=target->Distance(bot);
             if(remaining+2<trip.distance) {trip.distance=remaining;trip.progress=now;trip.work.Progress();}
@@ -743,7 +761,11 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             target->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
             context->ClearValues("travel target active");context->ClearValues("no active travel destinations");
             trip.requesting=true;
-            const bool requested=ai->DoSpecificAction("request travel target::"+std::to_string(purpose),Event("can move around","",bot),true);
+            bool requested=false;
+            if(purchaseItem) {
+                ai::RequestTravelTargetAction request(ai);Event event("can move around","",bot);
+                requested=request.RequestForEntries(event,ai::TravelDestinationPurpose::Vendor,purchaseVendors);
+            } else requested=ai->DoSpecificAction("request travel target::"+std::to_string(purpose),Event("can move around","",bot),true);
             trip.requesting=false;
             if(saved && requested) {trip.searchLease=trip.lease;trip.searchRevision=saved->revision;}
             result.blocker=requested?"recipe_service_route_requested":"recipe_service_route_pending";

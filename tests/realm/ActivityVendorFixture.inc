@@ -217,6 +217,28 @@ void LivingActivityCoordinator::RunIsolatedVendorFixture() {
             state->admissionFixtureStep=1;return;
         }
         const auto saved=state->cache.find(request.task.id);
+        if(paid && state->admissionFixtureStep<5) {
+            require(saved!=state->cache.end(),"ordinary_purchase_saved_job_present");
+            request.task=saved->second;
+            for(const auto& entry : state->operations) if(entry.second.request.transition.task.id==request.task.id) {
+                require(entry.second.request.kind=="vendor_purchase","ordinary_purchase_only_expected_native_operation");
+                operation=entry.second.request;
+                require(DecodeNativeVendorQuote(operation.beforeState,quote),"ordinary_purchase_exact_native_quote_saved");
+            }
+            const auto before=state->nativeDispatches;
+            state->vendorFixtureBlocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+            const auto dispatched=state->nativeDispatches-before;
+            require(dispatched<=1,"ordinary_purchase_bounded_native_dispatch");
+            state->operationFixtureCalls+=dispatched;
+            if(dispatched) {
+                require(!operation.transition.receipt.empty() && state->operationFixtureCalls==1,
+                    "ordinary_purchase_dispatched_once_from_saved_intent");
+                require(state->pending.size()==1 && state->pending.front().nativeSave &&
+                    state->pending.front().task.phase==Phase::Verifying,"ordinary_purchase_native_save_queued");
+                request.task=state->pending.front().task;state->admissionFixtureStep=5;
+            }
+            return;
+        }
         require(saved!=state->cache.end() && saved->second.revision==request.task.revision,"exact_fixture_receipt_saved");
         require(request.task.context==ReadNativeContext(*bot,state->policyRevision,state->boot),"fixture_context_current");
         auto advance=[&](Phase phase) {

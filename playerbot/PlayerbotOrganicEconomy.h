@@ -73,7 +73,7 @@ private:
         LivingActivity::ActivityLease searchLease;
         uint64 searchRevision=0,ticket=0,initialActiveMs=0;
         std::string goal;
-        uint32 purpose=0, started=0, progress=0, nextMove=0, attempts=0;
+        uint32 purpose=0, purchaseItem=0, started=0, progress=0, nextMove=0, attempts=0;
         float distance=1e30f;
         bool requesting=false, local=false,ready=false,routeOwned=false,routeInitialized=false;
     };
@@ -84,7 +84,7 @@ private:
     bool PrepareRecipeMail(Player* bot, uint32 entry, const std::string& goal, std::string& blocker);
     void ReachRecipeService(Player* bot, uint32 purpose, const std::string& goal, std::string& blocker);
     LivingActivity::ServiceTravelResult DriveRecipeService(Player* bot,uint32 purpose,
-        const std::string& goal,const LivingActivity::Task* saved);
+        const std::string& goal,const LivingActivity::Task* saved,uint32 purchaseItem=0,uint32 purchaseQuantity=0);
     void ReleaseRecipeService(uint32 guid, const std::string& reason);
     void PauseRecipeService(uint32 guid, const std::string& reason);
     std::map<uint32, std::string> lastBlockers;

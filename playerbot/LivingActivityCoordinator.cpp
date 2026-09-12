@@ -22,6 +22,7 @@
 #include "LivingNativeMailCollection.h"
 #include "LivingNativeVendorSale.h"
 #include "LivingProfessionDemand.h"
+#include "LivingProfessionVendor.h"
 #include "Mails/Mail.h"
 #include "LivingActivityTransfer.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
@@ -1531,6 +1532,12 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     const auto next=NextProfessionStep(*saved,snapshot);
     if (next.step==ProfessionStep::Finalize)
         return stop(SettleProfessionJob(actor,id,saved->revision,NewId()).blocker);
+    if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal) {
+        if(!snapshot.safe) return stop("profession_safety_pause");
+        if(!snapshot.retryReady) return stop("profession_retry_not_due");
+        return advance(Phase::Reconciling);
+    }
+    if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
     auto beginService=[&](ServiceDestination service) {
         if(saved->phase==Phase::Verifying) return advance(Phase::Preparing);
         if(saved->phase!=Phase::Preparing)
@@ -1542,12 +1549,6 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     };
     ServiceDestination service;
     if(ParseServiceStep(saved->checkpoint.step,service)) {
-        if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred) {
-            if(!snapshot.safe) return stop("profession_safety_pause");
-            if(!snapshot.retryReady) return stop("profession_retry_not_due");
-            return advance(Phase::Reconciling);
-        }
-        if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
         if(saved->phase==Phase::Preparing) return beginService(service);
         if(saved->phase==Phase::Traveling) {
             const auto route=sPlayerbotOrganicEconomy.ReachSavedService(actor,id,saved->revision,service);
@@ -1601,6 +1602,59 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(next.step==ProfessionStep::PrepareCapacity)return prepareCapacity();
     if(next.step==ProfessionStep::ReachBank) return beginService(ServiceDestination::PersonalBank);
     if(next.step==ProfessionStep::ReachStation) return beginService(ServiceDestination::CraftingStation);
+    if(next.step==ProfessionStep::Purchase && !next.quantities.empty()) {
+        if(saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
+        if(saved->phase!=Phase::Preparing) return stop("profession_purchase_preparation_required");
+        NativeVendorQuote quote;
+        if(!PlanNativeProfessionPurchase(*bot,*saved,next.quantities.front(),quote,blocker)) {
+            if(blocker=="profession_vendor_travel_required" || blocker=="vendor_actor_not_safely_available")
+                return beginService(ServiceDestination::PurchaseVendor);
+            if(blocker=="vendor_inventory_capacity_required") return prepareCapacity();
+            // A reached shop with exhausted stock is an external wait. Keep
+            // the job and possessions, but do not hammer the seller each tick.
+            if(blocker=="vendor_limited_stock_unavailable") {
+                TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
+                ++request.task.revision;request.task.phase=Phase::WaitingExternal;request.task.updatedAtMs=NowMs();
+                request.task.retryAtMs=request.task.updatedAtMs+300000;request.task.checkpoint.blocker=blocker;
+                request.receipt=NewId();return stop(SubmitTask(request).blocker);
+            }
+            return stop(blocker);
+        }
+        UnsettledClaimBatch batch;ResourceClaim held;
+        if(!ReadTaskClaims(actor,id,saved->revision,batch,blocker)) return stop(blocker);
+        for(const auto& claim:batch.claims) if(claim.location=="money") {
+            if(!held.id.empty() || claim.state!="held") return stop("profession_money_claims_require_reconciliation");
+            held=claim;
+        }
+        const auto operation=SourceId("profession_vendor_operation",id+":"+std::to_string(saved->revision));
+        const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Money),60000,"profession_vendor_prepare");
+        if(!grant.Permitted()) return stop(grant.blocker);
+        if(held.id.empty() || held.copper!=quote.copper) {
+            if(held.id.empty() && !ValidateNativeProfessionBudget(*bot,*saved,operation,quote.copper,blocker)) return stop(blocker);
+            ResourceClaim claim=held;uint64_t expected=held.revision;
+            if(held.id.empty()) {
+                expected=0;claim.id=NewId();claim.task=id;claim.actor=actor;claim.copper=quote.copper;
+                claim.location="money";claim.state="held";
+            } else {++claim.revision;claim.state="released";}
+            ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+            ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+            request.authorization=grant.action;request.changes.push_back({claim,expected});
+            NativeProfessionMoneyReservation adapter(quote,operation);
+            return stop(SubmitResourceReservation(request,adapter).blocker);
+        }
+        // Stable for this saved revision while the asynchronous budget read is
+        // pending; a new random ID on every visit would starve that read forever.
+        if(!ValidateNativeProfessionBudget(*bot,*saved,operation,quote.copper,blocker)) return stop(blocker);
+        OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+        ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+        request.transition.task.checkpoint.step="profession_vendor_purchase";request.transition.task.updatedAtMs=NowMs();
+        request.transition.receipt=operation;request.authorization=grant.action;request.kind="vendor_purchase";
+        request.effects=Mask(Effect::Inventory)|Mask(Effect::Money);request.persistence=NativePersistence::Inventory;
+        request.beforeState=EncodeNativeVendorQuote(quote);request.consumption.push_back({held,quote.copper});
+        request.itemGain={quote.entry,quote.quantity};
+        NativeProfessionPurchasePrerequisites prerequisites;NativeVendorPurchase adapter(quote,prerequisites);
+        return stop(SubmitOperationIntent(request,adapter).blocker);
+    }
     if (next.step==ProfessionStep::Collect && !next.quantities.empty()) {
         if (saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
         if (saved->phase!=Phase::Preparing) return stop("profession_mail_preparation_required");

@@ -1,6 +1,7 @@
 #include "botpch.h"
 #include "LivingProfessionNative.h"
 #include "LivingProfessionDemand.h"
+#include "LivingProfessionVendor.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingNativeCraftCapture.h"
@@ -74,12 +75,16 @@ namespace LivingActivity {
             }
         } else if (snapshot.blocker.empty()) snapshot.blocker=nativeBlocker;
         snapshot.bankAccess=NativeNearbyBanker(actor)!=0;
-        // Unknown sourcing still remains explicit. Owned bank stock now enters
-        // its real service step, without granting remote access or new items.
+        // Real spawned seller candidates, not generic vendors. Collection of
+        // owned/paid stock remains ahead of acquiring anything new.
         for (size_t i=0;i<job.reagents.size() && snapshot.blocker.empty();++i) {
-            const auto& have=snapshot.stock[i];
+            auto& have=snapshot.stock[i];
             if (have.bag>=job.reagents[i].perAttempt) continue;
-            if (!have.bank && !have.delivered && !have.paidInTransit) snapshot.blocker="profession_material_sources_not_planned";
+            if(have.bank || have.delivered || have.paidInTransit) continue;
+            const auto* item=sObjectMgr.GetItemPrototype(have.entry);uint32_t quantity=0;
+            std::vector<int32_t> sellers;
+            have.sourceAvailable=item && RequiredProfessionVendorQuantity(job.reagents[i],have,item->BuyCount,quantity,have.sourceBlocker) &&
+                NativeProfessionVendorSources(actor,have.entry,quantity,sellers,have.sourceBlocker);
         }
         // Completion evidence is evaluated before readiness blockers by the
         // finite policy. A successful receipt must not cause another craft just

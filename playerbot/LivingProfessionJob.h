@@ -68,6 +68,7 @@ namespace LivingActivity {
         // Incoming counts require an exact paid-order link, not matching mail.
         uint32_t bag = 0, bank = 0, paidInTransit = 0, delivered = 0;
         bool sourceAvailable = false;
+        std::string sourceBlocker = {};
     };
     bool RequiredProfessionVendorQuantity(const ProfessionReagent& need,const ProfessionStock& stock,
         uint32_t nativeBundle,uint32_t& quantity,std::string& blocker);
