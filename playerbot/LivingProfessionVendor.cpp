@@ -6,6 +6,7 @@
 #include "LivingTaskItemRequirements.h"
 #include "LivingNativeAuctionPurchase.h"
 #include "TravelMgr.h"
+#include "strategy/values/BudgetValues.h"
 #include <algorithm>
 #include <tuple>
 
@@ -116,21 +117,28 @@ namespace LivingActivity {
     }
     PurchaseSourcePreference PreferNativeProfessionSource(Player& actor,const Task& saved,
         const ProfessionReagent& need,const std::string& operation,const NativeVendorQuote* localVendor,
-        bool vendorOutOfStock,std::string& blocker) {
+        bool vendorOutOfStock,std::string& blocker,PurchaseSourceDiagnostics& diagnostics) {
+        diagnostics={};diagnostics.wallet=actor.GetMoney();
+        if(actor.GetPlayerbotAI())diagnostics.discretionary=actor.GetPlayerbotAI()->GetAiObjectContext()
+            ->GetValue<uint32>("free money for",uint32(ai::NeedMoneyFor::tradeskill))->Get();
         std::vector<NativeAuctionOffer> offers;
         if(!NativeAuctionOffers(actor,need.entry,need.perAttempt,offers,blocker))
             return blocker=="profession_purchase_market_snapshot_busy" ? PurchaseSourcePreference::Wait : PurchaseSourcePreference::Vendor;
-        const auto auctionDistance=NearestService(actor,uint32_t(ai::TravelDestinationPurpose::AH),{}).first;
+        const auto auctionService=NearestService(actor,uint32_t(ai::TravelDestinationPurpose::AH),{});
         const auto& offer=offers.front();
-        PurchaseSourceCandidate auction{offer.copper,offer.quantity,auctionDistance,true},vendor;
+        diagnostics.auctionService=auctionService.second;diagnostics.listing=offer.id;
+        auto& auction=diagnostics.auction;auto& vendor=diagnostics.vendor;
+        auction={offer.copper,offer.quantity,auctionService.first,true};
         if(localVendor)vendor={localVendor->copper,localVendor->quantity,0,true};
         else if(!vendorOutOfStock) {
             ProfessionReagent actual;std::vector<int32_t> vendors;
             if(NextNativeProfessionVendorItem(actor,saved,actual,vendors,blocker) && actual.entry==need.entry) {
                 const auto* item=sObjectMgr.GetItemPrototype(actual.entry);
                 const uint64_t price=item && item->BuyCount ? uint64_t(item->BuyPrice)*actual.perAttempt/item->BuyCount : 0;
-                if(price && price<=UINT32_MAX)
-                    vendor={uint32_t(price),actual.perAttempt,NearestService(actor,uint32_t(ai::TravelDestinationPurpose::Vendor),vendors).first,true};
+                if(price && price<=UINT32_MAX) {
+                    const auto service=NearestService(actor,uint32_t(ai::TravelDestinationPurpose::Vendor),vendors);
+                    vendor={uint32_t(price),actual.perAttempt,service.first,true};diagnostics.vendorService=service.second;
+                }
             }
         }
         if(!PreferAuctionSource(vendor,auction)) {blocker="vendor_price_and_travel_preferred";return PurchaseSourcePreference::Vendor;}

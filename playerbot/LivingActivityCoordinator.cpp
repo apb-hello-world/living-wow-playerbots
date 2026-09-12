@@ -229,6 +229,8 @@ struct LivingActivityCoordinator::State {
         // or per-tick database writes. A revision change makes this view stale.
         std::string professionTask, professionDecision;
         uint64_t professionRevision = 0, professionDecisionAt = 0;
+        boost::property_tree::ptree purchaseSource;
+        std::string purchaseSourceKey;
     };
     std::map<uint32_t, Binding> bindings;
     struct ActionObservation {
@@ -1273,6 +1275,9 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
         const auto binding=state->bindings.find(guid);
         if (binding!=state->bindings.end()) {
             const auto& decision=binding->second;
+            // Keep the last source choice across travel revisions, explicitly
+            // labelled as a past observation, not current execution proof.
+            if(!decision.purchaseSource.empty())p.add_child("last_purchase_source",decision.purchaseSource);
             const auto task=state->cache.find(decision.professionTask);
             if (task!=state->cache.end() && task->second.actor==guid &&
                 task->second.revision==decision.professionRevision && decision.professionDecisionAt) {
@@ -1774,13 +1779,40 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
         if(saved->phase!=Phase::Preparing) return stop("profession_purchase_preparation_required");
         const auto auctionOperation=SourceId("profession_auction_operation",id+":"+std::to_string(saved->revision));
+        auto chooseSource=[&](const NativeVendorQuote* localVendor,bool outOfStock) {
+            PurchaseSourceDiagnostics details;
+            const auto choice=PreferNativeProfessionSource(*bot,*saved,need,auctionOperation,localVendor,outOfStock,blocker,details);
+            const auto binding=state->bindings.find(actor);
+            if(binding!=state->bindings.end()) {
+                boost::property_tree::ptree view;
+                view.put("task",id);view.put("actor",actor);view.put("revision",saved->revision);view.put("item",need.entry);
+                view.put("choice",choice==PurchaseSourcePreference::Auction?"auction":choice==PurchaseSourcePreference::Wait?"wait":"vendor");
+                view.put("reason",blocker);view.put("wallet_copper",details.wallet);view.put("discretionary_copper",details.discretionary);
+                view.put("auction_listing",details.listing);view.put("vendor_service",details.vendorService);view.put("auction_service",details.auctionService);
+                auto candidate=[&](const char* name,const PurchaseSourceCandidate& value) {
+                    boost::property_tree::ptree item;item.put("available",value.available);
+                    item.put("copper",value.copper);item.put("quantity",value.quantity);
+                    if(std::isfinite(value.distance))item.put("distance",value.distance);
+                    item.put("reachable_estimate",std::isfinite(value.distance)&&value.available);
+                    if(std::isfinite(PurchaseSourceScore(value)))item.put("score",PurchaseSourceScore(value));
+                    view.add_child(name,item);
+                };
+                candidate("vendor",details.vendor);candidate("auction",details.auction);
+                const auto key=Json(view);auto& record=binding->second;
+                if(key!=record.purchaseSourceKey) {
+                    record.purchaseSourceKey=key;view.put("observed_at_ms",NowMs());view.put("transient",true);
+                    record.purchaseSource=view;sLog.outString("Living purchase source: %s",Json(view).c_str());
+                }
+            }
+            return choice;
+        };
         NativeVendorQuote quote;
         if(!PlanNativeProfessionPurchase(*bot,*saved,need,quote,blocker)) {
             if(blocker=="profession_vendor_source_unavailable" || blocker=="profession_vendor_item_or_bundle_invalid")
                 return purchaseAuction();
             if(blocker=="profession_vendor_travel_required" || blocker=="vendor_limited_stock_unavailable") {
                 const auto vendorBlocker=blocker;
-                const auto choice=PreferNativeProfessionSource(*bot,*saved,need,auctionOperation,nullptr,vendorBlocker=="vendor_limited_stock_unavailable",blocker);
+                const auto choice=chooseSource(nullptr,vendorBlocker=="vendor_limited_stock_unavailable");
                 if(choice==PurchaseSourcePreference::Auction)return purchaseAuction();
                 if(choice==PurchaseSourcePreference::Wait)return stop(blocker);
                 blocker=vendorBlocker;
@@ -1798,7 +1830,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             }
             return stop(blocker);
         }
-        const auto choice=PreferNativeProfessionSource(*bot,*saved,need,auctionOperation,&quote,false,blocker);
+        const auto choice=chooseSource(&quote,false);
         if(choice==PurchaseSourcePreference::Auction)return purchaseAuction();
         if(choice==PurchaseSourcePreference::Wait)return stop(blocker);
         UnsettledClaimBatch batch;ResourceClaim held;
