@@ -97,7 +97,9 @@
             fixture.blocker.clear();emit(true,"");return;
         }
         if(Terminal(saved->phase)) {emit(false,"job_ended_without_completion");return;}
-        if(saved->phase==Phase::Deferred && saved->checkpoint.blocker=="recipe_service_no_progress") {
+        const bool attemptedRoute=std::any_of(fixture.continuationTrace.begin(),fixture.continuationTrace.end(),
+            [](const auto& row){return row.second.template get<std::string>("phase","")=="traveling";});
+        if(attemptedRoute && saved->phase==Phase::Deferred && saved->checkpoint.blocker=="recipe_service_no_progress") {
             emit(false,"continuation_route_no_progress");return;
         }
         auto* travel=actor->GetPlayerbotAI()->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get();
@@ -105,6 +107,7 @@
         const bool original=state->enforceEffects.exchange(true,std::memory_order_acq_rel);
         struct Restore {State& state;bool original;~Restore(){state.enforceEffects.store(original,std::memory_order_release);}} restore{*state,original};
         fixture.blocker=AdvanceProfessionJob(saved->actor,taskId).blocker;
+        travel=actor->GetPlayerbotAI()->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get();
         const auto stamp=std::to_string(saved->revision)+":"+fixture.blocker+":"+std::to_string(travelBefore)+
             ":"+std::to_string(travel?int(travel->GetStatus()):-1);
         if(stamp!=fixture.lastCheckpoint) {
