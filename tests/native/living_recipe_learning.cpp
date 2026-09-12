@@ -103,7 +103,7 @@ int main() {
     assert(settlement.claims.size()==1 && settlement.claims[0].after.state=="released");
     assert(settlement.claims[0].after.itemGuid==440052 && settlement.claims[0].after.quantity==8);
     assert(settlement.claims[0].after.revision==stored.revision+1);
-    assert(settlement.plan.receiptQuery.find("c.state='released'")!=std::string::npos);
+    assert(settlement.plan.receiptQuery.find(SettlementClaimWhere(settlement.claims[0].after))!=std::string::npos);
     for (unsigned fault=0;fault<5;++fault) {
         auto badClaims=claims;auto badStock=stock;
         switch(fault) {
