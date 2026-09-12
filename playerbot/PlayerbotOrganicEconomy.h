@@ -75,9 +75,9 @@ private:
         uint64 searchRevision=0,ticket=0,initialActiveMs=0,routeRevision=0;
         LivingActivity::ServicePathProgress pathProgress;
         std::string goal;
-        uint32 purpose=0, purchaseItem=0, started=0, progress=0, nextMove=0, attempts=0;
+        uint32 purpose=0, purchaseItem=0, started=0, progress=0, nextMove=0, attempts=0,nextCatchup=0;
         float distance=1e30f;
-        bool requesting=false, local=false,ready=false,routeOwned=false,routeInitialized=false;
+        bool requesting=false, local=false,ready=false,routeOwned=false,routeInitialized=false,catchupUsed=false;
     };
     std::map<uint32, ServiceTrip> serviceTrips;
     uint64 serviceSequence=0;

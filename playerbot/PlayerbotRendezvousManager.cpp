@@ -2527,6 +2527,36 @@ bool PlayerbotRendezvousManager::TryErrandServiceCatchup(PartySession& session, 
     if (!IsPointUnobserved(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()))
         return false;
 
+    WorldPosition landing;
+    if (!FindSafeServiceApproach(bot,service,landing) || !ClaimRelocationSlot()) return false;
+    PlayerbotAI* ai = bot->GetPlayerbotAI();
+    ai->StopMoving();
+    ai->GetAiObjectContext()->GetValue<LastMovement&>("last movement")->Get().clear();
+    if (sameMap)
+        bot->NearTeleportTo(landing.getX(), landing.getY(), landing.getZ() + 0.1f, bot->GetOrientation());
+    else if (!bot->TeleportTo(service->getMapId(), landing.getX(), landing.getY(),
+        landing.getZ() + 0.1f, bot->GetOrientation())) return false;
+    const float finalDistance=landing.distance(*service);
+    session.errandCatchupUsed = true;
+    session.errandWorldportSince = now;
+    session.errandTravel.Reset(now, service->getMapId(), landing.getX(), landing.getY(), landing.getZ());
+    session.errandLastDistance = finalDistance;
+    session.nextErrandStep = now + std::chrono::seconds(1);
+    target->SetForced(true);
+    target->SetStatus(TravelStatus::TRAVEL_STATUS_TRAVEL);
+    ai->GetAiObjectContext()->ClearValues("no active travel destinations");
+    sLog.outString("Living WoW errand event=service_catchup bot=%u task=%s entry=%d map=%u remaining=%.0f",
+        bot->GetGUIDLow(), ErrandName(session.currentErrand), target->GetEntry(),
+        service->getMapId(), finalDistance);
+    QueueActivityTelemetry(session.botGuid, session.playerGuid, session.groupId,
+        PartyActivityOwner::party_errand, PartyActivityPhase::traveling,
+        "service_catchup", "final_service_approach", session.currentErrand);
+    return true;
+}
+
+bool PlayerbotRendezvousManager::FindSafeServiceApproach(Player* bot, WorldPosition* service, WorldPosition& result) const
+{
+    if(!bot || !service || !WorldPosition(bot).isOverworld() || !service->isOverworld()) return false;
     Map* destinationMap = service->getMap(0);
     if (!destinationMap) return false;
     const uint32 targetSeconds = std::max<uint32>(5, std::min<uint32>(30,
@@ -2537,7 +2567,7 @@ bool PlayerbotRendezvousManager::TryErrandServiceCatchup(PartySession& session, 
     {
         for (uint32 step = 0; step < 8; ++step)
         {
-            const float angle = float((step + session.botGuid) % 8) * float(M_PI) / 4.0f;
+            const float angle = float((step + bot->GetGUIDLow()) % 8) * float(M_PI) / 4.0f;
             WorldPosition candidate(service->getMapId(),
                 service->getX() + std::cos(angle) * radius,
                 service->getY() + std::sin(angle) * radius, service->getZ());
@@ -2562,32 +2592,48 @@ bool PlayerbotRendezvousManager::TryErrandServiceCatchup(PartySession& session, 
                 points.front().distance(landing) > 2.0f || service->getPathLength(points) > 210.0f) continue;
             if (!CanRelocateUnobserved(bot, destinationMap, landing.getX(), landing.getY(), landing.getZ()))
                 continue;
-            if (!ClaimRelocationSlot()) return false;
-            PlayerbotAI* ai = bot->GetPlayerbotAI();
-            ai->StopMoving();
-            ai->GetAiObjectContext()->GetValue<LastMovement&>("last movement")->Get().clear();
-            if (sameMap)
-                bot->NearTeleportTo(landing.getX(), landing.getY(), landing.getZ() + 0.1f, bot->GetOrientation());
-            else if (!bot->TeleportTo(service->getMapId(), landing.getX(), landing.getY(),
-                landing.getZ() + 0.1f, bot->GetOrientation())) return false;
-            session.errandCatchupUsed = true;
-            session.errandWorldportSince = now;
-            session.errandTravel.Reset(now, service->getMapId(), landing.getX(), landing.getY(), landing.getZ());
-            session.errandLastDistance = finalDistance;
-            session.nextErrandStep = now + std::chrono::seconds(1);
-            target->SetForced(true);
-            target->SetStatus(TravelStatus::TRAVEL_STATUS_TRAVEL);
-            ai->GetAiObjectContext()->ClearValues("no active travel destinations");
-            sLog.outString("Living WoW errand event=service_catchup bot=%u task=%s entry=%d map=%u remaining=%.0f",
-                bot->GetGUIDLow(), ErrandName(session.currentErrand), target->GetEntry(),
-                service->getMapId(), finalDistance);
-            QueueActivityTelemetry(session.botGuid, session.playerGuid, session.groupId,
-                PartyActivityOwner::party_errand, PartyActivityPhase::traveling,
-                "service_catchup", "final_service_approach", session.currentErrand);
-            return true;
+            result=landing;return true;
         }
     }
     return false;
+}
+
+bool PlayerbotRendezvousManager::TrySavedServiceCatchup(Player* bot,TravelTarget* target,std::string& blocker)
+{
+    auto reject=[&](const char* why){blocker=why;return false;};
+    if(!sLivingActivityCoordinator.OnWorldThread() || !sPlayerbotAIConfig.chatDirectorRendezvousCatchup)
+        return reject("service_catchup_disabled");
+    if(!bot || !bot->GetPlayerbotAI() || !target || !target->GetPosition() || !target->GetDestination() ||
+        !bot->IsInWorld() || !bot->IsAlive() || bot->IsInCombat() || !bot->GetMap() || bot->GetMap()->IsDungeon() ||
+        bot->IsBeingTeleported() || bot->IsTaxiFlying() || bot->GetTransport() || bot->IsInWater() || bot->IsFlying() ||
+        (bot->m_movementInfo.GetMovementFlags() & (MOVEFLAG_FALLING | MOVEFLAG_FALLINGFAR)) ||
+        bot->IsNonMeleeSpellCasted(false) || bot->GetTradeData() || bot->InBattleGround() || bot->duel)
+        return reject("service_catchup_safety_pause");
+    if(!sPlayerbotOrganicEconomy.HasOwnedServiceRoute(bot->GetGUIDLow(),uint32(target->GetDestination()->GetPurpose())))
+        return reject("service_catchup_owned_route_required");
+    auto* ai=bot->GetPlayerbotAI();
+    const LivingActivity::Effects effects{LivingActivity::Mask(LivingActivity::Effect::Movement)|
+        LivingActivity::Mask(LivingActivity::Effect::TravelTarget),LivingActivity::Lane::Managed,true};
+    if(!sLivingActivityCoordinator.PermitEffects(*ai,effects,"saved service catchup"))
+        return reject("service_catchup_authority_changed");
+    WorldPosition* service=target->GetPosition();
+    if(WorldPosition(bot).distance(*service)<=35) return reject("service_catchup_final_approach_required");
+    WorldPosition landing;
+    if(!FindSafeServiceApproach(bot,service,landing)) return reject("service_catchup_no_valid_approach");
+    if(!sLivingActivityCoordinator.PermitEffects(*ai,effects,"saved service catchup") ||
+        !sPlayerbotOrganicEconomy.HasOwnedServiceRoute(bot->GetGUIDLow(),uint32(target->GetDestination()->GetPurpose())))
+        return reject("service_catchup_authority_changed");
+    if(!ClaimRelocationSlot()) return reject("service_catchup_waiting_slot");
+    ai->StopMoving();ai->GetAiObjectContext()->GetValue<LastMovement&>("last movement")->Get().clear();
+    if(bot->GetMapId()==service->getMapId())
+        bot->NearTeleportTo(landing.getX(),landing.getY(),landing.getZ()+0.1f,bot->GetOrientation());
+    else if(!bot->TeleportTo(service->getMapId(),landing.getX(),landing.getY(),landing.getZ()+0.1f,bot->GetOrientation()))
+        return reject("service_catchup_transfer_rejected");
+    // Do not force a new travel owner, complete a task, or execute a remote
+    // service. The same task must cover the last leg and validate the native NPC.
+    sLog.outString("Living saved service event=service_catchup actor=%u entry=%d map=%u remaining=%.0f",
+        bot->GetGUIDLow(),target->GetEntry(),service->getMapId(),landing.distance(*service));
+    blocker.clear();return true;
 }
 
 bool PlayerbotRendezvousManager::ExecuteVerifiedErrand(PartySession& session, Player* bot)

@@ -825,6 +825,14 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             result.blocker=requested?"recipe_service_route_requested":"recipe_service_route_pending";
         } else {
             result.blocker="recipe_traveling_to_service";
+            if(saved && same && !trip.catchupUsed && now>=trip.nextCatchup && trip.work.NoProgressMs()>=60000) {
+                trip.nextCatchup=now+30;
+                if(sPlayerbotRendezvousManager.TrySavedServiceCatchup(bot,target,result.blocker)) {
+                    trip.catchupUsed=true;trip.progress=now;trip.work.Progress();trip.nextMove=now+1;
+                    result.blocker="service_catchup_final_approach";
+                }
+                return result; // A relocation is a route leg, never service completion.
+            }
             if(same && now>=trip.nextMove) {
                 trip.nextMove=now+5;
                 auto& nativePath=context->GetValue<ai::LastMovement&>("last movement")->Get().lastPath.getPath();

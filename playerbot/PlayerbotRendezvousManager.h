@@ -89,6 +89,9 @@ public:
     bool ClaimRelocationSlot();
     bool CanRelocateUnobserved(Player* bot, Map* destinationMap,
         float destinationX, float destinationY, float destinationZ) const;
+    // Existing service catch-up geometry, under an exact saved task's scope.
+    // Never grants service execution or bypasses a human/safety commitment.
+    bool TrySavedServiceCatchup(Player* bot, ai::TravelTarget* target, std::string& blocker);
     bool FindSafeStagingPoint(Player* bot, Player* player,
         float& x, float& y, float& z) const;
     LivingActivity::Acquisition AcquirePartyActivityLease(uint32 botGuid, PartyActivityOwner owner,
@@ -305,6 +308,7 @@ private:
         std::chrono::steady_clock::time_point now);
     bool TryErrandServiceCatchup(PartySession& session, Player* bot, ai::TravelTarget* target,
         std::chrono::steady_clock::time_point now);
+    bool FindSafeServiceApproach(Player* bot, ai::WorldPosition* service, ai::WorldPosition& landing) const;
     bool ExecuteVerifiedErrand(PartySession& session, Player* bot);
     bool VerifyErrand(const PartySession& session, const ErrandObservation& after) const;
     void FinishCurrentErrand(PartySession& session, Player* bot, bool completed,
