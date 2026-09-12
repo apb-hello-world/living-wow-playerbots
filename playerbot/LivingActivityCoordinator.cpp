@@ -2470,10 +2470,17 @@ AdmissionResult LivingActivityCoordinator::SettleRecipeLearning(uint32_t actor,c
     const auto owned=state->authority.Read(actor);
     if (!owned.operation.empty()) return stop(AdmissionCode::ReconciliationRequired,"atomic_operation_pending");
     if (!state->resources.ReadUnsettled(id,claims,blocker)) return stop(AdmissionCode::ReconciliationRequired,blocker);
+    const auto balances=NativeClaimBalances(*bot,claims.claims,false);
+    for (const auto& native:balances) {
+        uint32_t available=0;
+        if (!state->resources.AvailableToTask(id,native,available))
+            return stop(AdmissionCode::ReconciliationRequired,"recipe_settlement_native_backing_uncertain");
+    }
     RecipeLearningSettlement settled;
     if (!PrepareRecipeLearningSettlement(*saved,ReadNativeContext(*bot,state->policyRevision,state->boot),claims,
-        NowMs(),receipt,settled,blocker)) return stop(AdmissionCode::ReconciliationRequired,blocker);
+        NowMs(),receipt,settled,blocker,balances)) return stop(AdmissionCode::ReconciliationRequired,blocker);
     State::Pending write;write.task=std::move(settled.task);write.plan=std::move(settled.plan);write.admissionReceipt=receipt;
+    write.claims=std::move(settled.claims);
     state->pending.push_back(std::move(write));
     if (owned.lease.rootTask==id) ReleaseTaskLease(owned.lease);
     state->nextWork=0;return stop(AdmissionCode::Pending);

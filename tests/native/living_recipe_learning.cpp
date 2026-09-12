@@ -95,4 +95,24 @@ int main() {
     assert(sql.find("o.kind NOT IN ('vendor_purchase','mail_collect'")!=std::string::npos);
     assert(sql.find("OR o.state NOT IN ('verified','rejected')")!=std::string::npos);
     assert(sql.find("mail_items")!=std::string::npos && sql.find("m.cod=0")!=std::string::npos);
+    // Capacity preparation may leave safely banked personal stock. Completion
+    // releases that reservation atomically, without withdrawing or deleting it.
+    auto stored=original;stored.itemGuid=440052;stored.itemEntry=4470;stored.quantity=8;stored.location="bank";
+    claims.claims={stored};stock={{79,440052,4470,8,0,"bank"}};
+    assert(PrepareRecipeLearningSettlement(task,current,claims,2000,receipt,settlement,blocker,stock));
+    assert(settlement.claims.size()==1 && settlement.claims[0].after.state=="released");
+    assert(settlement.claims[0].after.itemGuid==440052 && settlement.claims[0].after.quantity==8);
+    assert(settlement.claims[0].after.revision==stored.revision+1);
+    assert(settlement.plan.receiptQuery.find("c.state='released'")!=std::string::npos);
+    for (unsigned fault=0;fault<5;++fault) {
+        auto badClaims=claims;auto badStock=stock;
+        switch(fault) {
+            case 0: --badStock[0].quantity;break;
+            case 1: badClaims.claims[0].location="mail";badClaims.claims[0].nativeReference=8190;break;
+            case 2: badClaims.claims[0].state="in_transfer";break;
+            case 3: badClaims.claims[0].itemEntry=6326;badStock[0].itemEntry=6326;break;
+            case 4: badClaims.claims.push_back(stored);break;
+        }
+        assert(!PrepareRecipeLearningSettlement(task,current,badClaims,2000,receipt,settlement,blocker,badStock));
+    }
 }
