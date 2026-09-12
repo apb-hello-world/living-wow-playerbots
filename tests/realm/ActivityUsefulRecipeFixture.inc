@@ -7,10 +7,7 @@ namespace {
     void RunIsolatedUsefulRecipeFixture(FixtureState& state) {
         if (state.fixtureFinished || NowMs()<state.fixtureNext) return;
         state.fixtureNext=NowMs()+500;
-        if (sWorld.GetActiveAndQueuedSessionCount() || !state.loaded || state.ioPending ||
-            !state.pending.empty() || !state.incoming.empty() || !state.resources.Protection().ready) return;
         auto& fixture=state.recipeLearningFixture;
-        if (!fixture.deadline) fixture.deadline=NowMs()+120000;
         auto emit=[&](bool passed,const std::string& failure,Player* actor=nullptr) {
             boost::property_tree::ptree report,before,after;
             report.put("suite","activity-useful-recipe-v1");report.put("boot",state.boot);
@@ -52,7 +49,6 @@ namespace {
             if (!ok) throw std::runtime_error(name);
         };
         try {
-            if (NowMs()>fixture.deadline) {emit(false,"native_learning_deadline");return;}
             if (!fixture.actor) {
                 auto id=[](const char* key) {
                     const char* value=std::getenv(key);const std::string input=value?value:"";
@@ -62,12 +58,18 @@ namespace {
                 };
                 fixture.actor=id("LIVING_WOW_NATIVE_FIXTURE_ACTOR");fixture.item=id("LIVING_WOW_NATIVE_FIXTURE_ITEM");
                 require(fixture.actor && fixture.item,"explicit_copied_actor_and_book");
-                bool committed=false;
-                for (const auto& row:state.cache) if (row.second.actor==fixture.actor &&
-                    row.second.mode==Mode::Active && !Terminal(row.second.phase)) committed=true;
-                require(!committed,"no_accepted_task_displaced");
+                // Hold before task loading so ordinary AI cannot consume the
+                // very book being inspected while the fixture waits for I/O.
                 state.gameplayFixtureActor.store(fixture.actor,std::memory_order_release);
             }
+            if (sWorld.GetActiveAndQueuedSessionCount() || !state.loaded || state.ioPending ||
+                !state.pending.empty() || !state.incoming.empty() || !state.resources.Protection().ready) return;
+            if (!fixture.deadline) fixture.deadline=NowMs()+120000;
+            if (NowMs()>fixture.deadline) {emit(false,"native_learning_deadline");return;}
+            bool committed=false;
+            for (const auto& row:state.cache) if (row.second.actor==fixture.actor &&
+                row.second.mode==Mode::Active && !Terminal(row.second.phase)) committed=true;
+            if (committed) {emit(false,"accepted_task_would_be_displaced");return;}
             auto* actor=sRandomPlayerbotMgr.GetPlayerBot(fixture.actor);
             if (!actor) {
                 if (!fixture.requestedLogin && sRandomPlayerbotMgr.GetAllBots().size()<49) {
@@ -83,6 +85,7 @@ namespace {
             }
             auto* ai=actor->GetPlayerbotAI();
             if (!fixture.started) {
+                require(!committed,"no_accepted_task_displaced");
                 const auto facts=InspectUsefulRecipe(*actor,sObjectMgr.GetItemPrototype(fixture.item));
                 const auto decision=EvaluateUsefulRecipe(facts);
                 fixture.blocker=decision.reason;
