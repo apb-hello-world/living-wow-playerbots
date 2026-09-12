@@ -4,7 +4,7 @@
 // organic learning or gathering. Money, auction stock and skills are not granted.
 namespace {
     template<class FixtureState>
-    void RunIsolatedAuctionProfessionFixture(FixtureState& state,bool restart) {
+    void RunIsolatedAuctionProfessionFixture(FixtureState& state,bool restart,bool partial=false) {
         if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
         state.fixtureNext=NowMs()+500;auto& f=state.auctionProfessionFixture;
         Player* actor=nullptr;
@@ -17,6 +17,7 @@ namespace {
             report.put("suite","activity-profession-auction-v1");report.put("boot",state.boot);
             report.put("outcome",outcome);report.put("failure",failure);report.put("test_only",true);
             report.put("restart",restart);report.put("task",f.task);report.put("actor",f.actor);
+            report.put("partial_purchases",partial);
             report.put("recipe",2330);report.put("required_auction_material",2447);
             report.put("money_before",f.moneyBefore);report.put("skill_before",f.skillBefore);
             report.put("output_before",f.outputBefore);report.put("blocker",f.blocker);
@@ -90,11 +91,28 @@ namespace {
                     if(!NativeAuctionSourceAvailable(*actor,2447,1,f.blocker))return;
                     const auto owned=actor->GetItemCount(765,true);
                     require(owned==0 || actor->GetItemCount(765,false)>=1,"no_fixture_bank_item_copy");
+                    if(partial) {
+                        require(!owned,"partial_purchase_starts_without_either_herb");
+                        boost::property_tree::ptree prepared;
+                        boost::property_tree::read_json("/isolated/evidence/partial-auction-setup-v1.json",prepared);
+                        require(prepared.get<std::string>("outcome")=="prepared" &&
+                            prepared.get<std::string>("environment")=="isolated-migration" &&
+                            prepared.get<uint32_t>("buyer")==f.actor && prepared.get<uint32_t>("entry")==765 &&
+                            prepared.get<uint32_t>("quantity")==1 && prepared.get<uint32_t>("itemGrants")==0 &&
+                            prepared.get<uint32_t>("moneyGrants")==0 && prepared.get<uint32_t>("skillGrants")==0 &&
+                            prepared.get<uint32_t>("spellGrants")==0 && prepared.get<uint32_t>("fixtureListings")==1,
+                            "explicit_existing_item_escrow_fixture_required");
+                        const auto* material=sAuctionMgr.GetAItem(prepared.get<uint32_t>("item"));
+                        require(material && material->GetEntry()==765 && material->GetCount()==1,
+                            "fixture_stock_loaded_as_real_auction_item");
+                        if(!NativeAuctionSourceAvailable(*actor,765,1,f.blocker))return;
+                        f.setup.add_child("partial_auction_fixture",prepared);
+                    }
                     ItemPosCountVec destinations;
-                    if(!owned)require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,destinations,765,1)==EQUIP_ERR_OK,
+                    if(!owned && !partial)require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,destinations,765,1)==EQUIP_ERR_OK,
                         "bounded_fixture_material_capacity");
                     f.setup.put("spell_grants",actor->HasSpell(2330)?0:1);f.setup.put("recipe_granted",actor->HasSpell(2330)?0:2330);
-                    f.setup.put("item_grants",owned?0:1);f.setup.put("item_entry",765);f.setup.put("new_tasks",1);
+                    f.setup.put("item_grants",owned || partial ? 0:1);f.setup.put("item_entry",765);f.setup.put("new_tasks",1);
                     f.task=SourceId("profession_job","isolated_auction_profession_v1:"+state.boot);
                     const auto intentPath="/isolated/evidence/auction-profession-setup-"+state.boot+".json";
                     require(!std::ifstream(intentPath).good(),"setup_never_replayed_after_uncertain_effect");
@@ -103,7 +121,7 @@ namespace {
                     std::ofstream intentFile(intentPath);intentFile<<Json(intent);intentFile.close();
                     require(bool(intentFile),"setup_intent_saved_before_prerequisite_grants");
                     if(!actor->HasSpell(2330))actor->learnSpell(2330,false);
-                    if(!owned) {
+                    if(!owned && !partial) {
                         auto* item=actor->StoreNewItem(destinations,765,true);
                         require(item && actor->GetItemCount(765,false)==1,"explicit_one_silverleaf_prerequisite");
                         f.setup.put("item_guid",item->GetGUIDLow());

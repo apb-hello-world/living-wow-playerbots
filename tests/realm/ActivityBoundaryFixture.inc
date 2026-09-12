@@ -39,9 +39,11 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     if (requested && (std::string(requested)=="activity-profession-auction-v1" ||
-        std::string(requested)=="activity-profession-auction-restart-v1")) {
+        std::string(requested)=="activity-profession-auction-restart-v1" ||
+        std::string(requested)=="activity-profession-auction-partial-v1")) {
         RequireIsolatedNativeFixtureEnvironment();
-        RunIsolatedAuctionProfessionFixture(*state,std::string(requested)=="activity-profession-auction-restart-v1");return;
+        RunIsolatedAuctionProfessionFixture(*state,std::string(requested)=="activity-profession-auction-restart-v1",
+            std::string(requested)=="activity-profession-auction-partial-v1");return;
     }
     if (requested && (std::string(requested)=="activity-managed-recipe-v1" ||
         std::string(requested)=="activity-managed-recipe-prepare-v1" || std::string(requested)=="activity-managed-recipe-restart-v1" ||

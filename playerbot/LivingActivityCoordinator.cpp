@@ -506,7 +506,8 @@ struct LivingActivityCoordinator::State {
         // Production has no canary actor, source-key or population exclusion.
         const char* mode=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
         if(mode && *mode && std::string(mode)!="activity-profession-auction-v1" &&
-            std::string(mode)!="activity-profession-auction-restart-v1")return false;
+            std::string(mode)!="activity-profession-auction-restart-v1" &&
+            std::string(mode)!="activity-profession-auction-partial-v1")return false;
 #endif
         return true;
     }
