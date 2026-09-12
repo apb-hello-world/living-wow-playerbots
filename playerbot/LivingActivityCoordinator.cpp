@@ -27,6 +27,7 @@
 #include "LivingProfessionDemand.h"
 #include "LivingTaskItemRequirements.h"
 #include "LivingProfessionVendor.h"
+#include "LivingServiceExecution.h"
 #include "Mails/Mail.h"
 #include "LivingActivityTransfer.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
@@ -2325,6 +2326,24 @@ AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint3
     if (!owned.operation.empty()) return reject(AdmissionCode::ReconciliationRequired,"atomic_operation_pending");
     ProfessionHistory history;ProfessionSnapshot snapshot;UnsettledClaimBatch batch;std::string blocker;
     if (!ReadProfessionHistory(actor,id,expectedRevision,history,blocker)) return reject(AdmissionCode::NotReady,blocker);
+    if(history.interruptedCraft && saved->second.phase==Phase::Executing) {
+        if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || LivingServiceExecution::Busy(bot))
+            return reject(AdmissionCode::NotReady,"profession_safety_pause");
+        const auto partyBlocker=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+        if(*partyBlocker) return reject(AdmissionCode::NotReady,partyBlocker);
+        ProfessionJob job;CraftFrame frame;ProfessionPreparation prepared;
+        if(!state->resources.ReadUnsettled(id,batch,blocker) ||
+            !DecodeProfessionJob(saved->second.checkpoint.data,job,blocker) ||
+            !ReadNativeCraftFrame(*bot,job,frame,blocker) ||
+            !PrepareInterruptedProfession(saved->second,current,history,batch,frame,NowMs(),receipt,prepared,blocker))
+            return reject(AdmissionCode::ReconciliationRequired,blocker);
+        State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
+        write.admissionReceipt=receipt;state->pending.push_back(std::move(write));
+        // Metadata-only rejection of a prior boot's uncommitted atomic save.
+        // Do not invent a native callback, alter claims, grant a lease or cast.
+        if(owned.lease.rootTask==id) ReleaseTaskLease(owned.lease);
+        state->nextWork=0;return reject(AdmissionCode::Pending);
+    }
     auto rebound=saved->second;rebound.context=current;
     if (!InspectNativeProfessionSnapshot(*bot,rebound,history,NowMs(),snapshot,blocker))
         return reject(AdmissionCode::ReconciliationRequired,blocker);

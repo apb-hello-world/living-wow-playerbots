@@ -1,10 +1,87 @@
 #include "LivingProfessionResume.h"
 #include "LivingActivityJournal.h"
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <set>
 
 namespace LivingActivity {
+bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
+    const ProfessionHistory& history,const UnsettledClaimBatch& batch,const CraftFrame& frame,
+    uint64_t nowMs,const std::string& receipt,ProfessionPreparation& result,std::string& blocker) {
+    result={};auto reject=[&](const char* why){blocker=why;return false;};
+    // Only a restored record can enter this path. Zoning or a live pending cast
+    // cannot erase its operation by presenting another map/session generation.
+    if(!saved.context.boot.empty() || saved.context.actorGeneration || saved.context.mapGeneration ||
+        current.actor!=saved.actor || !IsUuid(current.boot) || !current.actorGeneration ||
+        !current.mapGeneration || !current.policyRevision || current.session.size()>120 ||
+        (current.session.empty()!=(current.sessionRevision==0)) || !IsUuid(receipt) ||
+        nowMs<saved.updatedAtMs || saved.revision>=UINT64_MAX-1)
+        return reject("interrupted_craft_restored_context_required");
+    if(!history.complete || history.task!=saved.id || history.revision!=saved.revision ||
+        !history.unresolvedOperation || !history.interruptedCraft)
+        return reject("interrupted_craft_history_incomplete");
+    const auto& row=*history.interruptedCraft;InterruptedCraftIntent intent;ProfessionJob job;
+    if(!DecodeInterruptedCraftIntent(saved,row,intent,blocker) ||
+        !DecodeProfessionJob(saved.checkpoint.data,job,blocker)) return false;
+    if(!ValidCraftFrame(frame) || frame.actor!=saved.actor || frame.skill!=intent.skill || frame.money!=intent.money)
+        return reject("interrupted_craft_native_state_changed");
+    if(!batch.complete || !batch.bookRevision || batch.claims.size()!=intent.inputs.size())
+        return reject("interrupted_craft_claim_batch_changed");
+    auto n=[](uint64_t v){return std::to_string(v);};
+    std::string guard,frames="{\"skill\":"+n(frame.skill)+",\"money\":"+n(frame.money)+",\"stacks\":[";
+    std::set<std::string> ids;
+    for(const auto& c:batch.claims) {
+        const auto use=std::find_if(intent.inputs.begin(),intent.inputs.end(),[&](const auto& v){return v.before.id==c.id;});
+        if(!ids.insert(c.id).second || use==intent.inputs.end() || !SameResourceClaim(c,use->before))
+            return reject("interrupted_craft_claim_changed");
+        const auto item=std::find_if(frame.stacks.begin(),frame.stacks.end(),[&](const auto& v){return v.guid==c.itemGuid;});
+        if(item==frame.stacks.end() || item->entry!=c.itemEntry || item->count!=c.quantity)
+            return reject("interrupted_craft_native_quantity_changed");
+        // Conservative compatibility for intents without an entire before-frame:
+        // require one exact, fully reserved native stack per recipe input.
+        if(std::count_if(frame.stacks.begin(),frame.stacks.end(),[&](const auto& v){return v.entry==c.itemEntry;})!=1)
+            return reject("interrupted_craft_mixed_stack_unsupported");
+        guard+=" AND EXISTS(SELECT 1 FROM living_activity_claim c WHERE c.claim_id="+SqlValue(c.id)+
+            " AND c.task_id="+SqlValue(saved.id)+" AND c.actor_guid="+n(saved.actor)+" AND c.item_guid="+n(c.itemGuid)+
+            " AND c.item_entry="+n(c.itemEntry)+" AND c.quantity="+n(c.quantity)+" AND c.copper=0 AND c.location='bags'"
+            " AND c.native_reference=0 AND c.state='held' AND c.revision="+n(c.revision)+')';
+    }
+    for(const auto& item:frame.stacks) {
+        if(frames.back()!='[') frames+=',';
+        frames+='['+n(item.guid)+','+n(item.entry)+','+n(item.count)+','+n(item.bagGuid)+','+n(item.slot)+']';
+        guard+=" AND EXISTS(SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+
+            n(saved.actor)+" AND v.item="+n(item.guid)+" AND v.item_template="+n(item.entry)+" AND v.bag="+n(item.bagGuid)+
+            " AND v.slot="+n(item.slot)+" AND i.owner_guid="+n(saved.actor)+" AND i.itemEntry="+n(item.entry)+
+            " AND i.count="+n(item.count)+')';
+    }
+    frames+="]}";
+    ProfessionPreparation prepared;prepared.task=saved;auto& next=prepared.task;
+    next.context=current;++next.revision;next.phase=Phase::Verifying;next.updatedAtMs=nowMs;
+    next.checkpoint.step="profession_prepare";next.checkpoint.blocker.clear();
+    auto outcome=row.receipt;outcome.state=OperationState::Rejected;
+    outcome.evidence="native_craft_intent_not_committed";
+    outcome.nativeReference="spell:"+n(job.recipe)+":operation:"+outcome.id;
+    const auto after=std::string("{\"recovery\":{\"version\":1,\"basis\":\"atomic_native_save_absent\",\"boot\":\"")+
+        current.boot+"\"},\"frame\":"+frames+'}';
+    prepared.plan=OperationOutcomeWrite(next,saved.revision,outcome,receipt,after);
+    prepared.plan.statements.front()+=" AND phase='executing' AND accepted=1 AND checkpoint="+SqlValue(saved.checkpoint.data)+
+        " AND EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+SqlValue(outcome.id)+
+        " AND o.state='intent' AND o.before_state="+SqlValue(row.beforeState)+
+        " AND o.after_state='{}' AND o.evidence_code='' AND o.native_reference='')"+
+        " AND (SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task owner ON owner.task_id=o.task_id"
+        " WHERE owner.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))=1"+
+        " AND (SELECT COUNT(*) FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
+        " AND o.kind='profession_craft')="+n(history.attempts.size()+1)+
+        " AND (SELECT COUNT(*) FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id"
+        " AND c.state NOT IN ('consumed','released'))="+n(batch.claims.size())+
+        " AND EXISTS(SELECT 1 FROM characters c WHERE c.guid="+n(saved.actor)+" AND c.money="+n(frame.money)+')'+
+        " AND EXISTS(SELECT 1 FROM character_skills s WHERE s.guid="+n(saved.actor)+" AND s.skill="+n(job.skill)+
+        " AND s.value="+n(frame.skill)+')'+guard;
+    prepared.plan.statements.insert(prepared.plan.statements.begin(),
+        "UPDATE living_activity_task SET actor_guid=actor_guid WHERE actor_guid="+n(saved.actor));
+    result=std::move(prepared);blocker.clear();return true;
+}
 bool PrepareProfessionResumption(const Task& saved,const WorldContext& current,
     const ProfessionSnapshot& snapshot,const UnsettledClaimBatch& batch,
     const std::vector<NativeResourceBalance>& balances,uint64_t nowMs,

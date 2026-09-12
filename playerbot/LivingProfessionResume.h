@@ -1,6 +1,7 @@
 #pragma once
 #include "LivingProfessionJob.h"
 #include "LivingActivityResources.h"
+#include "LivingProfessionEvidence.h"
 
 namespace LivingActivity {
 struct ProfessionPreparation {
@@ -15,4 +16,7 @@ bool PrepareProfessionResumption(const Task& saved,const WorldContext& current,
     const ProfessionSnapshot& snapshot,const UnsettledClaimBatch& claims,
     const std::vector<NativeResourceBalance>& balances,uint64_t nowMs,
     const std::string& receipt,ProfessionPreparation& result,std::string& blocker);
+bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
+    const ProfessionHistory&,const UnsettledClaimBatch&,const CraftFrame&,
+    uint64_t nowMs,const std::string& receipt,ProfessionPreparation&,std::string& blocker);
 }

@@ -22,6 +22,15 @@ namespace LivingActivity {
     // cannot execute, mark a task completed, release claims or grant items.
     bool DecodeStoredCraftProof(const Task& task, const StoredCraftOperation& row,
         StoredCraftProof& result, std::string& blocker);
+    struct InterruptedCraftIntent {
+        uint32_t skill=0,money=0;
+        ItemGainSpec output;
+        std::vector<ClaimConsumption> inputs;
+    };
+    // Only an acknowledged, still-intent atomic profession save is eligible.
+    // This decodes identity, not proof that a native effect did or did not run.
+    bool DecodeInterruptedCraftIntent(const Task&,const StoredCraftOperation&,
+        InterruptedCraftIntent&,std::string& blocker);
 
     // Exact, bounded result of ProfessionHistoryQuery. Fields are actor, task
     // revision, unresolved-actor-operation flag, operation ID, operation task,
@@ -33,6 +42,7 @@ namespace LivingActivity {
         uint64_t revision=0;
         bool complete=false, unresolvedOperation=true;
         std::vector<ProfessionCraftProof> attempts;
+        std::optional<StoredCraftOperation> interruptedCraft;
     };
     std::string ProfessionHistoryQuery(const Task& task);
     // Value-only, finite decoder. Begin validates the read's identity/envelope;

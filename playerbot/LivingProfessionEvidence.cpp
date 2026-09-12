@@ -127,6 +127,32 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
         Require(receipt.state==OperationState::Verified || receipt.state==OperationState::Rejected,
             "stored_craft_operation_unresolved");
         const bool verified=receipt.state==OperationState::Verified;
+        if (!verified && receipt.evidence=="native_craft_intent_not_committed") {
+            auto predecessor=task;predecessor.revision=receipt.taskRevision;
+            predecessor.phase=Phase::Executing;predecessor.checkpoint.step="profession_craft";
+            auto intent=row;intent.receipt.state=OperationState::Intent;
+            intent.receipt.nativeReference.clear();intent.receipt.evidence.clear();intent.afterState="{}";
+            InterruptedCraftIntent decoded;
+            if (!DecodeInterruptedCraftIntent(predecessor,intent,decoded,blocker)) return false;
+            Require(receipt.nativeReference=="spell:"+std::to_string(job.recipe)+":operation:"+receipt.id,
+                "stored_craft_native_reference_mismatch");
+            const auto recovered=Parse(row.afterState);
+            Object(recovered,{"recovery","frame"});const auto& basis=recovered.get_child("recovery");
+            Object(basis,{"version","basis","boot"});
+            Require(Number(basis.get_child("version"))==1 &&
+                Scalar(basis.get_child("basis"))=="atomic_native_save_absent" &&
+                IsUuid(Scalar(basis.get_child("boot"))),"stored_craft_recovery_basis_invalid");
+            const auto frame=Frame(task.actor,recovered.get_child("frame"));
+            Require(frame.skill==decoded.skill && frame.money==decoded.money,"stored_craft_recovery_state_changed");
+            InputBacking(job,decoded.inputs,frame);
+            for (const auto& use:decoded.inputs) for(const auto& stack:frame.stacks)
+                if(stack.guid==use.before.itemGuid) Require(stack.count==use.before.quantity,"stored_craft_recovery_quantity_changed");
+            StoredCraftProof parsed;parsed.inputs=std::move(decoded.inputs);
+            parsed.attempt.recipe=job.recipe;parsed.attempt.skillBefore=parsed.attempt.skillAfter=frame.skill;
+            parsed.attempt.receipt=receipt;parsed.attempt.committed=true;
+            // A reconciled non-commit is NOT a native callback or skill credit.
+            result=std::move(parsed);return true;
+        }
         Require(receipt.nativeReference=="spell:"+std::to_string(job.recipe)+":operation:"+receipt.id &&
             receipt.evidence==(verified ? "native_craft_consumption_output_and_skill_observed" : "native_cast_cancelled_without_effect"),
             "stored_craft_native_reference_mismatch");
@@ -178,6 +204,40 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
         result=std::move(parsed);return true;
     } catch (const std::invalid_argument& error) {blocker=error.what();}
       catch (const std::exception&) {blocker="stored_craft_evidence_malformed";}
+    return false;
+}
+
+bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& row,
+    InterruptedCraftIntent& result,std::string& blocker) {
+    result={};blocker.clear();
+    try {
+        ProfessionJob job;std::string reason;const auto& r=row.receipt;
+        Require(row.acknowledged && task.mode==Mode::Active && task.accepted && task.root==task.id &&
+            task.parent.empty() && task.phase==Phase::Executing && task.checkpoint.step=="profession_craft" &&
+            ValidateProfessionTask(task,reason) && IsProfessionJob(task) &&
+            DecodeProfessionJob(task.checkpoint.data,job,reason),"interrupted_craft_task_invalid");
+        Require(IsUuid(r.id) && r.task==task.id && r.taskRevision==task.revision && r.kind=="profession_craft" &&
+            r.state==OperationState::Intent && r.evidence.empty() && r.nativeReference.empty() && row.afterState=="{}",
+            "interrupted_craft_not_pristine_intent");
+        Require((job.operation==ProfessionOperation::CreateItem || job.operation==ProfessionOperation::TransformMaterial) &&
+            !job.subjectItem,"interrupted_craft_operation_unsupported");
+        const auto before=Parse(row.beforeState);Object(before,{"effects","persistence","native","item_gain"});
+        Require(Number(before.get_child("effects"))==SpellEffectMask(false) &&
+            Number(before.get_child("persistence"))==unsigned(NativePersistence::Profession),"interrupted_craft_atomic_contract_required");
+        Object(before.get_child("native"),{"native","claimed_consumption"});
+        const auto& native=before.get_child("native.native");Object(native,{"recipe","skill","money"});
+        InterruptedCraftIntent decoded;decoded.output=Gain(before.get_child("item_gain"));
+        decoded.skill=Number<uint16_t>(native.get_child("skill"));decoded.money=Number(native.get_child("money"));
+        decoded.inputs=Inputs(task,before.get_child("native.claimed_consumption"));
+        Require(Number(native.get_child("recipe"))==job.recipe && decoded.output.entry==job.outputEntry &&
+            decoded.inputs.size()==job.reagents.size(),"interrupted_craft_recipe_mismatch");
+        for(const auto& need:job.reagents) {
+            const auto use=std::find_if(decoded.inputs.begin(),decoded.inputs.end(),[&](const auto& v){return v.before.itemEntry==need.entry;});
+            Require(use!=decoded.inputs.end() && use->used==need.perAttempt,"interrupted_craft_recipe_mismatch");
+        }
+        result=std::move(decoded);return true;
+    } catch(const std::invalid_argument& error) {blocker=error.what();}
+      catch(const std::exception&) {blocker="interrupted_craft_evidence_malformed";}
     return false;
 }
 
@@ -257,7 +317,11 @@ bool ProfessionHistoryCursor::Advance(std::string& blocker) {
             history={};records.clear();task={};return false;
         }
         history.attempts.push_back(std::move(proof.attempt));
-    } else history.unresolvedOperation=true;
+    } else {
+        history.unresolvedOperation=true;
+        if(row.receipt.state==OperationState::Intent && row.receipt.taskRevision==task.revision &&
+            task.phase==Phase::Executing) history.interruptedCraft=row;
+    }
     if (++position==records.size()) {history.complete=true;records.clear();}
     return true;
 }
