@@ -70,7 +70,7 @@ namespace LivingActivity {
             if(!item || !RequiredProfessionVendorQuantity(required,have,item->BuyCount,quantity,blocker)) return false;
             std::vector<int32_t> candidates;
             if(!NativeProfessionVendorSources(actor,required.entry,quantity,candidates,blocker)) return false;
-            if(!need.entry) {need={required.entry,quantity};vendors=std::move(candidates);}
+            need={required.entry,quantity};vendors=std::move(candidates);blocker.clear();return true;
         }
         if(!need.entry) {blocker="profession_purchase_material_already_available";return false;}
         blocker.clear();return true;

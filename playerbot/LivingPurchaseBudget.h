@@ -9,6 +9,7 @@ namespace LivingActivity {
     struct PurchaseSpend {
         bool complete = false;
         uint64_t auctionCountHour = 0, spentDay = 0, committed = 0;
+        uint64_t sellerPurchasesWeek = 0;
     };
     struct PurchaseLimits { uint32_t auctionsPerHour = 3, dailyPercent = 25; };
     // Existing rolling 24-hour discretionary policy, shared by source. Pending
@@ -19,8 +20,9 @@ namespace LivingActivity {
     // coordinator reads. Never a per-tick query. Excluding an exact current
     // intent avoids counting its quoted price twice; other uncertain intents
     // keep holding funds regardless of age or task cancellation.
-    std::string PurchaseSpendQuery(uint32_t actor,uint64_t nowMs,const std::string& currentOperation = "");
+    std::string PurchaseSpendQuery(uint32_t actor,uint64_t nowMs,const std::string& currentOperation = "",uint32_t seller=0);
     bool DecodePurchaseSpend(const std::array<std::string,4>& columns,PurchaseSpend& spend);
+    bool DecodeSellerPurchaseCount(const std::string& value,PurchaseSpend& spend);
 
     // Bounded value-only invalidation for asynchronous budget reads. Colliding
     // actor slots may force a reread, never authorize a stale allowance. No

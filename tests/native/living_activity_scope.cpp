@@ -105,6 +105,9 @@ int main() {
     {
         ExecutionScope craft(task,action);
         assert(ExecutionScope::RequiresNativeSpellItems(task.actor));
+        assert(ExecutionScope::OwnsNativeOperation(task.actor));
+        assert(!ExecutionScope::OwnsNativeOperation(task.actor+1));
+        {EvaluationScope inspecting(true);assert(!ExecutionScope::OwnsNativeOperation(task.actor));}
         assert(!ExecutionScope::RequiresNativeSpellItems(task.actor+1));
         std::thread otherThread([&]{assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));});otherThread.join();
         {
@@ -115,6 +118,7 @@ int main() {
         {
             auto stale=action;++stale.revision;ExecutionScope wrong(task,stale);
             assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));
+            assert(!ExecutionScope::OwnsNativeOperation(task.actor));
         }
         {
             auto other=task;other.actor=498;ExecutionScope foreign(other,action);
@@ -123,7 +127,9 @@ int main() {
         {
             auto unsaved=action;unsaved.operation.clear();ExecutionScope noIntent(task,unsaved);
             assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));
+            assert(!ExecutionScope::OwnsNativeOperation(task.actor));
         }
     }
     assert(!ExecutionScope::RequiresNativeSpellItems(task.actor));
+    assert(!ExecutionScope::OwnsNativeOperation(task.actor));
 }

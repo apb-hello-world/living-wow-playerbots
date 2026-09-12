@@ -43,6 +43,7 @@ namespace LivingActivity {
         // Restriction only: explicit journaled spell operations may not use
         // Playerbots' virtual-item shortcut. This never grants native execution.
         static bool RequiresNativeSpellItems(uint32_t actor);
+        static bool OwnsNativeOperation(uint32_t actor);
     private:
         static thread_local ExecutionScope* head;
         ExecutionScope* previous;

@@ -15,6 +15,12 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(!request.mailGain.Empty() && (!ValidMailGainSpec(request.mailGain) ||
+                request.kind!="auction_purchase" || !request.itemGain.Empty() || !request.itemTransfer.id.empty() ||
+                request.effects!=(Mask(Effect::Inventory)|Mask(Effect::Money)) ||
+                request.persistence!=NativePersistence::Inventory || request.consumption.size()!=1 ||
+                request.consumption.front().before.location!="money"))
+                throw std::invalid_argument("Exact auction mail purchase contract required");
             if (!request.itemTransfer.id.empty()) {
                 const auto& c=request.itemTransfer;
                 if (!request.consumption.empty() || !request.itemGain.Empty() || !ValidItemTransfer(c) || request.kind!=ItemTransferKind(c) ||
@@ -62,7 +68,8 @@ namespace LivingActivity {
         if (!JsonObject(request.beforeState, 4096) || !request.effects || (request.effects & ~AllEffects) ||
             unsigned(request.persistence) > unsigned(NativePersistence::Profession))
             throw std::invalid_argument("Invalid native operation state/effects");
-        const std::string gain = request.itemGain.Empty() ? "" : ",\"item_gain\":"+ItemGainSpecJson(request.itemGain);
+        const std::string gain = !request.mailGain.Empty() ? ",\"mail_gain\":"+MailGainSpecJson(request.mailGain) :
+            request.itemGain.Empty() ? "" : ",\"item_gain\":"+ItemGainSpecJson(request.itemGain);
         if (!gain.empty() && (!(request.effects & Mask(Effect::Inventory)) || request.persistence == NativePersistence::JournalOnly))
             throw std::invalid_argument("Item gains require native inventory persistence");
         const std::string state = "{\"effects\":" + std::to_string(request.effects) +

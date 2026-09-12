@@ -81,7 +81,7 @@ public:
     // to buy; the compiled adapter still validates its saved task, claims,
     // demand, quote and effect grant immediately before the native mutation.
     bool ReadPurchaseBudget(uint32_t actor,const std::string& task,uint64_t revision,
-        const std::string& currentOperation,LivingActivity::PurchaseSpend& spend,std::string& blocker);
+        const std::string& currentOperation,LivingActivity::PurchaseSpend& spend,std::string& blocker,uint32_t seller=0);
     // Acknowledged, revision-bound craft history. Decoded incrementally through
     // the existing world/DB queue; this neither grants a lease nor resumes work.
     bool ReadProfessionHistory(uint32_t actor,const std::string& task,uint64_t revision,

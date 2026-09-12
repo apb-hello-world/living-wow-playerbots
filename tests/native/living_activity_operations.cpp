@@ -88,6 +88,13 @@ int main() {
     assert(!SameRequest(gained,claimed));
     changed.itemGain.quantity=2; assert(!SameRequest(gained,OperationRequestWrite(changed)));
     changed.itemGain.entry=0; assert(!valid(changed,saved));
+    changed=request;changed.kind="auction_purchase";changed.persistence=NativePersistence::Inventory;
+    changed.mailGain={9,45,2880,2};assert(valid(changed,saved));
+    const auto mailed=OperationRequestWrite(changed);auto duplicate=changed;
+    ++duplicate.mailGain.guid;assert(!SameRequest(mailed,OperationRequestWrite(duplicate)));
+    duplicate=changed;duplicate.itemGain={2880,2};assert(!valid(duplicate,saved));
+    duplicate=changed;duplicate.kind="vendor_purchase";assert(!valid(duplicate,saved));
+    duplicate=changed;duplicate.mailGain.auction=0;assert(!valid(duplicate,saved));
     changed=request; changed.consumption.front().used=11;
     assert(!SameRequest(claimed,OperationRequestWrite(changed)));
     changed=request; changed.persistence=NativePersistence::Inventory;

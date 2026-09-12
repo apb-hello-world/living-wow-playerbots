@@ -57,4 +57,12 @@ namespace LivingActivity {
         return task.mode==Mode::Active && task.accepted && task.phase==Phase::Executing &&
             IsUuid(action.operation) && !(required&~action.permittedEffects) && Fresh(task,action,task.context);
     }
+    bool ExecutionScope::OwnsNativeOperation(uint32_t actor) {
+        if(EvaluationScope::Active() || !head || head->actor!=actor || head->depth>16 || !head->task || !head->action || head->permit)
+            return false;
+        const auto& task=*head->task;const auto& action=*head->action;
+        return task.mode==Mode::Active && task.accepted && task.phase==Phase::Executing &&
+            IsUuid(action.operation) && (action.permittedEffects&(Mask(Effect::Inventory)|Mask(Effect::Money))) &&
+            Fresh(task,action,task.context);
+    }
 }

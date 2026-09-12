@@ -20,10 +20,18 @@ int main() {
     for (const auto& value : {"", "-1", "1.5", "18446744073709551616", "100x"})
         assert(!DecodePurchaseSpend({"2",value,"50","0"},spend) && !spend.complete);
     assert(!DecodePurchaseSpend({"2","0","0","1"},spend));
+    assert(DecodePurchaseSpend({"0","0","0","0"},spend));
+    assert(DecodeSellerPurchaseCount("3",spend));
+    assert(!WithinPurchaseBudget(spend,limits,1000,1000,10,true,why) && why=="purchase_seller_weekly_limit");
+    assert(WithinPurchaseBudget(spend,limits,1000,1000,10,false,why));
+    assert(!DecodeSellerPurchaseCount("-1",spend) && !spend.complete);
     const auto query=PurchaseSpendQuery(497,172800000,"5a1f5c73-ccfc-5526-add2-ac21defc7617");
     assert(query.find("o.state IN ('intent','reconciling')")!=std::string::npos);
     assert(query.find("AND o.state='intent')")!=std::string::npos);
     assert(query.find("t.actor_guid=497")!=std::string::npos);
+    assert(query.find("o.kind IN ('vendor_purchase','auction_purchase')")!=std::string::npos);
+    assert(query.find("a.purchases+v.purchases")!=std::string::npos);
+    assert(PurchaseSpendQuery(497,172800000,"",77).find("$.native.native.seller")!=std::string::npos);
     bool invalid=false; try { PurchaseSpendQuery(497,172800000,"' OR 1=1"); } catch (...) {invalid=true;}
     assert(invalid);
     PurchaseEpoch epochs;

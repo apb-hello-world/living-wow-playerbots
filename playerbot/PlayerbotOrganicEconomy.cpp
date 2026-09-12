@@ -593,6 +593,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
     uint32 purpose=service==ServiceDestination::Mailbox ? uint32(ai::TravelDestinationPurpose::Mail) :
         uint32(ai::TravelDestinationPurpose::Bank);
     if(service==ServiceDestination::Vendor)purpose=uint32(ai::TravelDestinationPurpose::Vendor);
+    if(service==ServiceDestination::AuctionHouse)purpose=uint32(ai::TravelDestinationPurpose::AH);
     if(service==ServiceDestination::PurchaseVendor) {
         ProfessionReagent need;std::vector<int32_t> vendors;std::string blocker;
         if(!NextNativeProfessionVendorItem(*bot,*saved,need,vendors,blocker)) {

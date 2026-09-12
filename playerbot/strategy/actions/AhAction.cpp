@@ -4,6 +4,7 @@
 #include "playerbot/LivingActivityCoordinator.h"
 #include "playerbot/LivingPurchaseBudget.h"
 #include "playerbot/LivingProfessionDemand.h"
+#include "playerbot/LivingNativeAuctionPurchase.h"
 #include "playerbot/LivingUsefulRecipe.h"
 #include "playerbot/PlayerbotAuctionEligibility.h"
 #include "playerbot/PlayerbotServiceTracking.h"
@@ -202,6 +203,45 @@ bool LivingActivity::ValidateNativeProfessionBudget(Player& actor,const Task& sa
     if (!sLivingActivityCoordinator.ReadPurchaseBudget(actor.GetGUIDLow(),saved.id,saved.revision,operation,spend,blocker)) return false;
     const uint32 available=actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<uint32>("free money for",uint32(NeedMoneyFor::tradeskill))->Get();
     return WithinPurchaseBudget(spend,{policy.maxPurchasesPerHour,policy.maxDailySpendPercent},actor.GetMoney(),available,price,false,blocker);
+}
+
+bool LivingActivity::ValidateNativeAuctionBudget(Player& actor,const Task& saved,const std::string& operation,
+    uint32_t price,uint32_t seller,std::string& blocker)
+{
+    const auto policy=GetOrganicAuctionPolicy();
+    if(policy.mode!="active" || !policy.buying || !actor.GetPlayerbotAI() || !seller) {
+        blocker="profession_auction_purchasing_disabled";return false;
+    }
+    PurchaseSpend spend;
+    if(!sLivingActivityCoordinator.ReadPurchaseBudget(actor.GetGUIDLow(),saved.id,saved.revision,operation,spend,blocker,seller))return false;
+    const uint32 available=actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<uint32>("free money for",uint32(NeedMoneyFor::tradeskill))->Get();
+    return WithinPurchaseBudget(spend,{policy.maxPurchasesPerHour,policy.maxDailySpendPercent},actor.GetMoney(),available,price,true,blocker);
+}
+
+bool LivingActivity::NativeAuctionOffers(Player& actor,uint32_t entry,uint32_t maximum,
+    std::vector<NativeAuctionOffer>& offers,std::string& blocker,uint64_t auctioneer)
+{
+    offers.clear();const auto policy=GetOrganicAuctionPolicy();
+    if(!sLivingActivityCoordinator.OnWorldThread() || !actor.GetPlayerbotAI() || !actor.GetSession() || !maximum ||
+        policy.mode!="active" || !policy.buying) {blocker="profession_auction_purchasing_disabled";return false;}
+    std::unique_lock<std::mutex> lock(sRandomPlayerbotMgr.m_ahActionMutex,std::try_to_lock);
+    if(!lock.owns_lock()){blocker="profession_purchase_market_snapshot_busy";return false;}
+    const auto* houseEntry=auctioneer ? actor.GetSession()->GetCheckedAuctionHouseForAuctioneer(ObjectGuid(auctioneer)) :
+        sAuctionMgr.GetAuctionHouseEntry(&actor);
+    auto* house=houseEntry?sAuctionMgr.GetAuctionsMap(houseEntry):nullptr;
+    if(!house){blocker="profession_auction_unavailable";return false;}
+    for(const auto& candidate:MaterialOffers(house,entry)) {
+        const auto* offer=house->GetAuction(candidate.id);
+        if(!offer || offer->itemTemplate!=entry || !offer->itemCount || offer->itemCount>maximum ||
+            !offer->buyout || offer->buyout>actor.GetMoney() || offer->expireTime<=time(nullptr) ||
+            offer->bidder==actor.GetGUIDLow() || !MaterialSeller(&actor,offer->owner))continue;
+        offers.push_back({offer->Id,offer->itemTemplate,offer->itemCount,offer->buyout,offer->owner});
+    }
+    std::sort(offers.begin(),offers.end(),[](const auto& a,const auto& b) {
+        const auto left=uint64_t(a.copper)*b.quantity,right=uint64_t(b.copper)*a.quantity;
+        return left!=right ? left<right : a.id<b.id;
+    });
+    blocker=offers.empty()?"profession_auction_source_unavailable":"";return !offers.empty();
 }
 
 bool AhBidAction::HasPendingMaterial(Player* bot, uint32 entry)

@@ -4,6 +4,7 @@
 #include "LivingActivityEffects.h"
 #include "LivingActivityClaimConsumption.h"
 #include "LivingActivityItemGain.h"
+#include "LivingActivityMailGain.h"
 #include <memory>
 class Player;
 namespace LivingActivity {
@@ -17,6 +18,7 @@ namespace LivingActivity {
         NativePersistence persistence = NativePersistence::JournalOnly;
         std::vector<ClaimConsumption> consumption;
         ItemGainSpec itemGain; // Exact output bound into intent before purchase.
+        MailGainSpec mailGain; // Exact auction stack; native mail is not bag stock.
         ResourceClaim itemTransfer; // Same claim/quantity; verified whole-stack merges may replace its GUID.
     };
     struct NativeObservation {
@@ -26,6 +28,7 @@ namespace LivingActivity {
         // Count includes preexisting stock; only the transferred claim's own
         // quantity follows it. Never supplied by a model or inferred on restart.
         NativeResourceBalance transferredItem;
+        NativeResourceBalance mailedItem;
     };
     // Finite, compiled native service adapters. Never a model/RPC callback,
     // script interpreter, or pointer retained across asynchronous persistence.
@@ -39,6 +42,10 @@ namespace LivingActivity {
         virtual bool SupportsClaimedConsumption() const { return false; }
         virtual bool SupportsItemGain() const { return false; }
         virtual bool SupportsItemTransfer() const { return false; }
+        virtual bool SupportsMailGain() const { return false; }
+        // Native mail may pay a seller/refund another bidder. Hold their later
+        // native saves/mail mutations until this same receipt is acknowledged.
+        virtual std::vector<uint32_t> RelatedActors() const {return {};}
         virtual NativePersistence PersistencePolicy() const { return NativePersistence::JournalOnly; }
         // Compiled native after-state predicate, checked in the SAME transaction
         // as the native save and journal. No player/model SQL enters this API.

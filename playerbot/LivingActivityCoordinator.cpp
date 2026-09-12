@@ -22,6 +22,7 @@
 #include "LivingRecipeLearningSettlement.h"
 #include "LivingNativeBankWithdrawal.h"
 #include "LivingNativeMailCollection.h"
+#include "LivingNativeAuctionPurchase.h"
 #include "LivingNativeVendorSale.h"
 #include "LivingProfessionDemand.h"
 #include "LivingTaskItemRequirements.h"
@@ -357,6 +358,7 @@ struct LivingActivityCoordinator::State {
     std::atomic<bool> purchaseLedgerReady{false};
     struct BudgetRead {
         std::string task, operation, blocker="purchase_budget_queued";
+        uint32_t seller=0;
         uint64_t revision=0, generation=0, receivedAt=0, dueAt=0, requestedAt=0;
         PurchaseSpend spend;
         bool pending=false;
@@ -396,6 +398,7 @@ struct LivingActivityCoordinator::State {
         bool craftAwaiting = false;
         std::string completionBlocker;
         uint64_t completionRetryAt=0;
+        std::vector<uint32_t> relatedSaveHolds;
     };
     // Bounded transient admission state. An entry is created before its intent
     // write; it is NEVER reconstructed as dispatchable from a persisted intent.
@@ -664,6 +667,7 @@ struct LivingActivityCoordinator::State {
                             authority.FinishAtomic(held, operation->first);
                             authority.Release(held);
                             HoldNativeSave(held.actor,false);
+                            for(const auto actor:operation->second.relatedSaveHolds)HoldNativeSave(actor,false);
                         }
                         const auto binding = bindings.find(held.actor);
                         if (binding != bindings.end()) binding->second.publisher.Publish(authority.Read(held.actor));
@@ -735,20 +739,22 @@ struct LivingActivityCoordinator::State {
             const auto actor=row.first;
             const auto revision=read.revision;
             const auto task=read.task, operation=read.operation;
-            const auto query=PurchaseSpendQuery(actor,now,operation);
+            const auto seller=read.seller;
+            const auto query=PurchaseSpendQuery(actor,now,operation,seller);
             read.pending=true; ioPending=true; ++budgetReads;
-            if (!CharacterDatabase.AsyncQuery([this,actor,revision,task,operation,generation](QueryResult* result) {
+            if (!CharacterDatabase.AsyncQuery([this,actor,revision,task,operation,generation,seller](QueryResult* result) {
                 ioPending=false;
                 const auto found=purchaseBudgets.find(actor);
                 if (found==purchaseBudgets.end()) return;
                 auto& read=found->second; read.pending=false;
-                if (read.revision!=revision || read.task!=task || read.operation!=operation) return;
+                if (read.revision!=revision || read.task!=task || read.operation!=operation || read.seller!=seller) return;
                 read.spend={}; read.generation=generation; read.receivedAt=NowMs();
                 bool valid=false;
-                if (result && result->GetFieldCount()==4) {
+                if (result && result->GetFieldCount()==(seller?5u:4u)) {
                     auto* fields=result->Fetch();
                     valid=DecodePurchaseSpend({fields[0].GetCppString(),fields[1].GetCppString(),
                         fields[2].GetCppString(),fields[3].GetCppString()},read.spend);
+                    if(valid && seller) valid=DecodeSellerPurchaseCount(fields[4].GetCppString(),read.spend);
                 }
                 if (generation!=NativePurchaseEpoch().Read(actor)) {
                     read.spend={}; read.blocker="purchase_budget_changed_during_read"; read.dueAt=NowMs()+1000;
@@ -1390,7 +1396,7 @@ bool LivingActivityCoordinator::ReadTaskClaims(uint32_t actor,const std::string&
     blocker.clear();return true;
 }
 bool LivingActivityCoordinator::ReadPurchaseBudget(uint32_t actor,const std::string& task,uint64_t revision,
-    const std::string& operation,PurchaseSpend& spend,std::string& blocker) {
+    const std::string& operation,PurchaseSpend& spend,std::string& blocker,uint32_t seller) {
     spend={};
     auto reject=[&](const char* why){blocker=why; return false;};
     if (!OnWorldThread() || !PurchaseLedgerReady() || state->effective==Mode::Off)
@@ -1414,9 +1420,9 @@ bool LivingActivityCoordinator::ReadPurchaseBudget(uint32_t actor,const std::str
     }
     auto& read=found->second;
     if (read.pending) return reject("purchase_budget_read_pending");
-    if (read.task!=task || read.revision!=revision || read.operation!=operation || read.generation!=generation ||
+    if (read.task!=task || read.revision!=revision || read.operation!=operation || read.seller!=seller || read.generation!=generation ||
         (read.receivedAt && (now<read.receivedAt || now-read.receivedAt>15000))) {
-        read={}; read.task=task; read.revision=revision; read.operation=operation;
+        read={}; read.task=task; read.revision=revision; read.operation=operation;read.seller=seller;
         read.generation=generation; read.dueAt=now;
     }
     read.requestedAt=now;
@@ -1578,6 +1584,13 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
             NativeVendorPurchase adapter(quote,prerequisites);
             return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
         }
+        if(row.second.request.kind=="auction_purchase") {
+            NativeAuctionQuote quote;
+            if(!DecodeNativeAuctionQuote(row.second.request.beforeState,quote))return stop("profession_auction_intent_invalid");
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Money),60000,"profession_auction_purchase");
+            if(!grant.Permitted())return stop(grant.blocker);
+            NativeAuctionPurchase adapter(quote);return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
         return {}; // Craft/learning casts are dispatched by their typed executor.
     }
     return {};
@@ -1691,11 +1704,47 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(step==ProfessionStep::PrepareCapacity)return prepareCapacity();
     if(step==ProfessionStep::ReachBank) return beginService(ServiceDestination::PersonalBank);
     if(step==ProfessionStep::ReachStation) return beginService(ServiceDestination::CraftingStation);
+    auto purchaseAuction=[&]() {
+        NativeAuctionQuote quote;
+        if(!PlanNativeAuctionPurchase(*bot,*saved,need,quote,blocker)) {
+            if(blocker=="profession_auction_travel_required" || blocker=="auction_actor_not_safely_available")
+                return beginService(ServiceDestination::AuctionHouse);
+            return stop(blocker);
+        }
+        UnsettledClaimBatch batch;ResourceClaim held;
+        if(!ReadTaskClaims(actor,id,saved->revision,batch,blocker))return stop(blocker);
+        for(const auto& c:batch.claims)if(c.location=="money") {
+            if(!held.id.empty() || c.state!="held")return stop("profession_money_claims_require_reconciliation");
+            held=c;
+        }
+        const auto operation=SourceId("profession_auction_operation",id+":"+std::to_string(saved->revision));
+        const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Money),60000,"profession_auction_prepare");
+        if(!grant.Permitted())return stop(grant.blocker);
+        if(held.id.empty() || held.copper!=quote.copper) {
+            if(held.id.empty() && !ValidateNativeAuctionBudget(*bot,*saved,operation,quote.copper,quote.seller,blocker))return stop(blocker);
+            ResourceClaim c=held;uint64_t expected=held.revision;
+            if(held.id.empty()) {expected=0;c.id=NewId();c.task=id;c.actor=actor;c.copper=quote.copper;c.location="money";c.state="held";}
+            else {++c.revision;c.state="released";}
+            ReservationRequest r;r.transition.task=*saved;r.transition.expectedRevision=saved->revision;
+            ++r.transition.task.revision;r.transition.task.updatedAtMs=NowMs();r.transition.receipt=NewId();
+            r.authorization=grant.action;r.changes.push_back({c,expected});
+            NativeAuctionMoneyReservation adapter(quote,operation);return stop(SubmitResourceReservation(r,adapter).blocker);
+        }
+        if(!ValidateNativeAuctionBudget(*bot,*saved,operation,quote.copper,quote.seller,blocker))return stop(blocker);
+        OperationRequest r;r.transition.task=*saved;r.transition.expectedRevision=saved->revision;
+        ++r.transition.task.revision;r.transition.task.phase=Phase::Executing;r.transition.task.updatedAtMs=NowMs();
+        r.transition.task.checkpoint.step="profession_auction_purchase";r.transition.receipt=operation;r.authorization=grant.action;
+        r.kind="auction_purchase";r.effects=Mask(Effect::Inventory)|Mask(Effect::Money);r.persistence=NativePersistence::Inventory;
+        r.beforeState=EncodeNativeAuctionQuote(quote);r.consumption.push_back({held,quote.copper});r.mailGain=quote.Stack();
+        NativeAuctionPurchase adapter(quote);return stop(SubmitOperationIntent(r,adapter).blocker);
+    };
     if(step==ProfessionStep::Purchase && need.entry!=0) {
         if(saved->phase==Phase::Verifying || saved->phase==Phase::Traveling) return advance(Phase::Preparing);
         if(saved->phase!=Phase::Preparing) return stop("profession_purchase_preparation_required");
         NativeVendorQuote quote;
         if(!PlanNativeProfessionPurchase(*bot,*saved,need,quote,blocker)) {
+            if(blocker=="profession_vendor_source_unavailable" || blocker=="profession_vendor_item_or_bundle_invalid")
+                return purchaseAuction();
             if(blocker=="profession_vendor_travel_required" || blocker=="vendor_actor_not_safely_available")
                 return beginService(ServiceDestination::PurchaseVendor);
             if(blocker=="vendor_inventory_capacity_required") return prepareCapacity();
@@ -2674,6 +2723,8 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
         return reject(AdmissionCode::InvalidRequest,"resource_effect_adapter_not_supported");
     if (!request.itemGain.Empty() && (!adapter.SupportsItemGain() || !ValidItemGainSpec(request.itemGain)))
         return reject(AdmissionCode::InvalidRequest,"native_item_gain_adapter_not_supported");
+    if(!request.mailGain.Empty() && (!adapter.SupportsMailGain() || !ValidMailGainSpec(request.mailGain)))
+        return reject(AdmissionCode::InvalidRequest,"native_mail_gain_adapter_not_supported");
     WritePlan plan;
     try { plan = OperationRequestWrite(request); }
     catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest, "invalid_native_operation_intent"); }
@@ -2711,7 +2762,7 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
             return reject(AdmissionCode::InvalidRequest, IsToken(blocker) ? blocker : "native_prerequisite_unavailable");
     } catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest, "native_validation_failed"); }
     state->operations.emplace(request.transition.receipt, State::PendingOperation{request});
-    if (request.kind=="vendor_purchase") NativePurchaseEpoch().Changed(request.transition.task.actor);
+    if (request.kind=="vendor_purchase" || request.kind=="auction_purchase") NativePurchaseEpoch().Changed(request.transition.task.actor);
     state->pending.push_back({next, std::move(plan), "", request.transition.receipt, false});
     const auto held = state->authority.Read(next.actor).lease;
     ReleaseTaskLease(held); // Intent is durable work, not a retained execution grant.
@@ -2733,6 +2784,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     const auto& intended = request.transition.task;
     result.admission.task = intended.id; result.admission.revision = intended.revision;
     if (pending.dispatched) return reject(AdmissionCode::ReconciliationRequired, "operation_already_dispatched");
+    if(DefersNativeSave(intended.actor))return reject(AdmissionCode::Backpressure,"native_related_operation_pending");
     if (!pending.ready) return reject(AdmissionCode::Pending, "intent_receipt_pending");
     // Reserve the existing result queue before any nonrepeatable effect. The
     // world dispatch is synchronous and rejects reentrant task admissions.
@@ -2744,6 +2796,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     if (request.kind != adapter.OperationKind() || request.effects != adapter.OperationEffects() ||
         request.persistence != adapter.PersistencePolicy() ||
         (!request.itemGain.Empty() && !adapter.SupportsItemGain()) ||
+        (!request.mailGain.Empty() && !adapter.SupportsMailGain()) ||
         (!request.consumption.empty() && !adapter.SupportsClaimedConsumption()) ||
         (!request.itemTransfer.id.empty() && !adapter.SupportsItemTransfer()))
         return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
@@ -2766,6 +2819,15 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     // This world-thread dispatch cannot interleave another claim admission.
     if (!request.itemGain.Empty() && !state->resources.CanAdmitNewClaims(MaximumItemGainStacks))
         return reject(AdmissionCode::Backpressure,"native_item_gain_claim_capacity");
+    if(!request.mailGain.Empty() && !state->resources.CanAdmitNewClaims(1))
+        return reject(AdmissionCode::Backpressure,"native_mail_gain_claim_capacity");
+    auto related=adapter.RelatedActors();
+    std::sort(related.begin(),related.end());related.erase(std::unique(related.begin(),related.end()),related.end());
+    if(related.size()>2 || std::find(related.begin(),related.end(),0)!=related.end() ||
+        std::find(related.begin(),related.end(),intended.actor)!=related.end())
+        return reject(AdmissionCode::InvalidRequest,"native_related_actor_scope_invalid");
+    for(const auto actor:related)if(DefersNativeSave(actor))
+        return reject(AdmissionCode::Backpressure,"native_related_operation_pending");
     if (!request.itemTransfer.id.empty() && !state->resources.CanAdmitNewClaims(0))
         return reject(AdmissionCode::Backpressure,"native_transfer_protection_capacity");
     const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -2826,7 +2888,10 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                     // transaction already in progress. Mail/guild operations
                     // with their own transactions require dedicated hooks.
                     nativeTransactionOpen = !CharacterDatabase.HasOpenTransaction() && CharacterDatabase.BeginTransaction();
-                    if (nativeTransactionOpen) state->HoldNativeSave(intended.actor,true);
+                    if (nativeTransactionOpen) {
+                        state->HoldNativeSave(intended.actor,true);pending.relatedSaveHolds=related;
+                        for(const auto actor:related)state->HoldNativeSave(actor,true);
+                    }
                 }
                 if (request.persistence == NativePersistence::JournalOnly || nativeTransactionOpen) {
                     ++state->nativeDispatches; result.executed = true;
@@ -2843,6 +2908,17 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                 if (observation.state == OperationState::Verified && !request.itemGain.Empty() &&
                     !VerifyNativeItemGain(intended.actor,request.itemGain,itemsBefore,NativeGainStacks(*bot,request.itemGain),nativeGains,blocker)) {
                     observation.state=OperationState::Reconciling; observation.evidence=blocker;
+                }
+                if(observation.state==OperationState::Verified && !request.mailGain.Empty()) {
+                    if(!VerifyNativeMailGain(intended.actor,request.mailGain,observation.mailedItem,blocker)) {
+                        observation.state=OperationState::Reconciling;observation.evidence=blocker;
+                    } else {
+                        const auto claim=MailGainClaim(intended,id,request.mailGain,observation.mailedItem).after;
+                        NativeResourceBalance actual;
+                        if(!ReadNativeMailBalance(*bot,claim,actual) || !VerifyNativeMailGain(intended.actor,request.mailGain,actual,blocker)) {
+                            observation.state=OperationState::Reconciling;observation.evidence="native_mail_gain_not_backed";
+                        }
+                    }
                 }
                 }
             }
@@ -2915,7 +2991,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     if (!ValidateNativeObservation(observation)) observation = {};
     Task after = saved->second; ++after.revision; after.updatedAtMs = NowMs();
     pending.uncertain = observation.state == OperationState::Reconciling;
-    if (pending.uncertain && !request.itemGain.Empty()) pending.saveBlocked=true;
+    if (pending.uncertain && (!request.itemGain.Empty() || !request.mailGain.Empty())) pending.saveBlocked=true;
     if (pending.uncertain && !request.itemTransfer.id.empty()) {
         // An uncertain merge may have consumed the old GUID. Protecting that
         // GUID alone is insufficient; stop consumers until native evidence is
@@ -2957,6 +3033,17 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
             }
             gainReservation=receipt;
             plan=std::move(moved.journal);changes=std::move(moved.changes);
+        } else if(proof.state==OperationState::Verified && !request.mailGain.Empty()) {
+            auto mailed=MailedOperationWrite(after,saved->second.revision,proof,receipt,observation.afterState,
+                request.consumption,request.mailGain,observation.mailedItem);
+            const auto claim=MailGainClaim(after,id,request.mailGain,observation.mailedItem);
+            const auto heldMail=state->resources.ReservePending(receipt,{claim},{observation.mailedItem});
+            if(heldMail!=ClaimInstall::Installed && heldMail!=ClaimInstall::Duplicate) {
+                state->resources.BlockProjection();state->claimRestoreFailed=true;pending.saveBlocked=true;
+                state->claimBlocker="native_auction_mail_requires_reconciliation";++state->invalidClaims;
+                throw std::runtime_error("Native mailed acquisition protection failed");
+            }
+            gainReservation=receipt;plan=std::move(mailed.journal);changes=std::move(mailed.changes);
         } else if (proof.state == OperationState::Verified && !request.itemGain.Empty()) {
             auto acquired=AcquiredOperationWrite(after,saved->second.revision,proof,receipt,observation.afterState,
                 request.consumption,request.itemGain,nativeGains);

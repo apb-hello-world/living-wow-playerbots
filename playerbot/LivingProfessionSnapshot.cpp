@@ -2,6 +2,7 @@
 #include "LivingProfessionNative.h"
 #include "LivingProfessionDemand.h"
 #include "LivingProfessionVendor.h"
+#include "LivingNativeAuctionPurchase.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingNativeCraftCapture.h"
@@ -85,6 +86,8 @@ namespace LivingActivity {
             std::vector<int32_t> sellers;
             have.sourceAvailable=item && RequiredProfessionVendorQuantity(job.reagents[i],have,item->BuyCount,quantity,have.sourceBlocker) &&
                 NativeProfessionVendorSources(actor,have.entry,quantity,sellers,have.sourceBlocker);
+            if(!have.sourceAvailable && RequiredProfessionVendorQuantity(job.reagents[i],have,1,quantity,have.sourceBlocker))
+                have.sourceAvailable=NativeAuctionSourceAvailable(actor,have.entry,quantity,have.sourceBlocker);
         }
         // Completion evidence is evaluated before readiness blockers by the
         // finite policy. A successful receipt must not cause another craft just

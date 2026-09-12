@@ -12,6 +12,7 @@ namespace LivingActivity {
         if (!limits.dailyPercent || limits.dailyPercent > 100 || !price)
             return reject("purchase_budget_policy_invalid_or_disabled");
         if (auction && s.auctionCountHour >= limits.auctionsPerHour) return reject("purchase_hourly_limit");
+        if (auction && s.sellerPurchasesWeek>=3) return reject("purchase_seller_weekly_limit");
         if (price > wallet || price > discretionary) return reject("purchase_protected_money_shortfall");
         constexpr auto max=std::numeric_limits<uint64_t>::max();
         if (s.spentDay > max-wallet || s.committed > max-s.spentDay ||
@@ -22,7 +23,7 @@ namespace LivingActivity {
         if (s.spentDay+s.committed+price > allowed) return reject("purchase_daily_limit");
         blocker.clear(); return true;
     }
-    std::string PurchaseSpendQuery(uint32_t actor,uint64_t now,const std::string& operation) {
+    std::string PurchaseSpendQuery(uint32_t actor,uint64_t now,const std::string& operation,uint32_t seller) {
         if (!actor || now < 86400000 || (!operation.empty() && !IsUuid(operation)))
             throw std::invalid_argument("Exact native purchase budget scope required");
         const auto actorSql=std::to_string(actor), day=std::to_string(now-86400000), hour=std::to_string(now-3600000);
@@ -33,17 +34,27 @@ namespace LivingActivity {
             " AND JSON_UNQUOTE(JSON_EXTRACT(o.before_state,'$.native.claimed_consumption[0].location'))='money'"
             " AND "+used+" REGEXP '^[1-9][0-9]{0,9}$' AND CAST("+used+" AS UNSIGNED)<=2147483647,0)";
         const std::string scope=" FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
-            " WHERE t.actor_guid="+actorSql+" AND o.kind='vendor_purchase' AND o.state<>'rejected' AND "
+            " WHERE t.actor_guid="+actorSql+" AND o.kind IN ('vendor_purchase','auction_purchase') AND o.state<>'rejected' AND "
             "(o.state IN ('intent','reconciling') OR o.updated_at_ms>"+day+")"+
             (operation.empty() ? "" : " AND NOT(o.operation_id="+SqlValue(operation)+" AND o.state='intent')");
-        return "SELECT a.purchases,a.spent+v.spent,v.committed,v.invalid FROM "
+        const auto week=std::to_string(now>604800000 ? now-604800000 : 0);
+        const std::string pair=seller ?
+            ",(SELECT COUNT(*) FROM organic_economy_auction_history h WHERE h.buyer_guid="+actorSql+
+            " AND h.seller_guid="+std::to_string(seller)+" AND h.outcome='sold' AND h.occurred_at>FROM_UNIXTIME("+week+"/1000))"
+            "+(SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id WHERE t.actor_guid="+actorSql+
+            " AND o.kind='auction_purchase' AND o.state='verified' AND o.updated_at_ms>"+week+
+            " AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.before_state,'$.native.native.seller')) AS UNSIGNED)="+std::to_string(seller)+')' : "";
+        // Managed purchases live only in the operation ledger. They are not
+        // copied to legacy history, which would double-count the same payment.
+        return "SELECT a.purchases+v.purchases,a.spent+v.spent,v.committed,v.invalid"+pair+" FROM "
             "(SELECT COALESCE(SUM(UNIX_TIMESTAMP(occurred_at)*1000>"+hour+"),0) purchases,"
             "COALESCE(SUM(CAST(unit_price_copper AS DECIMAL(30,0))*quantity),0) spent"
             " FROM organic_economy_auction_history WHERE buyer_guid="+actorSql+
             " AND outcome IN ('bid','sold') AND occurred_at>FROM_UNIXTIME("+day+"/1000)) a CROSS JOIN "
             "(SELECT COALESCE(SUM(CASE WHEN o.state='verified' AND "+valid+" THEN CAST("+used+
             " AS DECIMAL(30,0)) ELSE 0 END),0) spent,COALESCE(SUM(CASE WHEN o.state IN ('intent','reconciling') AND "+valid+
-            " THEN CAST("+used+" AS DECIMAL(30,0)) ELSE 0 END),0) committed,COALESCE(SUM(NOT("+valid+")),0) invalid"+scope+") v";
+            " THEN CAST("+used+" AS DECIMAL(30,0)) ELSE 0 END),0) committed,COALESCE(SUM(NOT("+valid+")),0) invalid,"
+            "COALESCE(SUM(o.kind='auction_purchase' AND (o.state IN ('intent','reconciling') OR o.updated_at_ms>"+hour+")),0) purchases"+scope+") v";
     }
     bool DecodePurchaseSpend(const std::array<std::string,4>& columns,PurchaseSpend& spend) {
         spend={}; std::array<uint64_t,4> numbers{};
@@ -55,6 +66,13 @@ namespace LivingActivity {
         }
         if (numbers[3]) return false;
         spend={true,numbers[0],numbers[1],numbers[2]}; return true;
+    }
+    bool DecodeSellerPurchaseCount(const std::string& value,PurchaseSpend& spend) {
+        uint64_t count=0;const auto parsed=std::from_chars(value.data(),value.data()+value.size(),count);
+        if(!spend.complete || value.empty() || parsed.ec!=std::errc{} || parsed.ptr!=value.data()+value.size()) {
+            spend={};return false;
+        }
+        spend.sellerPurchasesWeek=count;return true;
     }
     uint64_t PurchaseEpoch::Read(uint32_t actor) const {
         if (!actor) return 0;

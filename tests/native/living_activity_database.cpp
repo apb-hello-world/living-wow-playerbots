@@ -65,12 +65,13 @@ public:
         bool present = row && row[0] && row[1] && ReceiptMatches(plan, row[0], std::stoull(row[1]));
         mysql_free_result(result); return present;
     }
-    PurchaseSpend Budget(uint32_t actor,uint64_t now,const std::string& operation="") {
-        if (!Execute(PurchaseSpendQuery(actor,now,operation))) throw std::runtime_error(mysql_error(db));
-        MYSQL_RES* result=mysql_store_result(db); assert(result && mysql_num_fields(result)==4);
+    PurchaseSpend Budget(uint32_t actor,uint64_t now,const std::string& operation="",uint32_t seller=0) {
+        if (!Execute(PurchaseSpendQuery(actor,now,operation,seller))) throw std::runtime_error(mysql_error(db));
+        MYSQL_RES* result=mysql_store_result(db); assert(result && mysql_num_fields(result)==(seller?5u:4u));
         const auto row=mysql_fetch_row(result); assert(row);
         PurchaseSpend spend;
         DecodePurchaseSpend({row[0] ? row[0] : "",row[1] ? row[1] : "",row[2] ? row[2] : "",row[3] ? row[3] : ""},spend);
+        if(seller)DecodeSellerPurchaseCount(row[4]?row[4]:"",spend);
         mysql_free_result(result); return spend;
     }
     std::vector<ProfessionHistoryRow> History(const Task& task) {
@@ -490,6 +491,46 @@ int main() {
     assert(db.Execute("ROLLBACK"));
     assert(db.Execute("UPDATE living_activity_operation SET state='verified',updated_at_ms=172000000 WHERE operation_id="+SqlValue(purchaseId)));
     { Connection restarted; assert(restarted.Budget(701,budgetNow).spentDay==60); }
+    assert(db.Execute("ALTER TABLE organic_economy_auction_history ADD seller_guid INT UNSIGNED NOT NULL DEFAULT 0"));
+    {
+        // Transaction/claim metadata only. No simulated receipt here counts as
+        // a native gameplay purchase; the copied realm must supply that proof.
+        const auto rid=[](unsigned n){return std::string("ff2efbdf-f0ec-4539-b840-29984797813")+std::to_string(n);};
+        Task auction=purchase;auction.id=auction.root="637bd562-36d2-5b01-bc01-e2d831c49fe6";
+        auction.source="auction_service";auction.sourceKey="mail_acquisition_fixture";
+        auction.actor=auction.context.actor=905;auction.phase=Phase::Preparing;auction.revision=1;
+        assert(db.Write(TaskWrite(auction,0,rid(0),"fixture_auction_prepare")));
+        ResourceClaim wallet;wallet.id=rid(1);wallet.task=auction.id;wallet.actor=905;wallet.copper=20;wallet.location="money";wallet.state="held";
+        ++auction.revision;
+        assert(db.Write(ResourceReservationWrite(auction,1,rid(2),{{wallet,0}},{{905,0,0,0,100,"money"}})));
+        OperationRequest order;order.transition.task=auction;order.transition.expectedRevision=2;
+        ++order.transition.task.revision;order.transition.task.phase=Phase::Executing;order.transition.receipt=rid(3);
+        order.kind="auction_purchase";order.effects=Mask(Effect::Money)|Mask(Effect::Inventory);order.persistence=NativePersistence::Inventory;
+        order.beforeState="{\"seller\":77}";order.mailGain={44,9901,765,2};order.consumption={{wallet,20}};
+        assert(db.Write(OperationRequestWrite(order)));
+        auto budget=db.Budget(905,budgetNow,"",77);assert(budget.complete && budget.auctionCountHour==1 && budget.committed==20);
+        assert(db.Budget(905,budgetNow,rid(3),77).auctionCountHour==0);
+        auction=order.transition.task;++auction.revision;auction.phase=Phase::Verifying;
+        OperationResult proof;proof.id=rid(3);proof.task=auction.id;proof.taskRevision=3;proof.kind=order.kind;
+        proof.state=OperationState::Verified;proof.nativeReference="auction:44:item:9901";proof.evidence="native_auction_payment_and_mail_observed";
+        NativeResourceBalance mail{905,9901,765,2,0,"mail",9911};
+        const auto acquired=MailedOperationWrite(auction,3,proof,rid(4),"{}",order.consumption,order.mailGain,mail);
+        assert(!db.Write(acquired.journal,true));
+        assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(wallet.id))=="held");
+        assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE item_guid=9901")=="0");
+        const auto intent=db.Scalar("SELECT before_state FROM living_activity_operation WHERE operation_id="+SqlValue(proof.id));
+        assert(db.Execute("UPDATE living_activity_operation SET before_state=JSON_SET(before_state,'$.mail_gain.guid',9902) WHERE operation_id="+SqlValue(proof.id)));
+        assert(!db.Write(acquired.journal));
+        assert(db.Execute("UPDATE living_activity_operation SET before_state="+SqlValue(intent)+" WHERE operation_id="+SqlValue(proof.id)));
+        assert(db.Write(acquired.journal) && db.Write(acquired.journal));
+        assert(db.Scalar("SELECT CONCAT(location,':',native_reference,':',quantity) FROM living_activity_claim WHERE item_guid=9901")=="mail:9911:2");
+        assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(wallet.id))=="consumed");
+        assert(db.Execute("UPDATE living_activity_operation SET updated_at_ms=172000000 WHERE operation_id="+SqlValue(proof.id)));
+        budget=db.Budget(905,budgetNow,"",77);
+        assert(budget.complete && budget.auctionCountHour==1 && budget.spentDay==20 && !budget.committed && budget.sellerPurchasesWeek==1);
+        assert(db.Budget(905,budgetNow,"",78).sellerPurchasesWeek==0);
+        {Connection restarted;assert(restarted.ReceiptPresent(acquired.journal));assert(restarted.Budget(905,budgetNow,"",77).spentDay==20);}
+    }
     // Exercise the actual revision-bound history query. These rows deliberately
     // contain no real craft proof, so even a 'verified' label cannot pass the
     // same physical decoder used by the game.
