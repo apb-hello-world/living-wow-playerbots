@@ -286,6 +286,7 @@ struct LivingActivityCoordinator::State {
         uint32_t bankGuid=0,bankCount=0,bankTotal=0;
         std::string mailOperation,mailClaim;
         uint32_t mailId=0,mailGuid=0,mailCount=0;
+        uint32_t mailMergeGuid=0,mailMergeCount=0;
         Task resumeTask;
         std::string resumeReceipt;
         std::vector<ResourceClaim> resumeClaims;
@@ -2312,6 +2313,8 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     // This world-thread dispatch cannot interleave another claim admission.
     if (!request.itemGain.Empty() && !state->resources.CanAdmitNewClaims(MaximumItemGainStacks))
         return reject(AdmissionCode::Backpressure,"native_item_gain_claim_capacity");
+    if (!request.itemTransfer.id.empty() && !state->resources.CanAdmitNewClaims(0))
+        return reject(AdmissionCode::Backpressure,"native_transfer_protection_capacity");
     const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (state->authority.BeginAtomic(held, id, monotonic).code != AuthorityCode::Allowed)
         return reject(AdmissionCode::ReconciliationRequired, "atomic_admission_rejected");
@@ -2460,6 +2463,14 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     Task after = saved->second; ++after.revision; after.updatedAtMs = NowMs();
     pending.uncertain = observation.state == OperationState::Reconciling;
     if (pending.uncertain && !request.itemGain.Empty()) pending.saveBlocked=true;
+    if (pending.uncertain && !request.itemTransfer.id.empty()) {
+        // An uncertain merge may have consumed the old GUID. Protecting that
+        // GUID alone is insufficient; stop consumers until native evidence is
+        // reconciled, rather than allowing the surviving stock to be spent.
+        state->resources.BlockProjection();state->claimRestoreFailed=true;
+        state->claimBlocker="native_transfer_identity_requires_reconciliation";++state->invalidClaims;
+        pending.saveBlocked=true;
+    }
     pending.outcome = observation.state;
     after.phase = pending.uncertain ? Phase::Reconciling : Phase::Verifying;
     after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
@@ -2473,9 +2484,20 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     std::string gainReservation;
     try {
         if (proof.state == OperationState::Verified && !request.itemTransfer.id.empty()) {
-            auto moved=ItemTransferWrite(after,saved->second.revision,proof,receipt,observation.afterState,request.itemTransfer);
-            // Same GUID and amount: the existing protection remains effective
-            // through location change, SQL retry and acknowledgement loss.
+            const auto& target=observation.transferredItem;
+            if (!ValidNativeResourceBalance(target) || target.actor!=intended.actor || target.location!="bags" ||
+                target.itemEntry!=request.itemTransfer.itemEntry || target.quantity<request.itemTransfer.quantity)
+                throw std::runtime_error("Verified native transfer identity missing");
+            auto moved=ItemTransferWrite(after,saved->second.revision,proof,receipt,observation.afterState,
+                request.itemTransfer,target.itemGuid);
+            const auto protectedTransfer=state->resources.ReserveTransferred(receipt,moved.changes.front(),target);
+            if (protectedTransfer!=ClaimInstall::Installed && protectedTransfer!=ClaimInstall::Duplicate) {
+                state->resources.BlockProjection();state->claimRestoreFailed=true;
+                state->claimBlocker="native_transferred_items_require_reconciliation";++state->invalidClaims;
+                pending.saveBlocked=true;
+                throw std::runtime_error("Native transfer protection failed");
+            }
+            gainReservation=receipt;
             plan=std::move(moved.journal);changes=std::move(moved.changes);
         } else if (proof.state == OperationState::Verified && !request.itemGain.Empty()) {
             auto acquired=AcquiredOperationWrite(after,saved->second.revision,proof,receipt,observation.afterState,
@@ -2500,6 +2522,10 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     } catch (const std::exception&) {
         // Never replay a native effect because its consumed-claim projection
         // could not be produced. Preserve its actual after-state for recovery.
+        if (!request.itemTransfer.id.empty()) {
+            state->resources.BlockProjection();state->claimRestoreFailed=true;
+            state->claimBlocker="native_transfer_claim_requires_reconciliation";pending.saveBlocked=true;
+        }
         pending.uncertain=true; pending.outcome=proof.state=OperationState::Reconciling;
         proof.evidence="claim_outcome_requires_reconciliation";
         after.phase=Phase::Reconciling; after.checkpoint.blocker=proof.evidence;

@@ -8,6 +8,7 @@ struct NativeBankQuote {
     uint64_t banker=0;
     uint16_t from=0,to=0;
     uint32_t bagBefore=0,totalBefore=0;
+    uint32_t mergeGuid=0,mergeCount=0;
 };
 uint64_t NativeNearbyBanker(Player& actor);
 std::string EncodeNativeBankQuote(const NativeBankQuote& quote);

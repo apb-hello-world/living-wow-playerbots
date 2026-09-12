@@ -7,6 +7,7 @@ struct NativeMailQuote {
     uint64_t mailbox=0,deliveredAt=0,expiresAt=0;
     uint32_t moneyBefore=0,mailMoney=0,attachmentsBefore=0,bagBefore=0,totalBefore=0;
     uint16_t to=0;
+    uint32_t mergeGuid=0,mergeCount=0; // Optional v2 quote; old empty-slot receipts remain unchanged.
 };
 // Identity inspection does not grant permission to collect, guess a recipe, or
 // count a mail attachment as bag stock. Only acknowledged task claims link it.

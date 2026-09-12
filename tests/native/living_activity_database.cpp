@@ -603,6 +603,39 @@ int main() {
         assert(db.Scalar("SELECT CONCAT(location,':',native_reference,':',state,':',quantity,':',revision) FROM living_activity_claim WHERE claim_id="+SqlValue(item.id))=="bags:0:held:5:2");
         assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE item_guid=9877")=="1");
     }
+    {
+        // Real SQL merge receipt: source/destination identity updates are atomic
+        // with task/operation records, and a failed/duplicate receipt cannot
+        // strand or duplicate the reservation. Physical proof is tested in realm.
+        const auto rid=[](unsigned n){return std::string("ff2efbdf-f0ec-4539-b840-29984797812")+std::to_string(n);};
+        Task task;task.id=task.root="637bd562-36d2-5b01-bc01-e2d831c49fe4";
+        task.actor=task.context.actor=906;task.source="mail_service";task.sourceKey="native_mail_merge_fixture";
+        task.mode=Mode::Active;task.phase=Phase::Queued;task.kind=Kind::Maintenance;task.createdAtMs=task.updatedAtMs=1000;
+        assert(db.Write(TaskWrite(task,0,rid(0),"fixture_created")));
+        task.phase=Phase::Preparing;++task.revision;assert(db.Write(TaskWrite(task,1,rid(1),"fixture_preparing")));
+        ResourceClaim item;item.id=rid(2);item.task=task.id;item.actor=906;item.itemGuid=9887;
+        item.itemEntry=765;item.quantity=5;item.location="mail";item.nativeReference=1236;item.state="held";
+        ++task.revision;
+        assert(db.Write(ResourceReservationWrite(task,2,rid(3),{{item,0}},{{906,9887,765,5,0,"mail",1236}})));
+        OperationRequest request;request.transition.task=task;request.transition.expectedRevision=task.revision;
+        ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;request.transition.receipt=rid(4);
+        request.kind="mail_collect";request.effects=Mask(Effect::Inventory);request.persistence=NativePersistence::Inventory;request.itemTransfer=item;
+        request.beforeState="{\"merge_guid\":9888,\"merge_count\":7}";
+        assert(db.Write(OperationRequestWrite(request)));
+        task=request.transition.task;++task.revision;task.phase=Phase::Verifying;
+        OperationResult result;result.id=rid(4);result.task=task.id;result.taskRevision=request.transition.task.revision;
+        result.kind="mail_collect";result.state=OperationState::Verified;result.nativeReference="mail:1236:item:9887";
+        result.evidence="native_mail_attachment_collected";
+        const auto moved=ItemTransferWrite(task,request.transition.task.revision,result,rid(5),
+            "{\"surviving_guid\":9888,\"surviving_count\":12}",item,9888);
+        assert(!db.Write(moved.journal,true));
+        const auto identity="SELECT CONCAT(item_guid,':',location,':',native_reference,':',quantity,':',revision) FROM living_activity_claim WHERE claim_id="+SqlValue(item.id);
+        assert(db.Scalar(identity)=="9887:mail:1236:5:1");
+        assert(db.Write(moved.journal) && db.Write(moved.journal));
+        assert(db.Scalar(identity)=="9888:bags:0:5:2");
+        assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE item_guid=9887")=="0");
+        assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE item_guid=9888")=="1");
+    }
     ProfessionSettlementDatabase(db);
     ProfessionResumeDatabase(db);
     // Execute the exact production projection/expiry SQL, including old-schema

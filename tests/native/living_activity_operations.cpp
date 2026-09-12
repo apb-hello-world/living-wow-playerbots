@@ -174,5 +174,12 @@ int main() {
         assert(!ValidateOperationResources(transfer,mail,attached,reason));
         ResourceClaimBook afterRestart;assert(afterRestart.RestoreBatch({mailWrite.changes[0].after})==ClaimInstall::Installed);
         assert(afterRestart.FinishRestore() && afterRestart.Inspect(claim.id)->nativeReference==0);
+        const auto mergedWrite=ItemTransferWrite(verified,transfer.transition.task.revision,moved,
+            "ff2efbdf-f0ec-4539-b840-299847970c09","{\"surviving_guid\":46,\"surviving_count\":12}",transfer.itemTransfer,46);
+        assert(mergedWrite.changes[0].after.itemGuid==46 && mergedWrite.changes[0].after.quantity==5);
+        assert(mergedWrite.changes[0].after.id==transfer.itemTransfer.id);
+        assert(mergedWrite.journal.statements.front().find("c.item_guid=45")!=std::string::npos);
+        assert(mergedWrite.journal.statements.back().find("SET c.item_guid=46")!=std::string::npos);
+        assert(mergedWrite.journal.receiptQuery.find("c.item_guid=46")!=std::string::npos);
     }
 }

@@ -14,6 +14,16 @@ using namespace ai;
 
 namespace
 {
+    bool UnreservedBankStack(Player* actor,const Item* item)
+    {
+        if (!actor || !item) return false;
+        const auto held=sLivingActivityCoordinator.ResourceReservations().Inspect();
+        // An unjournalled legacy transfer may merge away the source GUID.
+        // Accepted stock moves only through the identity-aware service adapter,
+        // including when activity execution has been paused or disabled.
+        return held && held->UnreservedItem(actor->GetGUIDLow(),item->GetGUIDLow(),
+            item->GetEntry(),item->GetCount())==item->GetCount();
+    }
     void ResetBankActionItemCaches(PlayerbotAI* ai, const std::string& itemId, const std::string& itemQualifier,
         const std::string& usageQualifier = "")
     {
@@ -57,6 +67,7 @@ bool BankAction::WithdrawForRecipe(uint32 entry, uint32 targetCount, std::string
     Item* item = FindItemInBank(entry);
     if (!item) { blocker = "recipe_bank_material_missing"; return false; }
     if (sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow())) return false;
+    if (!UnreservedBankStack(bot,item)) return false;
     uint32 count = std::min(targetCount - before, item->GetCount());
     ItemPosCountVec dest;
     blocker = "recipe_bag_space_unavailable";
@@ -159,7 +170,7 @@ bool BankAction::Withdraw(Player* requester, const uint32 itemid)
 {
     if (!sLivingActivityCoordinator.PermitEffects(*ai, GetActivityEffects(), "native service mutation")) return false;
     Item* pItem = FindItemInBank(itemid);
-    if (!pItem)
+    if (!pItem || !UnreservedBankStack(bot,pItem))
         return false;
 
     const ItemPrototype* proto = pItem->GetProto();
@@ -206,6 +217,7 @@ bool BankAction::Deposit(Player* requester, Item* pItem)
     const ItemPrototype* proto = pItem ? pItem->GetProto() : nullptr;
     if (!proto)
         return false;
+    if (!UnreservedBankStack(bot,pItem)) return false;
     if (sPlayerbotOrganicEconomy.RecipeMaterialQuantity(bot->GetGUIDLow(), pItem->GetEntry())) return false;
 
     const std::string itemId = std::to_string(proto->ItemId);
@@ -335,7 +347,7 @@ bool BankAction::AutoDeposit()
     for (const ObjectGuid& guid : items)
     {
         Item* item = bot->GetItemByGuid(guid);
-        if (!item)
+        if (!item || !UnreservedBankStack(bot,item))
             continue;
 
         const ItemPrototype* proto = item->GetProto();
@@ -387,7 +399,7 @@ bool BankAction::AutoWithdraw()
 
     auto checkAndWithdraw = [&](Item* pItem) -> bool
     {
-        if (!pItem)
+        if (!pItem || !UnreservedBankStack(bot,pItem))
             return false;
 
         ItemPrototype const* proto = pItem->GetProto();

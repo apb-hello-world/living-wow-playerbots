@@ -77,6 +77,11 @@ namespace LivingActivity {
         // be reconciled; only the exact committed receipt may settle the batch.
         ClaimInstall ReservePending(const std::string& receipt, const std::vector<ClaimReceiptChange>& changes,
             const std::vector<NativeResourceBalance>& nativeBalances);
+        // Called only after a compiled native whole-stack transfer verifies its
+        // surviving identity. Protect both old and new GUIDs until the SAME
+        // native-save/claim receipt commits. This never proves the transfer.
+        ClaimInstall ReserveTransferred(const std::string& receipt,const ClaimReceiptChange& change,
+            const NativeResourceBalance& destination);
         ClaimInstall CommitReservation(const std::string& receipt);
         bool HasPending(const std::string& receipt) const { return pending.count(receipt) != 0; }
         size_t PendingCount() const { return pending.size(); }
@@ -96,10 +101,13 @@ namespace LivingActivity {
         // contains every claim. Pending reservations fail closed.
         bool ReadUnsettled(const std::string& task,UnsettledClaimBatch& batch,std::string& blocker) const;
     private:
+        ClaimInstall ReservePendingImpl(const std::string& receipt,const std::vector<ClaimReceiptChange>& changes,
+            const std::vector<NativeResourceBalance>& nativeBalances,bool transferred);
         void Index(const ResourceClaim& claim, bool add);
         void IndexAcknowledged(const ResourceClaim& claim,bool add);
         size_t PendingSlots(const std::string& excluding = "") const;
         struct PendingReservation {
+            bool transferred=false;
             std::vector<ClaimReceiptChange> changes;
             std::vector<NativeResourceBalance> balances;
             std::vector<ResourceClaim> additional;

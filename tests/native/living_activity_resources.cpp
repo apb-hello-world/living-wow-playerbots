@@ -302,6 +302,53 @@ int main() {
     assert(rejects({{mailClaim,0}},{wrongReference}));
     assert(mailBook.ReservePending(receipt,{{mailClaim,0}},{wrongReference})==ClaimInstall::Invalid);
     assert(mailBook.CommitReservation(receipt)==ClaimInstall::Installed);
+    {
+        ResourceClaimBook transferBook;
+        auto sourceClaim=mailClaim;sourceClaim.quantity=4;
+        auto destinationClaim=sourceClaim;destinationClaim.id="ff2efbdf-f0ec-4539-b840-299847970c21";
+        destinationClaim.task="ff2efbdf-f0ec-4539-b840-299847970c22";
+        destinationClaim.itemGuid=82;destinationClaim.location="bags";destinationClaim.nativeReference=0;
+        destinationClaim.quantity=3;
+        assert(transferBook.RestoreBatch({sourceClaim,destinationClaim})==ClaimInstall::Installed && transferBook.FinishRestore());
+        auto after=sourceClaim;++after.revision;after.itemGuid=82;after.location="bags";after.nativeReference=0;
+        NativeResourceBalance native{497,82,2934,9,0,"bags"};
+        assert(transferBook.ReservePending(receipt,{{after,1}},{native})==ClaimInstall::Invalid);
+        assert(transferBook.ReserveTransferred(receipt,{after,1},native)==ClaimInstall::Installed);
+        assert(transferBook.ReserveTransferred(receipt,{after,1},native)==ClaimInstall::Duplicate);
+        assert(transferBook.ReservePending(receipt,{{after,1}},{native})==ClaimInstall::Invalid);
+        // Both identities stay protected while only the destination physically
+        // exists. A legacy seller cannot spend the new task's portion.
+        assert(transferBook.Reader().Inspect()->ProtectedItem(81)==4);
+        assert(transferBook.Reader().Inspect()->UnreservedItem(497,82,2934,9)==2);
+        assert(transferBook.Inspect(sourceClaim.id)->location=="mail");
+        assert(transferBook.CommitReservation(receipt)==ClaimInstall::Installed);
+        assert(transferBook.InstallReceipt({{after,1}})==ClaimInstall::Duplicate);
+        assert(transferBook.Reader().Inspect()->ProtectedItem(81)==0);
+        assert(transferBook.Reader().Inspect()->ProtectedItem(82)==7);
+        assert(transferBook.Inspect(sourceClaim.id)->itemGuid==82);
+        uint32_t own=0;
+        assert(transferBook.AvailableToTask(sourceClaim.task,native,own) && own==6);
+        ResourceClaimBook restarted;
+        assert(restarted.RestoreBatch({after,destinationClaim})==ClaimInstall::Installed && restarted.FinishRestore());
+        assert(restarted.Reader().Inspect()->UnreservedItem(497,82,2934,9)==2);
+        // Ordinary reservation admission cannot manufacture identity changes;
+        // neither can a transfer alter quantity, owner, entry or claim revision.
+        for(unsigned field=0;field<6;++field) {
+            ResourceClaimBook invalid;
+            assert(invalid.RestoreBatch({sourceClaim,destinationClaim})==ClaimInstall::Installed && invalid.FinishRestore());
+            auto bad=after;auto backing=native;
+            switch(field) {
+            case 0:bad.quantity=5;break;
+            case 1:++bad.actor;break;
+            case 2:++bad.itemEntry;break;
+            case 3:++bad.revision;break;
+            case 4:bad.location="bank";break;
+            default:backing.quantity=6;break;
+            }
+            assert(invalid.ReserveTransferred(receipt,{bad,1},backing)!=ClaimInstall::Installed);
+            assert(invalid.PendingCount()==0 && invalid.Inspect(sourceClaim.id)->itemGuid==81);
+        }
+    }
     uint32_t available=0;
     assert(mailBook.AvailableToTask(mailClaim.task,mailBalance,available) && available==mailBalance.quantity);
     assert(!mailBook.AvailableToTask(mailClaim.task,wrongReference,available));

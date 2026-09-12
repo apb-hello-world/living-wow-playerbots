@@ -22,6 +22,10 @@ namespace LivingActivity {
     struct NativeObservation {
         OperationState state = OperationState::Reconciling;
         std::string nativeReference, evidence = "native_outcome_uncertain", afterState = "{}";
+        // Exact surviving native stack after a verified whole-stack transfer.
+        // Count includes preexisting stock; only the transferred claim's own
+        // quantity follows it. Never supplied by a model or inferred on restart.
+        NativeResourceBalance transferredItem;
     };
     // Finite, compiled native service adapters. Never a model/RPC callback,
     // script interpreter, or pointer retained across asynchronous persistence.

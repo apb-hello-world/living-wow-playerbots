@@ -3,6 +3,7 @@
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingActivityTransfer.h"
+#include "LivingActivityStackTransfer.h"
 #include "LivingServiceExecution.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
@@ -18,15 +19,28 @@ bool SafeMailActor(Player& actor) {
         !actor.IsBeingTeleported() && !ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) &&
         actor.IsStopped() && !actor.GetMap()->IsDungeon() && !LivingServiceExecution::Busy(&actor);
 }
-bool NativeDestination(Player& actor,Item& item,uint16_t& destination) {
-    // Use the handler's own automatic placement. A merge/split needs a separate
-    // identity proof; do not call the handler if it would destroy this GUID.
+bool NativeDestination(Player& actor,Item& item,uint16_t& destination,uint32_t& mergeGuid,uint32_t& mergeCount) {
+    mergeGuid=mergeCount=0;
+    // Use the handler's exact automatic placement. One whole-stack merge is
+    // journalled below; a multi-destination split is not this adapter's proof.
     ItemPosCountVec positions;uint8_t affected=0;
     if (actor.CanStoreItem(NULL_BAG,NULL_SLOT,positions,&item,affected,false)!=EQUIP_ERR_OK ||
         positions.size()!=1 || positions[0].count!=item.GetCount()) return false;
     destination=positions[0].pos;
-    return Player::IsInventoryPos(uint8_t(destination>>8),uint8_t(destination)) &&
-        !actor.GetItemByPos(destination);
+    if (!Player::IsInventoryPos(uint8_t(destination>>8),uint8_t(destination))) return false;
+    if (const auto* target=actor.GetItemByPos(destination)) {
+        const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
+        if (!view || !view->ready || target->GetEntry()!=item.GetEntry() || target->GetGUIDLow()==item.GetGUIDLow() ||
+            view->HasUncertainItem(actor.GetGUIDLow(),item.GetEntry()) ||
+            view->ProtectedItem(target->GetGUIDLow())>target->GetCount()) return false;
+        mergeGuid=target->GetGUIDLow();mergeCount=target->GetCount();
+    }
+    return true;
+}
+NativeItemStack Stack(Player& actor,const Item* item) {
+    if (!item) return {};
+    return {actor.GetGUIDLow(),item->GetGUIDLow(),item->GetEntry(),item->GetCount(),
+        item->GetContainer()?item->GetContainer()->GetGUIDLow():0,item->GetSlot()};
 }
 bool ProtectedLegacy(Player& actor,const ResourceClaim& c) {
     return sPlayerbotActionBroker.IsItemReserved(c.itemGuid) || sGuildSupplies.ReservedEntry(c.actor,c.itemEntry) ||
@@ -59,7 +73,8 @@ std::string EncodeNativeMailQuote(const NativeMailQuote& q) {
         ",\"mailbox_entry\":"+std::to_string(q.mailboxEntry)+",\"delivered_at\":"+std::to_string(q.deliveredAt)+
         ",\"expires_at\":"+std::to_string(q.expiresAt)+",\"money_before\":"+std::to_string(q.moneyBefore)+
         ",\"mail_money\":"+std::to_string(q.mailMoney)+",\"attachments_before\":"+std::to_string(q.attachmentsBefore)+
-        ",\"bag_before\":"+std::to_string(q.bagBefore)+",\"total_before\":"+std::to_string(q.totalBefore)+",\"to\":"+std::to_string(q.to)+'}';
+        ",\"bag_before\":"+std::to_string(q.bagBefore)+",\"total_before\":"+std::to_string(q.totalBefore)+",\"to\":"+std::to_string(q.to)+
+        (q.mergeGuid ? ",\"merge_guid\":"+std::to_string(q.mergeGuid)+",\"merge_count\":"+std::to_string(q.mergeCount) : "")+'}';
 }
 bool DecodeNativeMailQuote(const std::string& value,NativeMailQuote& q) {
     q={};
@@ -71,8 +86,10 @@ bool DecodeNativeMailQuote(const std::string& value,NativeMailQuote& q) {
         q.expiresAt=p.get<uint64_t>("expires_at");q.moneyBefore=p.get<uint32_t>("money_before");
         q.mailMoney=p.get<uint32_t>("mail_money");q.attachmentsBefore=p.get<uint32_t>("attachments_before");
         q.bagBefore=p.get<uint32_t>("bag_before");q.totalBefore=p.get<uint32_t>("total_before");q.to=p.get<uint16_t>("to");
+        q.mergeGuid=p.get<uint32_t>("merge_guid",0);q.mergeCount=p.get<uint32_t>("merge_count",0);
         return value==EncodeNativeMailQuote(q) && q.actor && q.mail && q.guid && q.entry && q.quantity &&
-            q.mailbox && q.mailboxEntry && q.attachmentsBefore;
+            q.mailbox && q.mailboxEntry && q.attachmentsBefore && bool(q.mergeGuid)==bool(q.mergeCount) && q.mergeGuid!=q.guid &&
+            uint64_t(q.mergeCount)+q.quantity<=UINT32_MAX;
     } catch (...) {q={};return false;}
 }
 bool PlanNativeMailCollection(Player& actor,const Task& task,const ResourceClaim& c,NativeMailQuote& q,std::string& blocker) {
@@ -93,7 +110,7 @@ bool PlanNativeMailCollection(Player& actor,const Task& task,const ResourceClaim
     const auto mailbox=NativeNearbyMailbox(actor);
     if (!mailbox) return reject("profession_mailbox_travel_required");
     auto* item=actor.GetMItem(c.itemGuid);uint16_t to=0;
-    if (!NativeDestination(actor,*item,to)) return reject("profession_mail_empty_destination_required");
+    if (!NativeDestination(actor,*item,to,q.mergeGuid,q.mergeCount)) return reject("profession_mail_single_destination_required");
     q.actor=c.actor;q.mail=uint32_t(c.nativeReference);q.guid=c.itemGuid;q.entry=c.itemEntry;q.quantity=c.quantity;
     q.mailbox=mailbox;q.mailboxEntry=actor.GetGameObjectIfCanInteractWith(ObjectGuid(mailbox),GAMEOBJECT_TYPE_MAILBOX)->GetEntry();
     q.deliveredAt=mail->deliver_time;q.expiresAt=mail->expire_time;q.moneyBefore=actor.GetMoney();q.mailMoney=mail->money;
@@ -119,21 +136,29 @@ NativeObservation NativeMailCollection::ExecuteNative(Player& actor,const Operat
     NativeObservation out;std::string blocker;
     if (!ValidateNative(actor,request,blocker)) {out.state=OperationState::Rejected;out.evidence=blocker;return out;}
     if (!CharacterDatabase.HasOpenTransaction()) {out.state=OperationState::Rejected;out.evidence="mail_atomic_transaction_required";return out;}
+    const NativeItemStack source{quote.actor,quote.guid,quote.entry,quote.quantity,0,0};
+    const auto destinationBefore=Stack(actor,actor.GetItemByPos(quote.to));
     WorldPacket packet(CMSG_MAIL_TAKE_ITEM,16);packet<<ObjectGuid(quote.mailbox)<<uint32(quote.mail)<<uint32(quote.guid);
     actor.GetSession()->HandleMailTakeItem(packet);
-    auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.guid));const auto* mail=actor.GetMail(quote.mail);
+    const auto survivingGuid=quote.mergeGuid ? quote.mergeGuid : quote.guid;
+    auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,survivingGuid));const auto* mail=actor.GetMail(quote.mail);
+    const auto destinationAfter=Stack(actor,item);
+    const bool identityVerified=VerifyWholeStackTransfer(source,destinationBefore,destinationAfter,
+        actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.guid))!=nullptr,blocker);
     const bool removed=mail && std::none_of(mail->items.begin(),mail->items.end(),[&](const MailItemInfo& a){return a.item_guid==quote.guid;});
     out.nativeReference="mail:"+std::to_string(quote.mail)+":item:"+std::to_string(quote.guid);
     out.afterState="{\"mail\":"+std::to_string(quote.mail)+",\"guid\":"+std::to_string(quote.guid)+",\"to\":"+std::to_string(quote.to)+
         ",\"bag\":"+std::to_string(item && item->GetContainer() ? item->GetContainer()->GetGUIDLow() : 0)+
         ",\"slot\":"+std::to_string(item ? item->GetSlot() : 0)+",\"bag_count\":"+std::to_string(actor.GetItemCount(quote.entry,false))+
-        ",\"total_count\":"+std::to_string(actor.GetItemCount(quote.entry,true))+",\"money\":"+std::to_string(actor.GetMoney())+'}';
+        ",\"total_count\":"+std::to_string(actor.GetItemCount(quote.entry,true))+",\"money\":"+std::to_string(actor.GetMoney())+
+        ",\"surviving_guid\":"+std::to_string(destinationAfter.guid)+",\"surviving_count\":"+std::to_string(destinationAfter.count)+'}';
     if (CharacterDatabase.HasOpenTransaction() && item && item->GetOwnerGuid()==actor.GetObjectGuid() && item->GetPos()==quote.to &&
-        item->GetEntry()==quote.entry && item->GetCount()==quote.quantity && !actor.GetMItem(quote.guid) && removed &&
+        identityVerified && !actor.GetMItem(quote.guid) && removed &&
         mail->items.size()+1==quote.attachmentsBefore && !mail->COD && mail->money==quote.mailMoney &&
         actor.GetMoney()==quote.moneyBefore && uint64_t(actor.GetItemCount(quote.entry,false))==uint64_t(quote.bagBefore)+quote.quantity &&
         uint64_t(actor.GetItemCount(quote.entry,true))==uint64_t(quote.totalBefore)+quote.quantity) {
         out.state=OperationState::Verified;out.evidence="native_mail_attachment_collected";
+        out.transferredItem={quote.actor,survivingGuid,quote.entry,item->GetCount(),0,"bags"};
     } else out.evidence="native_mail_collection_requires_reconciliation";
     auto* context=actor.GetPlayerbotAI()->GetAiObjectContext();
     for (const auto& name : context->GetValues()) {
@@ -144,14 +169,16 @@ NativeObservation NativeMailCollection::ExecuteNative(Player& actor,const Operat
     return out;
 }
 std::string NativeMailCollection::PersistedNativeProof(Player& actor,const OperationRequest&,const Task& outcome) const {
-    const auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.guid));
+    const auto survivingGuid=quote.mergeGuid ? quote.mergeGuid : quote.guid;
+    const auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,survivingGuid));
     if (!item) return {};
     const auto bag=item->GetContainer() ? item->GetContainer()->GetGUIDLow() : 0;
     return "SELECT "+SqlValue(outcome.id)+','+std::to_string(outcome.revision)+
         " FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+std::to_string(quote.actor)+
-        " AND v.item="+std::to_string(quote.guid)+" AND v.item_template="+std::to_string(quote.entry)+
+        " AND v.item="+std::to_string(survivingGuid)+" AND v.item_template="+std::to_string(quote.entry)+
         " AND v.bag="+std::to_string(bag)+" AND v.slot="+std::to_string(item->GetSlot())+
-        " AND i.owner_guid="+std::to_string(quote.actor)+" AND i.itemEntry="+std::to_string(quote.entry)+" AND i.count="+std::to_string(quote.quantity)+
+        " AND i.owner_guid="+std::to_string(quote.actor)+" AND i.itemEntry="+std::to_string(quote.entry)+" AND i.count="+std::to_string(uint64_t(quote.quantity)+quote.mergeCount)+
+        (quote.mergeGuid ? " AND NOT EXISTS(SELECT 1 FROM item_instance removed WHERE removed.guid="+std::to_string(quote.guid)+')' : "")+
         " AND NOT EXISTS(SELECT 1 FROM mail_items mi WHERE mi.item_guid="+std::to_string(quote.guid)+')'+
         " AND EXISTS(SELECT 1 FROM mail m WHERE m.id="+std::to_string(quote.mail)+" AND m.receiver="+std::to_string(quote.actor)+
         " AND m.cod=0 AND m.money="+std::to_string(quote.mailMoney)+" AND m.deliver_time="+std::to_string(quote.deliveredAt)+

@@ -185,6 +185,14 @@ namespace LivingActivity {
     }
     ClaimInstall ResourceClaimBook::ReservePending(const std::string& receipt,
         const std::vector<ClaimReceiptChange>& changes,const std::vector<NativeResourceBalance>& balances) {
+        return ReservePendingImpl(receipt,changes,balances,false);
+    }
+    ClaimInstall ResourceClaimBook::ReserveTransferred(const std::string& receipt,const ClaimReceiptChange& change,
+        const NativeResourceBalance& destination) {
+        return ReservePendingImpl(receipt,{change},{destination},true);
+    }
+    ClaimInstall ResourceClaimBook::ReservePendingImpl(const std::string& receipt,
+        const std::vector<ClaimReceiptChange>& changes,const std::vector<NativeResourceBalance>& balances,bool transferred) {
         if (!protection.ready) return ClaimInstall::NotReady;
         if (!IsUuid(receipt) || changes.empty() || changes.size() > 16 || balances.size() > 16 ||
             protection.revision == std::numeric_limits<uint64_t>::max())
@@ -192,7 +200,7 @@ namespace LivingActivity {
         const auto existing = pending.find(receipt);
         if (existing != pending.end()) {
             const auto& old = existing->second;
-            if (old.changes.size() != changes.size() || old.balances.size() != balances.size()) return ClaimInstall::Invalid;
+            if (old.transferred!=transferred || old.changes.size() != changes.size() || old.balances.size() != balances.size()) return ClaimInstall::Invalid;
             for (size_t i=0;i<changes.size();++i) if (old.changes[i].expectedRevision != changes[i].expectedRevision ||
                 !SameResourceClaim(old.changes[i].after,changes[i].after)) return ClaimInstall::Invalid;
             for (size_t i=0;i<balances.size();++i) {
@@ -212,7 +220,7 @@ namespace LivingActivity {
         }
         std::set<std::string> ids;
         std::map<uint32_t,uint64_t> additional;
-        PendingReservation reservation; reservation.changes=changes; reservation.balances=balances;
+        PendingReservation reservation; reservation.transferred=transferred;reservation.changes=changes; reservation.balances=balances;
         size_t added = 0;
         for (const auto& change : changes) {
             const auto& after = change.after; const auto* before = Inspect(after.id);
@@ -224,12 +232,21 @@ namespace LivingActivity {
                 if (held.after.id == after.id) return ClaimInstall::Stale;
             if (before) {
                 if (before->revision != change.expectedRevision) return ClaimInstall::Stale;
-                if ((before->state != "proposed" && before->state != "held") ||
+                if (transferred) {
+                    if (changes.size()!=1 || balances.size()!=1 || before->state!="held" || after.state!="held" ||
+                        (before->location!="bank" && before->location!="mail") || after.location!="bags" ||
+                        after.nativeReference || before->copper || after.copper || !before->itemGuid || !after.itemGuid ||
+                        before->actor!=after.actor || before->task!=after.task || before->itemEntry!=after.itemEntry ||
+                        before->quantity!=after.quantity ||
+                        protection.ProtectedItem(before->actor,before->itemGuid,before->itemEntry)!=before->quantity ||
+                        Lookup(protection.uncertainEntries,std::make_pair(after.actor,after.itemEntry)))
+                        return ClaimInstall::Invalid;
+                } else if ((before->state != "proposed" && before->state != "held") ||
                     std::tie(before->actor,before->task,before->itemGuid,before->itemEntry,before->location,before->nativeReference) !=
                     std::tie(after.actor,after.task,after.itemGuid,after.itemEntry,after.location,after.nativeReference) ||
                     bool(before->copper) != bool(after.copper)) return ClaimInstall::Invalid;
             } else {
-                if (change.expectedRevision || after.state == "released") return ClaimInstall::Stale;
+                if (transferred || change.expectedRevision || after.state == "released") return ClaimInstall::Stale;
                 ++added;
             }
             if (after.state == "proposed" && (after.itemGuid || after.nativeReference)) return ClaimInstall::Invalid;
@@ -237,7 +254,7 @@ namespace LivingActivity {
             const auto limit = limits.find(after.itemGuid);
             if (limit == limits.end() || limit->second.itemEntry != after.itemEntry ||
                 limit->second.location != after.location || limit->second.nativeReference!=after.nativeReference) return ClaimInstall::Invalid;
-            const uint64_t oldAmount = before && ProtectsResources(*before) ? before->quantity+before->copper : 0;
+            const uint64_t oldAmount = before && before->itemGuid==after.itemGuid && ProtectsResources(*before) ? before->quantity+before->copper : 0;
             const uint64_t newAmount = after.quantity+after.copper;
             if (newAmount > oldAmount) {
                 auto extra = after;

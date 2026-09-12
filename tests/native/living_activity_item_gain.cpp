@@ -1,10 +1,43 @@
 #include "LivingActivityItemGain.h"
+#include "LivingActivityStackTransfer.h"
 #include <algorithm>
 #include <cassert>
 #include <limits>
 #include <stdexcept>
 using namespace LivingActivity;
 int main() {
+    {
+        std::string why;
+        NativeItemStack source{700,900,3371,5,0,45},empty;
+        NativeItemStack target{700,901,3371,7,850,3},merged=target;
+        merged.count=12;
+        assert(VerifyWholeStackTransfer(source,target,merged,false,why));
+        auto moved=source;moved.bagGuid=850;moved.slot=4;
+        assert(VerifyWholeStackTransfer(source,empty,moved,true,why));
+        assert(!VerifyWholeStackTransfer(source,target,merged,true,why)); // Source must really be gone.
+        for (unsigned field=0;field<8;++field) {
+            auto bad=merged;
+            switch(field) {
+            case 0:bad.guid=902;break;
+            case 1:bad.actor=701;break;
+            case 2:bad.entry=3372;break;
+            case 3:bad.count=11;break;
+            case 4:bad.count=13;break;
+            case 5:bad.bagGuid=851;break;
+            case 6:bad.slot=4;break;
+            default:bad.guid=source.guid;break;
+            }
+            assert(!VerifyWholeStackTransfer(source,target,bad,false,why));
+        }
+        auto bad=empty;bad.count=1;
+        assert(!VerifyWholeStackTransfer(source,bad,moved,true,why));
+        bad=moved;bad.guid=902;
+        assert(!VerifyWholeStackTransfer(source,empty,bad,true,why));
+        bad=target;bad.count=UINT32_MAX;
+        assert(!VerifyWholeStackTransfer(source,bad,merged,false,why));
+        bad=source;bad.count=0;
+        assert(!VerifyWholeStackTransfer(bad,target,merged,false,why));
+    }
     const ItemGainSpec spec{3371,3};
     NativeItemStack old{700,500,3371,19,0,23};
     auto merged=old; merged.count=20;

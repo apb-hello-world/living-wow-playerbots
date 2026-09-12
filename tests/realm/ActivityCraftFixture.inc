@@ -48,7 +48,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const bool travelRetry=suite=="activity-profession-mail-travel-resume-v1";
     const bool resumed=suite=="activity-profession-mail-resume-v1" || travelRetry;
     const bool serviceTravel=suite=="activity-profession-mail-travel-v1" || travelRetry;
-    const bool mailed=suite=="activity-profession-mail-v1" || checkpoint || resumed || serviceTravel;
+    const bool mergeMail=suite=="activity-profession-mail-merge-v1";
+    const bool mailed=suite=="activity-profession-mail-v1" || checkpoint || resumed || serviceTravel || mergeMail;
     const bool automatic=paid || resumed || serviceTravel;
     const bool settling=suite=="activity-profession-settlement-v1" || paid || banked || mailed;
     const bool supplied=suite=="activity-craft-supplied-v1" || interrupted || settling;
@@ -104,6 +105,11 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             report.put("mail_claim",fixture.mailClaim);report.put("mail_id",fixture.mailId);
             report.put("mail_guid",fixture.mailGuid);report.put("mail_quantity",fixture.mailCount);
             report.put("mail_link_and_service_positioning_fixture",true);
+            report.put("explicit_collection_selection_fixture",mergeMail);
+            if(mergeMail) {
+                report.put("mail_merge_guid",fixture.mailMergeGuid);report.put("mail_merge_prior_count",fixture.mailMergeCount);
+                report.put("mail_merge_native_adapter_proof",true);
+            }
         }
         if (paid) {
             report.put("vendor_operation",state->operationFixtureRequest.transition.receipt);
@@ -512,6 +518,21 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 require(SubmitResourceReservation(reservation,reserve).code==AdmissionCode::Pending,"exact_fixture_mail_link_saved");
                 fixture.mailClaim=claim.id;followRunnerWrite();if (checkpoint) fixture.step=12;return;
             }
+            if(mergeMail && !fixture.mailMergeGuid) {
+                // Recorded isolated input, not an earned/paid material claim.
+                // Keep this owned surplus distinct from the attachment's claim.
+                require(bot->GetItemCount(765,false)==0,"merge_fixture_empty_prior_bag_stock");
+                ItemPosCountVec destinations;
+                require(bot->CanStoreNewItem(NULL_BAG,NULL_SLOT,destinations,765,7)==EQUIP_ERR_OK && destinations.size()==1,
+                    "merge_fixture_target_capacity");
+                auto* added=bot->StoreNewItem(destinations,765,true);
+                require(added && added->GetCount()==7 && added->GetGUIDLow()!=fixture.mailGuid,"merge_fixture_distinct_target_identity");
+                fixture.mailMergeGuid=added->GetGUIDLow();fixture.mailMergeCount=added->GetCount();
+                boost::property_tree::ptree grant;grant.put("entry",765);grant.put("quantity",7);
+                grant.put("guid",fixture.mailMergeGuid);grant.put("count_before",0);grant.put("count_after",7);
+                grant.put("reason","isolated_native_merge_destination");fixture.grants.push_back({"",grant});
+                bot->SaveToDB();return;
+            }
             if(serviceTravel && !fixture.travelPositioned) {
                 if(!fixture.travelLegacyChecked) {
                     auto* letter=bot->GetMail(fixture.mailId);
@@ -594,10 +615,16 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             }
             const auto* claim=state->resources.Inspect(fixture.mailClaim);
             if (claim && claim->location=="bags" && saved->second.phase==Phase::Verifying && !DefersNativeSave(request.task.actor)) {
-                auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,fixture.mailGuid));
-                require(item && item->GetCount()==fixture.mailCount && !bot->GetMItem(fixture.mailGuid) &&
-                    claim->nativeReference==0 && claim->itemGuid==fixture.mailGuid && claim->quantity==fixture.mailCount &&
+                const auto target=mergeMail ? fixture.mailMergeGuid : fixture.mailGuid;
+                auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,target));
+                require(item && item->GetCount()==fixture.mailCount+fixture.mailMergeCount && !bot->GetMItem(fixture.mailGuid) &&
+                    claim->nativeReference==0 && claim->itemGuid==target && claim->quantity==fixture.mailCount &&
                     claim->state=="held" && bot->GetMoney()==fixture.before.money,"ordinary_mail_runner_preserves_item_claim_and_money");
+                if(mergeMail) {
+                    require(!bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,fixture.mailGuid)) &&
+                        ResourceReservations().Inspect()->UnreservedItem(request.task.actor,target,765,item->GetCount())==fixture.mailMergeCount,
+                        "native_mail_merge_keeps_exact_claim_and_uncommitted_surplus");
+                }
                 if (!resumed && std::find(fixture.inheritedInputs.begin(),fixture.inheritedInputs.end(),claim->id)==fixture.inheritedInputs.end())
                     fixture.inheritedInputs.push_back(claim->id);
                 ProfessionJob job;std::string blocker;
@@ -612,6 +639,27 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                     require(request.task.phase==Phase::Preparing,"resumed_runner_prepares_after_collection");
                 } else advance(Phase::Preparing);
                 fixture.step=2;return;
+            }
+            if(mergeMail && fixture.mailOperation.empty()) {
+                // Test the real collection adapter even though fixture-owned
+                // surplus now satisfies the recipe. This selection is explicit
+                // test setup, not proof of automatic procurement/planning.
+                NativeMailQuote quote;
+                require(claim && ValidMailTransfer(*claim),"merge_fixture_retains_acknowledged_attachment_claim");
+                if(!PlanNativeMailCollection(*bot,request.task,*claim,quote,fixture.blocker)) return;
+                require(quote.mergeGuid==fixture.mailMergeGuid && quote.mergeCount==fixture.mailMergeCount,
+                    "native_mail_quote_identifies_existing_merge_target");
+                const auto grant=AcquireSavedTask(request.task.id,request.task.revision,Mask(Effect::Inventory),60000,"isolated_mail_merge");
+                require(grant.Permitted(),"native_mail_merge_has_saved_root_authority");
+                OperationRequest intent;intent.transition=request;intent.transition.expectedRevision=request.task.revision;
+                ++intent.transition.task.revision;intent.transition.task.phase=Phase::Executing;
+                intent.transition.task.checkpoint.step="profession_mail_collect";intent.transition.task.updatedAtMs=NowMs();
+                intent.transition.receipt=NewId();intent.authorization=grant.action;
+                intent.kind="mail_collect";intent.effects=Mask(Effect::Inventory);intent.persistence=NativePersistence::Inventory;
+                intent.beforeState=EncodeNativeMailQuote(quote);intent.itemTransfer=*claim;
+                NativeMailCollection adapter(quote);
+                require(SubmitOperationIntent(intent,adapter).code==AdmissionCode::Pending,"native_mail_merge_intent_saved_before_dispatch");
+                fixture.mailOperation=intent.transition.receipt;followRunnerWrite();return;
             }
             fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
             if(serviceTravel && !fixture.travelConflictChecked && request.task.phase==Phase::Traveling) {
