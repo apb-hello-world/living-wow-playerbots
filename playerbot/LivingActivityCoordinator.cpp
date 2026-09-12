@@ -218,7 +218,14 @@ struct LivingActivityCoordinator::State {
     ExecutionAuthority authority; // Only world-thread methods may access this book.
     std::set<uint32_t> compatibilityActors; // Enumeration index only; no second lease/owner state.
     const std::string boot = NewId();
-    struct Binding { uint64_t actorEpoch = 0; PermissionPublisher publisher; };
+    struct Binding {
+        uint64_t actorEpoch = 0;
+        PermissionPublisher publisher;
+        // Bounded by the existing actor bindings; diagnostics are not task proof
+        // or per-tick database writes. A revision change makes this view stale.
+        std::string professionTask, professionDecision;
+        uint64_t professionRevision = 0, professionDecisionAt = 0;
+    };
     std::map<uint32_t, Binding> bindings;
     struct ActionObservation {
         uint32_t actor;
@@ -1184,6 +1191,21 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
         entry.put("retry_at_ms",read.dueAt);histories.push_back({"",entry});
     }
     p.add_child("profession_history",histories);
+    if (OnWorldThread()) {
+        const auto binding=state->bindings.find(guid);
+        if (binding!=state->bindings.end()) {
+            const auto& decision=binding->second;
+            const auto task=state->cache.find(decision.professionTask);
+            if (task!=state->cache.end() && task->second.actor==guid &&
+                task->second.revision==decision.professionRevision && decision.professionDecisionAt) {
+                p.put("profession_decision.task",decision.professionTask);
+                p.put("profession_decision.revision",decision.professionRevision);
+                p.put("profession_decision.blocker",decision.professionDecision);
+                p.put("profession_decision.observed_at_ms",decision.professionDecisionAt);
+                p.put("profession_decision.transient",true);
+            }
+        }
+    }
     return Json(p);
 }
 
@@ -1467,12 +1489,21 @@ AdmissionResult LivingActivityCoordinator::AdmitEconomyProfession(uint32_t actor
 }
 LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceProfessionJob(uint32_t actor,const std::string& id) {
     ProfessionProgress progress;
-    auto stop=[&](const std::string& why){progress.blocker=why;return progress;};
-    if (!OnWorldThread()) return stop("world_thread_required");
+    if (!OnWorldThread()) {progress.blocker="world_thread_required";return progress;}
     const auto saved=ReadSavedTask(id);
+    auto stop=[&](const std::string& why) {
+        progress.blocker=why;
+        const auto binding=state->bindings.find(actor);
+        if (saved && saved->actor==actor && binding!=state->bindings.end()) {
+            auto& decision=binding->second;
+            decision.professionTask=id;decision.professionRevision=saved->revision;
+            decision.professionDecision=why;decision.professionDecisionAt=NowMs();
+        }
+        return progress;
+    };
     if (!saved || !actor || saved->actor!=actor || saved->mode!=Mode::Active || !saved->accepted || !IsProfessionJob(*saved))
         return stop("profession_saved_job_unavailable");
-    if (saved->phase==Phase::Completed) {progress.completed=true;return progress;}
+    if (saved->phase==Phase::Completed) {progress.completed=true;return stop("");}
     if (Terminal(saved->phase)) return stop("profession_job_terminal_requires_projection");
     if (!EffectEnforcementEnabled()) return stop("execution_disabled");
     for (const auto& write : state->pending) if (write.task.actor==actor) return stop("profession_transition_pending");
@@ -1485,6 +1516,14 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_bank_withdraw");
             if (!grant.Permitted()) return stop(grant.blocker);
             NativeBankWithdrawal adapter(quote);
+            return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
+        if (row.second.request.kind=="bank_deposit") {
+            NativeBankQuote quote;
+            if (!DecodeNativeBankQuote(row.second.request.beforeState,quote)) return stop("capacity_bank_intent_invalid");
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_capacity_bank");
+            if (!grant.Permitted()) return stop(grant.blocker);
+            NativeBankDeposit adapter(quote);
             return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
         }
         if (row.second.request.kind=="mail_collect") {
@@ -1575,12 +1614,38 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             return stop(route.blocker);
         }
     }
+    auto prepareStorage=[&]() {
+        NativeBankQuote quote;ResourceClaim held;
+        if (!PlanNativeBankDeposit(*bot,*saved,quote,held,blocker)) {
+            if (blocker=="capacity_bank_travel_required") return beginService(ServiceDestination::PersonalBank);
+            return stop(blocker);
+        }
+        const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_capacity_bank_prepare");
+        if (!grant.Permitted()) return stop(grant.blocker);
+        if (held.id.empty()) {
+            ResourceClaim claim;claim.id=NewId();claim.task=id;claim.actor=actor;claim.itemGuid=quote.guid;
+            claim.itemEntry=quote.entry;claim.quantity=quote.quantity;claim.location="bags";claim.state="held";
+            ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+            ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+            request.authorization=grant.action;request.changes.push_back({claim,0});
+            NativeCapacityBankReservation adapter;
+            return stop(SubmitResourceReservation(request,adapter).blocker);
+        }
+        OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+        ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+        request.transition.task.checkpoint.step="profession_capacity_bank";request.transition.task.updatedAtMs=NowMs();
+        request.transition.receipt=NewId();request.authorization=grant.action;request.kind="bank_deposit";
+        request.effects=Mask(Effect::Inventory);request.persistence=NativePersistence::Inventory;
+        request.beforeState=EncodeNativeBankQuote(quote);request.itemTransfer=held;
+        NativeBankDeposit adapter(quote);return stop(SubmitOperationIntent(request,adapter).blocker);
+    };
     auto prepareCapacity=[&]() {
         if(saved->phase==Phase::Verifying || saved->phase==Phase::Traveling)return advance(Phase::Preparing);
         if(saved->phase!=Phase::Preparing)return stop("capacity_preparation_requires_reconciliation");
         NativeSaleQuote quote;ResourceClaim held;
         if(!PlanNativeCapacitySale(*bot,*saved,quote,held,blocker)) {
             if(blocker=="capacity_vendor_travel_required")return beginService(ServiceDestination::Vendor);
+            if(blocker=="capacity_no_safely_disposable_stack")return prepareStorage();
             return stop(blocker);
         }
         const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Money),60000,"profession_capacity_prepare");
@@ -2596,7 +2661,8 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     try {
         if (proof.state == OperationState::Verified && !request.itemTransfer.id.empty()) {
             const auto& target=observation.transferredItem;
-            if (!ValidNativeResourceBalance(target) || target.actor!=intended.actor || target.location!="bags" ||
+            if (!ValidNativeResourceBalance(target) || target.actor!=intended.actor ||
+                target.location!=ItemTransferDestination(request.itemTransfer) ||
                 target.itemEntry!=request.itemTransfer.itemEntry || target.quantity<request.itemTransfer.quantity)
                 throw std::runtime_error("Verified native transfer identity missing");
             auto moved=ItemTransferWrite(after,saved->second.revision,proof,receipt,observation.afterState,

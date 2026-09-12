@@ -81,6 +81,14 @@ CapacitySaleFacts Facts(Player& actor,const ProfessionJob& job,Item& item) {
     return f;
 }
 }
+bool NativeCapacityNeed(Player& actor,const Task& task,const ProfessionJob& job,
+    const UnsettledClaimBatch& claims,ItemGainSpec& need,std::string& blocker) {
+    return NeededCapacity(actor,task,job,claims,need,blocker);
+}
+bool NativeCapacityItemProtected(Player& actor,const ProfessionJob& job,Item& item) {
+    const auto facts=Facts(actor,job,item);
+    return !facts.ownedBag || facts.legacyProtected || facts.charged;
+}
 std::string EncodeNativeSaleQuote(const NativeSaleQuote& q) {
     const auto& f=q.item;
     return "{\"actor\":"+std::to_string(f.actor)+",\"guid\":"+std::to_string(f.guid)+",\"entry\":"+std::to_string(f.entry)+

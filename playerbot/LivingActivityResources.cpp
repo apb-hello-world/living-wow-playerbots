@@ -234,7 +234,8 @@ namespace LivingActivity {
                 if (before->revision != change.expectedRevision) return ClaimInstall::Stale;
                 if (transferred) {
                     if (changes.size()!=1 || balances.size()!=1 || before->state!="held" || after.state!="held" ||
-                        (before->location!="bank" && before->location!="mail") || after.location!="bags" ||
+                        !(((before->location=="bank" || before->location=="mail") && after.location=="bags") ||
+                          (before->location=="bags" && !before->nativeReference && after.location=="bank")) ||
                         after.nativeReference || before->copper || after.copper || !before->itemGuid || !after.itemGuid ||
                         before->actor!=after.actor || before->task!=after.task || before->itemEntry!=after.itemEntry ||
                         before->quantity!=after.quantity ||

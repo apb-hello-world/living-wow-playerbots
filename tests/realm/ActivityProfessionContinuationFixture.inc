@@ -106,6 +106,7 @@
             boost::property_tree::ptree row;row.put("revision",saved->revision);row.put("phase",Name(saved->phase));
             row.put("step",saved->checkpoint.step);row.put("blocker",fixture.blocker);row.put("at_ms",NowMs());
             row.put("x",actor->GetPositionX());row.put("y",actor->GetPositionY());row.put("map",actor->GetMapId());
+            sLog.outString("Living isolated continuation step: task=%s %s",taskId.c_str(),Json(row).c_str());
             fixture.continuationTrace.push_back({"",row});fixture.lastCheckpoint=stamp;
         }
     } catch(const std::exception& error) {emit(false,error.what());}

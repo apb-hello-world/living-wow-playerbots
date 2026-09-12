@@ -350,6 +350,35 @@ int main() {
         }
     }
     uint32_t available=0;
+    {
+        auto carried=mailClaim;carried.location="bags";carried.nativeReference=0;
+        ResourceClaimBook storage;
+        assert(storage.RestoreBatch({carried})==ClaimInstall::Installed && storage.FinishRestore());
+        auto banked=carried;++banked.revision;banked.location="bank";
+        NativeResourceBalance actual{carried.actor,carried.itemGuid,carried.itemEntry,carried.quantity,0,"bank"};
+        assert(storage.ReservePending(receipt,{{banked,1}},{actual})==ClaimInstall::Invalid);
+        assert(storage.ReserveTransferred(receipt,{banked,1},actual)==ClaimInstall::Installed);
+        assert(storage.ReserveTransferred(receipt,{banked,1},actual)==ClaimInstall::Duplicate);
+        assert(storage.Reader().Inspect()->ProtectedItem(carried.itemGuid)==carried.quantity);
+        assert(storage.Inspect(carried.id)->location=="bags");
+        assert(storage.CommitReservation(receipt)==ClaimInstall::Installed);
+        assert(storage.Inspect(carried.id)->location=="bank");
+        assert(storage.InstallReceipt({{banked,1}})==ClaimInstall::Duplicate);
+        for (unsigned field=0;field<5;++field) {
+            ResourceClaimBook invalid;
+            assert(invalid.RestoreBatch({carried})==ClaimInstall::Installed && invalid.FinishRestore());
+            auto bad=banked;auto backing=actual;
+            switch(field) {
+            case 0:bad.location="mail";bad.nativeReference=5;break;
+            case 1:++bad.quantity;break;
+            case 2:++bad.actor;break;
+            case 3:backing.location="bags";break;
+            default:--backing.quantity;break;
+            }
+            assert(invalid.ReserveTransferred(receipt,{bad,1},backing)!=ClaimInstall::Installed);
+            assert(invalid.Inspect(carried.id)->location=="bags");
+        }
+    }
     assert(mailBook.AvailableToTask(mailClaim.task,mailBalance,available) && available==mailBalance.quantity);
     assert(!mailBook.AvailableToTask(mailClaim.task,wrongReference,available));
     assert(!mailBook.AvailableToTask(mailClaim.task,balance,available));

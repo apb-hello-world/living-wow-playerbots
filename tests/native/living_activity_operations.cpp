@@ -181,5 +181,30 @@ int main() {
         assert(mergedWrite.journal.statements.front().find("c.item_guid=45")!=std::string::npos);
         assert(mergedWrite.journal.statements.back().find("SET c.item_guid=46")!=std::string::npos);
         assert(mergedWrite.journal.receiptQuery.find("c.item_guid=46")!=std::string::npos);
+        // Capacity storage is the reverse native transfer, not consumption or
+        // a synthetic item gain. The same claim follows the exact bank item.
+        transfer.kind="bank_deposit";transfer.itemTransfer=claim;
+        transfer.itemTransfer.location="bags";transfer.itemTransfer.nativeReference=0;
+        ResourceClaimBook deposit;
+        assert(deposit.RestoreBatch({transfer.itemTransfer})==ClaimInstall::Installed && deposit.FinishRestore());
+        assert(valid(transfer,saved) && ValidateOperationResources(transfer,deposit,stack,reason));
+        assert(!ValidateOperationResources(transfer,deposit,source,reason));
+        altered=transfer;altered.kind="bank_withdraw";assert(!valid(altered,saved));
+        altered=transfer;altered.itemTransfer.location="bank";assert(!valid(altered,saved));
+        altered=transfer;altered.itemTransfer.nativeReference=1;assert(!valid(altered,saved));
+        assert(ItemTransferIdentity(transfer.itemTransfer).find("\"destination\":\"bank\"")!=std::string::npos);
+        moved.kind="bank_deposit";moved.evidence="native_bank_stack_deposited";
+        const auto stored=ItemTransferWrite(verified,transfer.transition.task.revision,moved,
+            "ff2efbdf-f0ec-4539-b840-299847970c10","{}",transfer.itemTransfer);
+        assert(stored.changes[0].after.location=="bank" && stored.changes[0].after.state=="held");
+        assert(stored.changes[0].after.itemGuid==45 && stored.changes[0].after.quantity==5);
+        assert(stored.journal.statements.back().find("c.location='bank'")!=std::string::npos);
+        assert(deposit.InstallReceipt(stored.changes)==ClaimInstall::Installed);
+        assert(deposit.InstallReceipt(stored.changes)==ClaimInstall::Duplicate);
+        assert(!ValidateOperationResources(transfer,deposit,stack,reason));
+        ResourceClaimBook restoredDeposit;
+        assert(restoredDeposit.RestoreBatch({stored.changes[0].after})==ClaimInstall::Installed && restoredDeposit.FinishRestore());
+        assert(restoredDeposit.Inspect(claim.id)->location=="bank");
+        assert(restoredDeposit.Protection().ProtectedItem(saved.actor,45,2880)==5);
     }
 }
