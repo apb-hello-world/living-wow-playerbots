@@ -57,12 +57,6 @@ namespace LivingActivity {
         quote.vendor=vendor; quote.vendorEntry=service->GetEntry(); quote.buyUnits=units;
         quote.copper=price; quote.moneyBefore=actor.GetMoney(); blocker.clear(); return true;
     }
-    std::string EncodeNativeVendorQuote(const NativeVendorQuote& q) {
-        return "{\"actor\":"+std::to_string(q.actor)+",\"vendor\":"+std::to_string(q.vendor)+
-            ",\"vendor_entry\":"+std::to_string(q.vendorEntry)+",\"entry\":"+std::to_string(q.entry)+
-            ",\"quantity\":"+std::to_string(q.quantity)+",\"buy_units\":"+std::to_string(q.buyUnits)+
-            ",\"copper\":"+std::to_string(q.copper)+",\"money\":"+std::to_string(q.moneyBefore)+'}';
-    }
     bool NativeVendorPurchase::ValidateNative(Player& actor,const OperationRequest& request,std::string& blocker) {
         auto reject=[&](const char* reason){ blocker=reason; return false; };
         if (request.itemGain.entry != quote.entry || request.itemGain.quantity != quote.quantity ||

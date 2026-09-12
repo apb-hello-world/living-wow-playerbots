@@ -21,10 +21,10 @@
 #include "LivingNativeBankWithdrawal.h"
 #include "LivingNativeMailCollection.h"
 #include "LivingNativeVendorSale.h"
+#include "LivingProfessionDemand.h"
 #include "Mails/Mail.h"
 #include "LivingActivityTransfer.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
-#include "LivingProfessionDemand.h"
 #include "PlayerbotInventoryPressure.h"
 #include "strategy/actions/MailAction.h"
 #include "strategy/actions/AhAction.h"
@@ -1498,6 +1498,15 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Money),60000,"profession_capacity_sale");
             if(!grant.Permitted())return stop(grant.blocker);
             NativeVendorSale adapter(quote);
+            return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
+        if (row.second.request.kind=="vendor_purchase") {
+            NativeVendorQuote quote;
+            if(!DecodeNativeVendorQuote(row.second.request.beforeState,quote))return stop("profession_vendor_intent_invalid");
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Money),60000,"profession_vendor_purchase");
+            if(!grant.Permitted())return stop(grant.blocker);
+            NativeProfessionPurchasePrerequisites prerequisites;
+            NativeVendorPurchase adapter(quote,prerequisites);
             return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
         }
         if (row.second.request.kind!="profession_craft") return stop("profession_operation_requires_reconciliation");
