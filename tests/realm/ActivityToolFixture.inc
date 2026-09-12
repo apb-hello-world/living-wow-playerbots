@@ -53,6 +53,8 @@ void RunIsolatedToolFixture(FixtureState& state) {
             require(!actor->HasItemTotemCategory(13) && !actor->GetItemCount(5956,true),"native_tool_really_missing");
             const uint32_t owned=actor->GetItemCount(2840,true);
             require(owned==0 || owned>=4,"partial_test_stock_requires_separate_case");
+            ItemPosCountVec positions;
+            if (!owned) require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,2840,4)==EQUIP_ERR_OK,"tool_fixture_input_capacity");
             f.setup.put("actor",f.actor);f.setup.put("task",f.task);f.setup.put("job",EncodeProfessionJob(f.job));
             f.setup.put("money_before",actor->GetMoney());f.setup.put("skill_before",actor->GetSkillValuePure(f.job.skill));
             f.setup.put("tool_entry",5956);f.setup.put("tool_before",0);f.setup.put("tool_grants",0);
@@ -66,7 +68,6 @@ void RunIsolatedToolFixture(FixtureState& state) {
             actor->ModifyMoney(100000);
             require(actor->GetMoney()==f.setup.template get<uint32_t>("money_before")+100000,"tool_fixture_funds_recorded");
             if (!owned) {
-                ItemPosCountVec positions;require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,2840,4)==EQUIP_ERR_OK,"tool_fixture_input_capacity");
                 auto* item=actor->StoreNewItem(positions,2840,true);require(item!=nullptr,"tool_fixture_input_supplied");
                 f.setup.put("fixture_reagent_guid",item->GetGUIDLow());
             }
