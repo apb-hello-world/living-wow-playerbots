@@ -97,15 +97,27 @@
             fixture.blocker.clear();emit(true,"");return;
         }
         if(Terminal(saved->phase)) {emit(false,"job_ended_without_completion");return;}
+        if(saved->phase==Phase::Deferred && saved->checkpoint.blocker=="recipe_service_no_progress") {
+            emit(false,"continuation_route_no_progress");return;
+        }
+        auto* travel=actor->GetPlayerbotAI()->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get();
+        const int travelBefore=travel?int(travel->GetStatus()):-1;
         const bool original=state->enforceEffects.exchange(true,std::memory_order_acq_rel);
         struct Restore {State& state;bool original;~Restore(){state.enforceEffects.store(original,std::memory_order_release);}} restore{*state,original};
         fixture.blocker=AdvanceProfessionJob(saved->actor,taskId).blocker;
-        const auto stamp=std::to_string(saved->revision)+":"+fixture.blocker;
+        const auto stamp=std::to_string(saved->revision)+":"+fixture.blocker+":"+std::to_string(travelBefore)+
+            ":"+std::to_string(travel?int(travel->GetStatus()):-1);
         if(stamp!=fixture.lastCheckpoint) {
             if(fixture.continuationTrace.size()>=256) {emit(false,"continuation_transition_quota");return;}
             boost::property_tree::ptree row;row.put("revision",saved->revision);row.put("phase",Name(saved->phase));
             row.put("step",saved->checkpoint.step);row.put("blocker",fixture.blocker);row.put("at_ms",NowMs());
             row.put("x",actor->GetPositionX());row.put("y",actor->GetPositionY());row.put("map",actor->GetMapId());
+            row.put("travel_status_before",travelBefore);row.put("travel_status_after",travel?int(travel->GetStatus()):-1);
+            row.put("travel_purpose",travel && travel->GetDestination()?uint32_t(travel->GetDestination()->GetPurpose()):0);
+            row.put("route_generation",state->authority.Read(saved->actor).lease.generation);
+            auto* future=actor->GetPlayerbotAI()->GetAiObjectContext()->GetValue<ai::FutureDestinations*>("future travel destinations")->Get();
+            row.put("future_valid",future && future->valid());
+            row.put("future_ready",future && future->valid() && future->wait_for(std::chrono::seconds(0))==std::future_status::ready);
             sLog.outString("Living isolated continuation step: task=%s %s",taskId.c_str(),Json(row).c_str());
             fixture.continuationTrace.push_back({"",row});fixture.lastCheckpoint=stamp;
         }
