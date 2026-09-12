@@ -34,9 +34,12 @@ namespace LivingActivity {
             return reject("profession_snapshot_operation_unresolved");
         NativeProfessionDemand demand;
         if (!InspectNativeProfessionDemand(actor,task,demand)) {
-            snapshot.nativeReference=demand.nativeReference;return reject(demand.blocker);
-        }
-        snapshot.stock=std::move(demand.stock);
+            snapshot.nativeReference=demand.nativeReference;
+            if(demand.blocker!="profession_material_has_legacy_commitment")return reject(demand.blocker);
+            // Still inspect safety/recipe/history for a metadata-only restart
+            // rebind. Never turn protected stock into missing purchasable stock.
+            snapshot.readinessBlocker=demand.blocker;
+        } else snapshot.stock=std::move(demand.stock);
         snapshot.skill=actor.GetSkillValuePure(job.skill);
         snapshot.safe=!ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) &&
             !actor.GetMap()->IsDungeon() && !LivingServiceExecution::Busy(&actor);
@@ -78,7 +81,7 @@ namespace LivingActivity {
         snapshot.bankAccess=NativeNearbyBanker(actor)!=0;
         // Real spawned seller candidates, not generic vendors. Collection of
         // owned/paid stock remains ahead of acquiring anything new.
-        for (size_t i=0;i<job.reagents.size() && snapshot.blocker.empty();++i) {
+        for (size_t i=0;i<job.reagents.size() && snapshot.blocker.empty() && snapshot.readinessBlocker.empty();++i) {
             auto& have=snapshot.stock[i];
             if (have.bag>=job.reagents[i].perAttempt) continue;
             if(have.bank || have.delivered) continue;

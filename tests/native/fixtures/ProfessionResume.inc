@@ -18,6 +18,18 @@ void TestProfessionResumption() {
     }
     auto fail=[&](const ResumeFixture& x) {assert(!prepare(x) && !blocker.empty() && result.plan.statements.empty());};
     auto bad=f;bad.view.complete=false;fail(bad);
+    auto protectedStock=f;protectedStock.view.stock.clear();
+    protectedStock.view.readinessBlocker="profession_material_has_legacy_commitment";
+    assert(prepare(protectedStock));
+    assert(result.task.context==f.current && result.task.checkpoint.data==f.task.checkpoint.data &&
+        result.task.retryAtMs==f.task.retryAtMs && result.task.checkpoint.activeElapsedMs==500);
+    auto rebound=result.task;auto inspected=protectedStock.view;
+    inspected.context=rebound.context;inspected.revision=rebound.revision;
+    assert(NextProfessionStep(rebound,inspected).step==ProfessionStep::Defer);
+    assert(NextProfessionStep(rebound,inspected).quantities.empty());
+    bad=protectedStock;bad.view.readinessBlocker="native_effect_unknown";fail(bad);
+    bad=protectedStock;bad.view.unresolvedOperation=true;fail(bad);
+    bad=protectedStock;bad.view.safe=false;fail(bad);
     bad=f;bad.view.unresolvedOperation=true;fail(bad);
     bad=f;bad.view.safe=false;fail(bad);
     bad=f;bad.view.context=f.task.context;fail(bad);

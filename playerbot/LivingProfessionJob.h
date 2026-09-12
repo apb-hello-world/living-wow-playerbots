@@ -95,6 +95,9 @@ namespace LivingActivity {
         std::string blocker;
         uint64_t nativeReference = 0;
         uint32_t outputPerAttempt = 0;
+        // Known external reservation prevented material inspection. Quantities
+        // remain unknown (not zero stock); this snapshot can only wait/rebind.
+        std::string readinessBlocker;
     };
     struct ProfessionDecision {
         ProfessionStep step = ProfessionStep::Reconcile;

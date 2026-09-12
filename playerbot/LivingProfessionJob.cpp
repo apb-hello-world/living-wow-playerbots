@@ -205,9 +205,11 @@ namespace LivingActivity {
             return stop(ProfessionStep::Reconcile, "profession_snapshot_not_current");
         if (Terminal(task.phase)) return stop(ProfessionStep::Defer, "profession_task_terminal");
         if (snapshot.unresolvedOperation) return stop(ProfessionStep::Reconcile, "profession_operation_unresolved");
-        if (snapshot.stock.size() != job.reagents.size() || snapshot.attempts.size() > job.attemptLimit)
+        const bool protectedMaterials=snapshot.readinessBlocker=="profession_material_has_legacy_commitment";
+        if ((!snapshot.readinessBlocker.empty() && !protectedMaterials) || snapshot.attempts.size() > job.attemptLimit ||
+            (!protectedMaterials && snapshot.stock.size()!=job.reagents.size()))
             return stop(ProfessionStep::Reconcile, "profession_snapshot_inconsistent");
-        for (size_t i = 0; i < job.reagents.size(); ++i)
+        for (size_t i = 0; !protectedMaterials && i < job.reagents.size(); ++i)
             if (snapshot.stock[i].entry != job.reagents[i].entry)
                 return stop(ProfessionStep::Reconcile, "profession_stock_identity_mismatch");
 
@@ -254,6 +256,9 @@ namespace LivingActivity {
             ++decision.verifiedAttempts;
             earnedSkillTarget |= attempt.skillAfter > attempt.skillBefore && attempt.skillAfter >= job.targetSkill;
         }
+        // Validate every saved attempt first. A protected material can delay
+        // work but must never hide an uncertain native effect or authorize a buy.
+        if(protectedMaterials)return stop(ProfessionStep::Defer,"profession_material_has_legacy_commitment");
         const bool fixedOutput = job.operation == ProfessionOperation::CreateItem || job.operation == ProfessionOperation::TransformMaterial;
         if (job.purpose == ProfessionPurpose::SkillGain ? earnedSkillTarget :
             (fixedOutput ? decision.verifiedOutput >= job.outputQuantity : decision.verifiedAttempts > 0))
