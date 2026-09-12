@@ -1,7 +1,7 @@
 // Uses the production SQL builders against separate fixture tables, not game
 // inventory. Native bank execution is verified separately in the copied realm.
 static void GuildDepositDatabase(Connection& db) {
-    const auto rid=[](unsigned n){return std::string("ff2efbdf-f0ec-4539-b840-29984797800")+std::to_string(n);};
+    const auto rid=[](unsigned n){return std::string("ff2efbdf-f0ec-4539-b840-29984798200")+std::to_string(n);};
     GuildDepositQuote q;q.job={12,31,798,2770,4,0,"guild_database_fixture",false};
     q.actor=798;q.item=798001;q.itemCount=8;q.amount=4;q.bankCount=2;q.bagCount=8;
     q.money=500;q.goalTarget=6;q.position=255*256+23;q.tab=0;q.bank=321;
