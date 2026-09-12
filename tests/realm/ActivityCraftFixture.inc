@@ -232,7 +232,17 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 fixture.capacityLegacyChecked=fixture.originalCheckpoint.get<bool>("legacy_sale_claim_guard_checked");
                 for(const auto& row:fixture.originalCheckpoint.get_child("capacity_sales")) {
                     const auto id=row.second.get<std::string>("operation");NativeSaleQuote quote;
-                    require(IsUuid(id) && DecodeNativeSaleQuote(Json(row.second.get_child("quote")),quote) &&
+                    const auto& raw=row.second.get_child("quote");
+                    quote.item.actor=raw.get<uint32_t>("actor");quote.item.guid=raw.get<uint32_t>("guid");
+                    quote.item.entry=raw.get<uint32_t>("entry");quote.item.quantity=raw.get<uint32_t>("quantity");
+                    quote.item.unitCopper=raw.get<uint32_t>("unit_copper");quote.item.money=raw.get<uint32_t>("money");
+                    quote.copper=raw.get<uint32_t>("copper");quote.countBefore=raw.get<uint32_t>("count_before");
+                    quote.vendor=raw.get<uint64_t>("vendor");quote.vendorEntry=raw.get<uint32_t>("vendor_entry");
+                    quote.from=raw.get<uint16_t>("from");quote.capacityEntry=raw.get<uint32_t>("capacity_entry");
+                    quote.capacityQuantity=raw.get<uint32_t>("capacity_quantity");
+                    // Reports store property-tree scalars as strings. Rebuild
+                    // the canonical numeric quote before strict decoding.
+                    require(IsUuid(id) && DecodeNativeSaleQuote(EncodeNativeSaleQuote(quote),quote) &&
                         quote.item.actor==prior->actor && fixture.capacitySales.emplace(id,quote).second,
                         "restart_retains_prior_capacity_sale_identity");
                 }
