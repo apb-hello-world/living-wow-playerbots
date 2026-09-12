@@ -32,6 +32,14 @@ int main() {
         assert(!RequiredProfessionVendorQuantity(need,stock,5,quantity,blocker));
         stock.delivered=0; stock.paidInTransit=1;
         assert(!RequiredProfessionVendorQuantity(need,stock,5,quantity,blocker) && blocker=="profession_paid_material_in_transit");
+        need.perAttempt=4;stock.bag=1;
+        assert(RequiredProfessionVendorQuantity(need,stock,1,quantity,blocker) && quantity==2);
+        assert(RequiredProfessionVendorQuantity(need,stock,5,quantity,blocker) && quantity==5);
+        stock.paidInTransit=3;
+        assert(!RequiredProfessionVendorQuantity(need,stock,1,quantity,blocker) && !quantity);
+        stock.paidInTransit=UINT32_MAX;
+        assert(!RequiredProfessionVendorQuantity(need,stock,1,quantity,blocker) && !quantity);
+        stock.bag=0;
         stock.paidInTransit=0; need.perAttempt=256;
         assert(!RequiredProfessionVendorQuantity(need,stock,1,quantity,blocker));
         need.perAttempt=5000;
@@ -221,6 +229,11 @@ int main() {
     for (unsigned refresh=0;refresh<100;++refresh)
         assert(NextProfessionStep(saved,changed).step==ProfessionStep::WaitForDelivery);
     changed.stock[0].paidInTransit=1;
+    // The native source/purchase adapter must agree with the finite decision,
+    // rather than rejecting all purchases whenever any units are in flight.
+    uint32_t unpaid=0;
+    changed.stock[0].sourceAvailable=RequiredProfessionVendorQuantity(job.reagents[0],changed.stock[0],1,unpaid,reason);
+    assert(changed.stock[0].sourceAvailable && unpaid==1);
     next=NextProfessionStep(saved,changed);
     assert(next.step==ProfessionStep::Purchase && next.quantities[0].perAttempt==1);
     changed.stock[0].sourceAvailable=false;

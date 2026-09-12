@@ -81,7 +81,7 @@ namespace LivingActivity {
         for (size_t i=0;i<job.reagents.size() && snapshot.blocker.empty();++i) {
             auto& have=snapshot.stock[i];
             if (have.bag>=job.reagents[i].perAttempt) continue;
-            if(have.bank || have.delivered || have.paidInTransit) continue;
+            if(have.bank || have.delivered) continue;
             const auto* item=sObjectMgr.GetItemPrototype(have.entry);uint32_t quantity=0;
             std::vector<int32_t> sellers;
             have.sourceAvailable=item && RequiredProfessionVendorQuantity(job.reagents[i],have,item->BuyCount,quantity,have.sourceBlocker) &&

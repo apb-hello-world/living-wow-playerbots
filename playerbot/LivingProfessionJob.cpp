@@ -39,8 +39,12 @@ namespace LivingActivity {
         if (stock.bag>=need.perAttempt) return reject("profession_purchase_material_already_available");
         if (stock.bank) return reject("profession_banked_material_requires_collection");
         if (stock.delivered) return reject("profession_delivered_material_requires_collection");
-        if (stock.paidInTransit) return reject("profession_paid_material_in_transit");
-        const uint64_t units=(uint64_t(need.perAttempt-stock.bag)+bundle-1)/bundle;
+        const uint32_t missing=need.perAttempt-stock.bag;
+        if (stock.paidInTransit>=missing) return reject("profession_paid_material_in_transit");
+        // An accepted partial order protects its exact quantity, not the whole
+        // reagent requirement. Buy only the still-unpaid remainder; collection
+        // of banked or already-delivered stock retains priority above.
+        const uint64_t units=(uint64_t(missing-stock.paidInTransit)+bundle-1)/bundle;
         const uint64_t rounded=units*bundle;
         if (units>255 || rounded>10000) return reject("profession_vendor_quantity_exceeds_native_bound");
         quantity=uint32_t(rounded); blocker.clear(); return true;
