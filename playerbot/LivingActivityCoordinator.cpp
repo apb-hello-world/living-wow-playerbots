@@ -149,12 +149,16 @@ namespace {
             // "inventory" is the parser's bags-only selector, even with a
             // bank mask. "all" applies this explicit native location mask.
             for (Item* item : bot.GetPlayerbotAI()->InventoryParseItems("all",service.second)) {
-                if (!item || (admission && sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()))) continue;
+                // The aggregate broker query includes guild protection. Its
+                // exact saved delivery may consume that protection below, but
+                // a private trade reservation must always remain unavailable.
+                if (!item || (admission && sPlayerbotActionBroker.ReservedItemsView()->Item(item->GetGUIDLow()))) continue;
                 const std::string location=service.second == IterateItemsMask::ITERATE_ITEMS_IN_BAGS ? "bags" :
                     service.second==IterateItemsMask::ITERATE_ITEMS_IN_EQUIP ? "equipment" : "bank";
                 for (const auto& claim : claims) if (claim.state == "held" && claim.itemGuid == item->GetGUIDLow() &&
                     claim.itemEntry == item->GetEntry() && claim.location == location &&
-                    (!admission || !sGuildSupplies.ReservedEntry(actor,item->GetEntry()) || sGuildSupplies.AllowsManagedClaim(claim)))
+                    (!admission || (!sGuildSupplies.Reserved(item->GetGUIDLow()) &&
+                        !sGuildSupplies.ReservedEntry(actor,item->GetEntry())) || sGuildSupplies.AllowsManagedClaim(claim)))
                     owned.emplace(item->GetGUIDLow(),NativeResourceBalance{actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,location});
             }
         for (const auto& claim : claims) if (claim.state=="held" && claim.location=="mail") {

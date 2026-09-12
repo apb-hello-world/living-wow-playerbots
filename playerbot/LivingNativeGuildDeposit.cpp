@@ -47,10 +47,24 @@ bool PlanNativeGuildDeposit(Player& actor,const Task& task,GuildDepositQuote& q,
     auto items=actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
     items.sort([](const Item* a,const Item* b){return a->GetGUIDLow()<b->GetGUIDLow();});
     Item* selected=nullptr;const auto maximum=q.amount;
+    const auto tradeReservations=sPlayerbotActionBroker.ReservedItemsView();
+    const char* unavailable="guild_delivery_reserved_stack_unavailable";
     for(auto* item:items) {
         if(!item || item->GetEntry()!=q.job.entry || (!q.job.incomingMail && item->GetGUIDLow()!=q.item) ||
-            !item->CanBeTraded() || item->IsConjuredConsumable() || sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
+            !item->CanBeTraded() || item->IsConjuredConsumable() ||
             ai::ItemUsageValue::IsNeededForQuest(&actor,item->GetEntry(),true))continue;
+        if(!tradeReservations || tradeReservations->Item(item->GetGUIDLow())) {
+            unavailable="guild_delivery_private_trade_reserved";continue;
+        }
+        // Inspect the exact saved delivery before its first claim exists. The
+        // broker's aggregate IsItemReserved also includes this delivery's own
+        // legacy protection and would otherwise exclude its assigned stack.
+        ResourceClaim proposed;proposed.task=task.id;proposed.actor=task.actor;
+        proposed.itemGuid=item->GetGUIDLow();proposed.itemEntry=item->GetEntry();
+        proposed.quantity=std::min(maximum,item->GetCount());proposed.state="held";proposed.location="bags";
+        if(!sGuildSupplies.AllowsManagedClaim(proposed)) {
+            unavailable="guild_delivery_reservation_owner_mismatch";continue;
+        }
         ResourceClaim own;
         for(const auto& claim:batch.claims) if(claim.itemGuid==item->GetGUIDLow()) {
             if(!own.id.empty() || !sGuildSupplies.AllowsManagedClaim(claim))return reject("guild_delivery_claim_requires_reconciliation");
@@ -65,7 +79,7 @@ bool PlanNativeGuildDeposit(Player& actor,const Task& task,GuildDepositQuote& q,
             if(!own.id.empty())break;
         }
     }
-    if(!selected)return reject("guild_delivery_reserved_stack_unavailable");
+    if(!selected)return reject(unavailable);
     q.item=selected->GetGUIDLow();q.itemCount=selected->GetCount();q.position=selected->GetPos();
     q.bagCount=actor.GetItemCount(q.job.entry,false);q.money=actor.GetMoney();
     if(!held.id.empty())q.amount=std::min(q.amount,uint32_t(held.quantity));
