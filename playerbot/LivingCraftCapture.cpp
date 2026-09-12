@@ -8,11 +8,11 @@
 #include <tuple>
 
 namespace LivingActivity {
+    bool ValidCraftIdentity(const CraftIdentity& identity) {
+        return IsUuid(identity.task) && IsUuid(identity.operation) && identity.revision &&
+            identity.ownerGeneration && ExecutionAuthority::ContextValid(identity.world) && identity.recipe && identity.skill;
+    }
     namespace {
-        bool ValidIdentity(const CraftIdentity& identity) {
-            return IsUuid(identity.task) && IsUuid(identity.operation) && identity.revision &&
-                identity.ownerGeneration && ExecutionAuthority::ContextValid(identity.world) && identity.recipe && identity.skill;
-        }
         using StackValue=std::tuple<uint32_t,uint32_t,uint32_t,uint32_t,uint32_t,uint8_t>;
         std::vector<StackValue> Values(const CraftFrame& frame) {
             std::vector<StackValue> values;
@@ -38,7 +38,7 @@ namespace LivingActivity {
         return true;
     }
     CraftCapture::CraftCapture(CraftIdentity identity) {
-        if (!ValidIdentity(identity)) throw std::invalid_argument("invalid_native_craft_identity");
+        if (!ValidCraftIdentity(identity)) throw std::invalid_argument("invalid_native_craft_identity");
         result.identity=std::move(identity);
         result.blocker.reserve(128); // All callback reason strings fit before any native effect.
     }
@@ -101,7 +101,7 @@ namespace LivingActivity {
         CraftVerification result;
         auto reject=[&](const std::string& blocker) {result.blocker=blocker;return result;};
         std::string blocker;
-        if (!ValidIdentity(expected) || !SameCraftIdentity(expected,observed.identity) ||
+        if (!ValidCraftIdentity(expected) || !SameCraftIdentity(expected,observed.identity) ||
             !ValidateProfessionJob(job,blocker) || job.recipe!=expected.recipe || job.skill!=expected.skill)
             return reject("native_craft_identity_mismatch");
         if ((job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial) ||
@@ -136,30 +136,25 @@ namespace LivingActivity {
             return reject("native_craft_resource_frame_invalid");
         if (beforeFrame.money!=afterFrame.money || afterFrame.skill<beforeFrame.skill)
             return reject("native_craft_wallet_or_skill_changed_unexpectedly");
-        std::map<uint32_t,uint64_t> before,after,needed;
-        std::map<uint32_t,NativeItemStack> inputsBefore;
+        std::set<uint32_t> inputGuids;
+        CraftFrame inputsBefore=beforeFrame,inputsAfter=afterFrame;
+        inputsBefore.stacks.clear();inputsAfter.stacks.clear();
         std::vector<NativeItemStack> outputsBefore,outputsAfter;
-        for (const auto& reagent : job.reagents) needed.emplace(reagent.entry,reagent.perAttempt);
-        if (needed.empty() || needed.count(output.entry)) return reject("native_craft_input_output_overlap_unsupported");
+        if (job.reagents.empty() || std::any_of(job.reagents.begin(),job.reagents.end(),
+            [&](const auto& need){return need.entry==output.entry;}))
+            return reject("native_craft_input_output_overlap_unsupported");
         for (const auto& stack : beforeFrame.stacks) {
             if (stack.entry==output.entry) {outputsBefore.push_back(stack);continue;}
-            if (!needed.count(stack.entry)) return reject("native_craft_unexpected_input_entry");
-            before[stack.entry]+=stack.count;inputsBefore.emplace(stack.guid,stack);
+            inputGuids.insert(stack.guid);inputsBefore.stacks.push_back(stack);
         }
         for (const auto& stack : afterFrame.stacks) {
             if (stack.entry==output.entry) {
-                if (inputsBefore.count(stack.guid)) return reject("native_craft_input_identity_reused_as_output");
+                if (inputGuids.count(stack.guid)) return reject("native_craft_input_identity_reused_as_output");
                 outputsAfter.push_back(stack);continue;
             }
-            const auto original=inputsBefore.find(stack.guid);
-            if (!needed.count(stack.entry) || original==inputsBefore.end() || original->second.entry!=stack.entry ||
-                original->second.count<stack.count || original->second.bagGuid!=stack.bagGuid || original->second.slot!=stack.slot)
-                return reject("native_craft_input_identity_changed");
-            after[stack.entry]+=stack.count;
+            inputsAfter.stacks.push_back(stack);
         }
-        for (const auto& need : needed)
-            if (before[need.first]<need.second || before[need.first]-need.second!=after[need.first])
-                return reject("native_craft_consumption_mismatch");
+        if (!VerifyCraftReagents(actor,job.reagents,inputsBefore,inputsAfter,blocker)) return reject(blocker);
         if (!VerifyNativeItemGain(actor,output,outputsBefore,outputsAfter,result.gains,blocker))
             return reject(blocker);
         result.result=CraftEvidence::Verified;result.blocker.clear();
@@ -167,5 +162,34 @@ namespace LivingActivity {
         result.attempt.produced={{output.entry,output.quantity}};
         result.attempt.skillBefore=beforeFrame.skill;result.attempt.skillAfter=afterFrame.skill;
         return result;
+    }
+    bool VerifyCraftReagents(uint32_t actor,const std::vector<ProfessionReagent>& required,
+        const CraftFrame& beforeFrame,const CraftFrame& afterFrame,std::string& blocker) {
+        auto reject=[&](const char* code){blocker=code;return false;};
+        if (!ValidCraftFrame(beforeFrame) || !ValidCraftFrame(afterFrame) ||
+            beforeFrame.actor!=actor || afterFrame.actor!=actor || required.empty() || required.size()>8)
+            return reject("native_craft_resource_frame_invalid");
+        if (beforeFrame.money!=afterFrame.money || afterFrame.skill<beforeFrame.skill)
+            return reject("native_craft_wallet_or_skill_changed_unexpectedly");
+        std::map<uint32_t,uint64_t> before,after,needed;
+        std::map<uint32_t,NativeItemStack> originals;
+        for (const auto& need:required)
+            if (!need.entry || !need.perAttempt || need.perAttempt>10000 || !needed.emplace(need.entry,need.perAttempt).second)
+                return reject("native_craft_reagent_contract_invalid");
+        for (const auto& stack:beforeFrame.stacks) {
+            if (!needed.count(stack.entry)) return reject("native_craft_unexpected_input_entry");
+            before[stack.entry]+=stack.count;originals.emplace(stack.guid,stack);
+        }
+        for (const auto& stack:afterFrame.stacks) {
+            const auto original=originals.find(stack.guid);
+            if (!needed.count(stack.entry) || original==originals.end() || original->second.entry!=stack.entry ||
+                original->second.count<stack.count || original->second.bagGuid!=stack.bagGuid || original->second.slot!=stack.slot)
+                return reject("native_craft_input_identity_changed");
+            after[stack.entry]+=stack.count;
+        }
+        for (const auto& need:needed)
+            if (before[need.first]<need.second || before[need.first]-need.second!=after[need.first])
+                return reject("native_craft_consumption_mismatch");
+        blocker.clear();return true;
     }
 }

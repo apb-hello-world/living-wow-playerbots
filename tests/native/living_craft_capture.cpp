@@ -1,4 +1,5 @@
 #include "LivingCraftCapture.h"
+#include "LivingEnchantCapture.h"
 #include "LivingProfessionEvidence.h"
 #include "fixtures/CraftEvidence.h"
 #include <boost/property_tree/json_parser.hpp>
@@ -8,6 +9,7 @@
 #include <thread>
 using namespace LivingActivity;
 using namespace LivingActivityTest;
+#include "fixtures/EnchantCapture.inc"
 namespace {
     using Tree=boost::property_tree::ptree;
     template<class Change> void Mutate(std::string& json,Change change) {
@@ -129,6 +131,7 @@ namespace {
     }
 }
 int main() {
+    EnchantCaptureCases();
     CraftIdentity identity;
     identity.task="137e6854-06ea-5e21-8371-6b40c8c19f4e";
     identity.operation="2c60183b-4a76-41f4-a62e-01d8c65e273d";

@@ -47,6 +47,7 @@ namespace LivingActivity {
         CraftCaptureResult result;
     };
     bool SameCraftIdentity(const CraftIdentity& a, const CraftIdentity& b);
+    bool ValidCraftIdentity(const CraftIdentity& identity);
     bool ValidCraftFrame(const CraftFrame& frame);
     bool SameCraftFrame(const CraftFrame& a,const CraftFrame& b);
     enum class CraftEvidence { Verified, RejectedWithoutEffect, Reconciling };
@@ -67,5 +68,9 @@ namespace LivingActivity {
     // persistence, a current world context, or permission to repeat an action.
     CraftVerification VerifyCraftResources(uint32_t actor, const ProfessionJob& job,
         const CraftFrame& before, const CraftFrame& after, const ItemGainSpec& output);
+    // Exact native reagent conservation, shared by item creation and enchanting.
+    // Frames contain reagents only. This never proves an effect or a SQL commit.
+    bool VerifyCraftReagents(uint32_t actor, const std::vector<ProfessionReagent>& required,
+        const CraftFrame& before, const CraftFrame& after, std::string& blocker);
 }
 #endif
