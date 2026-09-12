@@ -4,11 +4,22 @@
 #include "LivingActivityNativeContext.h"
 #include "LivingServiceExecution.h"
 #include "LivingPurchaseBudget.h"
+#include "LivingActivityCoordinator.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
 namespace LivingActivity {
+    bool NativeVendorPurchase::PrepareDispatch(Player& actor,const OperationRequest& request,std::string& blocker) {
+        const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);
+        if(!saved || saved->actor!=actor.GetGUIDLow()) {blocker="purchase_budget_task_changed";return false;}
+        // Only an incomplete authoritative READ may keep an intent waiting.
+        // Once that read is ready, changed demand/price/access/budget must reach
+        // ValidateNative and a rejected-without-effect receipt, not wait forever.
+        PurchaseSpend spend;
+        return sLivingActivityCoordinator.ReadPurchaseBudget(saved->actor,saved->id,saved->revision,
+            request.transition.receipt,spend,blocker);
+    }
     bool InspectNativeVendorQuote(Player& actor,uint64_t vendor,uint32_t entry,uint32_t quantity,
         NativeVendorQuote& quote,std::string& blocker) {
         quote={};

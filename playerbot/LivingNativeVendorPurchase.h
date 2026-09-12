@@ -29,9 +29,7 @@ namespace LivingActivity {
         bool SupportsItemGain() const override { return true; }
         NativePersistence PersistencePolicy() const override { return NativePersistence::Inventory; }
         bool ValidateNative(Player& actor,const OperationRequest& request,std::string& blocker) override;
-        bool PrepareDispatch(Player& actor,const OperationRequest& request,std::string& blocker) override {
-            return prerequisites.ValidateCommittedDemandAndBudget(actor,request,quote,blocker);
-        }
+        bool PrepareDispatch(Player& actor,const OperationRequest& request,std::string& blocker) override;
         NativeObservation ExecuteNative(Player& actor,const OperationRequest& request) override;
         std::string PersistedNativeProof(Player& actor,const OperationRequest& request,const Task& outcome) const override;
     private:
