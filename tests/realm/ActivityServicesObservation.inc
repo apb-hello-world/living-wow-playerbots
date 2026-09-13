@@ -31,7 +31,10 @@ void RunIsolatedServicesObservation(FixtureState& state) {
         }
         result.put("task_snapshot_truncated",count>128);result.add_child("tasks",tasks);
         std::ofstream out("/isolated/evidence/activity-services-"+state.boot+".json");out<<Json(result);out.close();
-        if(!out)throw std::runtime_error("isolated_service_observation_evidence_unavailable");
+        if(!out) {
+            state.effective=Mode::Observe;state.fixtureFinished=true;
+            sLog.outError("Isolated service observation stopped: evidence unavailable");return;
+        }
         sLog.outString("Living isolated service observation: %s",Json(result).c_str());
     };
     if(sWorld.GetActiveAndQueuedSessionCount() || sRandomPlayerbotMgr.GetAllBots().size()>50) {
