@@ -68,7 +68,12 @@ int main(int argc,char**) {
     // Native MariaDB integration consumes the actual compiled journal, not
     // reconstructed SQL. Output contains fixture values, never private data.
     if(argc>1) {
-        for(const auto& sql:good.plan.statements)std::cout<<sql<<";\n";
-        std::cout<<good.plan.receiptQuery<<";\n";
+        boost::property_tree::ptree report,admission,handoff;
+        const auto initial=TaskWrite(saved,0,"15e40b72-38a2-4923-8d77-1f6a2d9c5e80","task_admitted");
+        for(const auto& sql:initial.statements){boost::property_tree::ptree v;v.put_value(sql);admission.push_back({"",v});}
+        for(const auto& sql:good.plan.statements){boost::property_tree::ptree v;v.put_value(sql);handoff.push_back({"",v});}
+        report.add_child("admission",admission);report.add_child("handoff",handoff);
+        report.put("receipt",good.plan.receiptQuery);
+        boost::property_tree::write_json(std::cout,report);
     }
 }
