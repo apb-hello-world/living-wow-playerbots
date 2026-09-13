@@ -100,6 +100,38 @@ void TestInterruptedProfession() {
     assert(!prepare(partial)); // Keep conservative compatibility with old evidence.
     replaceIntent(EncodeCraftIntent(partialJob,partial.frame));
     assert(prepare(partial));const auto partialRecovered=result.task;
+    // The real tool-preparation launch failure had a full atomic intent, then
+    // an empty adapter exception. Keep the same operation and held purchases;
+    // only an unchanged restored native frame permits non-commit recovery.
+    auto exception=partial;
+    exception.task.phase=Phase::Reconciling;++exception.task.revision;
+    exception.task.checkpoint.blocker="native_adapter_exception";
+    exception.history.revision=exception.task.revision;
+    exception.history.interruptedCraft->receipt.state=OperationState::Reconciling;
+    exception.history.interruptedCraft->receipt.evidence="native_adapter_exception";
+    assert(prepare(exception));
+    assert(result.task.id==exception.task.id && result.task.revision==exception.task.revision+1);
+    for(const auto& sql:result.plan.statements) {
+        assert(sql.find("UPDATE living_activity_claim")==std::string::npos);
+        assert(sql.find("UPDATE item_instance")==std::string::npos);
+        assert(sql.find(SqlValue("prior_observation"))==std::string::npos);
+    }
+    auto changedException=exception;changedException.task.context=exception.current;fail(changedException);
+    changedException=exception;++changedException.frame.money;fail(changedException);
+    changedException=exception;++changedException.frame.skill;fail(changedException);
+    changedException=exception;++changedException.frame.stacks.back().count;fail(changedException);
+    changedException=exception;--changedException.frame.stacks.back().count;fail(changedException);
+    changedException=exception;++changedException.batch.claims.back().revision;fail(changedException);
+    changedException=exception;changedException.history.interruptedCraft->afterState="{\"possible_effect\":true}";fail(changedException);
+    changedException=exception;changedException.history.interruptedCraft->receipt.nativeReference="spell:2329";fail(changedException);
+    changedException=exception;changedException.history.interruptedCraft->receipt.evidence="unknown_failure";fail(changedException);
+    changedException=exception;--changedException.history.interruptedCraft->receipt.taskRevision;fail(changedException);
+    changedException=exception;changedException.history.interruptedCraft->beforeState=f.history.interruptedCraft->beforeState;
+    fail(changedException); // Old intents without a full frame are never relaxed.
+    changedException=exception;
+    auto& notAtomic=changedException.history.interruptedCraft->beforeState;
+    auto atomicAt=notAtomic.find("\"persistence\":2");assert(atomicAt!=std::string::npos);
+    notAtomic.replace(atomicAt,15,"\"persistence\":1");fail(changedException);
     auto badPartial=partial;--badPartial.frame.stacks.back().count;fail(badPartial);
     badPartial=partial;++badPartial.frame.stacks.back().count;fail(badPartial);
     badPartial=partial;badPartial.batch.claims.back().quantity=4;fail(badPartial);

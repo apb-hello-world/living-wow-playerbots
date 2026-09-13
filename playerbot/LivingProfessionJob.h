@@ -44,6 +44,8 @@ namespace LivingActivity {
     bool HasActiveProfessionTool(const std::string&);
     bool IsProfessionJob(const Task& task);
     bool ValidateProfessionTask(const Task& task, std::string& blocker);
+    // Match the finite execution step, retaining the root's other saved steps.
+    bool MatchesActiveProfessionJob(const Task&,const ProfessionJob&,std::string& blocker);
     bool PreserveProfessionIntent(const Task& before, const Task& after, std::string& blocker);
     // A reusable recipe label is not a job identity. The native economy row
     // survives planner refresh and names exactly one accepted obligation.

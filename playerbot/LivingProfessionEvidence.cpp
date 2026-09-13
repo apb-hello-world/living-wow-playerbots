@@ -293,8 +293,12 @@ bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& r
             r.state==OperationState::Reconciling && r.taskRevision<UINT64_MAX && r.taskRevision+1==task.revision &&
             r.evidence=="native_save_capture_requires_reconciliation" && task.checkpoint.blocker==r.evidence &&
             r.nativeReference=="spell:"+std::to_string(job.recipe)+":operation:"+r.id;
+        const bool emptyAdapterFailure=task.phase==Phase::Reconciling && r.state==OperationState::Reconciling &&
+            r.taskRevision<UINT64_MAX && r.taskRevision+1==task.revision &&
+            r.evidence=="native_adapter_exception" && task.checkpoint.blocker==r.evidence &&
+            r.nativeReference.empty() && row.afterState=="{}";
         Require(IsUuid(r.id) && r.task==task.id && r.kind=="profession_craft" &&
-            (captured || (task.phase==Phase::Executing && r.taskRevision==task.revision &&
+            (captured || emptyAdapterFailure || (task.phase==Phase::Executing && r.taskRevision==task.revision &&
              r.state==OperationState::Intent && r.evidence.empty() && r.nativeReference.empty() && row.afterState=="{}")),
             "interrupted_craft_not_pristine_intent");
         const bool enchant=job.operation==ProfessionOperation::EnchantItem;
@@ -318,6 +322,11 @@ bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& r
         }
         decoded.skill=Number<uint16_t>(native.get_child("skill"));decoded.money=Number(native.get_child("money"));
         decoded.inputs=Inputs(task,before.get_child("native.claimed_consumption"));
+        // An exception is not proof of non-execution. Recovery is possible only
+        // after restart, under the atomic save contract above, with a complete
+        // saved before-frame and unchanged native inventory/skill/money/claims.
+        // Older aggregate-only intents and any possible after-effect stay held.
+        Require(!emptyAdapterFailure || decoded.inventoryBefore.has_value(),"interrupted_craft_full_before_frame_required");
         if(captured) {
             // A failed native callback is not success. Only this exact
             // pre-effect capture gap is eligible for restored-state comparison;

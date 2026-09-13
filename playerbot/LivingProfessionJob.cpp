@@ -272,6 +272,15 @@ namespace LivingActivity {
         }
         blocker.clear(); return true;
     }
+    bool MatchesActiveProfessionJob(const Task& task,const ProfessionJob& job,std::string& blocker) {
+        ProfessionJob active;
+        if (!IsProfessionJob(task) || !ValidateProfessionTask(task,blocker) ||
+            !DecodeProfessionJob(task.checkpoint.data,active,blocker) || !SameIntent(active,job)) {
+            if (blocker.empty()) blocker="profession_active_execution_mismatch";
+            return false;
+        }
+        blocker.clear();return true;
+    }
     bool PreserveProfessionIntent(const Task& before, const Task& after, std::string& blocker) {
         if (!PreserveRecipeLearningIntent(before,after,blocker)) return false;
         if (!ValidateProfessionTask(after, blocker)) return false;

@@ -123,14 +123,15 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
     auto outcome=row.receipt;outcome.state=OperationState::Rejected;
     outcome.evidence="native_craft_intent_not_committed";
     outcome.nativeReference="spell:"+n(job.recipe)+":operation:"+outcome.id;
-    const bool captured=row.receipt.state==OperationState::Reconciling;
+    const bool reconciling=row.receipt.state==OperationState::Reconciling;
+    const bool captured=reconciling && row.receipt.evidence=="native_save_capture_requires_reconciliation";
     const auto after=std::string("{\"recovery\":{\"version\":1,\"basis\":\"atomic_native_save_absent\",\"boot\":\"")+
         current.boot+"\"},\"frame\":"+frames+(subject?",\"subject\":"+EnchantSubjectJson(*subject):"")+
         (captured?",\"prior_observation\":"+row.afterState:"")+'}';
     prepared.plan=OperationOutcomeWrite(next,saved.revision,outcome,receipt,after);
-    prepared.plan.statements.front()+=" AND phase="+SqlValue(captured?"reconciling":"executing")+" AND accepted=1 AND checkpoint="+SqlValue(saved.checkpoint.data)+
+    prepared.plan.statements.front()+=" AND phase="+SqlValue(reconciling?"reconciling":"executing")+" AND accepted=1 AND checkpoint="+SqlValue(saved.checkpoint.data)+
         " AND EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+SqlValue(outcome.id)+
-        " AND o.state="+SqlValue(captured?"reconciling":"intent")+" AND o.before_state="+SqlValue(row.beforeState)+
+        " AND o.state="+SqlValue(reconciling?"reconciling":"intent")+" AND o.before_state="+SqlValue(row.beforeState)+
         " AND o.after_state="+SqlValue(row.afterState)+" AND o.evidence_code="+SqlValue(row.receipt.evidence)+
         " AND o.native_reference="+SqlValue(row.receipt.nativeReference)+')'+
         " AND (SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task owner ON owner.task_id=o.task_id"

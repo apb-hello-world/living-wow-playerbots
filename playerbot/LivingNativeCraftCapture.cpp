@@ -184,9 +184,9 @@ namespace LivingActivity {
           output(output),enchant(std::move(enchant)),inventoryBefore(std::move(inventoryBefore)),
           identity(Identity(task,this->action,this->job)),capture(std::make_shared<CraftCapture>(identity)) {
         std::string blocker;
-        if (!ValidateProfessionTask(task,blocker) || task.phase!=Phase::Executing || task.mode!=Mode::Active ||
+        if (!MatchesActiveProfessionJob(task,this->job,blocker) || task.phase!=Phase::Executing || task.mode!=Mode::Active ||
             !task.accepted || !Fresh(task,this->action,task.context) ||
-            this->action.revision!=task.revision || EncodeProfessionJob(this->job)!=task.checkpoint.data ||
+            this->action.revision!=task.revision ||
             (SpellEffectMask(false)&~this->action.permittedEffects) ||
             (this->job.operation==ProfessionOperation::EnchantItem ?
                 (!output.Empty() || !ValidEnchantClaim(task,this->job,this->enchant.claim) ||

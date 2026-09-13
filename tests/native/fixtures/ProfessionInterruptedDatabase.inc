@@ -101,6 +101,31 @@ static void ProfessionInterruptedDatabase(Connection& db) {
         second+','+id+",3,'vendor_purchase','fixture','intent','','{}','{}','',1100,1100)"));
     assert(!db.Write(prepared.plan));
     assert(db.Execute("UPDATE living_activity_operation SET state='rejected',evidence_code='fixture_no_effect' WHERE operation_id="+second));
+    // Reproduce the real launch exception after the intent transaction, before
+    // any native effect. The original recovery plan must become stale; a fresh
+    // restored-frame proof reconciles the same operation, never a new purchase.
+    auto exceptionTask=f.task;++exceptionTask.revision;exceptionTask.phase=Phase::Reconciling;
+    exceptionTask.checkpoint.blocker="native_adapter_exception";
+    auto exception=op.receipt;exception.state=OperationState::Reconciling;
+    exception.evidence="native_adapter_exception";
+    assert(db.Write(OperationOutcomeWrite(exceptionTask,f.task.revision,exception,rid(6),"{}")));
+    assert(!db.Write(prepared.plan));
+    f.task=exceptionTask;
+    ProfessionHistoryCursor failed;assert(failed.Begin(f.task,db.History(f.task),blocker));
+    while(!failed.Result().complete)assert(failed.Advance(blocker));
+    f.history=failed.Result();assert(f.history.interruptedCraft);
+    assert(PrepareInterruptedProfession(f.task,f.current,f.history,f.batch,f.frame,1200,f.receipt,prepared,blocker,f.bank,nullptr,f.carried));
+    auto rejectExceptionRace=[&](const std::string& change,const std::string& restore) {
+        assert(db.Execute(change));assert(!db.Write(prepared.plan));assert(db.Execute(restore));
+        assert(db.Scalar("SELECT revision FROM living_activity_task WHERE task_id="+id)=="5");
+    };
+    rejectExceptionRace("UPDATE characters SET money=99 WHERE guid=705","UPDATE characters SET money=100 WHERE guid=705");
+    rejectExceptionRace("UPDATE item_instance SET count=19 WHERE guid=100805","UPDATE item_instance SET count=20 WHERE guid=100805");
+    rejectExceptionRace("UPDATE character_skills SET value=2 WHERE guid=705","UPDATE character_skills SET value=1 WHERE guid=705");
+    rejectExceptionRace("UPDATE living_activity_operation SET after_state='{\"effect\":true}' WHERE operation_id="+operation,
+        "UPDATE living_activity_operation SET after_state='{}' WHERE operation_id="+operation);
+    rejectExceptionRace("UPDATE living_activity_operation SET native_reference='possible_effect' WHERE operation_id="+operation,
+        "UPDATE living_activity_operation SET native_reference='' WHERE operation_id="+operation);
     {Connection restarted;assert(restarted.Write(prepared.plan));}
     assert(db.Write(prepared.plan)); // Lost acknowledgement cannot repeat the transition.
     assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+operation)=="rejected");
