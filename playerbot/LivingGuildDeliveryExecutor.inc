@@ -20,6 +20,15 @@ bool LivingActivityCoordinator::OwnsGuildDelivery(uint32_t actor,const GuildDeli
     }
     return false;
 }
+std::string LivingActivityCoordinator::GuildDeliveryBlocker(uint32_t actor,const GuildDeliveryJob& job) const {
+    if(!OnWorldThread() || !ValidGuildDeliveryJob(job) || !actor || (!job.incomingMail && actor!=job.donor))
+        return "guild_delivery_identity_requires_review";
+    const auto id=SourceId("guild_delivery",GuildDeliverySourceKey(job,actor));
+    const auto saved=state->cache.find(id);
+    if(saved==state->cache.end())return "managed_delivery_queued";
+    const auto execution=state->executionBlockers.find(id);
+    return GuildDeliveryDisplayBlocker(saved->second,execution==state->executionBlockers.end()?"":execution->second);
+}
 AdmissionResult LivingActivityCoordinator::AdmitGuildDelivery(uint32_t actor,const GuildDeliveryJob& job) {
     AdmissionResult result;
     auto reject=[&](AdmissionCode code,const std::string& why){result.code=code;result.blocker=why;return result;};
@@ -259,13 +268,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                 return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,{job.entry,job.quantity}).blocker);
             if(blocker=="guild_mailbox_send_travel_required" || (blocker=="guild_mail_safety_or_arrival_wait" && !bot->IsStopped()))
                 return advance(Phase::Traveling,ServiceStep(ServiceDestination::GuildMailbox));
-            if(blocker=="guild_mail_no_deposit_recipient" || blocker=="guild_mail_insufficient_unreserved_postage" ||
-                blocker=="guild_mail_exact_whole_stack_required") {
-                TaskRequest wait;wait.task=*saved;wait.expectedRevision=saved->revision;wait.receipt=NewId();
-                ++wait.task.revision;wait.task.phase=Phase::WaitingExternal;wait.task.updatedAtMs=NowMs();
-                wait.task.retryAtMs=NowMs()+30000;wait.task.checkpoint.blocker=blocker;
-                return stop(SubmitTask(wait).blocker);
-            }
+            // The common due queue persists exact external prerequisites and
+            // releases movement. Missing parcel/uncertain ownership is NOT an
+            // acceptable shortage and stays an explicit review blocker.
             return stop(blocker);
         }
         NativeGuildMail adapter(parcel);

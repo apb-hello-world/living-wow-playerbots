@@ -7,11 +7,14 @@ namespace LivingActivity {
     // Exact external prerequisites only. Unknown errors, native uncertainty,
     // safety interruptions and unsupported adapters are NOT disguised as waits.
     inline uint64_t PreparationWaitDelay(const std::string& blocker) {
+        for(const auto* known : {"guild_mail_no_deposit_recipient", "guild_delivery_automation_paused"})
+            if(blocker==known)return 30000;
         for(const auto* known : {"purchase_hourly_limit", "purchase_seller_weekly_limit",
             "purchase_daily_limit", "purchase_protected_money_shortfall",
             "profession_material_has_legacy_commitment", "profession_material_source_unavailable",
             "profession_paid_material_in_transit", "vendor_limited_stock_unavailable",
-            "profession_tool_source_unavailable"})
+            "profession_tool_source_unavailable", "guild_bank_deposit_capacity_unavailable",
+            "guild_mail_insufficient_unreserved_postage"})
             if(blocker==known)return 300000;
         return 0;
     }
@@ -25,7 +28,7 @@ namespace LivingActivity {
             return false;
         next=saved;++next.revision;next.phase=Phase::WaitingExternal;next.updatedAtMs=now;
         next.retryAtMs=now+delay;next.checkpoint.blocker=blocker;
-        // Preserve the accepted recipe, due time, active elapsed time and every
+        // Preserve the accepted obligation, due time, active elapsed time and every
         // native claim. A wait is neither cancellation nor completion.
         return true;
     }

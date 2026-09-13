@@ -81,6 +81,20 @@ inline bool DecodeGuildDeliveryJob(const std::string& data,GuildDeliveryJob& job
 inline bool IsManagedGuildDelivery(const Task& task) {
     return task.mode==Mode::Active && (task.source=="guild_delivery" || task.kind==Kind::GuildDelivery);
 }
+// Read-only compatibility text. Physical mail/carried/deposited quantities
+// still come from the native delivery ledger, never from this phase label.
+inline std::string GuildDeliveryDisplayBlocker(const Task& task,const std::string& execution) {
+    if(!task.checkpoint.blocker.empty())return task.checkpoint.blocker;
+    if(task.phase==Phase::Completed)
+        return task.checkpoint.step=="guild_mail_handed_off"?"guild_delivery_handed_off":"guild_delivery_completed";
+    bool transient=execution.empty();
+    for(const auto* value:{"persistence_pending","saved","guild_delivery_transition_pending",
+        "guild_delivery_receipt_read_pending","guild_delivery_native_receipt_pending",
+        "guild_delivery_retry_wait","guild_delivery_native_retry_wait","native_result_receipt_pending"})
+        transient|=execution==value;
+    if(!transient)return execution;
+    return std::string("guild_delivery_")+Name(task.phase);
+}
 inline bool ValidateGuildDeliveryTask(const Task& task,std::string& blocker) {
     // Existing imported records remain read-only compatibility history. They
     // must not become executable merely by changing mode or acquiring a lease.

@@ -107,6 +107,8 @@ public:
     bool GuildDeliveryAdmissionsEnabled() const;
     LivingActivity::AdmissionResult AdmitGuildDelivery(uint32_t actor,const LivingActivity::GuildDeliveryJob& job);
     bool OwnsGuildDelivery(uint32_t actor,const LivingActivity::GuildDeliveryJob& job) const;
+    // World-thread cache only; does not execute, scan the DB or infer delivery.
+    std::string GuildDeliveryBlocker(uint32_t actor,const LivingActivity::GuildDeliveryJob& job) const;
     ProfessionProgress AdvanceGuildDelivery(uint32_t actor,const std::string& task);
     LivingActivity::AdmissionResult SettleRecipeLearning(uint32_t actor,const std::string& task,
         uint64_t expectedRevision,const std::string& receipt);

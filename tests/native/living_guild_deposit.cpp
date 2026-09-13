@@ -1,6 +1,7 @@
 #include "LivingGuildDeposit.h"
 #include "LivingGuildSaveFence.h"
 #include "LivingGuildDeliverySettlement.h"
+#include "LivingPreparationWait.h"
 #include <cassert>
 #include <thread>
 #include <limits>
@@ -54,6 +55,38 @@ static void Settlement() {
 }
 int main() {
     Settlement();
+    {
+        Task task;task.id=task.root=TaskId;task.kind=Kind::GuildDelivery;task.source="guild_delivery";
+        task.phase=Phase::Preparing;task.mode=Mode::Active;task.updatedAtMs=1000;
+        task.checkpoint.data=EncodeGuildDeliveryJob(Quote().job);task.checkpoint.activeElapsedMs=7000;
+        task.checkpoint.lastProgressAtMs=900;task.dueAtMs=1100;Task waiting;
+        for(const auto& prerequisite:std::vector<std::pair<std::string,uint64_t>>{
+            {"guild_bank_deposit_capacity_unavailable",300000}, {"guild_mail_no_deposit_recipient",30000},
+            {"guild_mail_insufficient_unreserved_postage",300000},{"guild_delivery_automation_paused",30000}}) {
+            assert(PrepareExternalPreparationWait(task,prerequisite.first,2000,waiting));
+            assert(CanTransition(task,waiting.phase) && waiting.phase==Phase::WaitingExternal);
+            assert(waiting.id==task.id && waiting.root==task.root && waiting.revision==task.revision+1);
+            assert(waiting.checkpoint.data==task.checkpoint.data && waiting.checkpoint.activeElapsedMs==7000);
+            assert(waiting.dueAtMs==1100 && waiting.checkpoint.lastProgressAtMs==900);
+            assert(waiting.retryAtMs==2000+prerequisite.second && !ConsumesActiveTime(waiting.phase));
+            assert(GuildDeliveryDisplayBlocker(waiting,"guild_delivery_retry_wait")==prerequisite.first);
+            const auto savedWait=waiting;
+            assert(!PrepareExternalPreparationWait(savedWait,prerequisite.first,2500,waiting));
+        }
+        for(const auto* unknown:{"guild_delivery_safety_pause","guild_mail_claimed_parcel_unavailable",
+            "guild_delivery_operation_requires_reconciliation","guild_delivery_goal_cancelled",
+            "guild_delivery_member_departed","guild_bank_native_save_pending"})
+            assert(!PrepareExternalPreparationWait(task,unknown,2000,waiting));
+        task.phase=Phase::Executing;
+        assert(!PrepareExternalPreparationWait(task,"guild_bank_deposit_capacity_unavailable",2000,waiting));
+        task.phase=Phase::Traveling;
+        assert(GuildDeliveryDisplayBlocker(task,"persistence_pending")=="guild_delivery_traveling");
+        assert(GuildDeliveryDisplayBlocker(task,"recipe_service_no_path")=="recipe_service_no_path");
+        task.phase=Phase::Completed;task.checkpoint.step="guild_mail_handed_off";
+        assert(GuildDeliveryDisplayBlocker(task,"persistence_pending")=="guild_delivery_handed_off");
+        task.checkpoint.step="guild_delivery_completed";
+        assert(GuildDeliveryDisplayBlocker(task,"")=="guild_delivery_completed");
+    }
     for(const auto phase:{Phase::Queued,Phase::Reconciling,Phase::Paused,Phase::Deferred,Phase::WaitingExternal}) {
         Task paused;paused.phase=phase;paused.mode=Mode::Active;
         const auto next=GuildDeliveryPreparationPhase(phase);

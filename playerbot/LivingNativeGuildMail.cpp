@@ -22,7 +22,7 @@ bool MayDeposit(Guild& guild,uint32_t actor) {
         if(guild.IsMemberHaveRights(actor,tab,GUILD_BANK_RIGHT_DEPOSIT_ITEM))return true;
     return false;
 }
-Player* EligibleRecipient(Player& sender,Guild& guild,Item& item,uint32_t actor,uint32_t quantity) {
+Player* EligibleRecipient(Player& sender,Guild& guild,Item& item,uint32_t actor) {
     auto* p=sRandomPlayerbotMgr.GetPlayerBot(actor);
     // A busy/dead bot can receive native mail without being interrupted. Its
     // queued collection/deposit still obeys all normal service safety checks.
@@ -30,7 +30,10 @@ Player* EligibleRecipient(Player& sender,Guild& guild,Item& item,uint32_t actor,
         !sPlayerbotAIConfig.IsInRandomAccountList(p->GetSession()->GetAccountId()) || !p->IsInWorld() ||
         p->GetGuildId()!=sender.GetGuildId() || p->GetTeam()!=sender.GetTeam() ||
         !guild.GetMemberSlot(p->GetObjectGuid()) || !MayDeposit(guild,actor) || p->GetMailSize()>=50 ||
-        sGuildSupplies.ReservedEntry(actor,item.GetEntry()) || guild.FindSupplyDepositTab(actor,&item,quantity)<0)return nullptr;
+        sGuildSupplies.ReservedEntry(actor,item.GetEntry()))return nullptr;
+    // Capacity is an execution prerequisite, not a recipient identity right.
+    // A full bank must not look like the guild has no deposit-capable member.
+    // The recipient checks actual space before any native deposit operation.
     return p;
 }
 bool EmptyParcelSlot(Player& actor,Item& item,uint32_t quantity,uint16_t& result) {
@@ -92,7 +95,7 @@ bool PlanNativeGuildMail(Player& actor,const Task& task,GuildMailQuote& q,std::v
         if(!item || (candidate->GetCount()==carry.job.quantity && item->GetCount()!=carry.job.quantity) ||
             ((candidate->GetCount()==carry.job.quantity)==(item->GetCount()==carry.job.quantity) && candidate->GetGUIDLow()<item->GetGUIDLow()))item=candidate;
     }
-    if(!item)return reject("guild_mail_exact_whole_stack_required");
+    if(!item)return reject("guild_mail_claimed_parcel_unavailable");
     q.job=carry.job;q.sender=task.actor;q.item=item->GetGUIDLow();
     if(item->GetCount()>carry.job.quantity) {
         q.sourceCount=item->GetCount();
@@ -110,11 +113,11 @@ bool PlanNativeGuildMail(Player& actor,const Task& task,GuildMailQuote& q,std::v
         }
     }
     Player* receiver=nullptr;
-    if(selectedReceiver)receiver=EligibleRecipient(actor,*guild,*item,selectedReceiver,carry.job.quantity);
+    if(selectedReceiver)receiver=EligibleRecipient(actor,*guild,*item,selectedReceiver);
     else {
         auto consider=[&](Player* member) {
             const auto guid=member->GetGUIDLow();
-            if(!receiver || guid<receiver->GetGUIDLow())if(auto* candidate=EligibleRecipient(actor,*guild,*item,guid,carry.job.quantity))receiver=candidate;
+            if(!receiver || guid<receiver->GetGUIDLow())if(auto* candidate=EligibleRecipient(actor,*guild,*item,guid))receiver=candidate;
         };
         guild->BroadcastWorker(consider,&actor); // Native online guild members, not a realm-wide bot scan.
     }

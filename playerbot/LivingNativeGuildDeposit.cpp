@@ -85,7 +85,9 @@ bool PlanNativeGuildDeposit(Player& actor,const Task& task,GuildDepositQuote& q,
     q.bagCount=actor.GetItemCount(q.job.entry,false);q.money=actor.GetMoney();
     if(!held.id.empty())q.amount=std::min(q.amount,uint32_t(held.quantity));
     const auto tab=guild->FindSupplyDepositTab(q.actor,selected,q.amount);
-    if(tab<0)return reject("guild_delivery_bank_full_or_permission_denied");q.tab=uint8_t(tab);
+    // ReadManagedDeposit already revalidated native deposit rights. This is
+    // native capacity for the exact eligible stack, not a missing recipient.
+    if(tab<0)return reject("guild_bank_deposit_capacity_unavailable");q.tab=uint8_t(tab);
     for(const auto guid:actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("nearest game objects no los")->Get())
         if(actor.GetGameObjectIfCanInteractWith(guid,GAMEOBJECT_TYPE_GUILD_BANK)){q.bank=guid.GetRawValue();break;}
     if(!q.bank)return reject("guild_bank_travel_required");

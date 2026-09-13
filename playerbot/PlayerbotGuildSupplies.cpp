@@ -166,6 +166,16 @@ struct PlayerbotGuildSupplies::State {
         InvalidateItems(Online(d.carrier));
         PublishProtection();
     }
+    void ProjectManaged(Delivery& d,const std::string& reason,uint32 now) {
+        Release(d); // OLD lease only; never touches the shared task or its claims.
+        if(d.blocker==reason)return;
+        d.blocker=reason;auto escaped=reason;CharacterDatabase.escape_string(escaped);
+        // A just-committed handoff may precede this compatibility cache's reload.
+        // Never overwrite the next courier's status with the previous leg.
+        CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET blocker='%s',updated_at=%u "
+            "WHERE delivery_id=%llu AND carrier_guid=%u AND mail_id=%u AND phase IN ('carried','mailed')",
+            escaped.c_str(),now,(unsigned long long)d.id,d.carrier,d.mail);
+    }
     void PublishProtection() {
         LivingActivity::LegacyResourceView view;
         view.items=protectedItems;
@@ -564,7 +574,7 @@ void PlayerbotGuildSupplies::Update() {
             // Admission retires the legacy executor, including during a pause,
             // restart, cancellation or delayed native acknowledgement.
             // Releasing only the OLD lease cannot clear the new owner's route.
-            s.Release(d);continue;
+            s.ProjectManaged(d,sLivingActivityCoordinator.GuildDeliveryBlocker(d.carrier,managed),now);continue;
         }
         Player* p=Online(d.carrier);Guild* guild=sGuildMgr.GetGuildById(d.guild);
         if(!guild||!s.enabled[d.guild]||!sGuildGovernance.Allows(guild,"supplies")) {s.Block(d,"supply_automation_paused",now);continue;}
