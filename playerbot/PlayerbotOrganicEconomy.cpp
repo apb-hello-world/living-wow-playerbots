@@ -591,7 +591,8 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
         saved->checkpoint.step!=ServiceStep(service)) return {false,"saved_service_step_changed"};
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
     if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) return {false,"saved_service_actor_unavailable",saved->checkpoint.activeElapsedMs};
-    uint32 purpose=service==ServiceDestination::Mailbox ? uint32(ai::TravelDestinationPurpose::Mail) :
+    if(service==ServiceDestination::GuildMailbox && !IsManagedGuildDelivery(*saved))return {false,"guild_mail_saved_delivery_required"};
+    uint32 purpose=(service==ServiceDestination::Mailbox || service==ServiceDestination::GuildMailbox) ? uint32(ai::TravelDestinationPurpose::Mail) :
         uint32(ai::TravelDestinationPurpose::Bank);
     if(service==ServiceDestination::Vendor)purpose=uint32(ai::TravelDestinationPurpose::Vendor);
     if(service==ServiceDestination::AuctionHouse)purpose=uint32(ai::TravelDestinationPurpose::AH);

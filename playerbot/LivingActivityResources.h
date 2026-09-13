@@ -83,6 +83,11 @@ namespace LivingActivity {
         // native-save/claim receipt commits. This never proves the transfer.
         ClaimInstall ReserveTransferred(const std::string& receipt,const ClaimReceiptChange& change,
             const NativeResourceBalance& destination);
+        // Exact cross-actor whole-stack mail handoff. The old claim already
+        // protects the physical GUID globally; do not double-count it as a new
+        // acquisition. Source item/postage and recipient claim settle together.
+        ClaimInstall ReserveMailedHandoff(const std::string& receipt,const std::vector<ClaimReceiptChange>& changes,
+            const NativeResourceBalance& attachment);
         ClaimInstall CommitReservation(const std::string& receipt);
         bool HasPending(const std::string& receipt) const { return pending.count(receipt) != 0; }
         size_t PendingCount() const { return pending.size(); }
@@ -109,6 +114,7 @@ namespace LivingActivity {
         size_t PendingSlots(const std::string& excluding = "") const;
         struct PendingReservation {
             bool transferred=false;
+            bool mailedHandoff=false;
             std::vector<ClaimReceiptChange> changes;
             std::vector<NativeResourceBalance> balances;
             std::vector<ResourceClaim> additional;

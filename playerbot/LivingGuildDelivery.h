@@ -16,7 +16,11 @@ struct GuildDeliveryJob {
     uint32_t guild=0,donor=0,entry=0,quantity=0,incomingMail=0;
     std::string goal;
     bool money=false;
+    // V1 parcels were sent by their original donor. V2 records the actual
+    // courier separately, without rewriting donor/contribution identity.
+    uint32_t mailSender=0;
 };
+inline uint32_t GuildDeliveryMailSender(const GuildDeliveryJob& j) {return j.mailSender?j.mailSender:j.donor;}
 inline Phase GuildDeliveryPreparationPhase(Phase phase) {
     // A finished wait is not proof that its saved native context is current.
     return phase==Phase::Paused || phase==Phase::Deferred || phase==Phase::WaitingExternal
@@ -24,6 +28,7 @@ inline Phase GuildDeliveryPreparationPhase(Phase phase) {
 }
 inline bool ValidGuildDeliveryJob(const GuildDeliveryJob& j) {
     return j.delivery && j.guild && j.donor && j.quantity && livingguild::Id(j.goal) &&
+        (!j.mailSender || (j.incomingMail && !j.money && j.mailSender!=j.donor)) &&
         (j.money ? !j.entry && !j.incomingMail && j.quantity<=uint32_t(INT32_MAX) : j.entry!=0);
 }
 inline std::string GuildDeliverySourceKey(const GuildDeliveryJob& j,uint32_t actor) {
@@ -33,21 +38,25 @@ inline std::string GuildDeliverySourceKey(const GuildDeliveryJob& j,uint32_t act
 }
 inline std::string EncodeGuildDeliveryJob(const GuildDeliveryJob& j) {
     if(!ValidGuildDeliveryJob(j)) throw std::invalid_argument("invalid_guild_delivery_job");
-    return "{\"workflow\":\"guild_delivery_v1\",\"delivery\":"+std::to_string(j.delivery)+
+    return std::string("{\"workflow\":\"")+(j.mailSender?"guild_delivery_v2":"guild_delivery_v1")+"\",\"delivery\":"+std::to_string(j.delivery)+
         ",\"guild\":"+std::to_string(j.guild)+",\"goal\":\""+j.goal+"\",\"donor\":"+std::to_string(j.donor)+
         ",\"entry\":"+std::to_string(j.entry)+",\"quantity\":"+std::to_string(j.quantity)+
-        ",\"incoming_mail\":"+std::to_string(j.incomingMail)+",\"money\":"+(j.money?"1":"0")+'}';
+        ",\"incoming_mail\":"+std::to_string(j.incomingMail)+",\"money\":"+(j.money?"1":"0")+
+        (j.mailSender?",\"mail_sender\":"+std::to_string(j.mailSender):"")+'}';
 }
 inline bool DecodeGuildDeliveryJob(const std::string& data,GuildDeliveryJob& job,std::string& blocker) {
     job={};blocker="invalid_guild_delivery_checkpoint";
     if(data.empty() || data.size()>1024) return false;
     try {
         boost::property_tree::ptree p;std::istringstream input(data);boost::property_tree::read_json(input,p);
-        const std::set<std::string> fields{"workflow","delivery","guild","goal","donor","entry","quantity","incoming_mail","money"};
+        const auto workflow=p.get<std::string>("workflow");
+        if(workflow!="guild_delivery_v1" && workflow!="guild_delivery_v2")return false;
+        std::set<std::string> fields{"workflow","delivery","guild","goal","donor","entry","quantity","incoming_mail","money"};
+        if(workflow=="guild_delivery_v2")fields.insert("mail_sender");
         std::set<std::string> seen;
         for(const auto& field:p)
             if(!fields.count(field.first) || !field.second.empty() || !seen.insert(field.first).second) return false;
-        if(seen!=fields || p.get<std::string>("workflow")!="guild_delivery_v1") return false;
+        if(seen!=fields) return false;
         auto number=[&](const char* key,uint64_t maximum) {
             const auto text=p.get<std::string>(key);
             if(text.empty() || text.size()>20 || (text.size()>1 && text.front()=='0') ||
@@ -61,6 +70,10 @@ inline bool DecodeGuildDeliveryJob(const std::string& data,GuildDeliveryJob& job
         j.donor=uint32_t(number("donor",UINT32_MAX));j.entry=uint32_t(number("entry",UINT32_MAX));
         j.quantity=uint32_t(number("quantity",UINT32_MAX));j.incomingMail=uint32_t(number("incoming_mail",UINT32_MAX));
         j.money=number("money",1)!=0;j.goal=p.get<std::string>("goal");
+        if(workflow=="guild_delivery_v2") {
+            j.mailSender=uint32_t(number("mail_sender",UINT32_MAX));
+            if(!j.mailSender)return false;
+        }
         if(!ValidGuildDeliveryJob(j)) return false;
         job=j;blocker.clear();return true;
     } catch(const std::exception&) {return false;}

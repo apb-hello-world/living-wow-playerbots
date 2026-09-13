@@ -192,6 +192,59 @@ namespace LivingActivity {
         const NativeResourceBalance& destination) {
         return ReservePendingImpl(receipt,{change},{destination},true);
     }
+    ClaimInstall ResourceClaimBook::ReserveMailedHandoff(const std::string& receipt,
+        const std::vector<ClaimReceiptChange>& changes,const NativeResourceBalance& attachment) {
+        if(!protection.ready)return ClaimInstall::NotReady;
+        if(!IsUuid(receipt) || changes.size()!=3 || !ValidNativeResourceBalance(attachment) ||
+            attachment.location!="mail" || !attachment.nativeReference || attachment.nativeReference>UINT32_MAX ||
+            attachment.copper || protection.revision==std::numeric_limits<uint64_t>::max())return ClaimInstall::Invalid;
+        const auto prior=pending.find(receipt);
+        if(prior!=pending.end()) {
+            const auto& old=prior->second;
+            if(!old.mailedHandoff || old.changes.size()!=3 || old.balances.size()!=1)return ClaimInstall::Invalid;
+            for(size_t i=0;i<3;++i)if(old.changes[i].expectedRevision!=changes[i].expectedRevision ||
+                !SameResourceClaim(old.changes[i].after,changes[i].after))return ClaimInstall::Invalid;
+            const auto& b=old.balances.front();
+            return std::tie(b.actor,b.itemGuid,b.itemEntry,b.quantity,b.copper,b.location,b.nativeReference)==
+                std::tie(attachment.actor,attachment.itemGuid,attachment.itemEntry,attachment.quantity,attachment.copper,
+                    attachment.location,attachment.nativeReference)?ClaimInstall::Duplicate:ClaimInstall::Invalid;
+        }
+        if(!CanAdmitNewClaims(1))return ClaimInstall::Capacity;
+        const ResourceClaim* source=nullptr;const ResourceClaim* postage=nullptr;const ResourceClaim* receiver=nullptr;
+        std::set<std::string> ids;
+        for(const auto& change:changes) {
+            const auto& c=change.after;const auto* old=Inspect(c.id);
+            if(!ValidResourceClaim(c) || !ids.insert(c.id).second ||
+                change.expectedRevision>=std::numeric_limits<uint64_t>::max()-1 ||
+                c.revision!=change.expectedRevision+1)return ClaimInstall::Invalid;
+            for(const auto& row:pending)for(const auto& held:row.second.changes)
+                if(held.after.id==c.id)return ClaimInstall::Stale;
+            if(!change.expectedRevision) {
+                if(old || receiver || c.state!="held" || c.actor!=attachment.actor || c.itemGuid!=attachment.itemGuid ||
+                    c.itemEntry!=attachment.itemEntry || c.quantity!=attachment.quantity || c.copper ||
+                    c.location!="mail" || c.nativeReference!=attachment.nativeReference)return ClaimInstall::Invalid;
+                receiver=&c;
+            } else {
+                if(!old || old->revision!=change.expectedRevision)return ClaimInstall::Stale;
+                auto terminal=*old;++terminal.revision;terminal.state="consumed";
+                if(old->state!="held" || old->nativeReference || !SameResourceClaim(c,terminal))return ClaimInstall::Invalid;
+                if(old->location=="bags" && !old->copper && !source)source=old;
+                else if(old->location=="money" && old->copper && !postage)postage=old;
+                else return ClaimInstall::Invalid;
+            }
+        }
+        if(!source || !postage || !receiver || source->actor!=postage->actor || source->task!=postage->task ||
+            source->actor==receiver->actor || source->task==receiver->task || source->itemGuid!=receiver->itemGuid ||
+            source->itemEntry!=receiver->itemEntry || source->quantity!=receiver->quantity ||
+            protection.ProtectedItem(source->actor,source->itemGuid,source->itemEntry)!=source->quantity ||
+            Lookup(protection.uncertainEntries,std::make_pair(receiver->actor,receiver->itemEntry)))return ClaimInstall::Invalid;
+        PendingReservation hold;hold.mailedHandoff=true;hold.changes=changes;hold.balances={attachment};
+        // The old exact GUID remains protected, for ANY actor. This pending
+        // receipt locks all three claim identities; CommitReservation replaces
+        // them atomically, publishing only the final one-owner projection.
+        pending.emplace(receipt,std::move(hold));++protection.revision;publisher.Publish(protection);
+        return ClaimInstall::Installed;
+    }
     ClaimInstall ResourceClaimBook::ReservePendingImpl(const std::string& receipt,
         const std::vector<ClaimReceiptChange>& changes,const std::vector<NativeResourceBalance>& balances,bool transferred) {
         if (!protection.ready) return ClaimInstall::NotReady;
@@ -201,7 +254,7 @@ namespace LivingActivity {
         const auto existing = pending.find(receipt);
         if (existing != pending.end()) {
             const auto& old = existing->second;
-            if (old.transferred!=transferred || old.changes.size() != changes.size() || old.balances.size() != balances.size()) return ClaimInstall::Invalid;
+            if (old.mailedHandoff || old.transferred!=transferred || old.changes.size() != changes.size() || old.balances.size() != balances.size()) return ClaimInstall::Invalid;
             for (size_t i=0;i<changes.size();++i) if (old.changes[i].expectedRevision != changes[i].expectedRevision ||
                 !SameResourceClaim(old.changes[i].after,changes[i].after)) return ClaimInstall::Invalid;
             for (size_t i=0;i<balances.size();++i) {

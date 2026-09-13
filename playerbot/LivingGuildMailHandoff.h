@@ -1,0 +1,38 @@
+#pragma once
+#include "LivingGuildDelivery.h"
+#include "LivingActivityClaimConsumption.h"
+
+namespace LivingActivity {
+// One exact whole-stack parcel and native postage, quoted before sending.
+// This is neither an auction gain nor a same-actor bank/mail transfer.
+struct GuildMailQuote {
+    GuildDeliveryJob job;
+    uint32_t sender=0,receiver=0,item=0,moneyBefore=0,postage=0,delay=0;
+    uint32_t bagBefore=0,totalBefore=0;
+    uint16_t position=0;
+    uint64_t mailbox=0;
+};
+bool ValidGuildMailQuote(const GuildMailQuote&);
+std::string EncodeGuildMailQuote(const GuildMailQuote&);
+bool DecodeGuildMailQuote(const std::string&,GuildMailQuote&);
+bool ExactGuildMailConsumption(const Task&,const GuildMailQuote&,const std::vector<ClaimConsumption>&);
+bool VerifyGuildMailAttachment(const GuildMailQuote&,const NativeResourceBalance&);
+GuildDeliveryJob GuildMailRecipientJob(const GuildMailQuote&,uint32_t nativeMail);
+struct GuildMailHandoff {
+    WritePlan journal;
+    std::vector<ClaimReceiptChange> changes;
+    ResourceClaim recipientClaim;
+    Task recipient;
+};
+// Caller supplies the deterministic source ID and the recipient's fresh native
+// context. A single retained transaction saves the send outcome, both task
+// legs and their claims. No source claim is released before that receipt.
+GuildMailHandoff GuildMailHandoffWrite(const Task& sender,uint64_t expected,
+    const OperationResult&,const std::string& receipt,const std::string& nativeAfter,
+    const GuildMailQuote&,const std::vector<ClaimConsumption>&,
+    const NativeResourceBalance& attachment,const Task& recipient,const std::string& recipientReceipt);
+// Exact native mail, possession, wallet, goal and delivery proof. Also used by
+// database fault tests; a plausible after-state JSON alone is never sufficient.
+std::string GuildMailNativeProof(const GuildMailQuote&,const Task& outcome,
+    const NativeResourceBalance& attachment,uint64_t deliveredAt,uint64_t expiresAt);
+}

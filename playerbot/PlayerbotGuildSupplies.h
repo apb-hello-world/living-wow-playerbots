@@ -5,6 +5,7 @@
 #include <string>
 #include "LivingLegacyResourceView.h"
 #include "LivingGuildDeposit.h"
+#include "LivingGuildMailHandoff.h"
 class Item;
 class Player;
 // Single world-thread executor. Native transaction hooks persist delivery proof.
@@ -25,11 +26,14 @@ public:
     void RecordCollected(uint32_t receiver,uint32_t mail,uint32_t item,uint32_t count);
     void RecordMoneyDeposit(uint32_t guild,uint32_t actor,uint32_t copper);
     bool ReadManagedDeposit(const LivingActivity::Task&,LivingActivity::GuildDepositQuote&,std::string&) const;
+    bool ReadManagedCarry(const LivingActivity::Task&,LivingActivity::GuildDepositQuote&,std::string&) const;
     bool ReadManagedMail(const LivingActivity::Task&,LivingActivity::ResourceClaim&,std::string&) const;
     bool ReadDeliveryJob(uint64_t delivery,uint32_t actor,LivingActivity::GuildDeliveryJob&,std::string&) const;
     bool AllowsManagedClaim(const LivingActivity::ResourceClaim&) const;
     bool BeginManagedDeposit(const LivingActivity::GuildDepositQuote&);
     void EndManagedDeposit();
+    bool BeginManagedMail(const LivingActivity::GuildMailQuote&);
+    uint32_t EndManagedMail();
 private:
     PlayerbotGuildSupplies();
     ~PlayerbotGuildSupplies();

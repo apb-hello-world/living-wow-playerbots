@@ -5,6 +5,51 @@
 #include "LivingPersonalResourceSettlement.h"
 namespace LivingActivity {
 struct GuildDeliverySettlement {Task task;WritePlan plan;std::vector<ClaimReceiptChange> claims;};
+inline bool PrepareGuildMailSenderSettlement(const Task& saved,const WorldContext& current,
+    const UnsettledClaimBatch& claims,uint64_t now,const std::string& receipt,
+    GuildDeliverySettlement& result,std::string& blocker,const std::vector<NativeResourceBalance>& balances={}) {
+    result={};GuildDeliveryJob job;
+    if(!IsManagedGuildDelivery(saved) || !ValidateGuildDeliveryTask(saved,blocker) ||
+        !DecodeGuildDeliveryJob(saved.checkpoint.data,job,blocker) || job.money ||
+        (saved.phase!=Phase::Verifying && saved.phase!=Phase::Reconciling) || saved.checkpoint.step!="guild_mail_send" ||
+        !claims.complete || !claims.bookRevision || current.actor!=saved.actor || !current.actorGeneration ||
+        !current.mapGeneration || !IsUuid(current.boot) || now<saved.updatedAtMs) {
+        blocker="guild_mail_handoff_settlement_context_invalid";return false;
+    }
+    for(const auto& c:claims.claims)if(!job.incomingMail || c.location!="bank" || c.state!="held" ||
+        c.copper || c.nativeReference || c.itemEntry==job.entry) {
+        blocker="guild_mail_handoff_unsettled_resources";return false;
+    }
+    PersonalResourceSettlement resources;
+    if(!PreparePersonalResourceSettlement(saved,claims,balances,resources,blocker,"guild_mail_handoff_"))return false;
+    result.task=saved;auto& next=result.task;++next.revision;next.phase=Phase::Completed;next.context=current;next.updatedAtMs=now;
+    next.checkpoint.step="guild_mail_handed_off";next.checkpoint.blocker.clear();next.retryAtMs=0;next.checkpoint.lastProgressAtMs=now;
+    result.plan=Detail::TaskTransitionWrite(next,saved.revision,receipt,"guild_parcel_handed_off",resources.fingerprint);
+    // This completes ONE sender/courier leg, never the supply goal. Its exact
+    // native send receipt and durable receiver obligation survive later mail
+    // collection, forwarding, cancellation and restart; current bag totals do
+    // not authorize another send or confer bank contribution credit.
+    result.plan.statements.front()+=" AND checkpoint="+SqlValue(saved.checkpoint.data)+
+        " AND NOT EXISTS(SELECT 1 FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
+        " WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))"
+        " AND (SELECT COUNT(*) FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
+        " AND o.kind='guild_mail_send' AND o.state='verified')=1"
+        " AND EXISTS(SELECT 1 FROM living_activity_operation o JOIN living_activity_task receiver ON receiver.source='guild_delivery'"
+        " AND receiver.source_key=CONCAT("+SqlValue(std::to_string(job.delivery)+":")+","
+        "JSON_UNQUOTE(JSON_EXTRACT(o.before_state,'$.native.native.receiver')),':',"
+        "JSON_UNQUOTE(JSON_EXTRACT(o.after_state,'$.native.result.mail')))"
+        " WHERE o.task_id=living_activity_task.task_id AND o.kind='guild_mail_send' AND o.state='verified'"
+        " AND o.evidence_code='native_guild_parcel_postage_and_handoff_observed'"
+        " AND JSON_COMPACT(JSON_EXTRACT(o.before_state,'$.native.native.job'))="+SqlValue(EncodeGuildDeliveryJob(job))+
+        " AND JSON_EXTRACT(o.before_state,'$.native.native.sender')=living_activity_task.actor_guid"
+        " AND receiver.actor_guid=JSON_EXTRACT(o.before_state,'$.native.native.receiver')"
+        " AND receiver.kind='guild_delivery' AND receiver.accepted=1 AND receiver.root_task_id=receiver.task_id"
+        " AND JSON_EXTRACT(receiver.checkpoint,'$.donor')="+std::to_string(job.donor)+
+        " AND JSON_EXTRACT(receiver.checkpoint,'$.entry')="+std::to_string(job.entry)+
+        " AND JSON_EXTRACT(receiver.checkpoint,'$.quantity')="+std::to_string(job.quantity)+')'+resources.guards;
+    AppendPersonalResourceSettlement(result.plan,resources,claims,now,receipt);
+    result.claims=std::move(resources.claims);blocker.clear();return true;
+}
 inline bool PrepareGuildDeliverySettlement(const Task& saved,const WorldContext& current,
     const UnsettledClaimBatch& claims,uint64_t now,const std::string& receipt,
     GuildDeliverySettlement& result,std::string& blocker,const std::vector<NativeResourceBalance>& balances={}) {

@@ -205,7 +205,7 @@ std::string NativeMailCollection::PersistedNativeProof(Player& actor,const Opera
             " AND d.carrier_guid="+std::to_string(quote.actor)+" AND d.mail_id="+std::to_string(job.incomingMail)+
             " AND d.item_guid="+std::to_string(quote.guid)+" AND d.item_entry="+std::to_string(job.entry)+
             " AND d.quantity="+std::to_string(job.quantity)+" AND d.deposited_quantity=0 AND d.phase='carried'"
-            " AND m.sender=d.donor_guid AND m.receiver=d.carrier_guid)";
+            " AND m.sender="+std::to_string(GuildDeliveryMailSender(job))+" AND m.receiver=d.carrier_guid)";
     }
     return proof;
 }

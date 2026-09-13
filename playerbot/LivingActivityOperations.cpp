@@ -1,5 +1,6 @@
 #include "LivingActivityOperations.h"
 #include "LivingActivityTransfer.h"
+#include "LivingGuildMailHandoff.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <tuple>
@@ -15,6 +16,15 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(request.kind=="guild_mail_send") {
+                GuildMailQuote quote;
+                if(!DecodeGuildMailQuote(request.beforeState,quote) ||
+                    !ExactGuildMailConsumption(request.transition.task,quote,request.consumption) ||
+                    request.effects!=(Mask(Effect::Inventory)|Mask(Effect::Money)|Mask(Effect::Guild)) ||
+                    request.persistence!=NativePersistence::Inventory || !request.mailGain.Empty() ||
+                    !request.itemGain.Empty() || !request.itemTransfer.id.empty())
+                    throw std::invalid_argument("Exact guild parcel and postage contract required");
+            }
             if(!request.mailGain.Empty() && (!ValidMailGainSpec(request.mailGain) ||
                 request.kind!="auction_purchase" || !request.itemGain.Empty() || !request.itemTransfer.id.empty() ||
                 request.effects!=(Mask(Effect::Inventory)|Mask(Effect::Money)) ||

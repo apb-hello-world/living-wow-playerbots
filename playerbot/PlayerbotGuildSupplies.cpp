@@ -2,6 +2,7 @@
 #include "PlayerbotGuildSupplies.h"
 #include "LivingServiceExecution.h"
 #include "LivingActivityCoordinator.h"
+#include "LivingActivityScope.h"
 #include "GuildSupplyPolicy.h"
 #include "GuildGovernancePolicy.h"
 #include "PlayerbotGuildGovernance.h"
@@ -102,7 +103,7 @@ uint32 DonationAllowance(Player* p,uint32 now) {
 }
 struct Delivery {
     LivingActivity::ActivityLease lease;
-    uint64 id=0;uint32 guild=0,donor=0,carrier=0,item=0,entry=0,quantity=0,deposited=0,mail=0;
+    uint64 id=0;uint32 guild=0,donor=0,carrier=0,item=0,entry=0,quantity=0,deposited=0,mail=0,mailSender=0;
     std::string goal,phase,blocker;
     uint32 retry=0,active=0,last=0,nextMove=0,progress=0,attempts=0,operations=0,prepVendor=0,prepBank=0;
     float distance=1e30f;uint32 service=0;
@@ -135,6 +136,8 @@ struct PlayerbotGuildSupplies::State {
     uint32 depositCount=0;
     bool mailRecorded=false;
     uint32 mailReceiver=0;
+    LivingActivity::GuildMailQuote managedMail;
+    uint32 managedMailId=0;
 
     void Release(Delivery& delivery) {
         const uint32 guid = delivery.lease.actor;
@@ -181,7 +184,7 @@ struct PlayerbotGuildSupplies::State {
         moneyEnabled.clear();
         auto settings=CharacterDatabase.PQuery("SELECT guild_id,money_enabled FROM guild_society_supply_execution WHERE enabled=1");
         if(settings) do {auto* f=settings->Fetch();enabled[f[0].GetUInt32()]=true;if(f[1].GetBool()) moneyEnabled.insert(f[0].GetUInt32());} while(settings->NextRow());
-        auto rows=CharacterDatabase.PQuery("SELECT delivery_id,guild_id,goal_id,donor_guid,carrier_guid,item_guid,item_entry,quantity,deposited_quantity,mail_id,phase,blocker FROM guild_society_supply_delivery WHERE phase NOT IN ('completed','cancelled','failed') ORDER BY delivery_id LIMIT 256");
+        auto rows=CharacterDatabase.PQuery("SELECT d.delivery_id,d.guild_id,d.goal_id,d.donor_guid,d.carrier_guid,d.item_guid,d.item_entry,d.quantity,d.deposited_quantity,d.mail_id,d.phase,d.blocker,COALESCE(m.sender,0) FROM guild_society_supply_delivery d LEFT JOIN mail m ON m.id=d.mail_id WHERE d.phase NOT IN ('completed','cancelled','failed') ORDER BY d.delivery_id LIMIT 256");
         std::map<uint64,Delivery> fresh;
         if(rows) do {
             Field* f=rows->Fetch();Delivery d;
@@ -193,6 +196,7 @@ struct PlayerbotGuildSupplies::State {
             d.id=f[0].GetUInt64();d.guild=f[1].GetUInt32();d.goal=f[2].GetString();d.donor=f[3].GetUInt32();d.carrier=f[4].GetUInt32();
             if(d.phase!=f[10].GetString()||d.deposited!=f[8].GetUInt32()) {d.operations=0;d.service=0;d.active=0;}
             d.item=f[5].GetUInt32();d.entry=f[6].GetUInt32();d.quantity=f[7].GetUInt32();d.deposited=f[8].GetUInt32();d.mail=f[9].GetUInt32();d.phase=f[10].GetString();d.blocker=f[11].GetString();
+            d.mailSender=f[12].GetUInt32();
             fresh[d.id]=d;
         } while(rows->NextRow());
         for(auto& old:deliveries) if(!fresh.count(old.first)) {Release(old.second);InvalidateItems(Online(old.second.carrier));}
@@ -364,10 +368,11 @@ bool PlayerbotGuildSupplies::ReadDeliveryJob(uint64_t id,uint32_t actor,LivingAc
         blocker="guild_delivery_native_item_leg_required";return false;
     }
     job={d.id,d.guild,d.donor,d.entry,d.quantity,d.mail,d.goal,false};
+    job.mailSender=d.mailSender && d.mailSender!=d.donor?d.mailSender:0;
     if(!LivingActivity::ValidGuildDeliveryJob(job)){blocker="guild_delivery_native_identity_invalid";job={};return false;}
     blocker.clear();return true;
 }
-bool PlayerbotGuildSupplies::ReadManagedDeposit(const LivingActivity::Task& task,LivingActivity::GuildDepositQuote& q,
+bool PlayerbotGuildSupplies::ReadManagedCarry(const LivingActivity::Task& task,LivingActivity::GuildDepositQuote& q,
     std::string& blocker) const {
     using namespace LivingActivity;
     q={};auto reject=[&](const char* why){blocker=why;return false;};
@@ -386,7 +391,6 @@ bool PlayerbotGuildSupplies::ReadManagedDeposit(const LivingActivity::Task& task
     if(!guild || enabled==state_->enabled.end() || !enabled->second || !sGuildGovernance.Allows(guild,"supplies"))
         return reject("guild_delivery_automation_paused");
     if(!guild->GetMemberSlot(ObjectGuid(HIGHGUID_PLAYER,task.actor)))return reject("guild_delivery_member_departed");
-    if(!MayDeposit(guild,task.actor))return reject("guild_delivery_deposit_permission_revoked");
     const auto goal=state_->goals.find(d.goal);
     if(goal==state_->goals.end() || goal->second.guild!=d.guild || goal->second.money)
         return reject("guild_delivery_goal_cancelled");
@@ -398,6 +402,13 @@ bool PlayerbotGuildSupplies::ReadManagedDeposit(const LivingActivity::Task& task
         SupplyOutstanding(q.goalTarget,q.bankCount,q.goalReserved,0)));
     if(!q.amount)return reject("guild_delivery_target_already_satisfied");
     blocker.clear();return true;
+}
+bool PlayerbotGuildSupplies::ReadManagedDeposit(const LivingActivity::Task& task,LivingActivity::GuildDepositQuote& q,
+    std::string& blocker) const {
+    if(!ReadManagedCarry(task,q,blocker))return false;
+    auto* guild=sGuildMgr.GetGuildById(q.job.guild);
+    if(!guild || !MayDeposit(guild,task.actor)){blocker="guild_delivery_deposit_permission_revoked";return false;}
+    return true;
 }
 bool PlayerbotGuildSupplies::AllowsManagedClaim(const LivingActivity::ResourceClaim& claim) const {
     using namespace LivingActivity;
@@ -429,15 +440,16 @@ bool PlayerbotGuildSupplies::ReadManagedMail(const LivingActivity::Task& task,Li
     if(!sLivingActivityCoordinator.OnWorldThread() || !state_->ready || !IsManagedGuildDelivery(task) ||
         !ValidateGuildDeliveryTask(task,blocker) || !DecodeGuildDeliveryJob(task.checkpoint.data,job,blocker) ||
         !ReadDeliveryJob(job.delivery,task.actor,native,blocker))return false;
-    if(job.money || !job.incomingMail || EncodeGuildDeliveryJob(job)!=EncodeGuildDeliveryJob(native))
+    if(job.money || !job.incomingMail)
         return reject("guild_delivery_mail_identity_changed");
     const auto& d=state_->deliveries.at(job.delivery);
     if(d.phase!="mailed")return reject("guild_delivery_mail_already_collected");
+    if(EncodeGuildDeliveryJob(job)!=EncodeGuildDeliveryJob(native))return reject("guild_delivery_mail_identity_changed");
     if(d.deposited || !d.item)return reject("guild_delivery_mail_credit_requires_reconciliation");
     // Collection is personal custody of an already accepted attachment, not
     // permission to deposit. A revoked guild duty must not erase owned mail.
     auto* actor=Online(task.actor);auto* mail=actor?actor->GetMail(d.mail):nullptr;
-    if(!mail || mail->state==MAIL_STATE_DELETED || mail->sender!=d.donor ||
+    if(!mail || mail->state==MAIL_STATE_DELETED || mail->sender!=GuildDeliveryMailSender(job) ||
         mail->receiverGuid!=actor->GetObjectGuid() || mail->COD || mail->expire_time<=time(nullptr))
         return reject("guild_delivery_native_mail_changed");
     claim.task=task.id;claim.actor=task.actor;claim.itemGuid=d.item;claim.itemEntry=d.entry;
@@ -458,6 +470,21 @@ bool PlayerbotGuildSupplies::BeginManagedDeposit(const LivingActivity::GuildDepo
 void PlayerbotGuildSupplies::EndManagedDeposit() {
     state_->depositing=0;state_->depositCount=0;state_->load=0;
 }
+bool PlayerbotGuildSupplies::BeginManagedMail(const LivingActivity::GuildMailQuote& q) {
+    if(!sLivingActivityCoordinator.OnWorldThread() || !LivingActivity::ValidGuildMailQuote(q) ||
+        !LivingActivity::ExecutionScope::OwnsNativeOperation(q.sender) || !CharacterDatabase.HasOpenTransaction() ||
+        state_->depositing || state_->mailing)return false;
+    const auto found=state_->deliveries.find(q.job.delivery);if(found==state_->deliveries.end())return false;
+    const auto& d=found->second;
+    if(d.carrier!=q.sender || d.guild!=q.job.guild || d.goal!=q.job.goal || d.donor!=q.job.donor ||
+        d.entry!=q.job.entry || d.quantity!=q.job.quantity || d.deposited || d.mail!=q.job.incomingMail || d.phase!="carried")return false;
+    state_->mailing=d.id;state_->mailReceiver=q.receiver;state_->managedMail=q;
+    state_->managedMailId=0;state_->mailRecorded=false;return true;
+}
+uint32_t PlayerbotGuildSupplies::EndManagedMail() {
+    const auto id=state_->managedMailId;state_->mailing=0;state_->mailReceiver=0;
+    state_->managedMail={};state_->managedMailId=0;state_->load=0;return id;
+}
 void PlayerbotGuildSupplies::RecordMoneyDeposit(uint32 guild,uint32 actor,uint32 copper) {
     auto found=state_->deliveries.find(state_->depositing);if(found==state_->deliveries.end()) return;
     const auto& d=found->second;
@@ -468,14 +495,20 @@ void PlayerbotGuildSupplies::RecordMoneyDeposit(uint32 guild,uint32 actor,uint32
 void PlayerbotGuildSupplies::RecordMailed(uint32 sender,uint32 receiver,Item* item,uint32 mail) {
     auto found=state_->deliveries.find(state_->mailing);if(found==state_->deliveries.end()||!item) return;
     auto& d=found->second;Player* source=Online(sender);
-    if(!source||state_->mailReceiver!=receiver||d.donor!=sender||d.carrier!=sender||d.item!=item->GetGUIDLow()||d.quantity!=item->GetCount()||d.phase!="carried") return;
+    const auto& managed=state_->managedMail;
+    const bool shared=managed.sender && LivingActivity::ExecutionScope::OwnsNativeOperation(sender) &&
+        CharacterDatabase.HasOpenTransaction() && managed.sender==sender && managed.receiver==receiver &&
+        managed.job.delivery==d.id && managed.job.donor==d.donor && managed.item==item->GetGUIDLow() && !d.deposited;
+    if(!source||state_->mailReceiver!=receiver||d.carrier!=sender||d.quantity!=item->GetCount()||d.phase!="carried" ||
+        (managed.sender?!shared:(d.donor!=sender||d.item!=item->GetGUIDLow())))return;
     // Mail row, removed inventory, real postage, attachment and journal share
     // this native mail transaction (no extra synthetic mail/inventory path).
     item->DeleteFromInventoryDB();item->SetOwnerGuid(ObjectGuid(HIGHGUID_PLAYER,receiver));item->SaveToDB();
     source->SaveInventoryAndGoldToDB();
-    CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET carrier_guid=%u,mail_id=%u,phase='mailed',blocker='mail_delivery_delay',updated_at=%u WHERE delivery_id=%llu AND phase='carried'",receiver,mail,uint32(time(nullptr)),(unsigned long long)d.id);
+    CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET carrier_guid=%u,mail_id=%u,item_guid=%u,phase='mailed',blocker='mail_delivery_delay',updated_at=%u WHERE delivery_id=%llu AND phase='carried' AND carrier_guid=%u AND donor_guid=%u AND mail_id=%u AND deposited_quantity=0",receiver,mail,item->GetGUIDLow(),uint32(time(nullptr)),(unsigned long long)d.id,sender,d.donor,d.mail);
     state_->mailRecorded=true;
-    d.carrier=receiver;d.mail=mail;d.phase="mailed";d.operations=0;d.service=0;
+    d.carrier=receiver;d.mail=mail;d.mailSender=sender;d.item=item->GetGUIDLow();d.phase="mailed";d.operations=0;d.service=0;
+    if(shared)state_->managedMailId=mail;
     state_->PublishProtection();
     InvalidateItems(source);InvalidateItems(Online(receiver));
 }

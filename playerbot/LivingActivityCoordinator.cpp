@@ -28,6 +28,7 @@
 #include "LivingNativeAuctionPurchase.h"
 #include "LivingNativeVendorSale.h"
 #include "LivingNativeGuildDeposit.h"
+#include "LivingNativeGuildMail.h"
 #include "LivingGuildDeliverySettlement.h"
 #include "LivingProfessionDemand.h"
 #include "LivingTaskItemRequirements.h"
@@ -478,6 +479,7 @@ struct LivingActivityCoordinator::State {
         std::string gainReservation;
         std::vector<ClaimReceiptChange> claims;
         std::shared_ptr<NativeSaveBatch> nativeSave;
+        Task recipientTask; // Same atomic outbound-mail receipt, not another admission queue.
     };
     struct PendingOperation {
         OperationRequest request;
@@ -763,6 +765,9 @@ struct LivingActivityCoordinator::State {
                     }
                 }
                 Remember(acknowledgedWrite.task);
+                if(!acknowledgedWrite.recipientTask.id.empty()) {
+                    Remember(acknowledgedWrite.recipientTask);++transitionCount;
+                }
                 if (!acknowledgedWrite.admissionReceipt.empty())
                     admissionReceipts[acknowledgedWrite.task.id] = acknowledgedWrite.admissionReceipt;
                 else admissionReceipts.erase(acknowledgedWrite.task.id);
@@ -3006,6 +3011,8 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
         return reject(AdmissionCode::InvalidRequest,"native_item_gain_adapter_not_supported");
     if(!request.mailGain.Empty() && (!adapter.SupportsMailGain() || !ValidMailGainSpec(request.mailGain)))
         return reject(AdmissionCode::InvalidRequest,"native_mail_gain_adapter_not_supported");
+    if(request.kind=="guild_mail_send" && !adapter.SupportsGuildMailHandoff())
+        return reject(AdmissionCode::InvalidRequest,"native_guild_mail_adapter_required");
     WritePlan plan;
     try { plan = OperationRequestWrite(request); }
     catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest, "invalid_native_operation_intent"); }
@@ -3078,6 +3085,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         request.persistence != adapter.PersistencePolicy() ||
         (!request.itemGain.Empty() && !adapter.SupportsItemGain()) ||
         (!request.mailGain.Empty() && !adapter.SupportsMailGain()) ||
+        (request.kind=="guild_mail_send" && !adapter.SupportsGuildMailHandoff()) ||
         (!request.consumption.empty() && !adapter.SupportsClaimedConsumption()) ||
         (!request.itemTransfer.id.empty() && !adapter.SupportsItemTransfer()))
         return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
@@ -3102,6 +3110,9 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         return reject(AdmissionCode::Backpressure,"native_item_gain_claim_capacity");
     if(!request.mailGain.Empty() && !state->resources.CanAdmitNewClaims(1))
         return reject(AdmissionCode::Backpressure,"native_mail_gain_claim_capacity");
+    if(request.kind=="guild_mail_send" && (!state->resources.CanAdmitNewClaims(1) ||
+        state->cache.size()+state->quarantined.size()+2*state->pending.size()+1>=state->maxCache))
+        return reject(AdmissionCode::Backpressure,"guild_mail_recipient_capacity");
     auto related=adapter.RelatedActors();
     std::sort(related.begin(),related.end());related.erase(std::unique(related.begin(),related.end()),related.end());
     if(related.size()>2 || std::find(related.begin(),related.end(),0)!=related.end() ||
@@ -3109,6 +3120,8 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         return reject(AdmissionCode::InvalidRequest,"native_related_actor_scope_invalid");
     for(const auto actor:related)if(DefersNativeSave(actor))
         return reject(AdmissionCode::Backpressure,"native_related_operation_pending");
+    for(const auto actor:related)for(const auto& write:state->pending)if(write.task.actor==actor || write.recipientTask.actor==actor)
+        return reject(AdmissionCode::Backpressure,"native_related_journal_pending");
     const auto relatedGuild=adapter.RelatedGuild();
     if(relatedGuild && (!(request.effects&Mask(Effect::Guild)) || request.persistence==NativePersistence::JournalOnly))
         return reject(AdmissionCode::InvalidRequest,"native_guild_contract_invalid");
@@ -3283,7 +3296,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     Task after = saved->second; ++after.revision; after.updatedAtMs = NowMs();
     pending.uncertain = observation.state == OperationState::Reconciling;
     if(pending.uncertain && pending.relatedGuild)pending.saveBlocked=true;
-    if (pending.uncertain && (!request.itemGain.Empty() || !request.mailGain.Empty())) pending.saveBlocked=true;
+    if (pending.uncertain && (!request.itemGain.Empty() || !request.mailGain.Empty() || request.kind=="guild_mail_send")) pending.saveBlocked=true;
     if (pending.uncertain && !request.itemTransfer.id.empty()) {
         // An uncertain merge may have consumed the old GUID. Protecting that
         // GUID alone is insufficient; stop consumers until native evidence is
@@ -3307,8 +3320,28 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     const auto receipt=NewId();
     WritePlan plan; std::vector<ClaimReceiptChange> changes;
     std::string gainReservation;
+    Task recipientTask;
     try {
-        if (proof.state == OperationState::Verified && !request.itemTransfer.id.empty()) {
+        if(proof.state==OperationState::Verified && request.kind=="guild_mail_send") {
+            GuildMailQuote quote;
+            if(!DecodeGuildMailQuote(request.beforeState,quote) || !VerifyGuildMailAttachment(quote,observation.mailedItem))
+                throw std::runtime_error("guild_mail_native_handoff_missing");
+            auto* receiver=sRandomPlayerbotMgr.GetPlayerBot(quote.receiver);
+            if(!receiver || !receiver->GetPlayerbotAI())throw std::runtime_error("guild_mail_recipient_context_missing");
+            const auto job=GuildMailRecipientJob(quote,uint32_t(observation.mailedItem.nativeReference));
+            Task target;target.actor=quote.receiver;target.source="guild_delivery";target.sourceKey=GuildDeliverySourceKey(job,target.actor);
+            target.id=target.root=SourceId(target.source,target.sourceKey);target.kind=Kind::GuildDelivery;
+            target.mode=Mode::Active;target.phase=Phase::Queued;target.priority=Priority::Delivery;target.accepted=true;
+            target.createdAtMs=target.updatedAtMs=after.updatedAtMs;
+            target.context=ReadNativeContext(*receiver,state->policyRevision,state->boot);
+            target.checkpoint.data=EncodeGuildDeliveryJob(job);target.checkpoint.step="guild_mail_prepare";
+            auto handoff=GuildMailHandoffWrite(after,saved->second.revision,proof,receipt,observation.afterState,
+                quote,request.consumption,observation.mailedItem,target,SourceId("guild_mail_handoff",id));
+            const auto reserved=state->resources.ReserveMailedHandoff(receipt,handoff.changes,observation.mailedItem);
+            if(reserved!=ClaimInstall::Installed && reserved!=ClaimInstall::Duplicate)
+                throw std::runtime_error("guild_mail_protection_handoff_failed");
+            gainReservation=receipt;plan=std::move(handoff.journal);changes=std::move(handoff.changes);recipientTask=std::move(target);
+        } else if (proof.state == OperationState::Verified && !request.itemTransfer.id.empty()) {
             const auto& target=observation.transferredItem;
             if (!ValidNativeResourceBalance(target) || target.actor!=intended.actor ||
                 target.location!=ItemTransferDestination(request.itemTransfer) ||
@@ -3359,7 +3392,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     } catch (const std::exception&) {
         // Never replay a native effect because its consumed-claim projection
         // could not be produced. Preserve its actual after-state for recovery.
-        if (!request.itemTransfer.id.empty()) {
+        if (!request.itemTransfer.id.empty() || request.kind=="guild_mail_send") {
             state->resources.BlockProjection();state->claimRestoreFailed=true;
             state->claimBlocker="native_transfer_claim_requires_reconciliation";pending.saveBlocked=true;
         }
@@ -3372,6 +3405,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     State::Pending write{std::move(after),std::move(plan),"",id,true};
     write.claims=std::move(changes);
     write.gainReservation=gainReservation;
+    write.recipientTask=std::move(recipientTask);
     if (nativeTransactionOpen) {
         try {
             if (!CharacterDatabase.HasOpenTransaction()) throw std::runtime_error("native_transaction_escaped");
@@ -3388,6 +3422,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
             proof.evidence="native_save_capture_requires_reconciliation";
             write.task.phase=Phase::Reconciling; write.task.checkpoint.blocker=proof.evidence;
             write.claims.clear();
+            write.recipientTask={};
             // A failed capture cannot acknowledge acquired claims separately.
             // Their pending holds remain until native domain reconciliation.
             write.gainReservation.clear();
