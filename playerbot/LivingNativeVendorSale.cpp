@@ -137,7 +137,8 @@ bool DecodeNativeSaleQuote(const std::string& value,NativeSaleQuote& q) {
 bool PlanNativeCapacitySale(Player& actor,const Task& task,NativeSaleQuote& q,ResourceClaim& held,std::string& blocker) {
     q={};held={};auto reject=[&](const char* why){blocker=why;return false;};
     if (!sLivingActivityCoordinator.OnWorldThread() || !SafeActor(actor) || actor.GetGUIDLow()!=task.actor ||
-        (!IsProfessionJob(task) && !IsRecipeLearningTask(task)) || task.mode!=Mode::Active || !task.accepted || task.root!=task.id)
+        (!IsProfessionJob(task) && !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task)) ||
+        task.mode!=Mode::Active || !task.accepted || task.root!=task.id)
         return reject("capacity_safety_or_task_pause");
     UnsettledClaimBatch claims;ItemGainSpec need;
     if(!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,blocker) ||
