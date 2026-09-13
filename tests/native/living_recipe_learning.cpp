@@ -63,6 +63,7 @@ int main() {
     guild.checkpoint.data=EncodeGuildDeliveryJob(delivery);guild.checkpoint.step="profession_service_mail";
     assert(ReadTaskItemRequirements(guild,items,blocker) && items==std::vector<ProfessionReagent>({{2770,4}}));
     assert(!IsProfessionJob(guild) && !IsRecipeLearningTask(guild));
+    assert(ValidateProfessionTask(guild,blocker) && ValidateGuildDeliveryTask(guild,blocker));
     auto badGuild=guild;badGuild.sourceKey="unrelated";assert(!ReadTaskItemRequirements(badGuild,items,blocker));
     badGuild=guild;badGuild.accepted=false;assert(!ReadTaskItemRequirements(badGuild,items,blocker));
     wrongDemand=service;wrongDemand.source="guild_supply";wrongDemand.checkpoint.step="guild_supply";

@@ -1,4 +1,5 @@
 #include "LivingProfessionJob.h"
+#include "LivingGuildDelivery.h"
 #include "LivingRecipeLearning.h"
 #include "LivingProfessionTools.h"
 #include <algorithm>
@@ -132,9 +133,10 @@ namespace LivingActivity {
         } catch (const std::exception&) { return false; }
     }
     bool IsProfessionJob(const Task& task) {
-        // Service step names are backward compatible and shared by learning.
+        // Service step names are backward compatible and shared by learning
+        // and guild deliveries; a route label never replaces the typed owner.
         // The typed root retains its identity while using the same adapter.
-        return !IsRecipeLearningTask(task) &&
+        return !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task) &&
             (task.source == "profession_job" || task.checkpoint.step.compare(0, 11, "profession_") == 0);
     }
     bool MatchNativeProfessionRecipe(const ProfessionJob& job, const NativeProfessionRecipe& native,
