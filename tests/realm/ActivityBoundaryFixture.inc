@@ -39,10 +39,14 @@ namespace {
 #include "ActivityToolFixture.inc"
 #include "ActivityGuildDepositFixture.inc"
 #include "ActivityGuildMailFixture.inc"
+#include "ActivityGuildAdmissionFixture.inc"
 
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(requested && std::string(requested)=="activity-guild-admission-v1") {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedGuildAdmissionFixture(*state);return;
+    }
     if(requested && (std::string(requested)=="activity-guild-mail-v1" || std::string(requested)=="activity-guild-mail-capacity-v1" ||
         std::string(requested)=="activity-guild-mail-forward-v1")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedGuildMailFixture(*state,std::string(requested)=="activity-guild-mail-capacity-v1",

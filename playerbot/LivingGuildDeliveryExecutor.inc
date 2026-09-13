@@ -1,5 +1,11 @@
 // Compiled with LivingActivityCoordinator.cpp: uses its existing bounded due
 // queue, persistence queue and private native-operation state, not a new loop.
+bool LivingActivityCoordinator::GuildDeliveryAdmissionsEnabled() const {
+    // Finite isolated native fixtures may enable effect enforcement in Observe;
+    // that must never admit every ordinary legacy delivery into the new path.
+    return OnWorldThread() && state->effective==Mode::Active && state->schemaReady &&
+        state->loaded && state->incoming.empty() && state->resources.Protection().ready && EffectEnforcementEnabled();
+}
 bool LivingActivityCoordinator::OwnsGuildDelivery(uint32_t actor,const GuildDeliveryJob& job) const {
     if(!OnWorldThread() || !ValidGuildDeliveryJob(job) || !actor || (!job.incomingMail && actor!=job.donor))return false;
     const auto id=SourceId("guild_delivery",GuildDeliverySourceKey(job,actor));
@@ -31,19 +37,24 @@ AdmissionResult LivingActivityCoordinator::AdmitGuildDelivery(uint32_t actor,con
         return reject(pending.task.checkpoint.data==EncodeGuildDeliveryJob(job)?AdmissionCode::Pending:AdmissionCode::ConflictingWrite,
             "guild_delivery_admission_pending");
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
-    if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld())return reject(AdmissionCode::StaleContext,"guild_delivery_actor_unavailable");
+    if(!bot || !bot->GetPlayerbotAI() || !bot->GetSession() || bot->isRealPlayer() ||
+        !sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId()) || !bot->IsInWorld())
+        return reject(AdmissionCode::StaleContext,"guild_delivery_actor_unavailable");
     TaskRequest request;auto& task=request.task;
     task.id=task.root=result.task;task.source="guild_delivery";task.sourceKey=GuildDeliverySourceKey(job,actor);
     task.actor=actor;task.kind=Kind::GuildDelivery;task.mode=Mode::Active;task.phase=Phase::Queued;
     task.priority=Priority::Delivery;task.accepted=true;task.createdAtMs=task.updatedAtMs=NowMs();
     task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
     task.checkpoint.data=EncodeGuildDeliveryJob(job);task.checkpoint.step="guild_delivery_prepare";
-    GuildDepositQuote current;std::string why;
-    if(job.incomingMail) {
-        ResourceClaim mail;
-        if(!sGuildSupplies.ReadManagedMail(task,mail,why))return reject(AdmissionCode::ReconciliationRequired,why);
+    GuildDepositQuote current;ResourceClaim mail;std::string why;
+    const bool collect=job.incomingMail && sGuildSupplies.ReadManagedMail(task,mail,why);
+    if(job.incomingMail && !collect && why!="guild_delivery_mail_already_collected")
+        return reject(AdmissionCode::ReconciliationRequired,why);
+    if(collect) {
         task.checkpoint.step="guild_mail_prepare";
     } else {
+        // An original native envelope remains referenced after collection.
+        // Import its actual carried state, never try to collect it twice.
         if(!sGuildSupplies.ReadManagedCarry(task,current,why))return reject(AdmissionCode::NotReady,why);
         if(current.deposited)return reject(AdmissionCode::ReconciliationRequired,"guild_delivery_prior_credit_requires_import");
     }

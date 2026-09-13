@@ -562,12 +562,28 @@ void PlayerbotGuildSupplies::Update() {
             // Releasing only the OLD lease cannot clear the new owner's route.
             s.Release(d);continue;
         }
-#ifdef LIVING_ISOLATED_NATIVE_TESTS
-        if(sLivingActivityCoordinator.IsolatedGameplayActor(d.carrier))continue;
-#endif
         Player* p=Online(d.carrier);Guild* guild=sGuildMgr.GetGuildById(d.guild);
         if(!guild||!s.enabled[d.guild]||!sGuildGovernance.Allows(guild,"supplies")) {s.Block(d,"supply_automation_paused",now);continue;}
         if(!guild->GetMemberSlot(ObjectGuid(HIGHGUID_PLAYER,d.carrier))) {s.Block(d,"recipient_no_longer_member",now);continue;}
+        if(d.entry && sLivingActivityCoordinator.GuildDeliveryAdmissionsEnabled()) {
+            // This existing eight-delivery/two-second producer proposes work;
+            // only the shared due queue executes it. Do not also run the old
+            // mail/bank route while a transition or admission is pending.
+            if(now<d.retry)continue;
+            if(!Bot(p) || !p->IsInWorld()) {s.Block(d,"carrier_offline_or_loading",now);d.retry=now+15;continue;}
+            LivingActivity::GuildDeliveryJob native;std::string why;
+            if(!ReadDeliveryJob(d.id,d.carrier,native,why)) {
+                s.Block(d,why,now);d.retry=now+15;continue;
+            }
+            const auto admission=sLivingActivityCoordinator.AdmitGuildDelivery(d.carrier,native);
+            const bool queued=admission.code==LivingActivity::AdmissionCode::Saved || admission.code==LivingActivity::AdmissionCode::Pending;
+            s.Block(d,queued?"managed_delivery_queued":admission.blocker,now);
+            if(!queued)d.retry=now+15;
+            continue;
+        }
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+        if(sLivingActivityCoordinator.IsolatedGameplayActor(d.carrier))continue;
+#endif
         const char* safety=SafetyBlocker(p);
         if(*safety) {
             d.last=0;
