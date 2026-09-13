@@ -17,6 +17,11 @@ struct GuildDeliveryJob {
     std::string goal;
     bool money=false;
 };
+inline Phase GuildDeliveryPreparationPhase(Phase phase) {
+    // A finished wait is not proof that its saved native context is current.
+    return phase==Phase::Paused || phase==Phase::Deferred || phase==Phase::WaitingExternal
+        ? Phase::Reconciling : Phase::Preparing;
+}
 inline bool ValidGuildDeliveryJob(const GuildDeliveryJob& j) {
     return j.delivery && j.guild && j.donor && j.quantity && livingguild::Id(j.goal) &&
         (j.money ? !j.entry && !j.incomingMail && j.quantity<=uint32_t(INT32_MAX) : j.entry!=0);

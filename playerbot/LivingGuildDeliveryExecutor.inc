@@ -149,7 +149,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(saved->retryAtMs>NowMs())return stop("guild_delivery_retry_wait");
     if(!(saved->context==current))return advance(Phase::Reconciling);
     if(saved->phase==Phase::Queued || saved->phase==Phase::Reconciling || saved->phase==Phase::Paused ||
-        saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal)return advance(Phase::Preparing);
+        saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal)return advance(GuildDeliveryPreparationPhase(saved->phase));
     ServiceDestination preparation;
     if(ParseServiceStep(saved->checkpoint.step,preparation) && preparation!=ServiceDestination::GuildBank)
         return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.entry,job.quantity}).blocker);

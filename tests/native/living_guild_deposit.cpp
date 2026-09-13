@@ -54,6 +54,15 @@ static void Settlement() {
 }
 int main() {
     Settlement();
+    for(const auto phase:{Phase::Queued,Phase::Reconciling,Phase::Paused,Phase::Deferred,Phase::WaitingExternal}) {
+        Task paused;paused.phase=phase;paused.mode=Mode::Active;
+        const auto next=GuildDeliveryPreparationPhase(phase);
+        assert(CanTransition(paused,next));
+        if(phase==Phase::Paused || phase==Phase::Deferred || phase==Phase::WaitingExternal) {
+            assert(next==Phase::Reconciling && !CanTransition(paused,Phase::Preparing));
+            paused.phase=next;assert(CanTransition(paused,GuildDeliveryPreparationPhase(next)));
+        } else assert(next==Phase::Preparing);
+    }
     assert(GuildDepositRetryAt(0,1000)==0);
     assert(GuildDepositRetryAt(1,1000)==301000);
     assert(GuildDepositRetryAt(2,1000)==1801000);

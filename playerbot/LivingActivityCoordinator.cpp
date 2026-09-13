@@ -1980,6 +1980,12 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if (saved->phase!=Phase::Preparing) return stop("profession_mail_preparation_required");
         UnsettledClaimBatch batch;
         if (!ReadTaskClaims(actor,id,saved->revision,batch,blocker)) return stop(blocker);
+        // Capacity is a prerequisite of this accepted collection, not another
+        // errand. In particular, after arriving at a vendor/bank we must finish
+        // making space before the mailbox intent can replace that route.
+        ItemGainSpec capacity;
+        if(NativeCapacityNeed(*bot,*saved,batch,capacity,blocker))return prepareCapacity();
+        if(blocker!="capacity_already_available")return stop(blocker);
         for (const auto& claim : batch.claims) if (ValidMailTransfer(claim) && claim.itemEntry==need.entry) {
             if(!bot->IsStopped()) return beginService(ServiceDestination::Mailbox);
             NativeMailQuote quote;
