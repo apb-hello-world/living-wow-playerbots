@@ -3032,7 +3032,7 @@ AdmissionResult LivingActivityCoordinator::AdmitGuildProcurement(uint32_t actor,
     if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || !bot->GetMap() || NativeSafety(bot) ||
         bot->GetMap()->IsDungeon() || bot->GetTradeData() || LivingServiceExecution::Busy(bot))
         return reject(AdmissionCode::StaleContext,"guild_procurement_actor_not_safely_available");
-    const auto party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+    const std::string party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
     if(!party.empty())return reject(AdmissionCode::NotReady,party);
     TaskRequest request;auto& task=request.task;
     task.source="guild_procurement";task.sourceKey=GuildProcurementSourceKey(job);task.id=task.root=SourceId(task.source,task.sourceKey);
