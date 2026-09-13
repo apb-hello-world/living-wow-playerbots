@@ -39,7 +39,7 @@ void RunIsolatedServicesObservation(FixtureState& state) {
                 route.put("alive",bot->IsAlive());route.put("combat",bot->IsInCombat());
                 route.put("transport",bool(bot->GetTransport()));route.put("taxi",bot->IsTaxiFlying());
                 auto* context=bot->GetPlayerbotAI()->GetAiObjectContext();
-                auto* target=context->GetValue<ai::TravelTarget*>("travel target")->Get();
+                auto* target=context->template GetValue<ai::TravelTarget*>("travel target")->Get();
                 if(target && target->GetDestination() && target->GetPosition()) {
                     const auto* position=target->GetPosition();
                     route.put("entry",target->GetEntry());route.put("purpose",uint32(target->GetDestination()->GetPurpose()));
@@ -49,7 +49,7 @@ void RunIsolatedServicesObservation(FixtureState& state) {
                     route.put("distance",target->Distance(bot));
                     route.put("owned",sPlayerbotOrganicEconomy.HasOwnedServiceRoute(task.actor,uint32(target->GetDestination()->GetPurpose())));
                 }
-                const auto& path=context->GetValue<ai::LastMovement&>("last movement")->Get().lastPath.getPath();
+                const auto& path=context->template GetValue<ai::LastMovement&>("last movement")->Get().lastPath.getPath();
                 route.put("path_nodes",path.size());
                 if(!path.empty()) {
                     route.put("next_leg_type",uint32(path.front().type));route.put("next_leg_entry",path.front().entry);
