@@ -51,6 +51,7 @@
 #include "LivingGuildProcurementHandoff.h"
 #include "LivingNativeGuildProcurement.h"
 #include "LivingGuildProcurementRecovery.h"
+#include "LivingGuildProcurementProjection.h"
 #include "PlayerbotOrganicEconomy.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -3012,6 +3013,26 @@ bool LivingActivityCoordinator::HasGuildSupplyCommitment(uint32_t actor) const {
     if(indexed!=state->cachedByActor.end())for(const auto& id:indexed->second)if(holds(state->cache.at(id)))return true;
     for(const auto& p:state->pending)if(holds(p.task) || holds(p.recipientTask))return true;
     return false;
+}
+GuildProcurementStatus LivingActivityCoordinator::ReadGuildProcurementStatus(uint32_t guild,uint32_t entry,const std::string& goal) const {
+    GuildProcurementStatus result;
+    if(!OnWorldThread() || !ProfessionStoreReady() || !guild || !entry || !livingguild::Id(goal) ||
+        state->cache.size()>20000)return result;
+    GuildProcurementProjection projection(guild,entry,goal);
+    for(const auto& row:state->cache) {
+        GuildProcurementJob job;std::string why;
+        if(!projection.Matches(row.second,job,why)) {
+            if(!why.empty()){result.blocker=why;return result;}
+            continue;
+        }
+        UnsettledClaimBatch claims;
+        if(!ReadTaskClaims(row.second.actor,row.first,row.second.revision,claims,why)) {result.blocker=why;return result;}
+        const auto blocked=state->executionBlockers.find(row.first);
+        if(!projection.Add(row.second,claims,blocked==state->executionBlockers.end()?"":blocked->second,why)) {
+            result.blocker=why;return result;
+        }
+    }
+    return projection.Finish();
 }
 AdmissionResult LivingActivityCoordinator::AdmitGuildProcurement(uint32_t actor,uint32_t guild,const std::string& goal,uint32_t entry) {
     AdmissionResult result;NativeGuildProcurementSource source;

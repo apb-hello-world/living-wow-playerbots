@@ -17,6 +17,7 @@
 #include <optional>
 class PlayerbotAI;
 class WorldPacket;
+namespace LivingActivity { struct GuildProcurementStatus; }
 
 class LivingActivityCoordinator {
 public:
@@ -111,6 +112,9 @@ public:
     // grants neither execution ownership nor permission to purchase anything.
     bool ReadGuildProcurementAvailability(const LivingActivity::Task&,uint32_t&,std::string&);
     bool ValidateGuildProcurementDemand(const LivingActivity::Task&,std::string&);
+    // Acknowledged in-memory work/claim projection, not physical delivery or
+    // mutation authority. Unknown/incomplete state is never reported as zero.
+    LivingActivity::GuildProcurementStatus ReadGuildProcurementStatus(uint32_t guild,uint32_t entry,const std::string& goal) const;
     ProfessionProgress AdvanceGuildProcurement(uint32_t actor,const std::string& task);
     ProfessionProgress HandoffGuildProcurement(uint32_t actor,const std::string& task);
     LivingActivity::AdmissionResult AdmitGuildDelivery(uint32_t actor,const LivingActivity::GuildDeliveryJob& job);

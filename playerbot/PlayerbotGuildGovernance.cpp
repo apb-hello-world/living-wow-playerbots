@@ -1,6 +1,8 @@
 #include "playerbot/playerbot.h"
 #include "PlayerbotGuildGovernance.h"
 #include "PlayerbotGuildSupplies.h"
+#include "LivingActivityCoordinator.h"
+#include "LivingGuildProcurementProjection.h"
 #include "PlayerbotGuildEventExecutor.h"
 #include "GuildEventPolicy.h"
 #include "Guilds/Guild.h"
@@ -297,6 +299,15 @@ void PlayerbotGuildGovernance::Snapshot(Player* actor,Guild* guild,Policy& p,con
             Send(actor,"GOALDELIVERY\t"+op+"\t"+f[0].GetString()+"\t"+std::to_string(transit)+"\t"+Wire(deliveryStatus,48));
             uint32 held=0,mailed=0,collected=0;sGuildSupplies.DeliveryCounts(id,f[0].GetString(),held,mailed,collected);
             Send(actor,"GOALFLOW\t"+op+"\t"+f[0].GetString()+"\t"+std::to_string(held)+"\t"+std::to_string(mailed)+"\t"+std::to_string(collected));
+            if(!money) {
+                const auto work=sLivingActivityCoordinator.ReadGuildProcurementStatus(id,f[1].GetUInt32(),f[0].GetCppString());
+                // Optional G2 records: old addons ignore these. Never add
+                // assignments to native GOAL stock, GOALDELIVERY or GOALFLOW.
+                const std::string key=op+"\t"+f[0].GetCppString()+"\t";
+                Send(actor,"GOALWORK\t"+key+std::to_string(work.assigned)+"\t"+std::to_string(work.carried)+"\t"+
+                    std::to_string(work.banked)+"\t"+std::to_string(work.mail)+"\t"+std::to_string(work.updatedAtMs/1000));
+                Send(actor,"GOALWORKSTATUS\t"+key+(work.ready?"1":"0")+"\t"+Wire(work.phase,20)+"\t"+Wire(work.blocker,48));
+            }
         } while(rows->NextRow());
         Send(actor,"END\t"+op+"\tgoals\t"+std::to_string(count>5?offset+5:0));
     } else if(section=="history" && permissions) {
