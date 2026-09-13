@@ -397,8 +397,8 @@ bool PlayerbotGuildSupplies::ProtectProcurementHandoff(const LivingActivity::Tas
     using namespace LivingActivity;
     GuildProcurementJob job;std::string why;uint64_t amount=0;std::set<uint32_t> items;
     if(!sLivingActivityCoordinator.OnWorldThread() || !ValidateGuildProcurementTask(task,why) ||
-        !DecodeGuildProcurementJob(task.checkpoint.data,job,why) || task.phase!=Phase::Completed ||
-        task.mode!=Mode::Active || task.checkpoint.step!="guild_procurement_handed_off" || parcels.empty() || parcels.size()>16)return false;
+        !DecodeGuildProcurementJob(task.checkpoint.data,job,why) || task.phase!=LivingActivity::Phase::Completed ||
+        task.mode!=LivingActivity::Mode::Active || task.checkpoint.step!="guild_procurement_handed_off" || parcels.empty() || parcels.size()>16)return false;
     for(const auto& c:parcels) {
         if(!ValidResourceClaim(c) || c.task!=task.id || c.actor!=task.actor || c.itemEntry!=job.entry ||
             c.location!="bags" || c.state!="held" || c.nativeReference || c.copper ||
