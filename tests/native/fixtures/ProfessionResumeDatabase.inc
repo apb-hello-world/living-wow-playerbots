@@ -53,7 +53,7 @@ static void ProfessionResumeDatabase(Connection& db,bool retryWake=false) {
     // operation. These are fixture records, NOT real gameplay purchase proof.
     const auto settled=retryWake?"verified":"rejected";
     assert(db.Execute("UPDATE living_activity_operation SET state="+SqlValue(settled)+
-        ",evidence_code='fixture_settled_operation' WHERE operation_id="+SqlValue(op)));
+        ",native_reference='fixture:settled',evidence_code='fixture_settled_operation' WHERE operation_id="+SqlValue(op)));
     {Connection restarted;assert(restarted.Write(prepared.plan));}
     assert(db.Write(prepared.plan)); // Lost acknowledgement is idempotent.
     assert(db.Scalar("SELECT revision FROM living_activity_task WHERE task_id="+id)==afterRevision);
