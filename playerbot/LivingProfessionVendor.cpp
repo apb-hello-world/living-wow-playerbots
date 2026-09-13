@@ -29,7 +29,10 @@ namespace LivingActivity {
                 // Use real service points, not the bounding square's distance.
                 // Cross-map geometric distances omit transport waiting/riding.
                 for(const auto* point:dest->GetPoints()) {
-                    if(!point)continue;
+                    // Apply the route planner's native level eligibility BEFORE
+                    // narrowing to one seller. Otherwise an unsafe nearby seller
+                    // hides every usable alternative and yields an empty route.
+                    if(!point || !ai::TravelMgr::IsLocationLevelValid(*point,info))continue;
                     const auto distance=double(here.distance(*point));
                     if(!std::isfinite(distance) || distance>=FLT_MAX)continue;
                     const ServiceEstimate candidate{distance,dest->GetEntry(),point->getMapId()!=actor.GetMapId()};
@@ -136,7 +139,7 @@ namespace LivingActivity {
     std::vector<int32_t> NearestNativePurchaseEntries(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries) {
         const auto best=NearestService(actor,purpose,entries);
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
-        // Diagnose the exact old preselection before changing eligibility.
+        // Record the exact preselection and the native gates it satisfies.
         // Read-only copied-world evidence; do not search twice asynchronously,
         // install a target, bypass a level gate or log this in production.
         if(best.entry) {
