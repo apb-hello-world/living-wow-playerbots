@@ -2979,6 +2979,21 @@ bool LivingActivityCoordinator::ReadGuildProcurementAvailability(const Task& tas
     available=UnassignedGuildProcurement(goal.target,goal.banked,goal.bankReserved,goal.nativeTransit,coverage.Assigned());
     blocker.clear();return true;
 }
+bool LivingActivityCoordinator::ValidateGuildProcurementDemand(const Task& task,std::string& blocker) {
+    GuildProcurementJob job;uint32_t available=0;
+    if(task.mode!=Mode::Active || Terminal(task.phase) || !IsGuildProcurementTask(task) ||
+        !DecodeGuildProcurementJob(task.checkpoint.data,job,blocker)) {
+        blocker="guild_procurement_accepted_demand_required";return false;
+    }
+    if(!ReadGuildProcurementAvailability(task,available,blocker))return false;
+    // An edit or another physical contribution may supersede part of this job.
+    // Stop spending and reconcile its existing claims first; do not silently
+    // rewrite accepted intent or treat paid incoming goods as free new demand.
+    if(job.quantity>available) {
+        blocker="guild_procurement_demand_changed_reconciliation_required";return false;
+    }
+    blocker.clear();return true;
+}
 AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request) {
     AdmissionResult result; result.task = request.task.id; result.revision = request.task.revision;
     auto reject = [&](AdmissionCode code, const std::string& reason = "") {

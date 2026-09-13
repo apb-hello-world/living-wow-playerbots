@@ -42,7 +42,7 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
     }
     ItemGainSpec output;
     if (IsRecipeLearningTask(task)) output={requirements.front().entry,1};
-    else if (!IsManagedGuildDelivery(task)) {
+    else if (!IsManagedGuildDelivery(task) && !IsGuildProcurementTask(task)) {
         ProfessionJob job;
         if (!DecodeProfessionJob(task.checkpoint.data,job,blocker)) return false;
         if (job.operation!=ProfessionOperation::EnchantItem && !ReadNativeCraftOutput(actor,job,output,blocker)) return false;
@@ -68,6 +68,11 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
     blocker="capacity_already_available";return false;
 }
 bool JobProtected(Player& actor,const Task& task,Item& item) {
+    if (IsGuildProcurementTask(task)) {
+        GuildProcurementJob job;std::string blocker;
+        return !ValidateGuildProcurementTask(task,blocker) ||
+            !DecodeGuildProcurementJob(task.checkpoint.data,job,blocker) || item.GetEntry()==job.entry;
+    }
     if (IsManagedGuildDelivery(task)) {
         GuildDeliveryJob delivery;std::string blocker;
         return !ValidateGuildDeliveryTask(task,blocker) ||
@@ -144,7 +149,7 @@ bool DecodeNativeSaleQuote(const std::string& value,NativeSaleQuote& q) {
 bool PlanNativeCapacitySale(Player& actor,const Task& task,NativeSaleQuote& q,ResourceClaim& held,std::string& blocker) {
     q={};held={};auto reject=[&](const char* why){blocker=why;return false;};
     if (!sLivingActivityCoordinator.OnWorldThread() || !SafeActor(actor) || actor.GetGUIDLow()!=task.actor ||
-        (!IsProfessionJob(task) && !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task)) ||
+        (!IsProfessionJob(task) && !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task) && !IsGuildProcurementTask(task)) ||
         task.mode!=Mode::Active || !task.accepted || task.root!=task.id)
         return reject("capacity_safety_or_task_pause");
     UnsettledClaimBatch claims;ItemGainSpec need;

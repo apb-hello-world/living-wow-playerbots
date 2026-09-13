@@ -28,6 +28,8 @@ bool Demand(Player& actor,const Task& saved,uint32_t entry,uint32_t& remaining,s
     if(!ReadNativeTaskItemRequirements(actor,saved,required,why))return false;
     if(IsRecipeLearningTask(saved)) {
         if(!ValidateNativeRecipeLearningTask(actor,saved,why))return false;
+    } else if(IsGuildProcurementTask(saved)) {
+        if(!sLivingActivityCoordinator.ValidateGuildProcurementDemand(saved,why))return false;
     } else {
         ProfessionJob job;if(!DecodeProfessionJob(saved.checkpoint.data,job,why))return false;
         const auto native=InspectNativeProfessionRecipe(actor,job);job.initialSkill=native.skillValue;
@@ -38,7 +40,7 @@ bool Demand(Player& actor,const Task& saved,uint32_t entry,uint32_t& remaining,s
     }
     NativeProfessionDemand have;
     if(!InspectNativeProfessionDemand(actor,saved,have)) {why=have.blocker;return false;}
-    if (required!=have.requirements) {why="profession_item_requirements_changed";return false;}
+    if (required!=have.requirements || required.size()!=have.stock.size()) {why="profession_item_requirements_changed";return false;}
     for(size_t i=0;i<required.size();++i) {
         if(have.stock[i].bank && have.stock[i].bag<required[i].perAttempt) {
             why="profession_banked_material_requires_collection";return false;

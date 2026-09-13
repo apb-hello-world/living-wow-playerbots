@@ -2,6 +2,7 @@
 #include "LivingGuildDelivery.h"
 #include "LivingProfessionJob.h"
 #include "LivingActivityRequests.h"
+#include "LivingTaskItemRequirements.h"
 #include <cassert>
 #include <limits>
 using namespace LivingActivity;
@@ -26,6 +27,8 @@ int main() {
     task.checkpoint.data=encoded;task.checkpoint.step="profession_service_purchase_vendor";
     assert(ValidateGuildProcurementTask(task,why));
     assert(!IsProfessionJob(task) && !IsManagedGuildDelivery(task)); // Shared service names cannot forge a recipe/parcel.
+    std::vector<ProfessionReagent> items;
+    assert(ReadTaskItemRequirements(task,items,why) && items.size()==1 && items[0].entry==2770 && items[0].perAttempt==20);
     Kind kind;assert(ParseKind("guild_procurement",kind) && kind==task.kind);
     assert(std::string(Name(kind))=="guild_procurement");
     for(int n=0;n!=5;++n) {

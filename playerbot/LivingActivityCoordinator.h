@@ -108,6 +108,7 @@ public:
     // Read-only admission/dispatch validation. Counts pending task writes once;
     // grants neither execution ownership nor permission to purchase anything.
     bool ReadGuildProcurementAvailability(const LivingActivity::Task&,uint32_t&,std::string&);
+    bool ValidateGuildProcurementDemand(const LivingActivity::Task&,std::string&);
     LivingActivity::AdmissionResult AdmitGuildDelivery(uint32_t actor,const LivingActivity::GuildDeliveryJob& job);
     bool OwnsGuildDelivery(uint32_t actor,const LivingActivity::GuildDeliveryJob& job) const;
     // World-thread cache only; does not execute, scan the DB or infer delivery.

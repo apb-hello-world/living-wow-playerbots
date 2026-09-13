@@ -171,7 +171,7 @@ bool PlanNativeBankWithdrawal(Player& actor,const Task& task,const ProfessionRea
 bool PlanNativeBankDeposit(Player& actor,const Task& task,NativeBankQuote& q,ResourceClaim& held,std::string& blocker) {
     q={};held={};auto reject=[&](const char* why){blocker=why;return false;};
     if (!sLivingActivityCoordinator.OnWorldThread() || actor.GetGUIDLow()!=task.actor ||
-        (!IsProfessionJob(task) && !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task)) ||
+        (!IsProfessionJob(task) && !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task) && !IsGuildProcurementTask(task)) ||
         task.mode!=Mode::Active || !task.accepted || task.root!=task.id)
         return reject("capacity_bank_task_unavailable");
     if (!SafeBankActor(actor)) return reject(actor.IsStopped()?"capacity_bank_safety_pause":"capacity_bank_travel_required");

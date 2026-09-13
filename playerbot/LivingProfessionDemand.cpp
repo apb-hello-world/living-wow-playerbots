@@ -118,6 +118,8 @@ namespace LivingActivity {
         if (!ReadNativeTaskItemRequirements(actor,*saved,requirements,blocker)) return false;
         if (IsRecipeLearningTask(*saved)) {
             if (!ValidateNativeRecipeLearningTask(actor,*saved,blocker)) return false;
+        } else if (IsGuildProcurementTask(*saved)) {
+            if (!sLivingActivityCoordinator.ValidateGuildProcurementDemand(*saved,blocker)) return false;
         } else {
             ProfessionJob job;
             if (!DecodeProfessionJob(saved->checkpoint.data,job,blocker)) return false;
@@ -126,7 +128,8 @@ namespace LivingActivity {
         }
         NativeProfessionDemand demand;
         if (!InspectNativeProfessionDemand(actor,*saved,demand)) {blocker=demand.blocker; return false;}
-        if (requirements!=demand.requirements) return reject("profession_item_requirements_changed");
+        if (requirements!=demand.requirements || requirements.size()!=demand.stock.size())
+            return reject("profession_item_requirements_changed");
         for (size_t i=0;i<requirements.size();++i) {
             if (demand.stock[i].bank && demand.stock[i].bag<requirements[i].perAttempt)
                 return reject("profession_banked_material_requires_collection");

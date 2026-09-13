@@ -88,6 +88,12 @@ namespace LivingActivity {
             // one learnable book, not permission to shop for arbitrary items.
             return prerequisites.ValidateCommittedDemandAndBudget(actor,request,quote,blocker);
         }
+        if (IsGuildProcurementTask(request.transition.task)) {
+            if (!ValidateGuildProcurementTask(request.transition.task,blocker)) return false;
+            // Reuses exact owned/banked/paid-mail demand and ordinary spending
+            // limits. Its provider additionally reads the current native goal.
+            return prerequisites.ValidateCommittedDemandAndBudget(actor,request,quote,blocker);
+        }
         if (!IsProfessionJob(request.transition.task)) return reject("vendor_demand_adapter_not_supported");
         ProfessionJob job;
         if (!DecodeProfessionJob(request.transition.task.checkpoint.data,job,blocker)) return false;
