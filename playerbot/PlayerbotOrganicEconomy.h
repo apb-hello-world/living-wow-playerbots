@@ -78,9 +78,9 @@ private:
         uint32 purpose=0, purchaseItem=0, started=0, progress=0, nextMove=0, attempts=0,nextCatchup=0;
         float distance=1e30f;
         bool requesting=false, local=false,ready=false,routeOwned=false,routeInitialized=false,catchupUsed=false;
-#ifdef LIVING_ISOLATED_NATIVE_TESTS
+        // Keep the class layout identical in all translation units. Only the
+        // isolated build writes this diagnostic rate limiter.
         uint32 nextApproachDiagnostic=0;
-#endif
     };
     std::map<uint32, ServiceTrip> serviceTrips;
     uint64 serviceSequence=0;
