@@ -1,7 +1,26 @@
 #include "ProfessionInterrupted.h"
 static void ProfessionInterruptedDatabase(Connection& db) {
     using namespace LivingActivityTest;
-    InterruptedFixture f;f.AddBankDependency();std::string blocker;const auto id=SqlValue(f.task.id);
+    InterruptedFixture f;std::string blocker;const auto id=SqlValue(f.task.id);
+    // Exercise the actual recovery SQL with consumption spanning two physical
+    // stacks. Retain a separate bank dependency and a later unused vial stack.
+    ProfessionJob split;assert(DecodeProfessionJob(f.task.checkpoint.data,split,blocker));
+    split.reagents.back().perAttempt=7;f.task.checkpoint.data=EncodeProfessionJob(split);
+    f.frame.stacks.push_back({705,805,3371,20,0,26});
+    f.frame.stacks.push_back({705,806,3371,9,0,27});
+    auto intent=SavedCraft(f.task,split,f.frame,f.frame,true,true);
+    intent.receipt.id=f.history.interruptedCraft->receipt.id;
+    intent.receipt.state=OperationState::Intent;intent.receipt.nativeReference.clear();
+    intent.receipt.evidence.clear();intent.afterState="{}";
+    InterruptedCraftIntent decoded;assert(DecodeInterruptedCraftIntent(f.task,intent,decoded,blocker));
+    assert(decoded.inputs.size()==4);f.batch.claims.clear();unsigned inputIndex=0;
+    for(auto& use:decoded.inputs) {
+        const auto old=use.before.id;
+        use.before.id="b71b6cac-8b42-44d9-9f1f-24e4e40a001"+std::to_string(++inputIndex);
+        const auto at=intent.beforeState.find(old);assert(at!=std::string::npos);
+        intent.beforeState.replace(at,old.size(),use.before.id);f.batch.claims.push_back(use.before);
+    }
+    f.history.interruptedCraft=intent;f.AddBankDependency();
     const auto rid=[](unsigned n){return std::string("ff2efbdf-f0ec-4539-b840-29984797802")+std::to_string(n);};
     auto initial=f.task;initial.revision=1;initial.phase=Phase::Queued;
     assert(db.Write(TaskWrite(initial,0,rid(1),"fixture_created")));
@@ -40,6 +59,10 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     rejectRace("UPDATE characters SET money=99 WHERE guid=705","UPDATE characters SET money=100 WHERE guid=705");
     rejectRace("UPDATE character_skills SET value=2 WHERE guid=705","UPDATE character_skills SET value=1 WHERE guid=705");
     rejectRace("UPDATE item_instance SET count=4 WHERE guid=802","UPDATE item_instance SET count=5 WHERE guid=802");
+    rejectRace("UPDATE item_instance SET count=19 WHERE guid=805","UPDATE item_instance SET count=20 WHERE guid=805");
+    rejectRace("UPDATE item_instance SET count=21 WHERE guid=805","UPDATE item_instance SET count=20 WHERE guid=805");
+    rejectRace("UPDATE character_inventory SET slot=28 WHERE item=805","UPDATE character_inventory SET slot=26 WHERE item=805");
+    rejectRace("UPDATE item_instance SET owner_guid=706 WHERE guid=805","UPDATE item_instance SET owner_guid=705 WHERE guid=805");
     rejectRace("UPDATE item_instance SET owner_guid=706 WHERE guid=800","UPDATE item_instance SET owner_guid=705 WHERE guid=800");
     rejectRace("UPDATE character_inventory SET slot=26 WHERE item=800","UPDATE character_inventory SET slot=23 WHERE item=800");
     rejectRace("UPDATE character_inventory SET slot=26 WHERE item=803","UPDATE character_inventory SET slot=43 WHERE item=803");
@@ -62,8 +85,9 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     assert(db.Write(prepared.plan)); // Lost acknowledgement cannot repeat the transition.
     assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+operation)=="rejected");
     assert(db.Scalar("SELECT money FROM characters WHERE guid=705")=="100");
-    assert(db.Scalar("SELECT SUM(count) FROM item_instance WHERE owner_guid=705")=="9");
-    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+id+" AND state='held' AND revision=1")=="4");
+    assert(db.Scalar("SELECT SUM(count) FROM item_instance WHERE owner_guid=705")=="38");
+    assert(db.Scalar("SELECT count FROM item_instance WHERE guid=806")=="9");
+    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+id+" AND state='held' AND revision=1")=="5");
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_transition WHERE transition_id="+SqlValue(f.receipt))=="1");
     ProfessionHistoryCursor recovered;assert(recovered.Begin(prepared.task,db.History(prepared.task),blocker));
     while(!recovered.Result().complete) assert(recovered.Advance(blocker));
