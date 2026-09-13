@@ -1149,7 +1149,8 @@ struct LivingActivityCoordinator::State {
                 if(row.retirement) {
                     Task retired;
                     const auto current=cache.find(task.id);
-                    if((current==cache.end() || current->second.revision==task.revision) &&
+                    if(authority.Read(task.actor).lease.rootTask!=task.id &&
+                        (current==cache.end() || current->second.revision==task.revision) &&
                         PrepareEconomyObservationRetirement(task,NowMs(),retired))
                         Queue(std::move(retired),task.revision,"observation_retired");
                     incoming.pop_front();continue;

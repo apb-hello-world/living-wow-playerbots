@@ -1,11 +1,12 @@
 // Real MariaDB predicate races; these rows are isolated fixture metadata only.
 void ObservationRetirementDatabase(Connection& db) {
     auto id=[](unsigned n){return std::string("b0bb4425-4e82-53d3-8295-0000000000")+(n<10?"0":"")+std::to_string(n);};
-    for(unsigned scenario=0;scenario<12;++scenario) {
+    for(unsigned scenario=0;scenario<13;++scenario) {
         Task task;task.id=task.root=id(scenario);task.source="economy_goal";
         task.sourceKey=std::to_string(53100+scenario);task.actor=task.context.actor=899;
         task.accepted=false;task.mode=Mode::Observe;task.phase=Phase::Reconciling;
         task.createdAtMs=task.updatedAtMs=1000;
+        if(scenario==12)task.ownerGeneration=143; // Prior restart invalidations, never accepted/executed.
         const auto goal=task.sourceKey,where=" WHERE task_id="+SqlValue(task.id);
         if(scenario!=8) assert(db.Execute("INSERT INTO organic_economy_goal(goal_id,character_guid,state) VALUES("+
             goal+",899,'expired')"));
@@ -34,7 +35,7 @@ void ObservationRetirementDatabase(Connection& db) {
             ++child.revision;child.phase=Phase::Cancelled;
             assert(db.Write(TaskWrite(child,1,id(69),"fixture_child_cancelled")));
         }
-        const bool empty= scenario==0 || scenario==8;
+        const bool empty= scenario==0 || scenario==8 || scenario==12;
         assert(db.Write(plan)==empty);
         if(empty) {
             assert(db.Write(plan)); // Acknowledgement retry, not a second mutation.

@@ -7,7 +7,7 @@ namespace LivingActivity {
     // Accepted jobs and native source rows are deliberately outside this scope.
     inline bool IsRetirableEconomyObservation(const Task& task) {
         return task.source=="economy_goal" && task.mode==Mode::Observe && !task.accepted &&
-            task.phase==Phase::Reconciling && !task.ownerGeneration && task.root==task.id && task.parent.empty() &&
+            task.phase==Phase::Reconciling && task.root==task.id && task.parent.empty() &&
             !task.sourceKey.empty() && task.sourceKey.size()<=20 && task.sourceKey[0]!='0' &&
             task.sourceKey.find_first_not_of("0123456789")==std::string::npos;
     }
@@ -16,7 +16,7 @@ namespace LivingActivity {
         // reactivation, a new claim or accepted work between them rejects it.
         const std::string t="living_activity_task.";
         return t+"source='economy_goal' AND "+t+"mode='observe' AND "+t+"accepted=0 AND "+
-            t+"phase='reconciling' AND "+t+"owner_generation=0 AND "+t+"parent_task_id='' AND "+
+            t+"phase='reconciling' AND "+t+"parent_task_id='' AND "+
             t+"root_task_id="+t+"task_id AND "+t+"source_key REGEXP '^[1-9][0-9]{0,19}$' AND "
             "NOT EXISTS(SELECT 1 FROM organic_economy_goal g WHERE g.goal_id=CAST("+t+"source_key AS UNSIGNED) "
             "AND g.character_guid="+t+"actor_guid AND g.state='active') AND "

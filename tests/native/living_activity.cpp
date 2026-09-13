@@ -27,7 +27,7 @@ int main() {
             auto protectedTask=candidate;
             if(field==0)protectedTask.accepted=true;
             if(field==1)protectedTask.mode=Mode::Active;
-            if(field==2)protectedTask.ownerGeneration=1;
+            if(field==2)protectedTask.root=Receipt;
             if(field==3)protectedTask.phase=Phase::Executing;
             if(field==4)protectedTask.source="profession_job";
             if(field==5)protectedTask.sourceKey="paid:42";
@@ -36,6 +36,11 @@ int main() {
             assert(!PrepareEconomyObservationRetirement(protectedTask,2000,retired));
         }
         assert(!PrepareEconomyObservationRetirement(candidate,0,retired));
+        const auto restored=AfterRestart(candidate,2000);
+        assert(restored.ownerGeneration==1 && PrepareEconomyObservationRetirement(restored,3000,retired));
+        assert(retired.ownerGeneration==restored.ownerGeneration && retired.revision==restored.revision+1);
+        assert(TaskWrite(retired,restored.revision,Receipt,"observation_retired").statements.front().find(
+            "AND owner_generation=1")!=std::string::npos);
         ObservationQueue q;q.enabled=q.schemaReady=q.retirementDue=true;
         q.cached=q.cacheLimit;q.due=false;
         assert(NextObservationWork(q)==ObservationWork::Retire); // Relief at capacity, not blocked by it.

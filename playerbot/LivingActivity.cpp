@@ -252,7 +252,11 @@ namespace LivingActivity
             if(!expected || !IsRetirableEconomyObservation(original) || task.phase!=Phase::Cancelled ||
                 task.checkpoint.step!="observer_retired" || task.checkpoint.blocker!="legacy_candidate_no_longer_active")
                 throw std::invalid_argument("Only empty, unaccepted economy observations may retire");
-            plan.statements.front()+=" AND ("+EconomyObservationRetirementPredicate()+')';
+            // Restart invalidation increments this counter even for a shadow
+            // candidate. It is not evidence that execution ever occurred.
+            // Preserve and compare it instead of requiring a never-booted zero.
+            plan.statements.front()+=" AND owner_generation="+Number(task.ownerGeneration)+
+                " AND ("+EconomyObservationRetirementPredicate()+')';
         }
         if (expected && Terminal(task.phase)) {
             plan.statements.front() += " AND NOT EXISTS (SELECT 1 FROM living_activity_operation o "
