@@ -17,6 +17,8 @@ void RunIsolatedServicesObservation(FixtureState& state) {
         result.put("native_dispatches",state.nativeDispatches);result.put("native_result_receipts",state.nativeOutcomes);
         result.put("verified_native_results",state.nativeVerifiedResults);result.put("task_admissions",state.taskAdmissions);
         result.put("pending_writes",state.pending.size());result.put("pending_operations",state.operations.size());
+        const uint64_t leaseNow=std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
         boost::property_tree::ptree tasks;unsigned count=0;
         for(const auto& row:state.cache) {
             const auto& task=row.second;
@@ -27,6 +29,7 @@ void RunIsolatedServicesObservation(FixtureState& state) {
             item.put("step",task.checkpoint.step);item.put("created_at_ms",task.createdAtMs);
             const auto blocked=state.executionBlockers.find(task.id);
             item.put("blocker",blocked==state.executionBlockers.end()?task.checkpoint.blocker:blocked->second);
+            item.put("saved_blocker",task.checkpoint.blocker);item.put("retry_at_ms",task.retryAtMs);
             // Private, value-only diagnostic for this marked copied realm.
             // A generic travel blocker must not hide the exact failing native
             // destination/leg. Reading this never installs or advances a route.
@@ -38,6 +41,17 @@ void RunIsolatedServicesObservation(FixtureState& state) {
                 route.put("actor_y",bot->GetPositionY());route.put("actor_z",bot->GetPositionZ());
                 route.put("alive",bot->IsAlive());route.put("combat",bot->IsInCombat());
                 route.put("transport",bool(bot->GetTransport()));route.put("taxi",bot->IsTaxiFlying());
+                // An authorization getter requires a caller's ExecutionScope.
+                // Observing outside that scope is not evidence of no owner.
+                // Read the same lease book used by the Admin projection; never
+                // acquire a scope or relax permissions to produce diagnostics.
+                const auto owner=state.authority.Read(task.actor);
+                route.put("owner_state",Name(state.authority.Inspect(task.actor,leaseNow).code));
+                route.put("owner_root",owner.lease.rootTask);route.put("owner_generation",owner.lease.generation);
+                route.put("owner_matches_task",owner.lease.rootTask==task.id);
+                route.put("actor_epoch",bot->GetPlayerbotAI()->GetActivityActorEpoch());
+                route.put("map_epoch",bot->GetPlayerbotAI()->GetActivityMapEpoch());
+                route.put("task_actor_epoch",task.context.actorGeneration);route.put("task_map_epoch",task.context.mapGeneration);
                 auto* context=bot->GetPlayerbotAI()->GetAiObjectContext();
                 auto* target=context->template GetValue<ai::TravelTarget*>("travel target")->Get();
                 if(target && target->GetDestination() && target->GetPosition()) {
@@ -47,7 +61,6 @@ void RunIsolatedServicesObservation(FixtureState& state) {
                     route.put("map",position->getMapId());route.put("x",position->getX());
                     route.put("y",position->getY());route.put("z",position->getZ());
                     route.put("distance",target->Distance(bot));
-                    route.put("owned",sPlayerbotOrganicEconomy.HasOwnedServiceRoute(task.actor,uint32(target->GetDestination()->GetPurpose())));
                 }
                 const auto& path=context->template GetValue<ai::LastMovement&>("last movement")->Get().lastPath.getPath();
                 route.put("path_nodes",path.size());
