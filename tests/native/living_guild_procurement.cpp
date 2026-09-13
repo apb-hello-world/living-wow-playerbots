@@ -49,7 +49,8 @@ int main() {
     assert(UnassignedGuildProcurement(50,2,0,8,std::numeric_limits<uint64_t>::max())==0);
     assert(UnassignedGuildProcurement(UINT32_MAX,UINT32_MAX,0,UINT32_MAX,0)==0);
     assert(UnassignedGuildProcurement(0,0,0,0,0)==0);
-    // Receipt moves 5 units from unacquired demand into native transit exactly
-    // once. New assignable need is unchanged, while actual delivery increases.
+    // The verified custody handoff, NOT a purchase receipt alone, moves 5 units
+    // from assigned demand to the native delivery ledger. New assignable need
+    // is unchanged, while the real delivery quantity increases.
     assert(UnassignedGuildProcurement(50,2,0,8,15)==UnassignedGuildProcurement(50,2,0,13,10));
 }

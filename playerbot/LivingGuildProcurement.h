@@ -73,13 +73,15 @@ inline bool PreserveGuildProcurementIntent(const Task& before,const Task& after,
     }
     blocker.clear();return true;
 }
-// The native bank reservation reduces usable bank stock. Outstanding accepted
-// demand reduces NEW assignments; it never inflates the displayed in-transit
-// quantity. Paid/carried quantities belong to nativeTransit or unacquired, not
-// both. Call on admission/acknowledged transitions with a complete snapshot.
+// The native bank reservation reduces usable bank stock. Accepted assignments
+// reduce NEW assignments, without inflating displayed native delivery counts.
+// An assignment continues covering its goods after purchase/collection until
+// the native delivery ledger actually takes custody. The transactional handoff
+// moves that coverage to nativeTransit, exactly once. Call on admission or
+// acknowledged transitions with a complete snapshot, including pending writes.
 inline uint32_t UnassignedGuildProcurement(uint32_t target,uint32_t bank,uint32_t bankReserved,
-    uint32_t nativeTransit,uint64_t unacquiredAssigned) {
+    uint32_t nativeTransit,uint64_t assignedNotInNativeDelivery) {
     const auto missing=livingguild::SupplyOutstanding(target,bank,bankReserved,nativeTransit);
-    return unacquiredAssigned>=missing?0:missing-uint32_t(unacquiredAssigned);
+    return assignedNotInNativeDelivery>=missing?0:missing-uint32_t(assignedNotInNativeDelivery);
 }
 }
