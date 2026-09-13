@@ -14,6 +14,7 @@ class PlayerbotGuildSupplies {
 public:
     static PlayerbotGuildSupplies& instance();
     void Update();
+    void RefreshCustodyProtection(); // Read-only global cache, independent of chat/automation enablement.
     bool Reserved(uint32_t item) const;
     bool ReservedEntry(uint32_t player,uint32_t entry) const;
     std::shared_ptr<const LivingActivity::LegacyResourceView> ReservedItemsView() const;

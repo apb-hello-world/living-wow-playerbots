@@ -128,6 +128,7 @@ struct PlayerbotGuildSupplies::State {
     std::set<uint32> protectedItems;
     LivingActivity::LegacyResourcePublisher protection;
     LivingActivity::LegacyResourceView durableProtection{{},{},true};
+    uint32 protectionDue=0;
     std::vector<Service> services;
     std::map<uint32,bool> enabled;
     std::set<uint32> moneyEnabled;
@@ -241,7 +242,8 @@ struct PlayerbotGuildSupplies::State {
             if(d.phase=="carried"&&d.mail&&Bot(carrier)&&carrier->IsInWorld())
                 for(auto* item:Inventory(carrier)) if(item&&item->GetEntry()==d.entry) protectedItems.insert(item->GetGUIDLow());
         }
-        ReloadProtection();PublishProtection();
+        if(now>=protectionDue){ReloadProtection();protectionDue=now+15;}
+        PublishProtection();
     }
     bool Busy(uint32 guid) const {for(const auto& d:deliveries) if(!SupplyTerminal(d.second.phase)&&(d.second.carrier==guid||d.second.donor==guid)) return true;return false;}
     const Service* Destination(Player* p,bool mail,uint32 npcFlag=0) const {
@@ -392,6 +394,12 @@ void PlayerbotGuildSupplies::RecordDeposit(uint32 guild,uint32 actor,uint32 entr
     // credit an attempt that did not commit. Donor remains distinct from courier.
     CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET phase=IF(deposited_quantity+%u>=quantity,'completed','carried'),deposited_quantity=deposited_quantity+%u,blocker='',updated_at=%u WHERE delivery_id=%llu AND phase='carried' AND deposited_quantity=%u",count,count,uint32(time(nullptr)),(unsigned long long)d.id,d.deposited);
 }
+void PlayerbotGuildSupplies::RefreshCustodyProtection() {
+    if(!sLivingActivityCoordinator.OnWorldThread())return;
+    const auto now=uint32(time(nullptr));
+    if(now<state_->protectionDue)return;
+    state_->protectionDue=now+15;state_->ReloadProtection();state_->PublishProtection();
+}
 bool PlayerbotGuildSupplies::ProtectProcurementHandoff(const LivingActivity::Task& task,
     const std::vector<LivingActivity::ResourceClaim>& parcels) {
     using namespace LivingActivity;
@@ -410,7 +418,7 @@ bool PlayerbotGuildSupplies::ProtectProcurementHandoff(const LivingActivity::Tas
     // Until the indexed/native reload, protection bridges the execution cache.
     state_->durableProtection.items.insert(items.begin(),items.end());
     state_->durableProtection.entries.emplace(task.actor,job.entry);
-    state_->PublishProtection();state_->load=0;return true;
+    state_->PublishProtection();state_->load=state_->protectionDue=0;return true;
 }
 bool PlayerbotGuildSupplies::ReadProcurementGoal(Player& actor,const LivingActivity::GuildProcurementJob& job,
     LivingActivity::GuildProcurementGoalSnapshot& snapshot,std::string& blocker) const {

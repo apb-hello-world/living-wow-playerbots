@@ -28,6 +28,7 @@
 #include "PlayerbotLoginMgr.h"
 #include "PlayerbotChatDirector.h"
 #include "LivingActivityCoordinator.h"
+#include "PlayerbotGuildSupplies.h"
 #include "Entities/Transports.h"
 
 #ifndef MANGOSBOT_ZERO
@@ -646,8 +647,10 @@ void RandomPlayerbotMgr::UpdateAI(uint32 elapsed)
 {
     // The coordinator's due queues run once per native world update, not only
     // when the population manager's independent login/update timer is due.
-    if (sPlayerbotAIConfig.randomBotAutologin && sPlayerbotAIConfig.enabled)
+    if (sPlayerbotAIConfig.randomBotAutologin && sPlayerbotAIConfig.enabled) {
         sLivingActivityCoordinator.Update();
+        sGuildSupplies.RefreshCustodyProtection();
+    }
     PlayerbotHolder::UpdateAI(elapsed);
 }
 
