@@ -12,6 +12,7 @@
 #include <string>
 
 class Player;
+class WorldObject;
 
 class PlayerbotOrganicEconomy
 {
@@ -23,6 +24,7 @@ public:
     uint32 RecipeMaterialQuantity(uint32 characterGuid, uint32 itemEntry) const;
     bool AllowsServiceAction(uint32 guid, const std::string& action) const;
     bool HasOwnedServiceRoute(uint32 guid,uint32 purpose) const;
+    bool HasOwnedLocalServiceApproach(uint32 guid,const WorldObject& service,uint32 purpose) const;
     bool IsAuctionPostingEnabled() const { return policy.mode == "active" && policy.posting; }
     // Trusted finite service step; no inventory operation or synthetic access.
     // Reads the acknowledged saved root and acquires its existing authority.
@@ -73,6 +75,7 @@ private:
         LivingActivity::ActionContext action;
         LivingActivity::ActivityLease searchLease;
         uint64 searchRevision=0,ticket=0,initialActiveMs=0,routeRevision=0;
+        uint64 localServiceGuid=0,localServiceStartedMs=0;
         LivingActivity::ServicePathProgress pathProgress;
         std::string goal;
         uint32 purpose=0, purchaseItem=0, started=0, progress=0, nextMove=0, attempts=0,nextCatchup=0;

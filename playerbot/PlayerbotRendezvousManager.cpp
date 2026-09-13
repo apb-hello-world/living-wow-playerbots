@@ -2600,28 +2600,54 @@ bool PlayerbotRendezvousManager::FindSafeServiceApproach(Player* bot, WorldPosit
 
 bool PlayerbotRendezvousManager::TrySavedServiceCatchup(Player* bot,TravelTarget* target,std::string& blocker)
 {
+    if(!sLivingActivityCoordinator.OnWorldThread()) {blocker="service_catchup_world_thread_required";return false;}
+    if(!bot || !target || !target->GetPosition() || !target->GetDestination()) {
+        blocker="service_catchup_owned_route_required";return false;
+    }
+    if(WorldPosition(bot).distance(*target->GetPosition())<=35) {
+        blocker="service_catchup_final_approach_required";return false;
+    }
+    return TrySavedServiceApproach(bot,*target->GetPosition(),target->GetEntry(),[&] {
+        return sPlayerbotOrganicEconomy.HasOwnedServiceRoute(bot->GetGUIDLow(),uint32(target->GetDestination()->GetPurpose()));
+    },blocker);
+}
+
+bool PlayerbotRendezvousManager::TrySavedLocalServiceCatchup(Player* bot,WorldObject* service,uint32 purpose,std::string& blocker)
+{
+    if(!sLivingActivityCoordinator.OnWorldThread()) {blocker="service_catchup_world_thread_required";return false;}
+    if(!bot || !service || !service->IsInWorld() || service->GetMap()!=bot->GetMap()) {
+        blocker="service_catchup_local_object_required";return false;
+    }
+    WorldPosition position(service);
+    return TrySavedServiceApproach(bot,position,int32(service->GetEntry()),[&] {
+        return sPlayerbotOrganicEconomy.HasOwnedLocalServiceApproach(bot->GetGUIDLow(),*service,purpose);
+    },blocker);
+}
+
+bool PlayerbotRendezvousManager::TrySavedServiceApproach(Player* bot,WorldPosition& position,int32 entry,
+    const std::function<bool()>& ownsStep,std::string& blocker)
+{
     auto reject=[&](const char* why){blocker=why;return false;};
     if(!sLivingActivityCoordinator.OnWorldThread() || !sPlayerbotAIConfig.chatDirectorRendezvousCatchup)
         return reject("service_catchup_disabled");
-    if(!bot || !bot->GetPlayerbotAI() || !target || !target->GetPosition() || !target->GetDestination() ||
+    if(!bot || !bot->GetPlayerbotAI() ||
         !bot->IsInWorld() || !bot->IsAlive() || bot->IsInCombat() || !bot->GetMap() || bot->GetMap()->IsDungeon() ||
         bot->IsBeingTeleported() || bot->IsTaxiFlying() || bot->GetTransport() || bot->IsInWater() || bot->IsFlying() ||
         (bot->m_movementInfo.GetMovementFlags() & (MOVEFLAG_FALLING | MOVEFLAG_FALLINGFAR)) ||
         bot->IsNonMeleeSpellCasted(false) || bot->GetTradeData() || bot->InBattleGround() || bot->duel)
         return reject("service_catchup_safety_pause");
-    if(!sPlayerbotOrganicEconomy.HasOwnedServiceRoute(bot->GetGUIDLow(),uint32(target->GetDestination()->GetPurpose())))
+    if(!ownsStep())
         return reject("service_catchup_owned_route_required");
     auto* ai=bot->GetPlayerbotAI();
     const LivingActivity::Effects effects{LivingActivity::Mask(LivingActivity::Effect::Movement)|
         LivingActivity::Mask(LivingActivity::Effect::TravelTarget),LivingActivity::Lane::Managed,true};
     if(!sLivingActivityCoordinator.PermitEffects(*ai,effects,"saved service catchup"))
         return reject("service_catchup_authority_changed");
-    WorldPosition* service=target->GetPosition();
-    if(WorldPosition(bot).distance(*service)<=35) return reject("service_catchup_final_approach_required");
+    WorldPosition* service=&position;
     WorldPosition landing;
     if(!FindSafeServiceApproach(bot,service,landing)) return reject("service_catchup_no_valid_approach");
     if(!sLivingActivityCoordinator.PermitEffects(*ai,effects,"saved service catchup") ||
-        !sPlayerbotOrganicEconomy.HasOwnedServiceRoute(bot->GetGUIDLow(),uint32(target->GetDestination()->GetPurpose())))
+        !ownsStep())
         return reject("service_catchup_authority_changed");
     if(!ClaimRelocationSlot()) return reject("service_catchup_waiting_slot");
     ai->StopMoving();ai->GetAiObjectContext()->GetValue<LastMovement&>("last movement")->Get().clear();
@@ -2632,7 +2658,7 @@ bool PlayerbotRendezvousManager::TrySavedServiceCatchup(Player* bot,TravelTarget
     // Do not force a new travel owner, complete a task, or execute a remote
     // service. The same task must cover the last leg and validate the native NPC.
     sLog.outString("Living saved service event=service_catchup actor=%u entry=%d map=%u remaining=%.0f",
-        bot->GetGUIDLow(),target->GetEntry(),service->getMapId(),landing.distance(*service));
+        bot->GetGUIDLow(),entry,service->getMapId(),landing.distance(*service));
     blocker.clear();return true;
 }
 

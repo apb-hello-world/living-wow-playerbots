@@ -8,6 +8,7 @@
 #include "LivingActivity.h"
 #include "LivingActivityAcquisition.h"
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -16,6 +17,7 @@
 
 class Player;
 class Map;
+class WorldObject;
 namespace ai { class TravelDestination; class WorldPosition; class TravelTarget; }
 
 class PlayerbotRendezvousManager
@@ -92,6 +94,7 @@ public:
     // Existing service catch-up geometry, under an exact saved task's scope.
     // Never grants service execution or bypasses a human/safety commitment.
     bool TrySavedServiceCatchup(Player* bot, ai::TravelTarget* target, std::string& blocker);
+    bool TrySavedLocalServiceCatchup(Player* bot, WorldObject* service, uint32 purpose, std::string& blocker);
     bool FindSafeStagingPoint(Player* bot, Player* player,
         float& x, float& y, float& z) const;
     LivingActivity::Acquisition AcquirePartyActivityLease(uint32 botGuid, PartyActivityOwner owner,
@@ -309,6 +312,8 @@ private:
     bool TryErrandServiceCatchup(PartySession& session, Player* bot, ai::TravelTarget* target,
         std::chrono::steady_clock::time_point now);
     bool FindSafeServiceApproach(Player* bot, ai::WorldPosition* service, ai::WorldPosition& landing) const;
+    bool TrySavedServiceApproach(Player* bot, ai::WorldPosition& service, int32 entry,
+        const std::function<bool()>& ownsStep, std::string& blocker);
     bool ExecuteVerifiedErrand(PartySession& session, Player* bot);
     bool VerifyErrand(const PartySession& session, const ErrandObservation& after) const;
     void FinishCurrentErrand(PartySession& session, Player* bot, bool completed,

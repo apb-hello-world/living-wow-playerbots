@@ -592,6 +592,30 @@ bool PlayerbotOrganicEconomy::HasOwnedServiceRoute(uint32 guid,uint32 purpose) c
         ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)))==AuthorityCode::Allowed;
 }
 
+bool PlayerbotOrganicEconomy::HasOwnedLocalServiceApproach(uint32 guid,const WorldObject& service,uint32 purpose) const
+{
+    using namespace LivingActivity;
+    if(!sLivingActivityCoordinator.OnWorldThread())return false;
+    const auto found=serviceTrips.find(guid);if(found==serviceTrips.end())return false;
+    const auto& trip=found->second;
+    if(!trip.ready || !trip.local || !trip.work.Running() || trip.purpose!=purpose ||
+        !ExecutionScope::Matches(trip.managedTask,trip.action))return false;
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(guid);
+    if(!bot || !bot->GetPlayerbotAI() || !service.IsInWorld() || service.GetMap()!=bot->GetMap())return false;
+    const auto saved=sLivingActivityCoordinator.ReadSavedTask(trip.managedTask.id);
+    if(!saved || !SameServiceIntent(trip.managedTask,*saved) ||
+        !SameLocalServiceRecovery(*saved,trip.action,trip.lease,trip.localServiceGuid,
+            service.GetObjectGuid().GetRawValue(),std::min(trip.work.NoProgressMs(),
+                trip.work.ActiveMs()-trip.localServiceStartedMs),trip.catchupUsed))return false;
+    const auto current=ReadNativeContext(*bot,trip.action.world.policyRevision,trip.action.world.boot);
+    const uint64 stamp=std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const auto effects=Mask(Effect::Movement)|Mask(Effect::TravelTarget);
+    return bot->GetPlayerbotAI()->ActivityPermissions().Check({effects,Lane::Managed,true},current,stamp,
+        &trip.managedTask,&trip.action,nullptr,
+        ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)))==AuthorityCode::Allowed;
+}
+
 void PlayerbotOrganicEconomy::ReleaseRecipeService(uint32 guid, const std::string& reason)
 {
     auto found=serviceTrips.find(guid);if(found==serviceTrips.end()) return;
@@ -834,6 +858,11 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
         }
     }
     trip.local=focus||service!=nullptr;
+    const uint64 selectedService=service?service->GetObjectGuid().GetRawValue():0;
+    if(trip.localServiceGuid!=selectedService) {
+        trip.localServiceGuid=selectedService;trip.localServiceStartedMs=trip.work.ActiveMs();
+        // Selection is not physical progress and does not reset route retries.
+    }
     if(service) {
         const bool interact=guildBank ? bot->GetGameObjectIfCanInteractWith(service->GetObjectGuid(),GAMEOBJECT_TYPE_GUILD_BANK)!=nullptr :
             mail ? bot->GetGameObjectIfCanInteractWith(service->GetObjectGuid(),GAMEOBJECT_TYPE_MAILBOX)!=nullptr :
@@ -844,6 +873,18 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             ReleaseRecipeService(guid,result.blocker);return result;
         }
         if(distance+1<trip.distance) {trip.distance=distance;trip.progress=now;trip.work.Progress();}
+        result.blocker="recipe_approaching_service";
+        if(saved && !trip.catchupUsed && now>=trip.nextCatchup && trip.work.NoProgressMs()>=60000 &&
+            trip.work.ActiveMs()-trip.localServiceStartedMs>=60000) {
+            trip.nextCatchup=now+30;
+            if(sPlayerbotRendezvousManager.TrySavedLocalServiceCatchup(bot,service,purpose,result.blocker)) {
+                trip.catchupUsed=true;trip.progress=now;trip.work.Progress();trip.distance=1e30f;trip.nextMove=now+1;
+                result.blocker="service_catchup_final_approach";
+                return result; // Same task, no arrival or remote native operation.
+            }
+            // A failed checked approach is diagnostic, not progress. Continue
+            // native movement and retain the existing two-attempt/backoff rule.
+        }
         if(now>=trip.nextMove) {
             trip.nextMove=now+5;
             float x=service->GetPositionX(),y=service->GetPositionY(),z=service->GetPositionZ();
@@ -875,7 +916,6 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
                 bot->GetMotionMaster()->MovePoint(240,x,y,z);
             }
         }
-        result.blocker="recipe_approaching_service";
     } else if(focus) {
         const WorldPosition here(bot);const WorldPosition* closest=nullptr;
         for(const auto& point:CraftStations(purpose&~FocusService)) {

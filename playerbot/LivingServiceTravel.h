@@ -66,6 +66,14 @@ namespace LivingActivity {
             action.task==saved.id && action.rootTask==saved.id && action.revision==revision &&
             action.ownerGeneration==route.generation && action.world==route.context;
     }
+    // A local final approach has no global TravelTarget. Its exact selected
+    // native object and acknowledged task still own the step. Elapsed active
+    // no-progress time is eligibility for checked recovery, never arrival.
+    inline bool SameLocalServiceRecovery(const Task& saved,const ActionContext& action,const ActivityLease& lease,
+        uint64_t selected,uint64_t requested,uint64_t noProgressMs,bool alreadyUsed) {
+        return selected && selected==requested && noProgressMs>=60000 && !alreadyUsed &&
+            SameServiceSearch(saved,action,lease,action.revision);
+    }
     // Progress-only saved revisions retain route identity, not an old grant.
     inline bool SameServiceIntent(const Task& before,const Task& after) {
         ServiceDestination service;
