@@ -1,13 +1,31 @@
 // Copied realm only: an explicitly supplied native parcel, not a claim that a
 // donor earned/sent it. Ordinary shared services must collect and deposit it.
 namespace {
+boost::property_tree::ptree GuildMailFixtureInventory(Player& actor) {
+    boost::property_tree::ptree rows;
+    auto capture=[&](Item* item) {
+        if(!item)return;boost::property_tree::ptree row;
+        row.put("guid",item->GetGUIDLow());row.put("entry",item->GetEntry());row.put("quantity",item->GetCount());
+        row.put("bag",item->GetContainer()?item->GetContainer()->GetGUIDLow():0);row.put("slot",uint32_t(item->GetSlot()));
+        rows.push_back({"",row});
+    };
+    for(uint8_t slot=EQUIPMENT_SLOT_START;slot<BANK_SLOT_BAG_END;++slot)capture(actor.GetItemByPos(INVENTORY_SLOT_BAG_0,slot));
+    for(uint8_t slot=KEYRING_SLOT_START;slot<KEYRING_SLOT_END;++slot)capture(actor.GetItemByPos(INVENTORY_SLOT_BAG_0,slot));
+    auto bags=[&](uint8_t first,uint8_t last) {
+        for(uint8_t bag=first;bag<last;++bag)if(auto* container=static_cast<Bag*>(actor.GetItemByPos(INVENTORY_SLOT_BAG_0,bag)))
+            for(uint8_t slot=0;slot<container->GetBagSize();++slot)capture(container->GetItemByPos(slot));
+    };
+    bags(INVENTORY_SLOT_BAG_START,INVENTORY_SLOT_BAG_END);bags(BANK_SLOT_BAG_START,BANK_SLOT_BAG_END);return rows;
+}
 template<class FixtureState>
-void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false) {
+void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool forward=false) {
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
     state.fixtureNext=NowMs()+500;auto& f=state.guildDepositFixture;
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     auto emit=[&](bool passed,const std::string& why,Player* actor) {
-        auto report=f.setup;report.put("suite",fullBags?"activity-guild-mail-capacity-v1":"activity-guild-mail-v1");report.put("boot",state.boot);
+        if(forward && f.setup.get_optional<uint32_t>("forward_mail_delay_original"))
+            sWorld.setConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY,f.setup.template get<uint32_t>("forward_mail_delay_original"));
+        auto report=f.setup;report.put("suite",forward?"activity-guild-mail-forward-v1":fullBags?"activity-guild-mail-capacity-v1":"activity-guild-mail-v1");report.put("boot",state.boot);
         report.put("task",f.task);report.put("actor",f.actor);report.put("test_only",true);
         report.put("original_boot",f.originalBoot);report.put("resumed_same_task",f.resuming);
         report.put("outcome",passed?"passed":"failed");report.put("failure",why);report.put("blocker",f.blocker);
@@ -44,6 +62,23 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false) {
         }
         if(!actor->IsInWorld() || !actor->GetMap() || NativeSafety(actor) || actor->GetGroup() || actor->GetTradeData() ||
             actor->GetMap()->IsDungeon()){f.blocker="guild_mail_native_safety_wait";return;}
+        Player* recipient=nullptr;
+        auto loadRecipient=[&]() {
+            const auto id=f.setup.template get<uint32_t>("forward_receiver",0);require(id && id!=f.actor,"distinct_native_forward_recipient_required");
+            state.professionCohortActors[0].store(id,std::memory_order_release);
+            recipient=sRandomPlayerbotMgr.GetPlayerBot(id);
+            if(!recipient) {
+                if(!f.setup.template get<bool>("recipient_login_requested",false)) {
+                    f.setup.put("recipient_login_requested",true);sRandomPlayerbotMgr.AddRandomBot(id);
+                }
+                f.blocker="forward_recipient_native_login_pending";return false;
+            }
+            if(!recipient->IsInWorld() || !recipient->GetMap() || NativeSafety(recipient) || recipient->GetGroup() ||
+                recipient->GetMap()->IsDungeon() || recipient->GetTradeData()) {f.blocker="forward_recipient_native_safety_wait";return false;}
+            require(recipient->GetPlayerbotAI() && !recipient->isRealPlayer() && recipient->GetSession() &&
+                sPlayerbotAIConfig.IsInRandomAccountList(recipient->GetSession()->GetAccountId()),"native_bot_forward_recipient_required");
+            return true;
+        };
         if(!f.started) {
             require(actor->GetPlayerbotAI() && !actor->GetPlayerbotAI()->IsRealPlayer() && actor->GetSession() &&
                 sPlayerbotAIConfig.IsInRandomAccountList(actor->GetSession()->GetAccountId()),"copied_native_guild_bot_required");
@@ -58,7 +93,9 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false) {
                 require(IsUuid(f.originalBoot) && f.setup.template get<uint32_t>("actor")==f.actor &&
                     f.setup.template get<std::string>("task")==f.task &&
                     f.setup.template get<std::string>("job")==saved->checkpoint.data &&
-                    f.setup.template get<bool>("full_bag_requested",false)==fullBags,"original_guild_mail_identity_changed");
+                    f.setup.template get<bool>("full_bag_requested",false)==fullBags &&
+                    f.setup.template get<bool>("forward_requested",false)==forward,"original_guild_mail_identity_changed");
+                if(forward)f.setup.put("recipient_login_requested",false);
                 state.enforceEffects.store(true,std::memory_order_release);f.started=f.admitted=true;return;
             }
             for(const auto& row:state.cache)if(row.second.actor==f.actor && row.second.mode==Mode::Active && !Terminal(row.second.phase))
@@ -69,6 +106,36 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false) {
                 allowed|=guild->IsMemberHaveRights(f.actor,tab,GUILD_BANK_RIGHT_DEPOSIT_ITEM);
             require(allowed,"existing_native_deposit_permission_required");
             require(!actor->GetItemCount(2772,true),"mail_fixture_entry_must_not_mix_with_existing_commitments");
+            if(forward) {
+                require(!fullBags,"separate_native_forward_and_capacity_scenarios");
+                if(!f.setup.template get<uint32_t>("forward_receiver",0)) {
+                    uint32_t receiver=0,lowerRank=0;
+                    auto members=CharacterDatabase.PQuery("SELECT c.guid,c.account FROM guild_member gm JOIN characters c ON c.guid=gm.guid WHERE gm.guildid=%u AND c.guid<>%u ORDER BY c.guid",guild->GetId(),f.actor);
+                    if(members)do {
+                        auto* row=members->Fetch();const auto guid=row[0].GetUInt32();
+                        if(!sPlayerbotAIConfig.IsInRandomAccountList(row[1].GetUInt32()))continue;
+                        bool deposit=false;for(uint8_t tab=0;tab<guild->GetPurchasedTabs();++tab)
+                            deposit|=guild->IsMemberHaveRights(guid,tab,GUILD_BANK_RIGHT_DEPOSIT_ITEM);
+                        const auto* slot=guild->GetMemberSlot(ObjectGuid(HIGHGUID_PLAYER,guid));
+                        if(deposit && !receiver)receiver=guid;
+                        if(!deposit && slot && slot->RankId>guild->GetRank(actor->GetObjectGuid()) && !lowerRank)lowerRank=slot->RankId;
+                    }while(members->NextRow());
+                    require(receiver && lowerRank,"existing_native_recipient_and_nondeposit_rank_required");
+                    f.setup.put("forward_receiver",receiver);f.setup.put("rank_before",guild->GetRank(actor->GetObjectGuid()));
+                    f.setup.put("rank_revoked",lowerRank);
+                }
+                if(!loadRecipient())return;
+                require(recipient->GetGuildId()==guild->GetId() && recipient->GetTeam()==actor->GetTeam() &&
+                    !recipient->GetItemCount(2772,true),"forward_recipient_existing_stock_and_guild_required");
+                for(const auto& row:state.cache)if(row.second.actor==recipient->GetGUIDLow() && row.second.mode==Mode::Active && !Terminal(row.second.phase))
+                    require(false,"existing_forward_recipient_obligation_preserved");
+                f.setup.put("forward_money_before",recipient->GetMoney());
+                f.setup.put("forward_mail_delay_original",sWorld.getConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY));
+                f.setup.put("forward_mail_delay_seconds",120);
+                sWorld.setConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY,uint32_t(120));
+                f.setup.add_child("forward_inventory_before",GuildMailFixtureInventory(*recipient));
+                f.setup.add_child("sender_inventory_before",GuildMailFixtureInventory(*actor));
+            }
             uint32_t donor=0;
             auto members=CharacterDatabase.PQuery("SELECT c.guid,c.account FROM guild_member gm JOIN characters c ON c.guid=gm.guid WHERE gm.guildid=%u AND c.guid<>%u ORDER BY c.guid LIMIT 100",guild->GetId(),f.actor);
             if(members)do{auto* row=members->Fetch();if(sPlayerbotAIConfig.IsInRandomAccountList(row[1].GetUInt32())){donor=row[0].GetUInt32();break;}}while(members->NextRow());
@@ -82,6 +149,7 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false) {
             f.setup.put("money_grants",0);f.setup.put("permission_grants",0);f.setup.put("fixture_relocations",0);
             f.setup.put("donor_sending_proven",false);f.setup.put("capacity_preparation_proven",false);
             f.setup.put("full_bag_requested",fullBags);
+            if(forward)f.setup.put("forward_requested",true);
             boost::property_tree::ptree beforeInventory,fillSlots;
             auto capture=[&](Item* item) {
                 if(!item)return;
@@ -164,7 +232,19 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false) {
                 (unsigned long long)f.job.delivery,f.job.guild,f.job.goal.c_str(),donor,f.actor,itemGuid,mailId,uint32_t(time(nullptr)),uint32_t(time(nullptr)));
             std::ofstream setup("/isolated/evidence/guild-mail-setup-"+f.task+".json");setup<<Json(f.setup);setup.close();
             require(bool(setup),"guild_mail_setup_saved");
+            if(forward) {
+                // Native rank loss is an explicit copied-world fault input.
+                // It happens before the parcel matures, never after deposit.
+                auto* member=guild->GetMemberSlot(actor->GetObjectGuid());require(member,"forward_native_member_required");
+                member->ChangeRank(f.setup.template get<uint32_t>("rank_revoked"));
+                for(uint8_t tab=0;tab<guild->GetPurchasedTabs();++tab)
+                    require(!guild->IsMemberHaveRights(f.actor,tab,GUILD_BANK_RIGHT_DEPOSIT_ITEM),"forward_native_permission_not_revoked");
+            }
             state.enforceEffects.store(true,std::memory_order_release);f.started=true;return;
+        }
+        if(forward) {
+            sWorld.setConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY,uint32_t(120));
+            if(!loadRecipient())return;
         }
         if(!f.admitted) {
             GuildDeliveryJob native;
@@ -183,8 +263,39 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false) {
                 (unsigned long long)saved->revision,Name(saved->phase),saved->checkpoint.step.c_str(),f.blocker.c_str());}
         require(!Terminal(saved->phase) || saved->phase==Phase::Completed,"guild_mail_ended_without_verified_success");
         if(saved->phase!=Phase::Completed)return;
+        if(forward) {
+            require(saved->checkpoint.step=="guild_mail_handed_off","sender_handoff_not_bank_completion_required");
+            const Task* receiverTask=nullptr;
+            for(const auto& row:state.cache)if(row.second.actor==recipient->GetGUIDLow() && IsManagedGuildDelivery(row.second)) {
+                GuildDeliveryJob linked;std::string why;
+                if(DecodeGuildDeliveryJob(row.second.checkpoint.data,linked,why) && linked.delivery==f.job.delivery) {
+                    require(!receiverTask,"exactly_one_forward_recipient_task_required");receiverTask=&row.second;
+                    require(linked.donor==f.job.donor && linked.mailSender==f.actor && linked.incomingMail!=f.job.incomingMail &&
+                        linked.quantity==f.job.quantity,"original_donor_and_new_native_envelope_required");
+                }
+            }
+            require(receiverTask,"native_handoff_must_persist_recipient_task");
+            const auto pending=state.executionBlockers.find(receiverTask->id);
+            f.blocker=pending==state.executionBlockers.end()?receiverTask->checkpoint.blocker:pending->second;
+            f.setup.put("forward_task",receiverTask->id);f.setup.put("forward_phase",Name(receiverTask->phase));
+            require(!Terminal(receiverTask->phase) || receiverTask->phase==Phase::Completed,"forward_recipient_ended_without_deposit");
+            if(receiverTask->phase!=Phase::Completed)return;
+            require(!sLivingActivityCoordinator.DefersNativeSave(recipient->GetGUIDLow()) &&
+                !state.executionTimes.count(receiverTask->id),"forward_recipient_native_save_and_queue_settled");
+            auto* guild=sGuildMgr.GetGuildById(f.job.guild);require(guild,"forward_original_guild_required");
+            require(actor->GetMoney()+30==f.setup.template get<uint32_t>("money_before") &&
+                recipient->GetMoney()==f.setup.template get<uint32_t>("forward_money_before") &&
+                Json(GuildMailFixtureInventory(*actor))==Json(f.setup.get_child("sender_inventory_before")) &&
+                Json(GuildMailFixtureInventory(*recipient))==Json(f.setup.get_child("forward_inventory_before")),"forward_postage_and_all_possessions_conserved");
+            const auto counts=guild->GetBankItemCounts();const auto stock=counts.find(2772);
+            require(stock!=counts.end() && stock->second==f.setup.template get<uint32_t>("bank_before")+4,"forward_real_guild_bank_gain_required");
+            auto* member=guild->GetMemberSlot(actor->GetObjectGuid());
+            require(member && member->RankId==f.setup.template get<uint32_t>("rank_revoked"),"forward_fault_rank_changed_externally");
+            member->ChangeRank(f.setup.template get<uint32_t>("rank_before"));
+            f.setup.put("rank_restored",member->RankId);f.setup.put("forward_money_after",recipient->GetMoney());
+        }
         require(actor->GetItemCount(2772,false)==f.setup.template get<uint32_t>("bags_before") &&
-            (fullBags || actor->GetMoney()==f.setup.template get<uint32_t>("money_before")),"guild_mail_existing_stock_and_wallet_conserved");
+            (fullBags || forward || actor->GetMoney()==f.setup.template get<uint32_t>("money_before")),"guild_mail_existing_stock_and_wallet_conserved");
         require(!sLivingActivityCoordinator.DefersNativeSave(f.actor) && !sLivingActivityCoordinator.DefersGuildMutation(f.job.guild) &&
             !state.executionTimes.count(f.task),"guild_mail_native_save_and_queue_settled");
         f.blocker.clear();emit(true,"",actor);

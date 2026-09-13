@@ -647,7 +647,7 @@ void PlayerbotGuildSupplies::Update() {
                 guild->MoveFromCharToBank(p,item->GetBagSlot(),item->GetSlot(),uint8(tab),255,finalAmount);
                 s.depositing=0;s.depositCount=0;s.Release(d);s.load=0;
             }
-        } else if(d.mail) s.Block(d,"deposit_permission_revoked",now,true);
+        } else if(d.mail || d.deposited) s.Block(d,"deposit_permission_revoked",now,true);
         else {
             Player* recipient=nullptr;float distance=1e30f;
             for(uint32 guid:sRandomPlayerbotMgr.GetChatBotGuids()) {
