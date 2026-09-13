@@ -533,6 +533,7 @@ struct LivingActivityCoordinator::State {
         uint32_t actor = 0;
         std::string id, source, key, payload;
         bool retirement=false;
+        bool resourceFreeObservation=false;
     };
     std::deque<Pending> pending;
     bool preferReceiptRetry = false;
@@ -559,12 +560,14 @@ struct LivingActivityCoordinator::State {
     uint64_t taskAdmissions = 0, savedGrants = 0;
     std::map<uint32_t, std::string> preferred;
     std::map<std::string, std::string> quarantined;
+    std::set<std::string> commitmentQuarantines;
 
     void QuarantineIncoming(const std::string& reason) {
         if (incoming.empty()) return;
         const auto& row = incoming.front();
         const std::string id = row.restored ? row.id : SourceId(row.source, row.key);
         quarantined[id] = reason;
+        if(!row.resourceFreeObservation)commitmentQuarantines.insert(id);
         if (row.restored && !row.retirement) loadCursor = row.id;
         ++invalidRecords; blocker = reason;
         sLog.outError("Living activity record quarantined: task=%s reason=%s; native journal retained",
@@ -1067,17 +1070,18 @@ struct LivingActivityCoordinator::State {
     }
     void Load() {
         const std::string projection = PersistedTaskProjection();
-        const std::string sql = "SELECT * FROM (SELECT task_id," + projection + " payload FROM living_activity_task "
+        const std::string sql = "SELECT * FROM (SELECT task_id," + projection + " payload,("+
+            ResourceFreeObservationPredicate()+") resource_free_observation FROM living_activity_task "
             "WHERE phase NOT IN ('completed','cancelled','failed') AND task_id>" + SqlValue(loadCursor) +
-            " ORDER BY task_id LIMIT " + std::to_string(loadBatch) + ") records UNION ALL SELECT '','{}'";
+            " ORDER BY task_id LIMIT " + std::to_string(loadBatch) + ") records UNION ALL SELECT '','{}',0";
         ioPending = true;
         if (!CharacterDatabase.AsyncQuery([this](QueryResult* result) {
             ioPending = false;
-            if (!result) { blocker = "task_load_query_failed"; nextWork = NowMs() + 5000; return; }
+            if (!result || result->GetFieldCount()!=3) { blocker = "task_load_query_failed"; nextWork = NowMs() + 5000; return; }
             unsigned count = 0;
             do {
                 auto* f = result->Fetch(); const std::string id = f[0].GetCppString(); if (id.empty()) continue;
-                incoming.push_back({true, 0, 0, id, "", "", f[1].GetCppString()}); ++count;
+                incoming.push_back({true, 0, 0, id, "", "", f[1].GetCppString(),false,f[2].GetBool()}); ++count;
             } while (result->NextRow());
             if (count < loadBatch) loaded = true;
         }, sql.c_str())) { ioPending = false; nextWork = NowMs() + 5000; }
@@ -1444,6 +1448,7 @@ std::string LivingActivityCoordinator::StatusJson() const {
     }
     p.add_child("action_effects", effects);
     p.put("quarantined_records", state->quarantined.size());
+    p.put("commitment_quarantines", state->commitmentQuarantines.size());
     if (!state->quarantined.empty()) {
         p.put("quarantined_task", state->quarantined.begin()->first);
         p.put("quarantined_reason", state->quarantined.begin()->second);
@@ -3000,7 +3005,7 @@ AdmissionResult LivingActivityCoordinator::SettleRecipeLearning(uint32_t actor,c
 }
 
 bool LivingActivityCoordinator::HasGuildSupplyCommitment(uint32_t actor) const {
-    if(!OnWorldThread() || !ProfessionStoreReady() || !state->quarantined.empty())return true;
+    if(!OnWorldThread() || !ProfessionStoreReady() || !state->commitmentQuarantines.empty())return true;
     auto holds=[&](const Task& t){return t.actor==actor && t.mode==Mode::Active && t.accepted &&
         !Terminal(t.phase) && (IsGuildProcurementTask(t) || IsManagedGuildDelivery(t));};
     const auto indexed=state->cachedByActor.find(actor);
@@ -3053,7 +3058,7 @@ AdmissionResult LivingActivityCoordinator::AdmitGuildProcurement(uint32_t actor,
 }
 bool LivingActivityCoordinator::ReadGuildProcurementAvailability(const Task& task,uint32_t& available,std::string& blocker) {
     available=0;GuildProcurementJob job;
-    if(!OnWorldThread() || !ProfessionStoreReady() || !state->quarantined.empty()) {
+    if(!OnWorldThread() || !ProfessionStoreReady() || !state->commitmentQuarantines.empty()) {
         blocker="guild_procurement_task_snapshot_unavailable";return false;
     }
     if(!ValidateGuildProcurementTask(task,blocker) || !IsGuildProcurementTask(task) ||
@@ -3212,8 +3217,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Handoff
         NativeClaimBalances(*bot,claims.claims,false),NowMs(),receipt,handoff,why))return stop(why);
     if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
         return stop("guild_procurement_handoff_backpressure");
-    // The normal executor gate is still closed until admission/recovery is
-    // complete. Having this compiled handoff does not enable new purchases.
+    // The existing active-mode gate and current action context still own this
+    // metadata-only handoff; its receipt does not prove a guild-bank deposit.
     const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Guild),60000,"guild_procurement_handoff");
     if(!grant.Permitted())return stop(grant.blocker);
     State::Pending write;write.task=std::move(handoff.task);write.plan=std::move(handoff.plan);
