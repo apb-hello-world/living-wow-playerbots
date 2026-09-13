@@ -10,7 +10,9 @@ namespace LivingActivity {
     void SealNativeVendorSources();
     bool NativeProfessionVendorSources(Player& actor,uint32_t entry,uint32_t quantity,
         std::vector<int32_t>& vendors,std::string& blocker);
-    bool NextNativeProfessionVendorItem(Player& actor,const Task& saved,
+    enum class VendorDemandStatus { Ready, Replan, Waiting };
+    // A failed snapshot is unknown, not evidence of changed demand or arrival.
+    VendorDemandStatus NextNativeProfessionVendorItem(Player& actor,const Task& saved,
         ProfessionReagent& need,std::vector<int32_t>& vendors,std::string& blocker);
     bool PlanNativeProfessionPurchase(Player& actor,const Task& saved,const ProfessionReagent& need,
         NativeVendorQuote& quote,std::string& blocker);

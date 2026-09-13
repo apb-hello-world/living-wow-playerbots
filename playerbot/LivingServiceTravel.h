@@ -30,12 +30,41 @@ namespace LivingActivity {
             if (step==ServiceStep(candidate)) {service=candidate;return true;}
         return false;
     }
+    enum class ServiceTravelDisposition { Continuing, Replan, Waiting };
     struct ServiceTravelResult {
         bool arrived=false;
         std::string blocker;
         uint64_t activeElapsedMs=0,retryAtMs=0;
         std::string safetyDetail; // Keep the pause classification separate from its exact native cause.
+        ServiceTravelDisposition disposition=ServiceTravelDisposition::Continuing;
     };
+    // The common task transition used by profession, recipe and guild service
+    // legs. A replan or missing snapshot must never advance the progress clock.
+    // This only prepares a value; the normal revision/authority writer commits it.
+    inline bool CheckpointServiceTravel(const Task& saved,const ServiceTravelResult& route,
+        uint64_t nowMs,const std::string& preparation,Task& next) {
+        if(saved.phase!=Phase::Traveling || nowMs<saved.updatedAtMs ||
+            saved.revision==std::numeric_limits<uint64_t>::max() ||
+            (route.arrived && route.disposition!=ServiceTravelDisposition::Continuing))return false;
+        const bool replan=route.disposition==ServiceTravelDisposition::Replan;
+        const bool waiting=route.disposition==ServiceTravelDisposition::Waiting;
+        const bool paused=route.blocker=="recipe_service_safety_pause";
+        if((route.arrived || replan) && (paused || route.retryAtMs))return false;
+        if(waiting && (route.blocker.empty() || route.retryAtMs<=nowMs))return false;
+        if(!route.arrived && !replan && !waiting && !route.retryAtMs && !paused &&
+            (route.activeElapsedMs<saved.checkpoint.activeElapsedMs ||
+             route.activeElapsedMs-saved.checkpoint.activeElapsedMs<30000))return false;
+        next=saved;++next.revision;next.updatedAtMs=nowMs;
+        next.phase=paused?Phase::Paused:waiting?Phase::WaitingExternal:
+            (route.arrived || replan)?Phase::Preparing:route.retryAtMs?Phase::Deferred:Phase::Traveling;
+        next.checkpoint.activeElapsedMs=std::max(saved.checkpoint.activeElapsedMs,route.activeElapsedMs);
+        next.retryAtMs=route.retryAtMs;
+        next.checkpoint.blocker=paused && !route.safetyDetail.empty()?route.safetyDetail:
+            (paused || waiting || replan || route.retryAtMs)?route.blocker:"";
+        if(route.arrived || replan)next.checkpoint.step=preparation;
+        if(route.arrived)next.checkpoint.lastProgressAtMs=nowMs;
+        return true;
+    }
     // Admission ordering only, not another scheduler or execution authority.
     // Both legacy and saved trips occupy the existing economy service queue.
     struct ServiceQueueEntry {

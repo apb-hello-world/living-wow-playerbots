@@ -1889,23 +1889,11 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(saved->phase==Phase::Preparing) return beginService(service);
         if(saved->phase==Phase::Traveling) {
             const auto route=sPlayerbotOrganicEconomy.ReachSavedService(actor,id,saved->revision,service);
-            const bool paused=route.blocker=="recipe_service_safety_pause";
             // At most one bounded checkpoint per 30s of active work, plus real
             // arrival/pause/backoff transitions. No per-tick database writes.
-            if(route.arrived || route.retryAtMs || paused ||
-                (route.activeElapsedMs>=saved->checkpoint.activeElapsedMs &&
-                 route.activeElapsedMs-saved->checkpoint.activeElapsedMs>=30000)) {
-                TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
-                ++request.task.revision;request.task.updatedAtMs=NowMs();request.receipt=NewId();
-                request.task.phase=route.arrived?Phase::Preparing:route.retryAtMs?Phase::Deferred:paused?Phase::Paused:Phase::Traveling;
-                request.task.checkpoint.activeElapsedMs=std::max(saved->checkpoint.activeElapsedMs,route.activeElapsedMs);
-                request.task.retryAtMs=route.retryAtMs;
-                request.task.checkpoint.blocker=paused && !route.safetyDetail.empty()?route.safetyDetail:
-                    paused || route.retryAtMs ? route.blocker : "";
-                if(route.arrived) {
-                    request.task.checkpoint.step="profession_prepare";
-                    request.task.checkpoint.lastProgressAtMs=request.task.updatedAtMs;
-                }
+            Task next;
+            if(CheckpointServiceTravel(*saved,route,NowMs(),"profession_prepare",next)) {
+                TaskRequest request;request.task=std::move(next);request.expectedRevision=saved->revision;request.receipt=NewId();
                 return stop(SubmitTask(request).blocker);
             }
             return stop(route.blocker);

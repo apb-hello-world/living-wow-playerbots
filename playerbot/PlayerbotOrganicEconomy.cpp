@@ -695,11 +695,25 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
     if(service==ServiceDestination::GuildBank)purpose=uint32(ai::TravelDestinationPurpose::GuildBank);
     if(service==ServiceDestination::PurchaseVendor) {
         ProfessionReagent need;std::vector<int32_t> vendors;std::string blocker;
-        if(!NextNativeProfessionVendorItem(*bot,*saved,need,vendors,blocker)) {
-            // Reinspect a changed prerequisite under preparation; it is not
-            // evidence of a completed purchase or permission to visit any shop.
-            ReleaseRecipeService(actor,"profession_vendor_demand_changed");
-            return {true,blocker,saved->checkpoint.activeElapsedMs};
+        const auto demand=NextNativeProfessionVendorItem(*bot,*saved,need,vendors,blocker);
+        if(demand!=VendorDemandStatus::Ready) {
+            ServiceTravelResult result;result.blocker=blocker;result.activeElapsedMs=saved->checkpoint.activeElapsedMs;
+            if(const auto trip=serviceTrips.find(actor);trip!=serviceTrips.end())
+                result.activeElapsedMs=std::max(result.activeElapsedMs,trip->second.work.ActiveMs());
+            if(demand==VendorDemandStatus::Replan) {
+                ReleaseRecipeService(actor,"profession_vendor_demand_changed");
+                result.disposition=ServiceTravelDisposition::Replan;
+            } else {
+                PauseRecipeService(actor,"profession_vendor_snapshot_wait");
+                result.disposition=ServiceTravelDisposition::Waiting;
+                const uint64 stamp=std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                result.retryAtMs=stamp+5000; // Existing due queue; not a failed route attempt.
+                if(result.blocker.empty())result.blocker="profession_vendor_snapshot_unavailable";
+            }
+            const auto trip=serviceTrips.find(actor);
+            if(trip!=serviceTrips.end())result.activeElapsedMs=std::max(result.activeElapsedMs,trip->second.work.ActiveMs());
+            return result;
         }
         return DriveRecipeService(bot,uint32(ai::TravelDestinationPurpose::Vendor),id,&*saved,need.entry,need.perAttempt);
     }

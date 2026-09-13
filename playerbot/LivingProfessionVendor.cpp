@@ -85,28 +85,38 @@ namespace LivingActivity {
         blocker=vendors.empty()?"profession_vendor_source_unavailable":"";
         return !vendors.empty();
     }
-    bool NextNativeProfessionVendorItem(Player& actor,const Task& saved,
+    VendorDemandStatus NextNativeProfessionVendorItem(Player& actor,const Task& saved,
         ProfessionReagent& need,std::vector<int32_t>& vendors,std::string& blocker) {
         need={};vendors.clear();std::vector<ProfessionReagent> requirements;NativeProfessionDemand demand;
-        if(!ReadNativeTaskItemRequirements(actor,saved,requirements,blocker)) return false;
-        if(!InspectNativeProfessionDemand(actor,saved,demand)) {blocker=demand.blocker;return false;}
-        if (requirements!=demand.requirements) {blocker="profession_item_requirements_changed";return false;}
+        if(!ReadNativeTaskItemRequirements(actor,saved,requirements,blocker)) return VendorDemandStatus::Waiting;
+        if(!InspectNativeProfessionDemand(actor,saved,demand)) {blocker=demand.blocker;return VendorDemandStatus::Waiting;}
+        if (requirements!=demand.requirements || requirements.size()!=demand.stock.size()) {
+            blocker="profession_item_requirements_changed";return VendorDemandStatus::Waiting;
+        }
         for(size_t i=0;i<requirements.size();++i) {
             const auto& required=requirements[i];const auto& have=demand.stock[i];
+            if(required.entry!=have.entry) {blocker="profession_stock_identity_mismatch";return VendorDemandStatus::Waiting;}
             if(have.bag>=required.perAttempt) continue;
             const auto* item=sObjectMgr.GetItemPrototype(required.entry);uint32_t quantity=0;
-            if(!item || !RequiredProfessionVendorQuantity(required,have,item->BuyCount,quantity,blocker)) return false;
+            if(!item) {blocker="profession_purchase_native_item_unavailable";return VendorDemandStatus::Waiting;}
+            if(!RequiredProfessionVendorQuantity(required,have,item->BuyCount,quantity,blocker)) {
+                // These quantities came from a complete native/claim snapshot.
+                // Returning to preparation can collect them or wait for mail;
+                // it still does not prove arrival, receipt or a purchase.
+                return have.bank || have.delivered || have.paidInTransit>=required.perAttempt-have.bag
+                    ? VendorDemandStatus::Replan : VendorDemandStatus::Waiting;
+            }
             std::vector<int32_t> candidates;
-            if(!NativeProfessionVendorSources(actor,required.entry,quantity,candidates,blocker)) return false;
-            need={required.entry,quantity};vendors=std::move(candidates);blocker.clear();return true;
+            if(!NativeProfessionVendorSources(actor,required.entry,quantity,candidates,blocker))
+                return blocker=="profession_vendor_source_unavailable" ? VendorDemandStatus::Replan : VendorDemandStatus::Waiting;
+            need={required.entry,quantity};vendors=std::move(candidates);blocker.clear();return VendorDemandStatus::Ready;
         }
-        if(!need.entry) {blocker="profession_purchase_material_already_available";return false;}
-        blocker.clear();return true;
+        blocker="profession_purchase_material_already_available";return VendorDemandStatus::Replan;
     }
     bool PlanNativeProfessionPurchase(Player& actor,const Task& saved,const ProfessionReagent& wanted,
         NativeVendorQuote& quote,std::string& blocker) {
         quote={};ProfessionReagent need;std::vector<int32_t> vendors;
-        if(!NextNativeProfessionVendorItem(actor,saved,need,vendors,blocker)) return false;
+        if(NextNativeProfessionVendorItem(actor,saved,need,vendors,blocker)!=VendorDemandStatus::Ready) return false;
         if(need.entry!=wanted.entry) {blocker="profession_vendor_demand_changed";return false;}
         auto* ai=actor.GetPlayerbotAI();
         std::string nearbyBlocker;
@@ -144,7 +154,7 @@ namespace LivingActivity {
         if(localVendor)vendor={localVendor->copper,localVendor->quantity,0,true};
         else if(!vendorOutOfStock) {
             ProfessionReagent actual;std::vector<int32_t> vendors;
-            if(NextNativeProfessionVendorItem(actor,saved,actual,vendors,blocker) && actual.entry==need.entry) {
+            if(NextNativeProfessionVendorItem(actor,saved,actual,vendors,blocker)==VendorDemandStatus::Ready && actual.entry==need.entry) {
                 const auto* item=sObjectMgr.GetItemPrototype(actual.entry);
                 const uint64_t price=item && item->BuyCount ? uint64_t(item->BuyPrice)*actual.perAttempt/item->BuyCount : 0;
                 if(price && price<=UINT32_MAX) {

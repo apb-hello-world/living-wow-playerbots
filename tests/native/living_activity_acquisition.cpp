@@ -8,6 +8,43 @@
 using namespace LivingActivity;
 int main() {
     {
+        Task saved;saved.phase=Phase::Traveling;saved.revision=8;saved.updatedAtMs=100000;
+        saved.checkpoint.step="profession_service_purchase_vendor";
+        saved.checkpoint.lastProgressAtMs=80000;saved.checkpoint.activeElapsedMs=60000;
+        ServiceTravelResult route;route.activeElapsedMs=60000;Task next;
+        assert(!CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        route.disposition=ServiceTravelDisposition::Waiting;route.blocker="claims_read_pending";route.retryAtMs=105000;
+        assert(CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        assert(next.phase==Phase::WaitingExternal && next.checkpoint.blocker=="claims_read_pending");
+        assert(next.revision==9 && next.retryAtMs==105000 && next.checkpoint.step==saved.checkpoint.step);
+        assert(next.checkpoint.activeElapsedMs==60000 && next.checkpoint.lastProgressAtMs==80000);
+        route.retryAtMs=100010;assert(!CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        route.retryAtMs=105000;route.blocker.clear();assert(!CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        route.disposition=ServiceTravelDisposition::Replan;route.blocker="profession_paid_material_in_transit";route.retryAtMs=0;
+        assert(CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        assert(next.phase==Phase::Preparing && next.checkpoint.step=="profession_prepare" && !next.retryAtMs);
+        assert(next.checkpoint.lastProgressAtMs==80000); // Replanning is NOT route advancement.
+        route.arrived=true;assert(!CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        route.disposition=ServiceTravelDisposition::Continuing;
+        assert(CheckpointServiceTravel(saved,route,100010,"guild_delivery_prepare",next));
+        assert(next.phase==Phase::Preparing && next.checkpoint.step=="guild_delivery_prepare");
+        assert(next.checkpoint.lastProgressAtMs==100010 && next.checkpoint.blocker.empty());
+        route.retryAtMs=105000;assert(!CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        route.arrived=false;route.blocker="recipe_service_no_progress";
+        assert(CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        assert(next.phase==Phase::Deferred && next.retryAtMs==105000 && next.checkpoint.lastProgressAtMs==80000);
+        route.retryAtMs=0;route.blocker="recipe_service_safety_pause";route.safetyDetail="native_transport";
+        assert(CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        assert(next.phase==Phase::Paused && next.checkpoint.blocker=="native_transport" && next.checkpoint.lastProgressAtMs==80000);
+        route.blocker.clear();route.safetyDetail.clear();route.activeElapsedMs=89999;
+        assert(!CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        route.activeElapsedMs=90000;assert(CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        assert(next.phase==Phase::Traveling && next.checkpoint.activeElapsedMs==90000 && next.checkpoint.lastProgressAtMs==80000);
+        assert(!CheckpointServiceTravel(saved,route,99999,"profession_prepare",next));
+        saved.phase=Phase::Completed;assert(!CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+        saved.phase=Phase::Traveling;saved.revision=UINT64_MAX;assert(!CheckpointServiceTravel(saved,route,100010,"profession_prepare",next));
+    }
+    {
         const ServicePathPoint here{1,874.343,-4044.7,5.3722};
         std::vector<ServicePathPoint> path;
         const auto valid=[&]{return ReachableServicePrefix(here,path.size(),[&](size_t n){return path[n];},2);};

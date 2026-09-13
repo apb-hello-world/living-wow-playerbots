@@ -234,16 +234,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             return advance(Phase::Preparing,"guild_delivery_prepare");
         const auto destination=saved->checkpoint.step==ServiceStep(ServiceDestination::GuildMailbox)?ServiceDestination::GuildMailbox:ServiceDestination::GuildBank;
         const auto travel=sPlayerbotOrganicEconomy.ReachSavedService(actor,id,saved->revision,destination);
-        const bool pause=travel.blocker=="recipe_service_safety_pause";
-        if(travel.arrived || travel.retryAtMs || pause || (travel.activeElapsedMs>=saved->checkpoint.activeElapsedMs &&
-            travel.activeElapsedMs-saved->checkpoint.activeElapsedMs>=30000)) {
-            TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;request.receipt=NewId();
-            ++request.task.revision;request.task.updatedAtMs=NowMs();
-            request.task.phase=travel.arrived?Phase::Preparing:travel.retryAtMs?Phase::Deferred:pause?Phase::Paused:Phase::Traveling;
-            request.task.retryAtMs=travel.retryAtMs;request.task.checkpoint.activeElapsedMs=std::max(saved->checkpoint.activeElapsedMs,travel.activeElapsedMs);
-            request.task.checkpoint.blocker=pause && !travel.safetyDetail.empty()?travel.safetyDetail:
-                (travel.retryAtMs || pause)?travel.blocker:"";
-            if(travel.arrived){request.task.checkpoint.step="guild_delivery_prepare";request.task.checkpoint.lastProgressAtMs=NowMs();}
+        Task next;
+        if(CheckpointServiceTravel(*saved,travel,NowMs(),"guild_delivery_prepare",next)) {
+            TaskRequest request;request.task=std::move(next);request.expectedRevision=saved->revision;request.receipt=NewId();
             return stop(SubmitTask(request).blocker);
         }
         return stop(travel.blocker);
