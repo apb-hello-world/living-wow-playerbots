@@ -242,7 +242,7 @@ namespace LivingActivity {
         // A split has a NEW native GUID; protect it before asynchronous save
         // acknowledgement, as well as the original source's existing hold.
         if(source->itemGuid!=receiver->itemGuid) {
-            if(protection.ProtectedItem(receiver->itemGuid))return ClaimInstall::Invalid;
+            if(protection.ProtectedItem(receiver->actor,receiver->itemGuid,receiver->itemEntry))return ClaimInstall::Invalid;
             hold.additional.push_back(*receiver);Index(*receiver,true);
         }
         // The old exact GUID remains protected, for ANY actor. This pending
