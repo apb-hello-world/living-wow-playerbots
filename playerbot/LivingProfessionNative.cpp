@@ -15,15 +15,66 @@
 namespace LivingActivity {
     namespace {
         std::vector<std::pair<uint32_t,uint32_t>> toolCatalog;
+        std::map<uint32_t,std::vector<uint32_t>> toolRecipes;
         bool toolCatalogReady=false;
     }
     void BuildNativeProfessionToolCatalog() {
-        toolCatalog.clear();toolCatalogReady=false;
+        toolCatalog.clear();toolRecipes.clear();toolCatalogReady=false;
         for (uint32_t id=1;id<sItemStorage.GetMaxEntry();++id) {
             const auto* item=sObjectMgr.GetItemPrototype(id);
             if (item && item->TotemCategory) toolCatalog.emplace_back(id,item->TotemCategory);
         }
+        for(uint32_t id=1;id<sSpellTemplate.GetMaxEntry();++id) {
+            const auto* spell=sServerFacade.LookupSpellInfo(id);if(!spell)continue;
+            for(uint8_t i=0;i<MAX_EFFECT_INDEX;++i)
+                if(spell->Effect[i]==SPELL_EFFECT_CREATE_ITEM && spell->EffectItemType[i]) {
+                    auto& recipes=toolRecipes[spell->EffectItemType[i]];
+                    if(recipes.empty() || recipes.back()!=id)recipes.push_back(id);
+                }
+        }
         toolCatalogReady=true;
+    }
+    namespace {
+        bool IsNativeRequiredTool(const ProfessionJob& parent,uint32_t entry) {
+            const auto* spell=sServerFacade.LookupSpellInfo(parent.recipe);
+            const auto* item=sObjectMgr.GetItemPrototype(entry);if(!spell || !item)return false;
+            for(const auto exact:spell->Totem)if(exact && exact==entry)return true;
+            for(const auto category:spell->TotemCategory)
+                if(category && item->TotemCategory && IsTotemCategoryCompatiableWith(item->TotemCategory,category))return true;
+            return false;
+        }
+    }
+    bool BuildNativeProfessionToolPreparation(Player& actor,const Task& task,uint32_t entry,
+        ProfessionWorkflow& result,std::string& blocker) {
+        result={};auto reject=[&](const char* why){blocker=why;return false;};
+        ProfessionWorkflow flow;
+        if(!sLivingActivityCoordinator.OnWorldThread() || !toolCatalogReady || actor.GetGUIDLow()!=task.actor ||
+            !actor.IsInWorld() || actor.IsBeingTeleported() || task.root!=task.id || !task.accepted ||
+            !DecodeProfessionWorkflow(task.checkpoint.data,flow,blocker))return reject("profession_tool_preparation_context_invalid");
+        if(!flow.tools.empty() && !flow.tools.back().finishedRevision)return reject("profession_tool_nested_preparation_required");
+        if(flow.tools.size()>=4)return reject("profession_tool_preparation_limit");
+        if(!IsNativeRequiredTool(flow.intent,entry))return reject("profession_tool_not_required_by_parent");
+        if(actor.HasItemCount(entry,1,true))return reject("profession_tool_already_owned_requires_collection");
+        for(const auto& tool:flow.tools)if(tool.job.outputEntry==entry)return reject("profession_prepared_tool_requires_reconciliation");
+        const auto found=toolRecipes.find(entry);
+        if(found==toolRecipes.end())return reject("profession_tool_crafting_recipe_unavailable");
+        for(const auto id:found->second) {
+            ProfessionJob job;job.recipe=id;job.skill=flow.intent.skill;job.purpose=ProfessionPurpose::Intermediate;
+            const auto native=InspectNativeProfessionRecipe(actor,job);
+            if(!native.blocker.empty() || native.operation!=ProfessionOperation::CreateItem || native.outputEntry!=entry)continue;
+            job.reagents=native.reagents;job.outputEntry=entry;job.outputQuantity=1;job.initialSkill=native.skillValue;
+            job.targetSkill=0;job.attemptLimit=3;
+            ItemGainSpec output;std::string why;
+            if(!MatchNativeProfessionRecipe(job,native,why) || !ReadNativeCraftOutput(actor,job,output,why) || output.quantity!=1)continue;
+            // This finite adapter creates a tool, not a recursive crafting DSL.
+            // A missing prerequisite of that tool is explicit until supported.
+            const auto* spell=sServerFacade.LookupSpellInfo(id);bool ready=true;
+            for(const auto tool:spell->Totem)if(tool && !actor.HasItemCount(tool,1,false))ready=false;
+            for(const auto category:spell->TotemCategory)if(category && !actor.HasItemTotemCategory(category))ready=false;
+            if(!ready)continue;
+            flow.tools.push_back({job,task.revision+1,0});result=std::move(flow);blocker.clear();return true;
+        }
+        return reject("profession_tool_known_executable_recipe_unavailable");
     }
     bool ReadNativeProfessionTools(Player& actor,const Task& task,
         std::vector<ProfessionReagent>& tools,std::string& unavailable,std::string& blocker) {
@@ -212,6 +263,9 @@ namespace LivingActivity {
         if (actor.GetGUIDLow() != task.actor) { blocker = "profession_native_actor_mismatch"; return false; }
         ProfessionJob job;
         if (!ValidateProfessionTask(task, blocker) || !DecodeProfessionJob(task.checkpoint.data, job, blocker)) return false;
+        ProfessionWorkflow flow;if(!DecodeProfessionWorkflow(task.checkpoint.data,flow,blocker))return false;
+        for(const auto& tool:flow.tools)
+            if(!IsNativeRequiredTool(flow.intent,tool.job.outputEntry)) {blocker="profession_tool_not_required_by_parent";return false;}
         return MatchNativeProfessionRecipe(job, InspectNativeProfessionRecipe(actor, job), blocker);
     }
 }

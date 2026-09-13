@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <boost/property_tree/json_parser.hpp>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -29,7 +30,7 @@ namespace LivingActivity {
         ProfessionJob job;std::string blocker;uint32_t recipe=0;
         return goalRow && task.source=="profession_job" && task.sourceKey==EconomyProfessionSourceKey(goalRow) &&
             task.actor==actor && task.id==task.root && task.parent.empty() && task.accepted && task.mode==Mode::Active &&
-            EconomyProfessionRecipe(actor,capability,recipe) && DecodeProfessionJob(task.checkpoint.data,job,blocker) &&
+            EconomyProfessionRecipe(actor,capability,recipe) && DecodeProfessionIntent(task.checkpoint.data,job,blocker) &&
             job.recipe==recipe;
     }
     bool RequiredProfessionVendorQuantity(const ProfessionReagent& need,const ProfessionStock& stock,
@@ -104,7 +105,7 @@ namespace LivingActivity {
         root.add_child("reagents", reagents);
         std::ostringstream output; boost::property_tree::write_json(output, root, false); return output.str();
     }
-    bool DecodeProfessionJob(const std::string& data, ProfessionJob& job, std::string& blocker) {
+    static bool DecodeBaseProfessionJob(const std::string& data, ProfessionJob& job, std::string& blocker) {
         blocker = "invalid_profession_checkpoint";
         if (data.empty() || data.size() > 8192) return false;
         try {
@@ -131,6 +132,102 @@ namespace LivingActivity {
             if (!ValidateProfessionJob(parsed, blocker)) return false;
             job = std::move(parsed); blocker.clear(); return true;
         } catch (const std::exception&) { return false; }
+    }
+    namespace {
+        std::string Json(const Tree& tree) {
+            std::ostringstream out;boost::property_tree::write_json(out,tree,false);return out.str();
+        }
+        uint64_t Revision(const Tree& value) {
+            const auto& text=value.data();
+            if(!value.empty() || text.empty() || text.size()>20 || text.find_first_not_of("0123456789")!=std::string::npos)
+                throw std::invalid_argument("invalid profession preparation revision");
+            return std::stoull(text);
+        }
+        bool ValidWorkflow(const ProfessionWorkflow& flow,std::string& blocker) {
+            if(!ValidateProfessionJob(flow.intent,blocker))return false;
+            blocker="invalid_profession_tool_preparation";
+            if(flow.tools.size()>4)return false;
+            uint64_t previous=0;std::set<uint32_t> recipes,outputs;
+            for(size_t i=0;i<flow.tools.size();++i) {
+                const auto& tool=flow.tools[i];const auto& job=tool.job;std::string why;
+                if(!ValidateProfessionJob(job,why) || job.operation!=ProfessionOperation::CreateItem ||
+                    job.purpose!=ProfessionPurpose::Intermediate || job.skill!=flow.intent.skill || job.outputQuantity!=1 ||
+                    job.attemptLimit>3 || job.recipe==flow.intent.recipe || job.outputEntry==flow.intent.outputEntry ||
+                    !recipes.insert(job.recipe).second || !outputs.insert(job.outputEntry).second ||
+                    tool.startedRevision<2 || tool.startedRevision<=previous ||
+                    (tool.finishedRevision ? tool.finishedRevision<=tool.startedRevision : i+1!=flow.tools.size()))return false;
+                previous=tool.finishedRevision;
+            }
+            blocker.clear();return true;
+        }
+        bool SameTool(const ProfessionToolPreparation& a,const ProfessionToolPreparation& b) {
+            return SameIntent(a.job,b.job) && a.startedRevision==b.startedRevision && a.finishedRevision==b.finishedRevision;
+        }
+    }
+    bool DecodeProfessionWorkflow(const std::string& data,ProfessionWorkflow& flow,std::string& blocker) {
+        blocker="invalid_profession_checkpoint";
+        if(data.empty() || data.size()>8192)return false;
+        try {
+            Tree root;std::istringstream input(data);boost::property_tree::read_json(input,root);
+            ProfessionWorkflow parsed;
+            if(root.count("tool_preparations")) {
+                if(root.count("tool_preparations")!=1)return false;
+                const auto list=root.get_child("tool_preparations");root.erase("tool_preparations");
+                if(!list.data().empty() || list.empty() || list.size()>4)return false;
+                for(const auto& row:list) {
+                    if(!row.first.empty() || !row.second.data().empty() || row.second.size()!=3 ||
+                        row.second.count("job")!=1 || row.second.count("started_revision")!=1 || row.second.count("finished_revision")!=1)return false;
+                    ProfessionToolPreparation tool;
+                    if(!DecodeBaseProfessionJob(Json(row.second.get_child("job")),tool.job,blocker))return false;
+                    tool.startedRevision=Revision(row.second.get_child("started_revision"));
+                    tool.finishedRevision=Revision(row.second.get_child("finished_revision"));parsed.tools.push_back(std::move(tool));
+                }
+            }
+            if(!DecodeBaseProfessionJob(Json(root),parsed.intent,blocker) || !ValidWorkflow(parsed,blocker))return false;
+            flow=std::move(parsed);blocker.clear();return true;
+        } catch(const std::exception&) {return false;}
+    }
+    std::string EncodeProfessionWorkflow(const ProfessionWorkflow& flow) {
+        std::string blocker;if(!ValidWorkflow(flow,blocker))throw std::invalid_argument(blocker);
+        if(flow.tools.empty())return EncodeProfessionJob(flow.intent);
+        Tree root;std::istringstream input(EncodeProfessionJob(flow.intent));boost::property_tree::read_json(input,root);
+        Tree list;
+        for(const auto& tool:flow.tools) {
+            Tree row,job;std::istringstream encoded(EncodeProfessionJob(tool.job));boost::property_tree::read_json(encoded,job);
+            row.add_child("job",job);row.put("started_revision",tool.startedRevision);row.put("finished_revision",tool.finishedRevision);
+            list.push_back({"",row});
+        }
+        root.add_child("tool_preparations",list);const auto encoded=Json(root);
+        if(encoded.size()>8192)throw std::invalid_argument("profession_checkpoint_bound");
+        return encoded;
+    }
+    bool DecodeProfessionIntent(const std::string& data,ProfessionJob& job,std::string& blocker) {
+        ProfessionWorkflow flow;if(!DecodeProfessionWorkflow(data,flow,blocker))return false;
+        job=std::move(flow.intent);return true;
+    }
+    bool DecodeProfessionJob(const std::string& data,ProfessionJob& job,std::string& blocker) {
+        ProfessionWorkflow flow;if(!DecodeProfessionWorkflow(data,flow,blocker))return false;
+        job=!flow.tools.empty() && !flow.tools.back().finishedRevision ? std::move(flow.tools.back().job) : std::move(flow.intent);
+        return true;
+    }
+    bool HasActiveProfessionTool(const std::string& data) {
+        ProfessionWorkflow flow;std::string blocker;
+        return DecodeProfessionWorkflow(data,flow,blocker) && !flow.tools.empty() && !flow.tools.back().finishedRevision;
+    }
+    uint32_t ProfessionWorkflowAttemptLimit(const std::string& data) {
+        ProfessionWorkflow flow;std::string blocker;if(!DecodeProfessionWorkflow(data,flow,blocker))return 0;
+        uint32_t limit=flow.intent.attemptLimit;for(const auto& tool:flow.tools)limit+=tool.job.attemptLimit;return limit;
+    }
+    bool ProfessionJobAtRevision(const Task& task,uint64_t revision,ProfessionJob& job,bool& current,std::string& blocker) {
+        ProfessionWorkflow flow;current=false;
+        if(!revision || revision>task.revision || !DecodeProfessionWorkflow(task.checkpoint.data,flow,blocker))return false;
+        for(size_t i=0;i<flow.tools.size();++i) {
+            const auto& tool=flow.tools[i];
+            if(tool.startedRevision<=revision && (!tool.finishedRevision || revision<tool.finishedRevision)) {
+                job=tool.job;current=i+1==flow.tools.size() && !tool.finishedRevision;return true;
+            }
+        }
+        job=flow.intent;current=flow.tools.empty() || flow.tools.back().finishedRevision;return true;
     }
     bool IsProfessionJob(const Task& task) {
         // Service step names are backward compatible and shared by learning
@@ -165,8 +262,11 @@ namespace LivingActivity {
     bool ValidateProfessionTask(const Task& task, std::string& blocker) {
         if (!ValidateRecipeLearningTask(task,blocker)) return false;
         if (!IsProfessionJob(task)) { blocker.clear(); return true; }
-        ProfessionJob job;
-        if (task.kind != Kind::Profession || !task.parent.empty() || !DecodeProfessionJob(task.checkpoint.data, job, blocker)) {
+        ProfessionWorkflow flow;
+        if (task.kind != Kind::Profession || !task.parent.empty() || !DecodeProfessionWorkflow(task.checkpoint.data, flow, blocker) ||
+            (!flow.tools.empty() && (!task.accepted || task.mode!=Mode::Active)) ||
+            std::any_of(flow.tools.begin(),flow.tools.end(),[&](const auto& tool){
+                return tool.startedRevision>task.revision || tool.finishedRevision>task.revision;})) {
             if (blocker.empty()) blocker = "invalid_profession_task";
             return false;
         }
@@ -175,11 +275,33 @@ namespace LivingActivity {
     bool PreserveProfessionIntent(const Task& before, const Task& after, std::string& blocker) {
         if (!PreserveRecipeLearningIntent(before,after,blocker)) return false;
         if (!ValidateProfessionTask(after, blocker)) return false;
-        if (!before.accepted || !IsProfessionJob(before)) return true;
-        ProfessionJob oldJob, nextJob;
-        if (!IsProfessionJob(after) || !DecodeProfessionJob(before.checkpoint.data, oldJob, blocker) ||
-            !DecodeProfessionJob(after.checkpoint.data, nextJob, blocker) || !SameIntent(oldJob, nextJob)) {
+        if (!before.accepted || !IsProfessionJob(before)) {
+            ProfessionWorkflow initial;
+            if(IsProfessionJob(after) && DecodeProfessionWorkflow(after.checkpoint.data,initial,blocker) && !initial.tools.empty()) {
+                blocker="profession_preparation_requires_accepted_root";return false;
+            }
+            return true;
+        }
+        ProfessionWorkflow oldFlow,nextFlow;
+        if (!IsProfessionJob(after) || !DecodeProfessionWorkflow(before.checkpoint.data, oldFlow, blocker) ||
+            !DecodeProfessionWorkflow(after.checkpoint.data, nextFlow, blocker) || !SameIntent(oldFlow.intent, nextFlow.intent)) {
             blocker = "accepted_profession_intent_is_immutable"; return false;
+        }
+        blocker="accepted_profession_preparation_is_immutable";
+        if(nextFlow.tools.size()<oldFlow.tools.size() || nextFlow.tools.size()>oldFlow.tools.size()+1)return false;
+        for(size_t i=0;i<oldFlow.tools.size();++i) {
+            if(SameTool(oldFlow.tools[i],nextFlow.tools[i]))continue;
+            const auto& a=oldFlow.tools[i];const auto& b=nextFlow.tools[i];
+            if(i+1!=oldFlow.tools.size() || nextFlow.tools.size()!=oldFlow.tools.size() || a.finishedRevision ||
+                !SameIntent(a.job,b.job) || a.startedRevision!=b.startedRevision || b.finishedRevision!=after.revision ||
+                after.revision!=before.revision+1 || after.checkpoint.step!="profession_tool_ready" ||
+                before.phase!=Phase::Verifying || after.phase!=Phase::Verifying)return false;
+        }
+        if(nextFlow.tools.size()>oldFlow.tools.size()) {
+            if((!oldFlow.tools.empty() && !oldFlow.tools.back().finishedRevision) ||
+                nextFlow.tools.back().startedRevision!=after.revision || nextFlow.tools.back().finishedRevision ||
+                after.revision!=before.revision+1 || after.checkpoint.step!="profession_tool_prepare" ||
+                after.phase!=Phase::Preparing || (before.phase!=Phase::Preparing && before.phase!=Phase::Verifying))return false;
         }
         blocker.clear(); return true;
     }
@@ -209,7 +331,7 @@ namespace LivingActivity {
         if (Terminal(task.phase)) return stop(ProfessionStep::Defer, "profession_task_terminal");
         if (snapshot.unresolvedOperation) return stop(ProfessionStep::Reconcile, "profession_operation_unresolved");
         const bool protectedMaterials=snapshot.readinessBlocker=="profession_material_has_legacy_commitment";
-        if ((!snapshot.readinessBlocker.empty() && !protectedMaterials) || snapshot.attempts.size() > job.attemptLimit ||
+        if ((!snapshot.readinessBlocker.empty() && !protectedMaterials) || snapshot.attempts.size() > ProfessionWorkflowAttemptLimit(task.checkpoint.data) ||
             !ValidProfessionTools(job,snapshot.requiredTools) || (!snapshot.toolBlocker.empty() && !IsToken(snapshot.toolBlocker)) ||
             (!protectedMaterials && (snapshot.stock.size()!=job.reagents.size() || snapshot.toolStock.size()!=snapshot.requiredTools.size())))
             return stop(ProfessionStep::Reconcile, "profession_snapshot_inconsistent");
@@ -224,13 +346,20 @@ namespace LivingActivity {
         // skill flag, elapsed time and a planner's replaced goal are not proof.
         std::set<std::string> operations;
         bool earnedSkillTarget = false;
+        uint32_t currentAttempts=0;
+        std::map<uint32_t,uint32_t> attemptsByRecipe;
         uint64_t previousRevision = 0;
         for (const auto& attempt : snapshot.attempts) {
             const auto& receipt = attempt.receipt;
+            ProfessionJob proofJob;bool currentAttempt=false;
+            if(!ProfessionJobAtRevision(task,receipt.taskRevision,proofJob,currentAttempt,blocker) ||
+                ++attemptsByRecipe[proofJob.recipe]>proofJob.attemptLimit)
+                return stop(ProfessionStep::Reconcile,"profession_attempt_step_mismatch");
+            if(currentAttempt)++currentAttempts;
             if (!attempt.committed || !IsUuid(receipt.id) || !operations.insert(receipt.id).second ||
                 receipt.task != task.id || receipt.taskRevision <= previousRevision || receipt.taskRevision > task.revision ||
-                receipt.kind != "profession_craft" || attempt.recipe != job.recipe ||
-                attempt.subjectItem != job.subjectItem || !IsToken(receipt.evidence) ||
+                receipt.kind != "profession_craft" || attempt.recipe != proofJob.recipe ||
+                attempt.subjectItem != proofJob.subjectItem || !IsToken(receipt.evidence) ||
                 receipt.state == OperationState::Intent || receipt.state == OperationState::Reconciling)
                 return stop(ProfessionStep::Reconcile, "profession_attempt_not_reconciled");
             previousRevision = receipt.taskRevision;
@@ -241,7 +370,7 @@ namespace LivingActivity {
                 continue;
             }
             if (receipt.state != OperationState::Verified || receipt.nativeReference.empty() ||
-                !attempt.nativeEffectVerified || attempt.consumed != job.reagents ||
+                !attempt.nativeEffectVerified || attempt.consumed != proofJob.reagents ||
                 attempt.skillAfter < attempt.skillBefore || attempt.produced.size() > 16)
                 return stop(ProfessionStep::Reconcile, "profession_native_proof_mismatch");
             uint32_t previous = 0;
@@ -250,18 +379,23 @@ namespace LivingActivity {
                 if (!output.entry || output.entry <= previous || !output.perAttempt)
                     return stop(ProfessionStep::Reconcile, "profession_output_proof_invalid");
                 previous = output.entry;
-                if (output.entry == job.outputEntry) {
-                    decision.verifiedOutput += output.perAttempt; expectedOutput = true;
+                if (output.entry == proofJob.outputEntry) {
+                    if(currentAttempt)decision.verifiedOutput += output.perAttempt;
+                    expectedOutput = true;
                 }
             }
-            if ((job.operation == ProfessionOperation::CreateItem || job.operation == ProfessionOperation::TransformMaterial) &&
+            if ((proofJob.operation == ProfessionOperation::CreateItem || proofJob.operation == ProfessionOperation::TransformMaterial) &&
                 !expectedOutput) return stop(ProfessionStep::Reconcile, "profession_expected_output_missing");
-            if (job.operation == ProfessionOperation::EnchantItem && !attempt.produced.empty())
+            if (proofJob.operation == ProfessionOperation::EnchantItem && !attempt.produced.empty())
                 return stop(ProfessionStep::Reconcile, "enchant_produced_unexpected_items");
-            if (job.operation == ProfessionOperation::DisenchantItem && attempt.produced.empty())
+            if (proofJob.operation == ProfessionOperation::DisenchantItem && attempt.produced.empty())
                 return stop(ProfessionStep::Reconcile, "disenchant_output_proof_missing");
-            ++decision.verifiedAttempts;
-            earnedSkillTarget |= attempt.skillAfter > attempt.skillBefore && attempt.skillAfter >= job.targetSkill;
+            if(currentAttempt)++decision.verifiedAttempts;
+            // Making a required tool can itself earn the requested skill gain.
+            // Credit its actual native recipe, never pretend the main enchant
+            // was cast. Tool handoff must finish before the root can settle.
+            earnedSkillTarget |= proofJob.skill==job.skill && attempt.skillAfter > attempt.skillBefore &&
+                attempt.skillAfter >= job.targetSkill;
         }
         // Validate every saved attempt first. A protected material can delay
         // work but must never hide an uncertain native effect or authorize a buy.
@@ -275,7 +409,7 @@ namespace LivingActivity {
         if (!snapshot.safe) return stop(ProfessionStep::Pause, "profession_safety_pause");
         if (!snapshot.retryReady) return stop(ProfessionStep::Defer, "profession_retry_not_due");
         if (!snapshot.knownRecipe) return stop(ProfessionStep::Defer, "profession_recipe_not_known");
-        if (snapshot.attempts.size() >= job.attemptLimit)
+        if (currentAttempts >= job.attemptLimit)
             return stop(ProfessionStep::Defer, "profession_attempt_limit");
         if (job.purpose == ProfessionPurpose::SkillGain && snapshot.skill >= job.targetSkill)
             return stop(ProfessionStep::Defer, "profession_target_met_without_job_proof");

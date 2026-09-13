@@ -1,6 +1,7 @@
 #include "LivingProfessionSettlement.h"
 #include "LivingActivityJournal.h"
 #include "LivingPersonalResourceSettlement.h"
+#include "LivingActivityItemGain.h"
 #include <algorithm>
 #include <limits>
 #include <map>
@@ -9,6 +10,64 @@
 namespace LivingActivity {
 namespace {
     std::string N(uint64_t value) {return std::to_string(value);}
+    std::string ProofMatch(const Task& task,const ProfessionCraftProof& attempt) {
+        const auto& r=attempt.receipt;
+        auto match="o.operation_id="+SqlValue(r.id)+" AND o.task_id="+SqlValue(task.id)+
+            " AND o.task_revision="+N(r.taskRevision)+" AND o.kind='profession_craft' AND o.state="+
+            SqlValue(r.state==OperationState::Verified?"verified":"rejected")+
+            " AND o.native_reference="+SqlValue(r.nativeReference)+" AND o.evidence_code="+SqlValue(r.evidence);
+        if(!attempt.journalDigest.empty())match+=" AND SHA2(CONCAT(o.before_state,'|',o.after_state),256)="+SqlValue(attempt.journalDigest);
+        return match;
+    }
+    bool PrepareToolHandoff(const Task& before,const ProfessionSnapshot& snapshot,const UnsettledClaimBatch& batch,
+        const std::vector<NativeResourceBalance>& balances,uint64_t now,const std::string& receipt,
+        ProfessionSettlement& result,std::string& blocker) {
+        auto reject=[&](const char* why){blocker=why;return false;};
+        ProfessionWorkflow flow;
+        if(!DecodeProfessionWorkflow(before.checkpoint.data,flow,blocker) || flow.tools.empty() || flow.tools.back().finishedRevision)
+            return reject("profession_tool_handoff_not_active");
+        if(!batch.complete)return reject("profession_tool_handoff_claim_batch_incomplete");
+        PersonalResourceSettlement protectedStock;
+        if(!PreparePersonalResourceSettlement(before,batch,balances,protectedStock,blocker,"profession_tool_handoff_"))return false;
+        const auto& job=flow.tools.back().job;
+        const ProfessionCraftProof* proof=nullptr;const ResourceClaim* output=nullptr;
+        for(const auto& attempt:snapshot.attempts) {
+            if(attempt.recipe!=job.recipe || attempt.receipt.taskRevision<flow.tools.back().startedRevision ||
+                attempt.receipt.state!=OperationState::Verified || !attempt.nativeEffectVerified || attempt.journalDigest.size()!=64)continue;
+            for(const auto& c:batch.claims)
+                if(c.itemEntry==job.outputEntry && c.quantity==1 && c.state=="held" && c.location=="bags" &&
+                    !c.nativeReference && c.id==ItemGainClaimId(attempt.receipt.id,c.itemGuid)) {proof=&attempt;output=&c;break;}
+            if(proof)break;
+        }
+        if(!proof || !output)return reject("profession_tool_handoff_native_output_required");
+        const auto native=std::find_if(balances.begin(),balances.end(),[&](const auto& b){return b.itemGuid==output->itemGuid;});
+        if(native==balances.end() || native->actor!=before.actor || native->location!="bags" ||
+            native->itemEntry!=job.outputEntry || !native->quantity)return reject("profession_tool_handoff_output_not_carried");
+        ProfessionSettlement prepared;prepared.task=before;auto& next=prepared.task;
+        ++next.revision;next.updatedAtMs=now;next.phase=Phase::Verifying;next.retryAtMs=0;
+        flow.tools.back().finishedRevision=next.revision;next.checkpoint.data=EncodeProfessionWorkflow(flow);
+        next.checkpoint.step="profession_tool_ready";next.checkpoint.blocker.clear();next.checkpoint.lastProgressAtMs=now;
+        if(!PreserveProfessionIntent(before,next,blocker))return false;
+        std::string guards,fingerprint=protectedStock.fingerprint;
+        for(const auto& attempt:snapshot.attempts) {
+            const auto match=ProofMatch(before,attempt);guards+=" AND EXISTS(SELECT 1 FROM living_activity_operation o WHERE "+match+')';
+            fingerprint+='|'+match;
+        }
+        prepared.plan=Detail::TaskTransitionWrite(next,before.revision,receipt,"profession_tool_retained",fingerprint);
+        prepared.plan.statements.front()+=" AND mode='active' AND accepted=1 AND phase='verifying' AND checkpoint="+SqlValue(before.checkpoint.data)+
+            guards+protectedStock.guards+
+            " AND (SELECT COUNT(*) FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id AND o.kind='profession_craft')="+N(snapshot.attempts.size())+
+            " AND NOT EXISTS(SELECT 1 FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))"+
+            " AND EXISTS(SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+N(before.actor)+
+            " AND v.item="+N(output->itemGuid)+" AND v.item_template="+N(output->itemEntry)+" AND i.owner_guid="+N(before.actor)+
+            " AND i.itemEntry="+N(output->itemEntry)+" AND i.count="+N(native->quantity)+
+            " AND ((v.bag=0 AND v.slot BETWEEN 23 AND 38) OR EXISTS(SELECT 1 FROM character_inventory b WHERE b.guid=v.guid AND b.item=v.bag AND b.bag=0 AND b.slot BETWEEN 19 AND 22)))";
+        prepared.plan.statements.insert(prepared.plan.statements.begin(),
+            "UPDATE living_activity_task SET actor_guid=actor_guid WHERE actor_guid="+N(before.actor));
+        // Do not apply protectedStock.claims: the tool and all unused parent
+        // materials remain held, with unchanged identities and revisions.
+        result=std::move(prepared);blocker.clear();return true;
+    }
 }
 bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& snapshot,
     const UnsettledClaimBatch& batch,const std::vector<NativeResourceBalance>& balances,
@@ -22,6 +81,8 @@ bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& sn
         return reject("profession_settlement_context_invalid");
     if (NextProfessionStep(before,snapshot).step!=ProfessionStep::Finalize)
         return reject("profession_settlement_goal_not_verified");
+    if(HasActiveProfessionTool(before.checkpoint.data))
+        return PrepareToolHandoff(before,snapshot,batch,balances,nowMs,receipt,result,blocker);
     // Do not quietly release an item promised to a requester or another job.
     const bool enchant=job.operation==ProfessionOperation::EnchantItem;
     if (job.purpose!=ProfessionPurpose::SkillGain ||
@@ -43,18 +104,23 @@ bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& sn
     // revisions, outcomes and exact native references; reject a shortened list.
     std::string proofGuards;
     for (const auto& attempt : snapshot.attempts) {
-        const auto& r=attempt.receipt;
-        const auto state=r.state==OperationState::Verified ? "verified" : "rejected";
-        const std::string match="o.operation_id="+SqlValue(r.id)+" AND o.task_id="+SqlValue(before.id)+
-            " AND o.task_revision="+N(r.taskRevision)+" AND o.kind='profession_craft' AND o.state="+SqlValue(state)+
-            " AND o.native_reference="+SqlValue(r.nativeReference)+" AND o.evidence_code="+SqlValue(r.evidence);
+        const auto match=ProofMatch(before,attempt);
         fingerprint+='|'+match;proofGuards+=" AND EXISTS (SELECT 1 FROM living_activity_operation o WHERE "+match+')';
     }
+    ProfessionJob creditJob;const ProfessionCraftProof* credit=nullptr;
+    for(const auto& attempt:snapshot.attempts) {
+        bool current=false;ProfessionJob candidate;
+        if(attempt.receipt.state==OperationState::Verified && attempt.skillAfter>attempt.skillBefore &&
+            attempt.skillAfter>=job.targetSkill && ProfessionJobAtRevision(before,attempt.receipt.taskRevision,candidate,current,reason) &&
+            candidate.skill==job.skill) {credit=&attempt;creditJob=std::move(candidate);break;}
+    }
+    if(!credit)return reject("profession_skill_credit_not_verified");
     prepared.plan=Detail::TaskTransitionWrite(next,before.revision,receipt,
         batch.complete ? "profession_completed" : "profession_claims_settled",fingerprint);
     auto& update=prepared.plan.statements.front();
-    const std::string path=enchant?"$.native.":"$.native.result.";
-    const std::string evidence=enchant?"native_enchant_consumption_subject_and_skill_observed":"native_craft_consumption_output_and_skill_observed";
+    const bool creditEnchant=creditJob.operation==ProfessionOperation::EnchantItem;
+    const std::string path=creditEnchant?"$.native.":"$.native.result.";
+    const std::string evidence=creditEnchant?"native_enchant_consumption_subject_and_skill_observed":"native_craft_consumption_output_and_skill_observed";
     update+=" AND mode='active' AND accepted=1 AND phase='verifying' AND checkpoint="+SqlValue(before.checkpoint.data)+
         " AND NOT EXISTS (SELECT 1 FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id "
         "WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))"+
@@ -62,8 +128,8 @@ bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& sn
         "AND o.kind='profession_craft')="+N(snapshot.attempts.size())+
         " AND EXISTS (SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id "
         "AND o.kind='profession_craft' AND o.state='verified' "
-        "AND o.evidence_code="+SqlValue(evidence)+
-        " AND JSON_UNQUOTE(JSON_EXTRACT(o.after_state,"+SqlValue(path+"recipe")+"))="+SqlValue(N(job.recipe))+
+        "AND o.evidence_code="+SqlValue(evidence)+" AND o.operation_id="+SqlValue(credit->receipt.id)+
+        " AND JSON_UNQUOTE(JSON_EXTRACT(o.after_state,"+SqlValue(path+"recipe")+"))="+SqlValue(N(creditJob.recipe))+
         " AND JSON_UNQUOTE(JSON_EXTRACT(o.after_state,"+SqlValue(path+"skill_id")+"))="+SqlValue(N(job.skill))+
         " AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.after_state,"+SqlValue(path+"after.skill")+")) AS UNSIGNED)>="+N(job.targetSkill)+
         " AND CAST(JSON_UNQUOTE(JSON_EXTRACT(o.after_state,"+SqlValue(path+"after.skill")+")) AS UNSIGNED)>"

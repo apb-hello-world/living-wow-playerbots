@@ -21,9 +21,27 @@ namespace LivingActivity {
         ProfessionPurpose purpose = ProfessionPurpose::SkillGain;
         std::vector<ProfessionReagent> reagents;
     };
+    // A bounded native preparation, not a second task or scheduler. Its output
+    // stays claimed by the original root and its recipe never replaces the
+    // accepted main intent. Revision ranges identify every historical cast.
+    struct ProfessionToolPreparation {
+        ProfessionJob job;
+        uint64_t startedRevision=0,finishedRevision=0;
+    };
+    struct ProfessionWorkflow {
+        ProfessionJob intent;
+        std::vector<ProfessionToolPreparation> tools;
+    };
     bool ValidateProfessionJob(const ProfessionJob& job, std::string& blocker);
     std::string EncodeProfessionJob(const ProfessionJob& job);
+    bool DecodeProfessionWorkflow(const std::string&,ProfessionWorkflow&,std::string&);
+    std::string EncodeProfessionWorkflow(const ProfessionWorkflow&);
+    bool DecodeProfessionIntent(const std::string&,ProfessionJob&,std::string&);
+    // Returns the current finite step's recipe, not the long-term accepted intent.
     bool DecodeProfessionJob(const std::string& data, ProfessionJob& job, std::string& blocker);
+    bool ProfessionJobAtRevision(const Task&,uint64_t,ProfessionJob&,bool& current,std::string&);
+    uint32_t ProfessionWorkflowAttemptLimit(const std::string&);
+    bool HasActiveProfessionTool(const std::string&);
     bool IsProfessionJob(const Task& task);
     bool ValidateProfessionTask(const Task& task, std::string& blocker);
     bool PreserveProfessionIntent(const Task& before, const Task& after, std::string& blocker);
@@ -78,6 +96,7 @@ namespace LivingActivity {
         std::vector<ProfessionReagent> consumed, produced; // perAttempt = actual quantity
         uint32_t skillBefore = 0, skillAfter = 0;
         bool committed = false, nativeEffectVerified = false;
+        std::string journalDigest; // SHA-256 of the acknowledged before/after pair.
     };
     struct ProfessionSnapshot {
         std::string task;

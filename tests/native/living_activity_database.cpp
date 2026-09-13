@@ -80,7 +80,7 @@ public:
     }
     std::vector<ProfessionHistoryRow> History(const Task& task) {
         if (!Execute(ProfessionHistoryQuery(task))) throw std::runtime_error(mysql_error(db));
-        MYSQL_RES* result=mysql_store_result(db);assert(result && mysql_num_fields(result)==12);
+        MYSQL_RES* result=mysql_store_result(db);assert(result && mysql_num_fields(result)==ProfessionHistoryRow{}.size());
         std::vector<ProfessionHistoryRow> rows;
         while (const auto row=mysql_fetch_row(result)) {
             ProfessionHistoryRow fields;for (size_t i=0;i<fields.size();++i) fields[i]=row[i] ? row[i] : "";
@@ -103,6 +103,7 @@ public:
 #include "fixtures/ObservationRetirementDatabase.inc"
 #include "fixtures/ProfessionResumeDatabase.inc"
 #include "fixtures/ProfessionInterruptedDatabase.inc"
+#include "fixtures/ProfessionToolPreparationDatabase.inc"
 #include "fixtures/RecipeLearningDatabase.inc"
 #include "fixtures/EnchantWorkflowDatabase.inc"
 #include "fixtures/GuildDepositDatabase.inc"
@@ -723,6 +724,7 @@ int main() {
     ObservationRetirementDatabase(db);
     RecipeLearningDatabase(db);
     ProfessionInterruptedDatabase(db);
+    ProfessionToolPreparationDatabase(db);
     EnchantWorkflowDatabase(db);
     GuildDepositDatabase(db);
     GuildMailDatabase(db);

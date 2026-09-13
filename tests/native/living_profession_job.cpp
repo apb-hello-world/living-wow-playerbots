@@ -5,8 +5,69 @@
 #include "LivingProfessionTools.h"
 #include "LivingProfessionCandidates.h"
 #include <cassert>
+#include <stdexcept>
 using namespace LivingActivity;
 int main() {
+    {
+        Task parent;parent.id=parent.root="cf235954-c8bc-4507-a9a5-7d5eb01c3247";
+        parent.actor=parent.context.actor=71;parent.source="profession_job";parent.kind=Kind::Profession;
+        parent.mode=Mode::Active;parent.phase=Phase::Preparing;parent.revision=4;
+        ProfessionJob main;main.recipe=7418;main.skill=333;main.operation=ProfessionOperation::EnchantItem;
+        main.subjectItem=111;main.initialSkill=1;main.targetSkill=2;main.reagents={{10940,1}};
+        parent.checkpoint.data=EncodeProfessionJob(main);
+        ProfessionJob rod;rod.recipe=7421;rod.skill=333;rod.purpose=ProfessionPurpose::Intermediate;
+        rod.outputEntry=6218;rod.outputQuantity=1;rod.initialSkill=1;rod.attemptLimit=3;
+        rod.reagents={{6217,1},{10938,1},{10940,1}};
+        ProfessionWorkflow flow{main,{{rod,5,0}}};std::string why;ProfessionJob decoded;
+        auto preparing=parent;++preparing.revision;preparing.checkpoint.step="profession_tool_prepare";
+        preparing.checkpoint.data=EncodeProfessionWorkflow(flow);
+        assert(PreserveProfessionIntent(parent,preparing,why));
+        auto unaccepted=parent;unaccepted.accepted=false;
+        assert(!PreserveProfessionIntent(unaccepted,preparing,why));
+        auto observed=preparing;observed.mode=Mode::Observe;
+        assert(!ValidateProfessionTask(observed,why));
+        assert(DecodeProfessionJob(preparing.checkpoint.data,decoded,why) && decoded.recipe==7421);
+        assert(DecodeProfessionIntent(preparing.checkpoint.data,decoded,why) && decoded.recipe==7418);
+        assert(ProfessionWorkflowAttemptLimit(preparing.checkpoint.data)==8 && HasActiveProfessionTool(preparing.checkpoint.data));
+        auto malformed=flow;malformed.intent.targetSkill=3;
+        auto changed=preparing;changed.checkpoint.data=EncodeProfessionWorkflow(malformed);
+        assert(!PreserveProfessionIntent(parent,changed,why));
+        auto invalidFlow=[&](ProfessionWorkflow altered) {
+            bool rejected=false;try{(void)EncodeProfessionWorkflow(altered);}catch(const std::invalid_argument&){rejected=true;}
+            assert(rejected);
+        };
+        malformed=flow;malformed.tools.push_back(malformed.tools[0]);invalidFlow(malformed);
+        malformed=flow;malformed.tools[0].job.skill=165;invalidFlow(malformed);
+        malformed=flow;malformed.tools[0].job.outputQuantity=2;invalidFlow(malformed);
+        malformed=flow;malformed.tools[0].startedRevision=0;invalidFlow(malformed);
+        malformed=flow;malformed.tools[0].startedRevision=1;invalidFlow(malformed);
+        malformed=flow;malformed.tools[0].finishedRevision=4;invalidFlow(malformed);
+        malformed=flow;malformed.tools[0].job.attemptLimit=4;invalidFlow(malformed);
+        preparing.revision=7;preparing.phase=Phase::Verifying;
+        auto ready=preparing;++ready.revision;ready.checkpoint.step="profession_tool_ready";
+        flow.tools[0].finishedRevision=ready.revision;ready.checkpoint.data=EncodeProfessionWorkflow(flow);
+        assert(PreserveProfessionIntent(preparing,ready,why) && !HasActiveProfessionTool(ready.checkpoint.data));
+        bool current=true;
+        assert(ProfessionJobAtRevision(ready,6,decoded,current,why) && decoded.recipe==7421 && !current);
+        assert(ProfessionJobAtRevision(ready,8,decoded,current,why) && decoded.recipe==7418 && current);
+        assert(!ProfessionJobAtRevision(ready,9,decoded,current,why));
+        auto erased=ready;erased.checkpoint.data=EncodeProfessionJob(main);
+        assert(!PreserveProfessionIntent(ready,erased,why)); // No lost preparation history.
+        ProfessionSnapshot view;view.task=ready.id;view.revision=ready.revision;view.context=ready.context;
+        view.complete=view.safe=view.retryReady=view.knownRecipe=view.useful=view.capacity=view.tools=view.atStation=true;
+        view.unresolvedOperation=false;view.skill=2;view.stock={{10940,1}};
+        ProfessionCraftProof actual;actual.recipe=7421;actual.skillBefore=1;actual.skillAfter=2;
+        actual.committed=actual.nativeEffectVerified=true;actual.consumed=rod.reagents;actual.produced={{6218,1}};
+        actual.receipt.id="5c7bbcad-02af-477b-a73c-3885e6cab22d";actual.receipt.task=ready.id;
+        actual.receipt.taskRevision=6;actual.receipt.kind="profession_craft";actual.receipt.state=OperationState::Verified;
+        actual.receipt.nativeReference="spell:7421";actual.receipt.evidence="native_craft_consumption_output_and_skill_observed";
+        view.attempts={actual};
+        assert(NextProfessionStep(ready,view).step==ProfessionStep::Finalize); // Real tool skill gain, not an invented enchant.
+        view.attempts[0].skillAfter=1;view.skill=1;
+        assert(NextProfessionStep(ready,view).step==ProfessionStep::Execute); // Grey rod alone does not complete skill goal.
+        view.attempts[0].recipe=7418;
+        assert(NextProfessionStep(ready,view).step==ProfessionStep::Reconcile); // Old recipe cannot claim tool's revision.
+    }
     {
         using Ready=ProfessionCandidateReadiness;
         std::string why;

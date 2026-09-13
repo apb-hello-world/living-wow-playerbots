@@ -10,7 +10,7 @@ namespace LivingActivity {
 bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
     const ProfessionHistory& history,const UnsettledClaimBatch& batch,const CraftFrame& frame,
     uint64_t nowMs,const std::string& receipt,ProfessionPreparation& result,std::string& blocker,
-    const std::vector<NativeItemStack>& preservedBank,const EnchantSubject* subject) {
+    const std::vector<NativeItemStack>& preservedBank,const EnchantSubject* subject,const std::vector<NativeItemStack>& preservedBags) {
     result={};auto reject=[&](const char* why){blocker=why;return false;};
     // Only a restored record can enter this path. Zoning or a live pending cast
     // cannot erase its operation by presenting another map/session generation.
@@ -33,8 +33,17 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
     if (bool(subject)!=bool(intent.enchant) || (subject && !SameEnchantSubject(*subject,intent.enchant->before)))
         return reject("interrupted_enchant_subject_changed");
     if(!batch.complete || !batch.bookRevision || batch.claims.size()<intent.inputs.size()+subjects || batch.claims.size()>16 ||
+        preservedBags.size()>16 ||
         preservedBank.size()!=size_t(std::count_if(batch.claims.begin(),batch.claims.end(),[](const auto& c){return c.location=="bank";})))
         return reject("interrupted_craft_claim_batch_changed");
+    auto carried=frame.stacks;
+    for(const auto& item:preservedBags) {
+        if(item.actor!=saved.actor || !item.guid || !item.entry || !item.count ||
+            std::any_of(carried.begin(),carried.end(),[&](const auto& c){return c.guid==item.guid;}) ||
+            std::none_of(batch.claims.begin(),batch.claims.end(),[&](const auto& c){return c.location=="bags" && c.itemGuid==item.guid;}))
+            return reject("interrupted_craft_preserved_bag_invalid");
+        carried.push_back(item);
+    }
     auto n=[](uint64_t v){return std::to_string(v);};
     std::string guard,frames="{\"skill\":"+n(frame.skill)+",\"money\":"+n(frame.money)+",\"stacks\":[";
     std::set<std::string> ids;
@@ -69,7 +78,10 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
         } else if(use==intent.inputs.end() && !sharedInput) {
             // Dependent capacity work shares this root; banking its surplus
             // does not release the claim before the whole job is settled.
-            const auto& storage=c.location=="bags"?frame.stacks:preservedBank;
+            // Nonconsumed parent materials and an already made tool need not
+            // appear in this recipe's craft frame. They require their own
+            // fresh, SQL-rechecked native identity; they are never cast proof.
+            const auto& storage=c.location=="bags"?carried:preservedBank;
             const auto item=std::find_if(storage.begin(),storage.end(),[&](const auto& v){return v.guid==c.itemGuid;});
             if((c.location!="bank" && c.location!="bags") || item==storage.end() || item->actor!=saved.actor ||
                 item->entry!=c.itemEntry || item->count!=c.quantity || !bankIds.insert(item->guid).second ||

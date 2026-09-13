@@ -12,6 +12,7 @@ namespace LivingActivity {
     // Once per native catalog load. Runtime work inspects this compact index,
     // never scans all item templates for each bot or tick.
     void BuildNativeProfessionToolCatalog();
+    bool BuildNativeProfessionToolPreparation(Player&,const Task&,uint32_t,ProfessionWorkflow&,std::string&);
     bool ReadNativeProfessionTools(Player& actor,const Task& task,
         std::vector<ProfessionReagent>& tools,std::string& unavailable,std::string& blocker);
     bool ReadNativeTaskItemRequirements(Player& actor,const Task& task,

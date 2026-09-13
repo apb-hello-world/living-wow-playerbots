@@ -113,6 +113,7 @@ namespace {
             const auto recovered=Parse(row.afterState);
             const bool priorCapture=recovered.count("prior_observation")!=0;
             auto predecessor=task;predecessor.revision=receipt.taskRevision;predecessor.phase=Phase::Executing;
+            predecessor.checkpoint.data=EncodeProfessionJob(job); // Read-only historical step projection.
             predecessor.checkpoint.step="profession_craft";auto original=row;original.receipt.state=OperationState::Intent;
             original.receipt.evidence.clear();original.receipt.nativeReference.clear();original.afterState="{}";
             if(priorCapture) {
@@ -181,15 +182,15 @@ namespace {
         result=std::move(parsed);blocker.clear();return true;
     }
 }
-bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
+static bool DecodeStoredCraftProofBody(const Task& task,const StoredCraftOperation& row,
     StoredCraftProof& result,std::string& blocker) {
     result={};blocker.clear();
     try {
-        const auto& receipt=row.receipt;ProfessionJob job;std::string reason;
+        const auto& receipt=row.receipt;ProfessionJob job;std::string reason;bool current=false;
         Require(row.acknowledged,"stored_craft_receipt_not_acknowledged");
         Require(task.mode==Mode::Active && task.accepted && IsUuid(task.id) && task.root==task.id && task.actor &&
             ValidateProfessionTask(task,reason) && IsProfessionJob(task) &&
-            DecodeProfessionJob(task.checkpoint.data,job,reason),"stored_craft_task_invalid");
+            ProfessionJobAtRevision(task,receipt.taskRevision,job,current,reason),"stored_craft_task_invalid");
         Require(IsUuid(receipt.id) && receipt.task==task.id && receipt.taskRevision && receipt.taskRevision<task.revision &&
             receipt.kind=="profession_craft","stored_craft_receipt_identity_mismatch");
         Require(receipt.state==OperationState::Verified || receipt.state==OperationState::Rejected,
@@ -200,6 +201,7 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
         if (!verified && receipt.evidence=="native_craft_intent_not_committed") {
             auto predecessor=task;predecessor.revision=receipt.taskRevision;
             predecessor.phase=Phase::Executing;predecessor.checkpoint.step="profession_craft";
+            predecessor.checkpoint.data=EncodeProfessionJob(job); // Read-only historical step projection.
             auto intent=row;intent.receipt.state=OperationState::Intent;
             intent.receipt.nativeReference.clear();intent.receipt.evidence.clear();intent.afterState="{}";
             InterruptedCraftIntent decoded;
@@ -373,6 +375,14 @@ bool MatchesInterruptedCraftInventory(const InterruptedCraftIntent& intent,const
     return quantities.empty();
 }
 
+bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,StoredCraftProof& result,std::string& blocker) {
+    if(!row.journalDigest.empty() && (row.journalDigest.size()!=64 ||
+        row.journalDigest.find_first_not_of("0123456789abcdef")!=std::string::npos)) {
+        result={};blocker="profession_history_digest_invalid";return false;
+    }
+    if(!DecodeStoredCraftProofBody(task,row,result,blocker))return false;
+    result.attempt.journalDigest=row.journalDigest;return true;
+}
 std::string ProfessionHistoryQuery(const Task& task) {
     ProfessionJob job;std::string blocker;
     if (task.mode!=Mode::Active || !task.accepted || !task.actor || !IsUuid(task.id) || task.root!=task.id ||
@@ -385,11 +395,11 @@ std::string ProfessionHistoryQuery(const Task& task) {
     return "SELECT t.actor_guid,t.revision,EXISTS(SELECT 1 FROM living_activity_operation u "
         "JOIN living_activity_task owner ON owner.task_id=u.task_id WHERE owner.actor_guid=t.actor_guid "
         "AND u.state IN ('intent','reconciling')),o.operation_id,o.task_id,o.task_revision,o.kind,o.state,"
-        "o.native_reference,o.before_state,o.after_state,o.evidence_code FROM living_activity_task t "
+        "o.native_reference,o.before_state,o.after_state,o.evidence_code,SHA2(CONCAT(o.before_state,'|',o.after_state),256) FROM living_activity_task t "
         "LEFT JOIN (SELECT operation_id,task_id,task_revision,kind,state,native_reference,before_state,after_state,evidence_code "
         "FROM living_activity_operation WHERE task_id="+id+" AND (kind='profession_craft' OR "
         "(kind='mail_collect' AND state IN ('intent','reconciling'))) "
-        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(job.attemptLimit+2)+") o ON o.task_id=t.task_id "
+        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(ProfessionWorkflowAttemptLimit(task.checkpoint.data)+2)+") o ON o.task_id=t.task_id "
         "WHERE t.task_id="+id+" AND t.actor_guid="+std::to_string(task.actor)+" AND t.revision="+
         std::to_string(task.revision)+" AND t.root_task_id=t.task_id AND t.mode='active' "
         "AND t.accepted=1 AND t.source='profession_job' AND t.kind='profession' ORDER BY o.task_revision,o.operation_id";
@@ -402,7 +412,8 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
         ProfessionJob job;std::string why;
         Require(DecodeProfessionJob(owner.checkpoint.data,job,why),"profession_history_task_invalid");
         Require(!rows.empty(),"profession_history_task_changed_or_missing");
-        Require(rows.size()<=job.attemptLimit+1,"profession_history_attempt_limit_exceeded");
+        const auto limit=ProfessionWorkflowAttemptLimit(owner.checkpoint.data);
+        Require(rows.size()<=limit+1,"profession_history_attempt_limit_exceeded");
         bool first=true,unresolved=false;uint64_t previous=0;std::set<std::string> ids;
         unsigned crafts=0,mails=0;
         for (const auto& fields : rows) {
@@ -422,7 +433,7 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
                 receipt.taskRevision>previous && receipt.taskRevision<=owner.revision &&
                 (receipt.kind=="profession_craft" || receipt.kind=="mail_collect"),
                 "profession_history_operation_identity_invalid");
-            if(receipt.kind=="profession_craft") Require(++crafts<=job.attemptLimit,"profession_history_attempt_limit_exceeded");
+            if(receipt.kind=="profession_craft") Require(++crafts<=limit,"profession_history_attempt_limit_exceeded");
             else Require(++mails==1 && receipt.taskRevision==owner.revision &&
                 (fields[7]=="intent" || fields[7]=="reconciling"),"profession_history_mail_identity_invalid");
             previous=receipt.taskRevision;
@@ -435,7 +446,7 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
             Require(fields[8].size()<=160 && fields[9].size()<=8192 && fields[10].size()<=8192 && fields[11].size()<=64,
                 "profession_history_evidence_bound");
             receipt.nativeReference=fields[8];row.beforeState=fields[9];row.afterState=fields[10];receipt.evidence=fields[11];
-            row.acknowledged=true;records.push_back(std::move(row));
+            row.journalDigest=fields[12];row.acknowledged=true;records.push_back(std::move(row));
         }
         task=owner;history.task=owner.id;history.revision=owner.revision;
         history.unresolvedOperation=unresolved;history.complete=records.empty();return true;

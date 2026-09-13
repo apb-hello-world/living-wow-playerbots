@@ -9,6 +9,7 @@ struct InterruptedFixture {
     UnsettledClaimBatch batch;
     CraftFrame frame;
     std::vector<NativeItemStack> bank;
+    std::vector<NativeItemStack> carried;
     std::string receipt="ff2efbdf-f0ec-4539-b840-299847978003";
     InterruptedFixture() {
         ResumeFixture base;task=base.task;task.id=task.root="637bd562-36d2-5b01-bc01-e2d831c49f94";
@@ -36,6 +37,11 @@ struct InterruptedFixture {
         auto claim=batch.claims.front();claim.id="b71b6cac-8b42-44d9-9f1f-24e4e40a0004";
         claim.itemGuid=803;claim.itemEntry=4470;claim.quantity=2;claim.location="bank";claim.revision=1;
         batch.claims.push_back(claim);bank.push_back({705,803,4470,2,0,43});
+    }
+    void AddCarriedDependency() {
+        auto claim=batch.claims.front();claim.id="b71b6cac-8b42-44d9-9f1f-24e4e40a0005";
+        claim.itemGuid=100807;claim.itemEntry=6218;claim.quantity=1;claim.location="bags";claim.revision=1;
+        batch.claims.push_back(claim);carried.push_back({705,100807,6218,1,0,28});
     }
 };
 }

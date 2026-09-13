@@ -4,7 +4,7 @@ void TestInterruptedProfession() {
     using namespace LivingActivity;using namespace LivingActivityTest;
     InterruptedFixture f;ProfessionPreparation result;std::string blocker;
     auto prepare=[&](const InterruptedFixture& x) {
-        return PrepareInterruptedProfession(x.task,x.current,x.history,x.batch,x.frame,1200,x.receipt,result,blocker,x.bank);
+        return PrepareInterruptedProfession(x.task,x.current,x.history,x.batch,x.frame,1200,x.receipt,result,blocker,x.bank,nullptr,x.carried);
     };
     assert(prepare(f));const auto accepted=result;
     assert(result.task.phase==Phase::Verifying && result.task.context==f.current && result.task.revision==5);
@@ -51,6 +51,19 @@ void TestInterruptedProfession() {
     bad=storage;bad.batch.claims.back().state="reconciling";fail(bad);
     auto bagged=storage;bagged.bank[0].bagGuid=900;bagged.bank[0].slot=1;
     assert(prepare(bagged) && result.plan.statements[1].find("b.slot>=67 AND b.slot<74")!=std::string::npos);
+    auto carried=f;carried.AddCarriedDependency();assert(prepare(carried));
+    assert(result.plan.statements[1].find("v.item=100807")!=std::string::npos);
+    bad=carried;bad.carried.clear();fail(bad);
+    bad=carried;bad.carried[0].actor=706;fail(bad);
+    bad=carried;bad.carried[0].entry=6217;fail(bad);
+    bad=carried;bad.carried[0].count=0;fail(bad);
+    bad=carried;bad.carried[0].slot=43;fail(bad);
+    bad=carried;bad.carried.push_back(bad.carried[0]);fail(bad);
+    bad=carried;bad.carried[0]=bad.frame.stacks[0];fail(bad);
+    bad=carried;bad.batch.claims.back().state="in_transfer";fail(bad);
+    bad=carried;bad.batch.claims.back().quantity=2;fail(bad);
+    auto inBag=carried;inBag.carried[0].bagGuid=900;inBag.carried[0].slot=2;
+    assert(prepare(inBag) && result.plan.statements[1].find("b.slot>=19 AND b.slot<23")!=std::string::npos);
     // An interrupted non-commit is stored without inventing a spell callback.
     auto row=*f.history.interruptedCraft;row.receipt.state=OperationState::Rejected;
     row.receipt.evidence="native_craft_intent_not_committed";

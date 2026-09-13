@@ -12,6 +12,7 @@ namespace LivingActivity {
         OperationResult receipt;
         std::string beforeState, afterState;
         bool acknowledged=false; // Only a completed DB read may set this.
+        std::string journalDigest;
     };
     struct StoredCraftProof {
         ProfessionCraftProof attempt;
@@ -40,9 +41,10 @@ namespace LivingActivity {
 
     // Exact, bounded result of ProfessionHistoryQuery. Fields are actor, task
     // revision, unresolved-actor-operation flag, operation ID, operation task,
-    // operation revision, kind, state, native reference, before, after, evidence.
+    // operation revision, kind, state, native reference, before, after, evidence,
+    // and the database-computed digest of the exact before/after journal text.
     // An empty operation ID represents the LEFT JOIN's no-history row.
-    using ProfessionHistoryRow=std::array<std::string,12>;
+    using ProfessionHistoryRow=std::array<std::string,13>;
     struct ProfessionHistory {
         std::string task;
         uint64_t revision=0;

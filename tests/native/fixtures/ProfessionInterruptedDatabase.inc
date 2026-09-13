@@ -29,7 +29,7 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     intent.beforeState="{\"effects\":21,\"persistence\":2,\"native\":"+
         ClaimedNativeState(EncodeCraftIntent(split,f.frame),decoded.inputs)+
         ",\"item_gain\":"+ItemGainSpecJson(decoded.output)+'}';
-    f.history.interruptedCraft=intent;f.AddBankDependency();
+    f.history.interruptedCraft=intent;f.AddBankDependency();f.AddCarriedDependency();
     const auto rid=[](unsigned n){return std::string("ff2efbdf-f0ec-4539-b840-29984797802")+std::to_string(n);};
     auto initial=f.task;initial.revision=1;initial.phase=Phase::Queued;
     assert(db.Write(TaskWrite(initial,0,rid(1),"fixture_created")));
@@ -40,6 +40,7 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     for(const auto& item:f.frame.stacks)
         balances.push_back({item.actor,item.guid,item.entry,item.count,0,"bags"});
     for(const auto& item:f.bank)balances.push_back({item.actor,item.guid,item.entry,item.count,0,"bank"});
+    for(const auto& item:f.carried)balances.push_back({item.actor,item.guid,item.entry,item.count,0,"bags"});
     initial.revision=3;assert(db.Write(ResourceReservationWrite(initial,2,rid(3),changes,balances)));
     const auto& op=*f.history.interruptedCraft;
     assert(db.Write(OperationIntentWrite(f.task,3,op.receipt.id,"profession_craft",op.beforeState)));
@@ -49,6 +50,7 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     assert(db.Execute("INSERT INTO character_skills VALUES(705,171,1)"));
     assert(db.Execute("ALTER TABLE character_inventory ADD COLUMN item_template INT NOT NULL DEFAULT 0"));
     auto items=f.frame.stacks;items.insert(items.end(),f.bank.begin(),f.bank.end());
+    items.insert(items.end(),f.carried.begin(),f.carried.end());
     for(const auto& item:items) {
         assert(db.Execute("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES("+
             std::to_string(item.guid)+','+std::to_string(item.entry)+",705,"+std::to_string(item.count)+')'));
@@ -59,7 +61,7 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     while(!cursor.Result().complete) assert(cursor.Advance(blocker));
     f.history=cursor.Result();assert(f.history.interruptedCraft);
     ProfessionPreparation prepared;
-    assert(PrepareInterruptedProfession(f.task,f.current,f.history,f.batch,f.frame,1200,f.receipt,prepared,blocker,f.bank));
+    assert(PrepareInterruptedProfession(f.task,f.current,f.history,f.batch,f.frame,1200,f.receipt,prepared,blocker,f.bank,nullptr,f.carried));
     assert(!db.Write(prepared.plan,true)); // Atomic rollback retains intent and claims.
     assert(db.Scalar("SELECT revision FROM living_activity_task WHERE task_id="+id)=="4");
     auto rejectRace=[&](const std::string& change,const std::string& restore) {
@@ -78,6 +80,9 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     rejectRace("UPDATE character_inventory SET slot=26 WHERE item=803","UPDATE character_inventory SET slot=43 WHERE item=803");
     rejectRace("UPDATE item_instance SET count=1 WHERE guid=803","UPDATE item_instance SET count=2 WHERE guid=803");
     rejectRace("UPDATE item_instance SET owner_guid=706 WHERE guid=803","UPDATE item_instance SET owner_guid=705 WHERE guid=803");
+    rejectRace("UPDATE item_instance SET count=2 WHERE guid=100807","UPDATE item_instance SET count=1 WHERE guid=100807");
+    rejectRace("UPDATE item_instance SET owner_guid=706 WHERE guid=100807","UPDATE item_instance SET owner_guid=705 WHERE guid=100807");
+    rejectRace("UPDATE character_inventory SET slot=43 WHERE item=100807","UPDATE character_inventory SET slot=28 WHERE item=100807");
     const auto operation=SqlValue(op.receipt.id),claim=SqlValue(f.batch.claims[0].id);
     rejectRace("UPDATE living_activity_claim SET revision=2 WHERE claim_id="+claim,
         "UPDATE living_activity_claim SET revision=1 WHERE claim_id="+claim);
@@ -100,9 +105,9 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     assert(db.Write(prepared.plan)); // Lost acknowledgement cannot repeat the transition.
     assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+operation)=="rejected");
     assert(db.Scalar("SELECT money FROM characters WHERE guid=705")=="100");
-    assert(db.Scalar("SELECT SUM(count) FROM item_instance WHERE owner_guid=705")=="38");
+    assert(db.Scalar("SELECT SUM(count) FROM item_instance WHERE owner_guid=705")=="39");
     assert(db.Scalar("SELECT count FROM item_instance WHERE guid=100806")=="9");
-    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+id+" AND state='held' AND revision=1")=="6");
+    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+id+" AND state='held' AND revision=1")=="7");
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_transition WHERE transition_id="+SqlValue(f.receipt))=="1");
     ProfessionHistoryCursor recovered;assert(recovered.Begin(prepared.task,db.History(prepared.task),blocker));
     while(!recovered.Result().complete) assert(recovered.Advance(blocker));
@@ -110,6 +115,6 @@ static void ProfessionInterruptedDatabase(Connection& db) {
         !recovered.Result().attempts[0].nativeEffectVerified);
     auto changed=f;changed.current.boot=rid(5);ProfessionPreparation different;
     assert(PrepareInterruptedProfession(changed.task,changed.current,changed.history,changed.batch,changed.frame,1200,
-        changed.receipt,different,blocker,changed.bank));
+        changed.receipt,different,blocker,changed.bank,nullptr,changed.carried));
     assert(!db.Write(different.plan)); // Same operation ID cannot acknowledge a changed recovery.
 }

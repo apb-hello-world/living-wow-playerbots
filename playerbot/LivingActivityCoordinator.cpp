@@ -996,8 +996,8 @@ struct LivingActivityCoordinator::State {
                 auto& read=found->second;read.pending=false;
                 if (read.generation!=generation || read.task.revision!=revision) {++historyStaleReads;return;}
                 std::vector<ProfessionHistoryRow> rows;
-                if (result && result->GetFieldCount()==12) do {
-                    if (rows.size()==21) break;
+                if (result && result->GetFieldCount()==ProfessionHistoryRow{}.size()) do {
+                    if (rows.size()==34) break; // Root (20), four tools (3 each), mail and overflow sentinel.
                     auto* fields=result->Fetch();ProfessionHistoryRow row;
                     for (size_t i=0;i<row.size();++i) row[i]=fields[i].GetCppString();
                     rows.push_back(std::move(row));
@@ -2243,6 +2243,21 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     const auto next=NextProfessionStep(*saved,snapshot);
     if (next.step==ProfessionStep::Finalize)
         return stop(SettleProfessionJob(actor,id,saved->revision,NewId()).blocker);
+    if(next.blocker=="profession_tool_source_unavailable" && snapshot.safe && snapshot.retryReady) {
+        for(size_t i=0;i<snapshot.requiredTools.size();++i) {
+            const auto& have=snapshot.toolStock[i];
+            if(have.bag || have.bank || have.delivered || have.paidInTransit || have.sourceAvailable)continue;
+            ProfessionWorkflow flow;
+            if(!BuildNativeProfessionToolPreparation(*bot,*saved,have.entry,flow,blocker))return stop(blocker);
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_tool_preparation");
+            if(!grant.Permitted())return stop(grant.blocker);
+            TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;request.receipt=NewId();
+            ++request.task.revision;request.task.updatedAtMs=NowMs();request.task.phase=Phase::Preparing;
+            request.task.checkpoint.data=EncodeProfessionWorkflow(flow);request.task.checkpoint.step="profession_tool_prepare";
+            request.task.checkpoint.blocker.clear();request.task.retryAtMs=0;
+            return stop(SubmitTask(request).blocker);
+        }
+    }
     ServiceDestination service;
     if (ParseServiceStep(saved->checkpoint.step,service) || next.step==ProfessionStep::PrepareCapacity ||
         next.step==ProfessionStep::ReachBank || next.step==ProfessionStep::ReachStation ||
@@ -2637,9 +2652,20 @@ AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint3
         EnchantSubject subject;
         if (!DecodeProfessionJob(saved->second.checkpoint.data,job,blocker) ||
             (job.operation==ProfessionOperation::EnchantItem && !ReadNativeEnchantSubject(*bot,job,subject,blocker)) ||
-            !ReadNativeCraftFrame(*bot,job,frame,blocker) ||
-            !PrepareInterruptedProfession(saved->second,current,history,batch,frame,NowMs(),receipt,prepared,blocker,banked,
-                job.operation==ProfessionOperation::EnchantItem?&subject:nullptr))
+            !ReadNativeCraftFrame(*bot,job,frame,blocker))
+            return reject(AdmissionCode::ReconciliationRequired,blocker);
+        std::vector<NativeItemStack> preservedBags;
+        for(const auto& c:batch.claims) {
+            if(c.location!="bags" || c.itemGuid==job.subjectItem ||
+                std::any_of(frame.stacks.begin(),frame.stacks.end(),[&](const auto& v){return v.guid==c.itemGuid;}) ||
+                std::any_of(preservedBags.begin(),preservedBags.end(),[&](const auto& v){return v.guid==c.itemGuid;}))continue;
+            const auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,c.itemGuid));
+            if(!item || item->GetOwnerGuid()!=bot->GetObjectGuid())return reject(AdmissionCode::ReconciliationRequired,"profession_preserved_parent_item_missing");
+            preservedBags.push_back({actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),
+                item->GetContainer()?item->GetContainer()->GetGUIDLow():0,item->GetSlot()});
+        }
+        if(!PrepareInterruptedProfession(saved->second,current,history,batch,frame,NowMs(),receipt,prepared,blocker,banked,
+                job.operation==ProfessionOperation::EnchantItem?&subject:nullptr,preservedBags))
             return reject(AdmissionCode::ReconciliationRequired,blocker);
         State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
         write.admissionReceipt=receipt;state->pending.push_back(std::move(write));
@@ -2700,7 +2726,8 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJobImpl(uint32_t acto
     for (const auto& pending : state->pending) {
         if (pending.admissionReceipt==receipt) {
             if (pending.task.id==id && pending.task.revision==expectedRevision+1 &&
-                (pending.task.checkpoint.step=="profession_settling" || pending.task.checkpoint.step=="profession_completed"))
+                (pending.task.checkpoint.step=="profession_settling" || pending.task.checkpoint.step=="profession_completed" ||
+                 pending.task.checkpoint.step=="profession_tool_ready"))
                 return reject(AdmissionCode::Pending);
             return reject(AdmissionCode::InvalidRequest,"receipt_identity_reused");
         }
@@ -2709,7 +2736,7 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJobImpl(uint32_t acto
     const auto acknowledged=state->admissionReceipts.find(id);
     if (saved->second.revision==expectedRevision+1 && acknowledged!=state->admissionReceipts.end() &&
         acknowledged->second==receipt && (saved->second.checkpoint.step=="profession_settling" ||
-        saved->second.checkpoint.step=="profession_completed")) return reject(AdmissionCode::Saved);
+        saved->second.checkpoint.step=="profession_completed" || saved->second.checkpoint.step=="profession_tool_ready")) return reject(AdmissionCode::Saved);
     if (saved->second.revision!=expectedRevision) return reject(AdmissionCode::StaleRevision);
     if (restartRecovery && saved->second.context==current)
         return reject(AdmissionCode::StaleContext,"profession_restart_already_rebound");
@@ -2999,7 +3026,11 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
     // Check first admission only. Later cancellation/deferral/reconciliation
     // must remain possible if a recipe becomes obsolete or a subject changes.
     // Repeated requests share the saved receipt above, not a second job.
-    if ((saved == state->cache.end() || (!saved->second.accepted && task.accepted)) &&
+    const bool preparationChanged=saved!=state->cache.end() && saved->second.checkpoint.data!=task.checkpoint.data;
+    if(preparationChanged && HasActiveProfessionTool(saved->second.checkpoint.data) && !HasActiveProfessionTool(task.checkpoint.data))
+        return reject(AdmissionCode::InvalidRequest,"profession_tool_handoff_requires_native_receipt");
+    if ((saved == state->cache.end() || (!saved->second.accepted && task.accepted) ||
+         (preparationChanged && task.checkpoint.step=="profession_tool_prepare")) &&
         (!ValidateNativeProfessionTask(*bot, task, reason) || !ValidateNativeRecipeLearningTask(*bot,task,reason)))
         return reject(AdmissionCode::InvalidRequest, reason);
     if (state->pending.size() >= state->batch ||

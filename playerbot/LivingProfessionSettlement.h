@@ -12,7 +12,9 @@ namespace LivingActivity {
     // Finite, receipt-acknowledged bookkeeping after a proven skill-gain job.
     // Releases only backed personal stock/speculative demand; never consumes,
     // transfers, withdraws, sells or destroys goods. Requested/equipment output
-    // and intermediate handoffs require their own recipient validators.
+    // and general intermediate handoffs require their own recipient validators.
+    // A proven required-tool preparation keeps the tool and parent materials
+    // claimed to the same root, then restores that root's original next step.
     // More than 16 claims settle in bounded batches while remaining verifying.
     bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& snapshot,
         const UnsettledClaimBatch& batch,const std::vector<NativeResourceBalance>& balances,
