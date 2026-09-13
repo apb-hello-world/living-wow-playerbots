@@ -11,6 +11,8 @@ static void ProfessionResumeDatabase(Connection& db,bool retryWake=false) {
     if(retryWake) {
         f.task.actor=f.task.context.actor=f.current.actor=f.view.context.actor=705;
         f.batch.claims[0].actor=f.balances[0].actor=705;
+        // Native item GUIDs are realm-wide, not per-character identifiers.
+        f.batch.claims[0].itemGuid=f.balances[0].itemGuid=711110;
     }
     const auto id=SqlValue(f.task.id);
     auto initial=f.task;initial.revision=1;initial.phase=Phase::Queued;
@@ -47,9 +49,11 @@ static void ProfessionResumeDatabase(Connection& db,bool retryWake=false) {
     assert(!db.Write(prepared.plan));
     assert(db.Execute("UPDATE living_activity_operation SET state='reconciling' WHERE operation_id="+SqlValue(op)));
     assert(!db.Write(prepared.plan));
-    // This fixture records a rejected operation with no native effect; it is
-    // journal fault injection, not a gameplay transaction or purchase receipt.
-    assert(db.Execute("UPDATE living_activity_operation SET state='rejected',evidence_code='fixture_no_effect' WHERE operation_id="+SqlValue(op)));
+    // Both settled states permit a metadata rebind, without inserting another
+    // operation. These are fixture records, NOT real gameplay purchase proof.
+    const auto settled=retryWake?"verified":"rejected";
+    assert(db.Execute("UPDATE living_activity_operation SET state="+SqlValue(settled)+
+        ",evidence_code='fixture_settled_operation' WHERE operation_id="+SqlValue(op)));
     {Connection restarted;assert(restarted.Write(prepared.plan));}
     assert(db.Write(prepared.plan)); // Lost acknowledgement is idempotent.
     assert(db.Scalar("SELECT revision FROM living_activity_task WHERE task_id="+id)==afterRevision);
@@ -62,6 +66,7 @@ static void ProfessionResumeDatabase(Connection& db,bool retryWake=false) {
     assert(db.Scalar("SELECT native_reference FROM living_activity_claim WHERE claim_id="+claim)=="902");
     assert(db.Scalar("SELECT revision FROM living_activity_claim WHERE claim_id="+claim)=="1");
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_operation WHERE task_id="+id)=="1");
+    assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+SqlValue(op))==settled);
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_transition WHERE task_id="+id+" AND code='profession_preparation_revalidated'")=="1");
     ProfessionPreparation duplicate;
     assert(PrepareProfessionResumption(f.task,f.current,f.view,f.batch,f.balances,1201,f.receipt,duplicate,blocker));
