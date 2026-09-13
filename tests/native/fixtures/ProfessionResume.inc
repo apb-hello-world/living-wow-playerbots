@@ -36,13 +36,28 @@ void TestProfessionResumption() {
     bad=f;++bad.view.revision;fail(bad);
     bad=f;bad.task.accepted=false;fail(bad);
     bad=f;bad.task.mode=Mode::Observe;fail(bad);
-    for (auto phase : {Phase::Executing,Phase::Reconciling,Phase::Completed,Phase::Cancelled,Phase::Failed}) {
+    for (auto phase : {Phase::Executing,Phase::Completed,Phase::Cancelled,Phase::Failed}) {
         bad=f;bad.task.phase=phase;fail(bad);
     }
-    for (auto phase : {Phase::Queued,Phase::Preparing,Phase::Traveling,Phase::WaitingExternal,Phase::Paused,Phase::Deferred,Phase::Verifying}) {
+    for (auto phase : {Phase::Queued,Phase::Preparing,Phase::Traveling,Phase::WaitingExternal,Phase::Paused,Phase::Deferred,Phase::Verifying,Phase::Reconciling}) {
         auto waiting=f;waiting.task.phase=phase;assert(prepare(waiting));
         if (phase==Phase::Verifying) assert(result.plan.statements[1].find("o.state IN ('verified','rejected')")!=std::string::npos);
     }
+    auto wake=f;wake.task.phase=Phase::Reconciling;
+    wake.task.checkpoint.blocker="purchase_daily_limit";
+    assert(prepare(wake)); // Restart between retry wake-up and preparation.
+    assert(result.task.phase==Phase::Preparing && result.task.context==f.current);
+    assert(result.task.retryAtMs==f.task.retryAtMs && result.task.checkpoint.activeElapsedMs==500 &&
+        result.task.checkpoint.lastProgressAtMs==1050 && result.task.checkpoint.data==f.task.checkpoint.data);
+    assert(result.plan.statements[1].find("phase='reconciling'")!=std::string::npos);
+    assert(result.plan.statements[1].find("o.state IN ('intent','reconciling')")!=std::string::npos);
+    assert(result.plan.statements[1].find("c.state NOT IN ('consumed','released')")!=std::string::npos);
+    bad=wake;bad.view.unresolvedOperation=true;fail(bad);
+    bad=wake;bad.view.complete=false;fail(bad);
+    bad=wake;bad.batch.claims[0].state="reconciling";fail(bad);
+    bad=wake;bad.balances[0].quantity=0;fail(bad);
+    bad=wake;bad.view.safe=false;fail(bad);
+    bad=wake;bad.view.readinessBlocker="native_effect_unknown";fail(bad);
     bad=f;bad.current.boot.clear();bad.view.context=bad.current;fail(bad);
     bad=f;bad.current.actorGeneration=0;bad.view.context=bad.current;fail(bad);
     bad=f;bad.current.mapGeneration=0;bad.view.context=bad.current;fail(bad);

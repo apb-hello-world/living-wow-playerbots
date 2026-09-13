@@ -693,6 +693,7 @@ int main() {
     }
     ProfessionSettlementDatabase(db);
     ProfessionResumeDatabase(db);
+    ProfessionResumeDatabase(db,true);
     // Execute the exact production projection/expiry SQL, including old-schema
     // compatibility and a newer speculative row with the same recipe label.
     assert(db.Execute("CREATE TABLE characters(guid INT PRIMARY KEY,race INT)"));

@@ -155,7 +155,7 @@ bool PrepareProfessionResumption(const Task& saved,const WorldContext& current,
     std::string reason;
     if (!Validate(saved,reason) || !ValidateProfessionTask(saved,reason) || !IsProfessionJob(saved) ||
         !saved.accepted || saved.mode!=Mode::Active || saved.root!=saved.id || !saved.parent.empty() ||
-        Terminal(saved.phase) || saved.phase==Phase::Executing || saved.phase==Phase::Reconciling ||
+        Terminal(saved.phase) || saved.phase==Phase::Executing ||
         !IsUuid(receipt) || nowMs<saved.updatedAtMs || saved.revision>=UINT64_MAX-1)
         return reject("profession_resume_task_not_reconcilable");
     if (current==saved.context || current.actor!=saved.actor || !current.actorGeneration ||
@@ -164,6 +164,11 @@ bool PrepareProfessionResumption(const Task& saved,const WorldContext& current,
         (saved.context.boot.empty() && (saved.context.actorGeneration || saved.context.mapGeneration)))
         return reject("profession_resume_context_not_revalidated");
     auto rebound=saved;rebound.context=current;
+    // Retry wake-up passes through Reconciling even when no native operation
+    // is uncertain. A restart in that durable phase must still rebind the job.
+    // The complete history, exact claims/native balances and transactional
+    // unresolved-operation guard below decide whether it is safe; the phase
+    // name alone is not evidence of an unacknowledged purchase or craft.
     const auto decision=NextProfessionStep(rebound,snapshot);
     if (decision.step==ProfessionStep::Reconcile)
         return reject("profession_resume_history_requires_reconciliation");
