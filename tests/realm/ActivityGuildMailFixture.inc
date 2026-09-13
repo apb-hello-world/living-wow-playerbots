@@ -2,12 +2,12 @@
 // donor earned/sent it. Ordinary shared services must collect and deposit it.
 namespace {
 template<class FixtureState>
-void RunIsolatedGuildMailFixture(FixtureState& state) {
+void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false) {
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
     state.fixtureNext=NowMs()+500;auto& f=state.guildDepositFixture;
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     auto emit=[&](bool passed,const std::string& why,Player* actor) {
-        auto report=f.setup;report.put("suite","activity-guild-mail-v1");report.put("boot",state.boot);
+        auto report=f.setup;report.put("suite",fullBags?"activity-guild-mail-capacity-v1":"activity-guild-mail-v1");report.put("boot",state.boot);
         report.put("task",f.task);report.put("actor",f.actor);report.put("test_only",true);
         report.put("original_boot",f.originalBoot);report.put("resumed_same_task",f.resuming);
         report.put("outcome",passed?"passed":"failed");report.put("failure",why);report.put("blocker",f.blocker);
@@ -57,7 +57,8 @@ void RunIsolatedGuildMailFixture(FixtureState& state) {
                 f.originalBoot=f.setup.template get<std::string>("original_boot");
                 require(IsUuid(f.originalBoot) && f.setup.template get<uint32_t>("actor")==f.actor &&
                     f.setup.template get<std::string>("task")==f.task &&
-                    f.setup.template get<std::string>("job")==saved->checkpoint.data,"original_guild_mail_identity_changed");
+                    f.setup.template get<std::string>("job")==saved->checkpoint.data &&
+                    f.setup.template get<bool>("full_bag_requested",false)==fullBags,"original_guild_mail_identity_changed");
                 state.enforceEffects.store(true,std::memory_order_release);f.started=f.admitted=true;return;
             }
             for(const auto& row:state.cache)if(row.second.actor==f.actor && row.second.mode==Mode::Active && !Terminal(row.second.phase))
@@ -80,6 +81,44 @@ void RunIsolatedGuildMailFixture(FixtureState& state) {
             f.setup.put("item_grants",4);f.setup.put("requested_quantity",4);f.setup.put("mail_delivery_delay_seconds",120);
             f.setup.put("money_grants",0);f.setup.put("permission_grants",0);f.setup.put("fixture_relocations",0);
             f.setup.put("donor_sending_proven",false);f.setup.put("capacity_preparation_proven",false);
+            f.setup.put("full_bag_requested",fullBags);
+            boost::property_tree::ptree beforeInventory,fillSlots;
+            auto capture=[&](Item* item) {
+                if(!item)return;
+                boost::property_tree::ptree row;row.put("guid",item->GetGUIDLow());row.put("entry",item->GetEntry());
+                row.put("quantity",item->GetCount());row.put("bag",item->GetContainer()?item->GetContainer()->GetGUIDLow():0);
+                row.put("slot",uint32_t(item->GetSlot()));beforeInventory.push_back({"",row});
+            };
+            if(fullBags) {
+                // Record all owned locations, including containers and banked
+                // stock, before adding bounded, explicitly labeled test junk.
+                for(uint8_t slot=EQUIPMENT_SLOT_START;slot<BANK_SLOT_BAG_END;++slot)
+                    capture(actor->GetItemByPos(INVENTORY_SLOT_BAG_0,slot));
+                for(uint8_t slot=KEYRING_SLOT_START;slot<KEYRING_SLOT_END;++slot)
+                    capture(actor->GetItemByPos(INVENTORY_SLOT_BAG_0,slot));
+                for(const auto range:{std::make_pair(INVENTORY_SLOT_BAG_START,INVENTORY_SLOT_BAG_END),
+                    std::make_pair(BANK_SLOT_BAG_START,BANK_SLOT_BAG_END)})
+                    for(uint8_t bag=range.first;bag<range.second;++bag)
+                        if(auto* container=static_cast<Bag*>(actor->GetItemByPos(INVENTORY_SLOT_BAG_0,bag)))
+                            for(uint8_t slot=0;slot<container->GetBagSize();++slot)capture(container->GetItemByPos(slot));
+                const auto* proto=sObjectMgr.GetItemPrototype(7074);
+                require(proto && proto->Quality==ITEM_QUALITY_POOR && proto->SellPrice,"native_capacity_junk_template_required");
+                f.setup.put("capacity_unit_copper",proto->SellPrice);
+                auto planFill=[&](uint8_t bag,uint8_t slot) {
+                    if(actor->GetItemByPos(bag,slot))return;
+                    ItemPosCountVec positions;
+                    if(actor->CanStoreNewItem(bag,slot,positions,7074,1)!=EQUIP_ERR_OK)return;
+                    require(positions.size()==1 && positions[0].pos==uint16_t(uint16_t(bag)<<8|slot),"capacity_exact_empty_slot_required");
+                    boost::property_tree::ptree row;row.put("bag_slot",uint32_t(bag));row.put("slot",uint32_t(slot));
+                    fillSlots.push_back({"",row});
+                };
+                for(uint8_t slot=INVENTORY_SLOT_ITEM_START;slot<INVENTORY_SLOT_ITEM_END;++slot)planFill(INVENTORY_SLOT_BAG_0,slot);
+                for(uint8_t bag=INVENTORY_SLOT_BAG_START;bag<INVENTORY_SLOT_BAG_END;++bag)
+                    if(auto* container=static_cast<Bag*>(actor->GetItemByPos(INVENTORY_SLOT_BAG_0,bag)))
+                        for(uint8_t slot=0;slot<container->GetBagSize();++slot)planFill(bag,slot);
+                require(!fillSlots.empty() && fillSlots.size()<=128,"bounded_capacity_input_required");
+                f.setup.add_child("inventory_before",beforeInventory);f.setup.add_child("capacity_slots",fillSlots);
+            }
             boost::property_tree::ptree prior;
             for(auto* item:actor->GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BAGS))
                 if(item && item->GetEntry()==2772){boost::property_tree::ptree row;row.put("guid",item->GetGUIDLow());row.put("quantity",item->GetCount());prior.push_back({"",row});}
@@ -87,6 +126,24 @@ void RunIsolatedGuildMailFixture(FixtureState& state) {
             const auto inputPath="/isolated/evidence/guild-mail-input-"+state.boot+".json";
             require(!std::ifstream(inputPath),"existing_mail_input_must_not_be_granted_again");
             std::ofstream intent(inputPath);intent<<Json(f.setup);intent.close();require(bool(intent),"guild_mail_input_intent_saved");
+            if(fullBags) {
+                boost::property_tree::ptree grants;
+                for(const auto& row:fillSlots) {
+                    const uint8_t bag=row.second.template get<uint32_t>("bag_slot"),slot=row.second.template get<uint32_t>("slot");
+                    ItemPosCountVec positions;
+                    require(!actor->GetItemByPos(bag,slot) && actor->CanStoreNewItem(bag,slot,positions,7074,1)==EQUIP_ERR_OK &&
+                        positions.size()==1 && positions[0].pos==uint16_t(uint16_t(bag)<<8|slot),"capacity_input_slot_changed");
+                    auto* item=actor->StoreNewItem(positions,7074,true);
+                    require(item && item->GetCount()==1,"capacity_native_junk_input_created");
+                    boost::property_tree::ptree grant;grant.put("guid",item->GetGUIDLow());grant.put("entry",7074);grant.put("quantity",1);
+                    grant.put("bag",item->GetContainer()?item->GetContainer()->GetGUIDLow():0);grant.put("slot",uint32_t(slot));
+                    grant.put("bag_slot",uint32_t(bag));grants.push_back({"",grant});
+                }
+                ItemPosCountVec positions;
+                require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,2772,4)==EQUIP_ERR_INVENTORY_FULL,
+                    "native_full_bags_must_block_parcel_collection");
+                f.setup.add_child("capacity_grants",grants);f.setup.put("capacity_initially_full",true);
+            }
             auto* attachment=Item::CreateItem(2772,4,actor);require(attachment,"native_parcel_input_created");
             const auto itemGuid=attachment->GetGUIDLow();attachment->SaveToDB();
             MailDraft draft("Isolated guild supply receipt fixture");draft.AddItem(attachment);
@@ -125,7 +182,7 @@ void RunIsolatedGuildMailFixture(FixtureState& state) {
         require(!Terminal(saved->phase) || saved->phase==Phase::Completed,"guild_mail_ended_without_verified_success");
         if(saved->phase!=Phase::Completed)return;
         require(actor->GetItemCount(2772,false)==f.setup.template get<uint32_t>("bags_before") &&
-            actor->GetMoney()==f.setup.template get<uint32_t>("money_before"),"guild_mail_existing_stock_and_wallet_conserved");
+            (fullBags || actor->GetMoney()==f.setup.template get<uint32_t>("money_before")),"guild_mail_existing_stock_and_wallet_conserved");
         require(!sLivingActivityCoordinator.DefersNativeSave(f.actor) && !sLivingActivityCoordinator.DefersGuildMutation(f.job.guild) &&
             !state.executionTimes.count(f.task),"guild_mail_native_save_and_queue_settled");
         f.blocker.clear();emit(true,"",actor);
