@@ -52,6 +52,25 @@ int main() {
         assert(!ServiceInteractionApproach(invalid,service,5));
     }
     {
+        const std::string root="637bd562-36d2-5b01-bc01-e2d831c49f38";
+        const std::string other="637bd562-36d2-5b01-bc01-e2d831c49f39";
+        ServiceVendorBackoff routes;
+        assert(!routes.Avoid(root,3614,10)&&!routes.NextRetry(root,10));
+        routes.Record(root,3614,100);
+        assert(routes.Avoid(root,3614,100)&&routes.Avoid(root,3614,1899));
+        assert(!routes.Avoid(root,3614,1900)&&routes.NextRetry(root,100)==1900);
+        assert(!routes.Avoid(root,1215,100)&&!routes.Avoid(other,3614,100));
+        routes.Record(root,1215,101);assert(routes.NextRetry(root,102)==1900);
+        routes.Record(root,3614,200);assert(routes.NextRetry(root,201)==1901);
+        routes.Record("invalid",2,100);routes.Record(root,0,100);
+        assert(!routes.Avoid(root,2,100));
+        routes.Record(other,1,201);assert(!routes.Avoid(root,3614,201));
+        for(int entry=2;entry<=17;++entry)routes.Record(other,entry,201);
+        assert(!routes.Avoid(other,1,201)&&routes.Avoid(other,17,201));
+        routes.Record(other,18,std::numeric_limits<uint64_t>::max());
+        assert(!routes.Avoid(other,18,201));
+    }
+    {
         assert(!LegacyProfessionInFlight(false,true,true,false)); // A saved trip must not deadlock its own runner.
         assert(LegacyProfessionInFlight(false,true,false,false));
         assert(LegacyProfessionInFlight(true,true,true,false));

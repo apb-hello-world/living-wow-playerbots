@@ -74,6 +74,36 @@ namespace LivingActivity {
         return selected && selected==requested && noProgressMs>=60000 && !alreadyUsed &&
             SameServiceSearch(saved,action,lease,action.revision);
     }
+    // Candidate routing memory only, not an obligation or purchase ledger.
+    // A genuinely invalid local path must not select the same nearest vendor
+    // forever. Keep a bounded, expiring set scoped to the accepted root.
+    class ServiceVendorBackoff {
+    public:
+        bool Avoid(const std::string& root,int32_t entry,uint64_t now) const {
+            if(root!=task)return false;
+            for(const auto& failure:failures)if(failure.entry==entry && failure.until>now)return true;
+            return false;
+        }
+        uint64_t NextRetry(const std::string& root,uint64_t now) const {
+            uint64_t next=0;
+            if(root==task)for(const auto& failure:failures)
+                if(failure.until>now && (!next || failure.until<next))next=failure.until;
+            return next;
+        }
+        void Record(const std::string& root,int32_t entry,uint64_t now) {
+            if(!IsUuid(root) || entry<=0 || now>std::numeric_limits<uint64_t>::max()-1800)return;
+            if(task!=root){task=root;failures.clear();}
+            failures.erase(std::remove_if(failures.begin(),failures.end(),[&](const Failure& f){
+                return f.until<=now || f.entry==entry;
+            }),failures.end());
+            if(failures.size()==16)failures.erase(failures.begin());
+            failures.push_back({entry,now+1800});
+        }
+    private:
+        struct Failure {int32_t entry;uint64_t until;};
+        std::string task;
+        std::vector<Failure> failures;
+    };
     // Progress-only saved revisions retain route identity, not an old grant.
     inline bool SameServiceIntent(const Task& before,const Task& after) {
         ServiceDestination service;

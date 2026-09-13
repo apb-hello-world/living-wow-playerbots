@@ -77,7 +77,8 @@ private:
         uint64 searchRevision=0,ticket=0,initialActiveMs=0,routeRevision=0;
         uint64 localServiceGuid=0,localServiceStartedMs=0;
         LivingActivity::ServicePathProgress pathProgress;
-        std::string goal;
+        std::string goal,lastCatchupBlocker;
+        uint32 localServiceEntry=0;
         uint32 purpose=0, purchaseItem=0, started=0, progress=0, nextMove=0, attempts=0,nextCatchup=0;
         float distance=1e30f;
         bool requesting=false, local=false,ready=false,routeOwned=false,routeInitialized=false,catchupUsed=false;
@@ -86,6 +87,7 @@ private:
         uint32 nextApproachDiagnostic=0;
     };
     std::map<uint32, ServiceTrip> serviceTrips;
+    std::map<uint32, LivingActivity::ServiceVendorBackoff> serviceVendorBackoffs;
     uint64 serviceSequence=0;
     std::map<uint32, uint32> serviceRetry;
     std::map<uint32, uint32> mailPrepAttempts;

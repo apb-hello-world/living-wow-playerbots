@@ -725,6 +725,18 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     if(purchaseItem && (!saved || !NativeProfessionVendorSources(*bot,purchaseItem,purchaseQuantity,purchaseVendors,sourceBlocker)))
         return stop(sourceBlocker.empty()?"profession_vendor_saved_source_required":sourceBlocker);
     const uint32 guid=bot->GetGUIDLow(), now=uint32(time(nullptr));
+    if(purchaseItem) {
+        const auto backoff=serviceVendorBackoffs.find(guid);
+        if(backoff!=serviceVendorBackoffs.end()) {
+            purchaseVendors.erase(std::remove_if(purchaseVendors.begin(),purchaseVendors.end(),[&](int32_t vendor){
+                return backoff->second.Avoid(goal,vendor,now);
+            }),purchaseVendors.end());
+            if(purchaseVendors.empty()) {
+                result.retryAtMs=backoff->second.NextRetry(goal,now)*1000;
+                return stop("recipe_vendor_routes_backoff");
+            }
+        }
+    }
     const auto old=serviceTrips.find(guid);
     if(old!=serviceTrips.end()) result.activeElapsedMs=old->second.work.ActiveMs();
     if(old!=serviceTrips.end() && bool(old->second.managedTask.actor)!=bool(saved))
@@ -861,6 +873,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     const uint64 selectedService=service?service->GetObjectGuid().GetRawValue():0;
     if(trip.localServiceGuid!=selectedService) {
         trip.localServiceGuid=selectedService;trip.localServiceStartedMs=trip.work.ActiveMs();
+        trip.localServiceEntry=service?service->GetEntry():0;trip.lastCatchupBlocker.clear();
         // Selection is not physical progress and does not reset route retries.
     }
     if(service) {
@@ -872,8 +885,8 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             result.arrived=true;result.blocker="recipe_service_arrived";
             ReleaseRecipeService(guid,result.blocker);return result;
         }
-        if(distance+1<trip.distance) {trip.distance=distance;trip.progress=now;trip.work.Progress();}
-        result.blocker="recipe_approaching_service";
+        if(distance+1<trip.distance) {trip.distance=distance;trip.progress=now;trip.work.Progress();trip.lastCatchupBlocker.clear();}
+        result.blocker=trip.lastCatchupBlocker.empty()?"recipe_approaching_service":trip.lastCatchupBlocker;
         if(saved && !trip.catchupUsed && now>=trip.nextCatchup && trip.work.NoProgressMs()>=60000 &&
             trip.work.ActiveMs()-trip.localServiceStartedMs>=60000) {
             trip.nextCatchup=now+30;
@@ -882,6 +895,9 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
                 result.blocker="service_catchup_final_approach";
                 return result; // Same task, no arrival or remote native operation.
             }
+            trip.lastCatchupBlocker=result.blocker;
+            sLog.outString("Living saved service event=local_approach_rejected actor=%u task=%s entry=%u reason=%s",
+                guid,saved->id.c_str(),service->GetEntry(),result.blocker.c_str());
             // A failed checked approach is diagnostic, not progress. Continue
             // native movement and retain the existing two-attempt/backoff rule.
         }
@@ -1000,8 +1016,14 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     }
     if(trip.work.NoProgressMs()>=90000) {
         if(++trip.attempts>=2) {
-            ReleaseRecipeService(guid,"recipe_service_no_progress");serviceRetry[guid]=now+300;
-            result.retryAtMs=uint64(serviceRetry[guid])*1000;return stop("recipe_service_no_progress");
+            const std::string failure=trip.lastCatchupBlocker.empty()?"recipe_service_no_progress":trip.lastCatchupBlocker;
+            // Only a checked path failure excludes a source. Combat, revoked
+            // authority or a busy relocation slot do not mean a bad vendor.
+            if(saved && purchaseItem && trip.local && trip.localServiceEntry &&
+                trip.lastCatchupBlocker=="service_catchup_no_valid_approach")
+                serviceVendorBackoffs[guid].Record(goal,int32_t(trip.localServiceEntry),now);
+            ReleaseRecipeService(guid,failure);serviceRetry[guid]=now+300;
+            result.retryAtMs=uint64(serviceRetry[guid])*1000;return stop(failure);
         }
         trip.progress=now;trip.work.Progress();trip.distance=1e30f;trip.nextMove=0;
         if(target && !target->IsForced()) target->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
