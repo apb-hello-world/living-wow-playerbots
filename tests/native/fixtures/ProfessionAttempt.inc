@@ -101,6 +101,15 @@ void TestProfessionAttemptPlan() {
     assert(used==3);
     std::vector<ProfessionMaterialReservation> missing;
     assert(PlanProfessionMaterialReservations(mergedTask,mergedView,mergedClaims,mergedFrame,missing,blocker) && missing.empty());
+    // A later paid portion on this same stack is NOT another obligation and
+    // must stay reserved without being spuriously consumed by a smaller craft.
+    auto smallerJob=mergedJob;smallerJob.reagents.front().perAttempt=1;
+    auto smallerTask=mergedTask;smallerTask.checkpoint.data=EncodeProfessionJob(smallerJob);
+    assert(run(smallerTask,mergedView,mergedClaims,mergedFrame) && result.consumption.size()==3);
+    assert(result.consumption.front().used==1 && result.consumption.front().before.quantity==1);
+    assert(MatchProfessionInputClaims(smallerTask,smallerJob,mergedFrame,result.consumption,blocker));
+    assert(ProfessionInputProtectionMatches(3,1,3,3));
+    assert(!ProfessionInputProtectionMatches(3,1,1,3)); // The other portion belongs to another root.
     mergedClaims.claims.back().quantity=3;
     assert(!run(mergedTask,mergedView,mergedClaims,mergedFrame)); // Aggregate protection cannot exceed physical stock.
 

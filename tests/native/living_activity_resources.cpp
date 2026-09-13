@@ -1,5 +1,6 @@
 #include "LivingActivityResources.h"
 #include "LivingActivityClaimCodec.h"
+#include "LivingProfessionConsumption.h"
 #include <cassert>
 #include <limits>
 #include <stdexcept>
@@ -15,6 +16,39 @@ static ResourceClaim ItemClaim(const std::string& suffix, uint32_t guid, uint64_
     return claim;
 }
 int main() {
+    {
+        ResourceClaimBook shared;
+        auto first=ItemClaim("41",10800,2),later=ItemClaim("42",10800,3);
+        assert(shared.RestoreBatch({first,later})==ClaimInstall::Installed && shared.FinishRestore());
+        const auto original=shared.Reader().Inspect();
+        const auto held=[&](const auto& view){return view->HeldBagItem(first.task,497,10800,2934);};
+        assert(held(original)==5 && original->ProtectedItem(10800)==5);
+        assert(ProfessionInputProtectionMatches(7,2,held(original),original->ProtectedItem(10800)));
+        assert(!original->HeldBagItem("another-root",497,10800,2934));
+        assert(!original->HeldBagItem(first.task,498,10800,2934));
+        assert(!original->HeldBagItem(first.task,497,10800,2935));
+        auto pending=ItemClaim("43",10800,1);const auto receipt=ItemClaim("44",1,1).id;
+        assert(shared.ReservePending(receipt,{{pending,0}},{{497,10800,2934,7,0,"bags"}})==ClaimInstall::Installed);
+        auto view=shared.Reader().Inspect();
+        assert(held(view)==5 && view->ProtectedItem(10800)==6);
+        assert(!ProfessionInputProtectionMatches(7,2,held(view),view->ProtectedItem(10800)));
+        assert(shared.CommitReservation(receipt)==ClaimInstall::Installed);
+        view=shared.Reader().Inspect();assert(held(view)==6);
+        assert(ProfessionInputProtectionMatches(7,2,held(view),view->ProtectedItem(10800)));
+        auto other=ItemClaim("45",10800,1);other.task="637bd562-36d2-5b01-bc01-e2d831c49f39";
+        assert(shared.InstallReceipt({{other,0}})==ClaimInstall::Installed);
+        view=shared.Reader().Inspect();
+        assert(!ProfessionInputProtectionMatches(7,2,held(view),view->ProtectedItem(10800)));
+        auto banked=later;banked.location="bank";++banked.revision;
+        assert(shared.InstallReceipt({{banked,1}})==ClaimInstall::Installed);
+        view=shared.Reader().Inspect();assert(held(view)==3); // Banked is protected, not carried backing.
+        assert(held(original)==5); // Published snapshots remain immutable.
+        shared.BlockProjection();assert(!held(shared.Reader().Inspect()));
+        assert(!ProfessionInputProtectionMatches(7,2,0,7));
+        assert(!ProfessionInputProtectionMatches(7,0,5,5));
+        assert(!ProfessionInputProtectionMatches(4,2,5,5));
+        assert(!ProfessionInputProtectionMatches(7,6,5,5));
+    }
     {
         ResourceClaimBook indexed;
         UnsettledClaimBatch batch;std::string blocker;
@@ -102,6 +136,7 @@ int main() {
             while (!stop.load()) {
                 const auto view=reader.Inspect(); assert(view && view->ready);
                 assert(view->UnreservedItem(497,100,2934,10)+view->UnreservedItem(497,101,2934,10) == 12);
+                assert(view->HeldBagItem(a.task,497,100,2934)+view->HeldBagItem(a.task,497,101,2934)==8);
                 ++reads;
             }
         };

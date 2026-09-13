@@ -9,6 +9,12 @@ namespace LivingActivity {
 // carried bags by equipped slot. The native collector rejects relevant keyring
 // inputs. Never sort by GUID, item value, or pointer before selecting inputs.
 struct ProfessionInputStack { NativeItemStack item; uint32_t used=0; };
+// Several purchase receipts may reserve portions of one merged stack. Unused
+// portions of THIS root remain held; another root or pending hold still blocks.
+inline bool ProfessionInputProtectionMatches(uint32_t nativeCount,uint64_t inputClaims,
+    uint64_t heldByRoot,uint64_t protectedTotal) {
+    return inputClaims && inputClaims<=heldByRoot && heldByRoot<=nativeCount && heldByRoot==protectedTotal;
+}
 inline bool PlanProfessionInputStacks(const ProfessionJob& job,const CraftFrame& frame,
     std::vector<ProfessionInputStack>& inputs,std::string& blocker) {
     inputs.clear();

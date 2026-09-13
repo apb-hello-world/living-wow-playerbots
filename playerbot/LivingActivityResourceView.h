@@ -5,9 +5,12 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <string>
+#include <tuple>
 #include <utility>
 
 namespace LivingActivity {
+    using HeldBagItemKey = std::tuple<std::string,uint32_t,uint32_t,uint32_t>; // root, actor, GUID, entry
     struct ResourceClaim;
     struct ResourceProtection;
     // Immutable, partitioned index: a transition copies only its affected
@@ -15,6 +18,7 @@ namespace LivingActivity {
     struct ResourceBucket {
         std::map<uint32_t,uint64_t> items, money;
         std::map<std::pair<uint32_t,uint32_t>,uint64_t> uncertain;
+        std::map<HeldBagItemKey,uint64_t> heldBagItems;
     };
     struct ResourceView {
         bool ready = false;
@@ -24,6 +28,9 @@ namespace LivingActivity {
         // Exact immutable protection, not the clamped available quantity. A
         // service must not mistake an overclaimed full stack for its own claim.
         uint64_t ProtectedItem(uint32_t guid) const;
+        // Acknowledged held bag portions only. Pending, banked or uncertain
+        // quantities remain protected globally but are never usable backing.
+        uint64_t HeldBagItem(const std::string& root,uint32_t actor,uint32_t guid,uint32_t entry) const;
         bool HasUncertainItem(uint32_t actor,uint32_t entry) const;
         uint32_t UnreservedMoney(uint32_t actor,uint32_t nativeCopper) const;
     };
@@ -51,6 +58,7 @@ namespace LivingActivity {
         std::shared_ptr<ResourceReader::Cell> cell;
         std::set<uint32_t> items, money;
         std::set<std::pair<uint32_t,uint32_t>> uncertain;
+        std::set<HeldBagItemKey> heldBagItems;
     };
 }
 #endif

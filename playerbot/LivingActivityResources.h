@@ -55,6 +55,7 @@ namespace LivingActivity {
         std::map<uint32_t, uint64_t> items;
         std::map<std::pair<uint32_t, uint32_t>, uint64_t> uncertainEntries;
         std::map<uint32_t, uint64_t> money;
+        std::map<HeldBagItemKey,uint64_t> heldBagItems; // Derived from acknowledged claims, never pending proposals.
         uint64_t ProtectedItem(uint32_t actor, uint32_t guid, uint32_t entry) const;
         uint64_t ProtectedMoney(uint32_t actor) const;
         uint32_t UnreservedItem(uint32_t actor, uint32_t guid, uint32_t entry, uint32_t nativeCount) const;

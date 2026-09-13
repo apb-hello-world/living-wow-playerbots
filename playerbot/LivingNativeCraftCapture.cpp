@@ -250,7 +250,9 @@ namespace LivingActivity {
             }
             if (trade->Item(native->guid) || supply->Item(native->guid) || supply->Entry(actor.GetGUIDLow(),native->entry) ||
                 protectedItems->HasUncertainItem(actor.GetGUIDLow(),native->entry) ||
-                protectedItems->ProtectedItem(native->guid)!=held)
+                !ProfessionInputProtectionMatches(native->count,held,
+                    protectedItems->HeldBagItem(task.root,actor.GetGUIDLow(),native->guid,native->entry),
+                    protectedItems->ProtectedItem(native->guid)))
                 return reject("native_craft_other_obligation_protects_material");
         }
         blocker.clear();return true;

@@ -30,6 +30,11 @@ namespace LivingActivity {
         if (!ready || !guid) return std::numeric_limits<uint64_t>::max();
         const auto& bucket=buckets[guid%256];return bucket ? Get(bucket->items,guid) : 0;
     }
+    uint64_t ResourceView::HeldBagItem(const std::string& root,uint32_t actor,uint32_t guid,uint32_t entry) const {
+        if(!ready || root.empty() || !actor || !guid || !entry) return 0;
+        const auto& bucket=buckets[guid%256];
+        return bucket ? Get(bucket->heldBagItems,HeldBagItemKey{root,actor,guid,entry}) : 0;
+    }
     bool ResourceView::HasUncertainItem(uint32_t actor,uint32_t entry) const {
         if (!ready || !actor || !entry) return true;
         const auto& bucket=buckets[actor%256];return bucket && Get(bucket->uncertain,std::make_pair(actor,entry));
@@ -40,7 +45,10 @@ namespace LivingActivity {
     }
     void ResourcePublisher::Changed(const ResourceClaim& claim) {
         if (claim.copper) { if (claim.location == "money") money.insert(claim.actor); }
-        else if (claim.itemGuid) items.insert(claim.itemGuid);
+        else if (claim.itemGuid) {
+            items.insert(claim.itemGuid);
+            heldBagItems.emplace(claim.task,claim.actor,claim.itemGuid,claim.itemEntry);
+        }
         else uncertain.emplace(claim.actor,claim.itemEntry);
     }
     void ResourcePublisher::Publish(const ResourceProtection& source) {
@@ -57,10 +65,11 @@ namespace LivingActivity {
         for (const auto guid : items) Set(bucket(guid).items,guid,Get(source.items,guid));
         for (const auto actor : money) Set(bucket(actor).money,actor,Get(source.money,actor));
         for (const auto& key : uncertain) Set(bucket(key.first).uncertain,key,Get(source.uncertainEntries,key));
+        for (const auto& key : heldBagItems) Set(bucket(std::get<2>(key)).heldBagItems,key,Get(source.heldBagItems,key));
         for (const auto& row : changed) next->buckets[row.first]=row.second;
         next->ready=source.ready; next->revision=source.revision;
         std::shared_ptr<const ResourceView> immutable=next;
         std::atomic_store_explicit(&cell->value,std::move(immutable),std::memory_order_release);
-        items.clear(); money.clear(); uncertain.clear();
+        items.clear(); money.clear(); uncertain.clear(); heldBagItems.clear();
     }
 }

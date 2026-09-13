@@ -81,6 +81,8 @@ namespace LivingActivity {
         const auto found = records.find(id); return found == records.end() ? nullptr : &found->second;
     }
     void ResourceClaimBook::IndexAcknowledged(const ResourceClaim& claim,bool add) {
+        if(claim.itemGuid && claim.state=="held" && claim.location=="bags" && !claim.nativeReference && !claim.copper)
+            Add(protection.heldBagItems,HeldBagItemKey{claim.task,claim.actor,claim.itemGuid,claim.itemEntry},claim.quantity,add);
         if (!TerminalClaim(claim)) {
             if (add) unsettledByTask[claim.task].insert(claim.id);
             else {
