@@ -861,12 +861,12 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
                 // Copied-only, bounded output, no path mutation or extra query.
                 if(trip.work.NoProgressMs()>=30000 && now>=trip.nextApproachDiagnostic) {
                     trip.nextApproachDiagnostic=now+30;
-                    const auto& path=context->GetValue<ai::LastMovement&>("last movement")->Get().lastPath;
+                    const auto& path=context->GetValue<ai::LastMovement&>("last movement")->Get().lastPath.getPath();
                     sLog.outString("Living isolated service approach: actor=%u task=%s item=%u service=%u map=%u distance=%.2f actor=%.2f,%.2f,%.2f service=%.2f,%.2f,%.2f contact=%.2f,%.2f,%.2f dispatched=%u path_nodes=%u",
                         guid,saved->id.c_str(),purchaseItem,service->GetEntry(),bot->GetMapId(),distance,
                         bot->GetPositionX(),bot->GetPositionY(),bot->GetPositionZ(),
                         service->GetPositionX(),service->GetPositionY(),service->GetPositionZ(),x,y,z,
-                        uint32(dispatched),uint32(path.getPath().size()));
+                        uint32(dispatched),uint32(path.size()));
                 }
 #else
                 (void)dispatched;
