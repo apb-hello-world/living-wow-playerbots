@@ -150,7 +150,7 @@ std::string GuildMailNativeProof(const GuildMailQuote& q,const Task& task,const 
 std::string GuildMailRollbackProjection() {
     // Preserve exact journal bytes; MariaDB otherwise nests JSON-constrained
     // TEXT columns as objects and loses the string envelope used for recovery.
-    return "JSON_OBJECT('id',o.operation_id,'task',o.task_id,'revision',o.task_revision,"
+    return "JSON_OBJECT('id',o.operation_id,'task',o.task_id,'revision',o.task_revision,'state',o.state,"
         "'reference',o.native_reference,'evidence',o.evidence_code,'before',CONCAT('',o.before_state),'after',CONCAT('',o.after_state))";
 }
 bool DecodeGuildMailRollback(const std::string& text,GuildMailRollback& out) {
@@ -158,14 +158,21 @@ bool DecodeGuildMailRollback(const std::string& text,GuildMailRollback& out) {
     try {
         boost::property_tree::ptree p;std::istringstream input(text);boost::property_tree::read_json(input,p);
         auto& o=out.interrupted;o.id=p.get<std::string>("id");o.task=p.get<std::string>("task");
-        o.taskRevision=p.get<uint64_t>("revision");o.kind="guild_mail_send";o.state=OperationState::Reconciling;
+        o.taskRevision=p.get<uint64_t>("revision");o.kind="guild_mail_send";
+        const auto state=p.get<std::string>("state");
+        if(state!="intent" && state!="reconciling")return false;
+        o.state=state=="intent"?OperationState::Intent:OperationState::Reconciling;
         o.nativeReference=p.get<std::string>("reference");o.evidence=p.get<std::string>("evidence");
         out.before=p.get<std::string>("before");out.after=p.get<std::string>("after");
-        if(!IsUuid(o.id) || !IsUuid(o.task) || !o.taskRevision || o.evidence!="native_save_capture_requires_reconciliation")return false;
+        if(!IsUuid(o.id) || !IsUuid(o.task) || !o.taskRevision)return false;
+        if(o.state==OperationState::Intent) {
+            if(!o.evidence.empty() || !o.nativeReference.empty() || out.after!="{}")return false;
+        } else if(o.evidence!="native_save_capture_requires_reconciliation")return false;
         const std::string prefix="{\"effects\":76,\"persistence\":1,\"native\":{\"native\":";
         const auto end=out.before.find(",\"claimed_consumption\":",prefix.size());
         if(out.before.compare(0,prefix.size(),prefix)!=0 || end==std::string::npos ||
             !DecodeGuildMailQuote(out.before.substr(prefix.size(),end-prefix.size()),out.quote))return false;
+        if(o.state==OperationState::Intent)return true;
         boost::property_tree::ptree a;std::istringstream after(out.after);boost::property_tree::read_json(after,a);
         out.attemptedMail=a.get<uint32_t>("mail");const auto& q=out.quote;
         return out.attemptedMail && o.nativeReference=="mail:"+std::to_string(out.attemptedMail)+":item:"+std::to_string(q.item) &&
@@ -179,13 +186,16 @@ bool PrepareGuildMailRollback(const Task& saved,const WorldContext& context,cons
     const std::string& receipt,GuildMailRollbackWrite& out,std::string& why) {
     out={};auto reject=[&](const char* text){why=text;return false;};
     const auto& q=rollback.quote;const auto& interrupted=rollback.interrupted;
+    const bool intent=interrupted.state==OperationState::Intent;
+    const bool exactOutcome=intent?interrupted.evidence.empty() && interrupted.nativeReference.empty() &&
+        rollback.after=="{}" && !rollback.attemptedMail:
+        interrupted.state==OperationState::Reconciling && interrupted.evidence=="native_save_capture_requires_reconciliation" && rollback.attemptedMail;
     if(!saved.context.boot.empty() || saved.context.actorGeneration || saved.context.mapGeneration ||
         saved.phase!=Phase::Reconciling || saved.checkpoint.step!="guild_mail_send" || saved.revision>=UINT64_MAX-1 ||
         context.actor!=saved.actor || !context.actorGeneration || !context.mapGeneration || !IsUuid(context.boot) ||
         !context.policyRevision || now<saved.updatedAtMs || !IsUuid(receipt) ||
-        interrupted.task!=saved.id || interrupted.taskRevision>=saved.revision || interrupted.state!=OperationState::Reconciling ||
-        interrupted.kind!="guild_mail_send" || interrupted.evidence!="native_save_capture_requires_reconciliation" ||
-        !IsUuid(interrupted.id) || !rollback.attemptedMail || !ExactGuildMailConsumption(saved,q,uses))
+        interrupted.task!=saved.id || interrupted.taskRevision>=saved.revision || !exactOutcome ||
+        interrupted.kind!="guild_mail_send" || !IsUuid(interrupted.id) || !ExactGuildMailConsumption(saved,q,uses))
         return reject("guild_mail_rollback_exact_restored_operation_required");
     const auto expected="{\"effects\":76,\"persistence\":1,\"native\":"+ClaimedNativeState(EncodeGuildMailQuote(q),uses)+'}';
     if(rollback.before!=expected || item.actor!=saved.actor || item.guid!=q.item || item.entry!=q.job.entry ||
@@ -199,8 +209,8 @@ bool PrepareGuildMailRollback(const Task& saved,const WorldContext& context,cons
     auto n=[](uint64_t v){return std::to_string(v);};
     out.journal.statements.front()+=" AND phase='reconciling' AND checkpoint="+SqlValue(saved.checkpoint.data)+
         " AND EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+SqlValue(interrupted.id)+
-        " AND o.state='reconciling' AND o.kind='guild_mail_send' AND o.before_state="+SqlValue(rollback.before)+
-        " AND o.after_state="+SqlValue(rollback.after)+" AND o.evidence_code='native_save_capture_requires_reconciliation'"
+        " AND o.state="+SqlValue(intent?"intent":"reconciling")+" AND o.kind='guild_mail_send' AND o.before_state="+SqlValue(rollback.before)+
+        " AND o.after_state="+SqlValue(rollback.after)+" AND o.evidence_code="+SqlValue(interrupted.evidence)+
         " AND o.native_reference="+SqlValue(interrupted.nativeReference)+')'+
         " AND (SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
         " WHERE t.actor_guid="+n(saved.actor)+" AND o.state IN ('intent','reconciling'))=1"
@@ -211,12 +221,14 @@ bool PrepareGuildMailRollback(const Task& saved,const WorldContext& context,cons
         " AND NOT EXISTS(SELECT 1 FROM mail WHERE id="+n(rollback.attemptedMail)+')'+
         " AND NOT EXISTS(SELECT 1 FROM mail_items WHERE item_guid="+n(item.guid)+')'+
         " AND NOT EXISTS(SELECT 1 FROM guild_bank_item WHERE item_guid="+n(item.guid)+')'+
-        " AND NOT EXISTS(SELECT 1 FROM living_activity_task WHERE source='guild_delivery' AND source_key="+
-        SqlValue(GuildDeliverySourceKey(GuildMailRecipientJob(q,rollback.attemptedMail),q.receiver))+')'+
+        " AND NOT EXISTS(SELECT 1 FROM living_activity_claim WHERE item_guid="+n(item.guid)+
+        " AND actor_guid<>"+n(saved.actor)+" AND state='held')"+
         " AND EXISTS(SELECT 1 FROM guild_society_supply_delivery d WHERE d.delivery_id="+n(q.job.delivery)+
         " AND d.guild_id="+n(q.job.guild)+" AND d.goal_id="+SqlValue(q.job.goal)+" AND d.donor_guid="+n(q.job.donor)+
         " AND d.carrier_guid="+n(q.sender)+" AND d.item_guid="+n(q.item)+" AND d.item_entry="+n(q.job.entry)+
         " AND d.quantity="+n(q.job.quantity)+" AND d.deposited_quantity=0 AND d.phase='carried' AND d.mail_id="+n(q.job.incomingMail)+')';
+    if(rollback.attemptedMail)out.journal.statements.front()+=" AND NOT EXISTS(SELECT 1 FROM living_activity_task WHERE source='guild_delivery' AND source_key="+
+        SqlValue(GuildDeliverySourceKey(GuildMailRecipientJob(q,rollback.attemptedMail),q.receiver))+')';
     for(const auto& use:uses)out.journal.statements.front()+=" AND EXISTS(SELECT 1 FROM living_activity_claim c WHERE "+ConsumptionClaimPredicate(use.before)+')';
     out.journal.statements.insert(out.journal.statements.begin(),
         "UPDATE living_activity_task SET actor_guid=actor_guid WHERE actor_guid="+n(saved.actor));

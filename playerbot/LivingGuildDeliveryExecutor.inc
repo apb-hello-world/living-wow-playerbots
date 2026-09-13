@@ -127,7 +127,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             const auto marker=snapshot.find(" FROM guild_society_supply_delivery d");
             snapshot.insert(marker,",COALESCE((SELECT "+GuildMailRollbackProjection()+
                 " FROM living_activity_operation o WHERE o.task_id="+SqlValue(id)+" AND o.kind='guild_mail_send'"
-                " AND o.state='reconciling' AND o.evidence_code='native_save_capture_requires_reconciliation' LIMIT 1),'')");
+                " AND (o.state='intent' OR (o.state='reconciling' AND o.evidence_code='native_save_capture_requires_reconciliation')) LIMIT 1),'')");
             if(!CharacterDatabase.AsyncQuery([this,id,revision](QueryResult* rows) {
                 state->ioPending=false;const auto found=state->guildDeliveryReads.find(id);
                 if(found==state->guildDeliveryReads.end())return;

@@ -503,7 +503,11 @@ void PlayerbotGuildSupplies::RecordMailed(uint32 sender,uint32 receiver,Item* it
         (managed.sender?!shared:(d.donor!=sender||d.item!=item->GetGUIDLow())))return;
     // Mail row, removed inventory, real postage, attachment and journal share
     // this native mail transaction (no extra synthetic mail/inventory path).
-    item->DeleteFromInventoryDB();item->SetOwnerGuid(ObjectGuid(HIGHGUID_PLAYER,receiver));item->SaveToDB();
+    item->DeleteFromInventoryDB();item->SaveToDB();
+    // Match native MailHandler: SaveToDB is a no-op for ITEM_UNCHANGED.
+    // SetOwnerGuid alone changes only memory, not the item's update state.
+    CharacterDatabase.PExecute("UPDATE item_instance SET owner_guid=%u WHERE guid=%u",receiver,item->GetGUIDLow());
+    item->SetOwnerGuid(ObjectGuid(HIGHGUID_PLAYER,receiver));
     source->SaveInventoryAndGoldToDB();
     CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET carrier_guid=%u,mail_id=%u,item_guid=%u,phase='mailed',blocker='mail_delivery_delay',updated_at=%u WHERE delivery_id=%llu AND phase='carried' AND carrier_guid=%u AND donor_guid=%u AND mail_id=%u AND deposited_quantity=0",receiver,mail,item->GetGUIDLow(),uint32(time(nullptr)),(unsigned long long)d.id,sender,d.donor,d.mail);
     state_->mailRecorded=true;

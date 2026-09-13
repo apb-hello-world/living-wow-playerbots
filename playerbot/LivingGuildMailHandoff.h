@@ -42,8 +42,9 @@ struct GuildMailRollback {
     GuildMailQuote quote;
     uint32_t attemptedMail=0;
 };
-// Narrow restart recovery for a captured native transaction that was rolled
-// back before sealing. Ambiguous commits remain held; they are never resent.
+// Restart recovery for an unchanged intent or failed capture. Only exact
+// original possessions, postage and claims plus absent native effects permit
+// rejection of the old attempt. Ambiguous commits remain held, never resent.
 bool DecodeGuildMailRollback(const std::string& stored,GuildMailRollback&);
 std::string GuildMailRollbackProjection();
 struct GuildMailRollbackWrite { Task task;WritePlan journal; };
