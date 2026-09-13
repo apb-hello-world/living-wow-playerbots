@@ -23,7 +23,7 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
     state.fixtureNext=NowMs()+500;auto& f=state.guildDepositFixture;
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     auto emit=[&](bool passed,const std::string& why,Player* actor) {
-        if(forward && f.setup.get_optional<uint32_t>("forward_mail_delay_original"))
+        if(forward && f.setup.template get_optional<uint32_t>("forward_mail_delay_original"))
             sWorld.setConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY,f.setup.template get<uint32_t>("forward_mail_delay_original"));
         auto report=f.setup;report.put("suite",forward?"activity-guild-mail-forward-v1":fullBags?"activity-guild-mail-capacity-v1":"activity-guild-mail-v1");report.put("boot",state.boot);
         report.put("task",f.task);report.put("actor",f.actor);report.put("test_only",true);
