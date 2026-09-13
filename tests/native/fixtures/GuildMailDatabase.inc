@@ -35,7 +35,8 @@ static void GuildMailDatabase(Connection& db) {
         if(r.kind=="capacity_vendor_sale")r.effects|=Mask(Effect::Money);
         if(r.kind=="guild_bank_deposit")r.effects|=Mask(Effect::Guild);
         r.persistence=NativePersistence::Inventory;r.beforeState=quote;
-        if(consume)r.consumption={{claim,claim.quantity}};else r.itemTransfer=claim;
+        assert(claim.quantity<=UINT32_MAX);
+        if(consume)r.consumption={{claim,uint32_t(claim.quantity)}};else r.itemTransfer=claim;
         r.transition.task=task;r.transition.expectedRevision=task.revision;
         ++r.transition.task.revision;r.transition.task.phase=Phase::Executing;r.transition.receipt=receipt();
         assert(db.Write(OperationRequestWrite(r)));
@@ -43,7 +44,7 @@ static void GuildMailDatabase(Connection& db) {
         OperationResult native;native.id=r.transition.receipt;native.task=task.id;
         native.taskRevision=r.transition.task.revision;native.kind=kind;native.state=OperationState::Verified;
         native.nativeReference="fixture-metadata";native.evidence=evidence;
-        auto outcome=consume?ConsumedOperationWrite(task,task.revision-1,native,receipt(),"{}",{{claim,claim.quantity}}):
+        auto outcome=consume?ConsumedOperationWrite(task,task.revision-1,native,receipt(),"{}",{{claim,uint32_t(claim.quantity)}}):
             ItemTransferWrite(task,task.revision-1,native,receipt(),"{}",claim);
         assert(db.Write(outcome.journal));claim=outcome.changes.front().after;
         return native.id;
