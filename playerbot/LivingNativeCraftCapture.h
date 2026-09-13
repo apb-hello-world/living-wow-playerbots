@@ -40,7 +40,8 @@ namespace LivingActivity {
     class NativeProfessionCraftCast final : public NativeCraftCast {
     public:
         NativeProfessionCraftCast(Task executing,ActionContext action,ProfessionJob job,
-            std::vector<ClaimConsumption> consumption,ItemGainSpec output,EnchantIntent enchant={});
+            std::vector<ClaimConsumption> consumption,ItemGainSpec output,EnchantIntent enchant={},
+            std::optional<CraftFrame> inventoryBefore={});
         // World-thread launch only, BEFORE SpellStart. This does not start a
         // spell, manufacture a lease, waive native CheckCast, or prove success.
         bool Attach(Spell& spell,std::string& blocker);
@@ -70,6 +71,7 @@ namespace LivingActivity {
         const std::vector<ClaimConsumption> consumption;
         const ItemGainSpec output;
         const EnchantIntent enchant;
+        const std::optional<CraftFrame> inventoryBefore;
         EnchantSubject enchantAfter;
         const CraftIdentity identity;
         const std::shared_ptr<CraftCapture> capture;

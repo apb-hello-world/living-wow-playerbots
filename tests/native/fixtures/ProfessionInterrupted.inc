@@ -66,6 +66,44 @@ void TestInterruptedProfession() {
         row.beforeState,"{}",""};
     ProfessionHistoryCursor cursor;assert(cursor.Begin(f.task,{fields},blocker) && cursor.Advance(blocker));
     assert(cursor.Result().complete && cursor.Result().unresolvedOperation && cursor.Result().interruptedCraft);
+    // One paid portion is selected; another same-root purchase remains on the
+    // same physical stack. Old intents cannot infer the missing before count.
+    InterruptedFixture partial;ProfessionJob partialJob;InterruptedCraftIntent partialInput;
+    assert(DecodeProfessionJob(partial.task.checkpoint.data,partialJob,blocker));
+    auto partialIntent=*partial.history.interruptedCraft;
+    assert(DecodeInterruptedCraftIntent(partial.task,partialIntent,partialInput,blocker));
+    partialInput.inputs.back().before.quantity=2;
+    auto unused=partialInput.inputs.back().before;
+    unused.id="f71b6cac-8b42-44d9-9f1f-24e4e40a0009";unused.quantity=3;
+    auto replaceIntent=[&](const std::string& native) {
+        partialIntent.beforeState="{\"effects\":21,\"persistence\":2,\"native\":"+
+            ClaimedNativeState(native,partialInput.inputs)+",\"item_gain\":"+ItemGainSpecJson(partialInput.output)+'}';
+        partial.history.interruptedCraft=partialIntent;
+    };
+    partial.batch.claims.clear();
+    for(const auto& use:partialInput.inputs)partial.batch.claims.push_back(use.before);
+    partial.batch.claims.push_back(unused);
+    replaceIntent("{\"recipe\":2329,\"skill\":1,\"money\":100}");
+    assert(!prepare(partial)); // Keep conservative compatibility with old evidence.
+    replaceIntent(EncodeCraftIntent(partialJob,partial.frame));
+    assert(prepare(partial));const auto partialRecovered=result.task;
+    auto badPartial=partial;--badPartial.frame.stacks.back().count;fail(badPartial);
+    badPartial=partial;++badPartial.frame.stacks.back().count;fail(badPartial);
+    badPartial=partial;badPartial.batch.claims.back().quantity=4;fail(badPartial);
+    badPartial=partial;badPartial.batch.claims.back().actor=706;fail(badPartial);
+    badPartial=partial;badPartial.batch.claims.back().location="bank";fail(badPartial);
+    badPartial=partial;badPartial.batch.claims.erase(badPartial.batch.claims.begin());fail(badPartial);
+    auto recoveredPartial=partialIntent;recoveredPartial.receipt.state=OperationState::Rejected;
+    recoveredPartial.receipt.evidence="native_craft_intent_not_committed";
+    recoveredPartial.receipt.nativeReference="spell:2329:operation:"+recoveredPartial.receipt.id;
+    recoveredPartial.afterState="{\"recovery\":{\"version\":1,\"basis\":\"atomic_native_save_absent\",\"boot\":\""+
+        partial.current.boot+"\"},\"frame\":"+FrameJson(partial.frame)+'}';
+    assert(DecodeStoredCraftProof(partialRecovered,recoveredPartial,proof,blocker));
+    assert(proof.inputs.back().before.quantity==2 && proof.inputs.back().used==1 && !proof.attempt.nativeEffectVerified);
+    auto changedPartial=recoveredPartial;auto changedFrame=partial.frame;--changedFrame.stacks.back().count;
+    changedPartial.afterState="{\"recovery\":{\"version\":1,\"basis\":\"atomic_native_save_absent\",\"boot\":\""+
+        partial.current.boot+"\"},\"frame\":"+FrameJson(changedFrame)+'}';
+    assert(!DecodeStoredCraftProof(partialRecovered,changedPartial,proof,blocker));
     // A paid merged stack still has separate claims after a crash before craft.
     InterruptedFixture merged;ProfessionJob job;
     assert(DecodeProfessionJob(merged.task.checkpoint.data,job,blocker));

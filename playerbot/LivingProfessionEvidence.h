@@ -28,7 +28,11 @@ namespace LivingActivity {
         ItemGainSpec output;
         std::vector<ClaimConsumption> inputs;
         std::optional<EnchantIntent> enchant;
+        std::optional<CraftFrame> inventoryBefore;
     };
+    // New intents retain exact native before quantities. Legacy receipts can
+    // prove absence only when their selected claims cover each physical input.
+    bool MatchesInterruptedCraftInventory(const InterruptedCraftIntent&,const CraftFrame&);
     // Only an acknowledged, still-intent atomic profession save is eligible.
     // This decodes identity, not proof that a native effect did or did not run.
     bool DecodeInterruptedCraftIntent(const Task&,const StoredCraftOperation&,

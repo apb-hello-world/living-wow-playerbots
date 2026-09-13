@@ -133,10 +133,8 @@ namespace {
                 frame.skill==intent.skill && frame.money==intent.money &&
                 SameEnchantSubject(EnchantCodec::Subject(recovered.get_child("subject")),intent.enchant->before),
                 "stored_enchant_recovery_changed");
-            InputBacking(task,job,intent.inputs,frame);std::map<uint32_t,uint64_t> quantities;
-            for (const auto& use:intent.inputs) quantities[use.before.itemGuid]+=use.before.quantity;
-            for (const auto& item:frame.stacks) if (quantities.count(item.guid))
-                Require(item.count==quantities[item.guid],"stored_enchant_recovery_quantity_changed");
+            InputBacking(task,job,intent.inputs,frame);
+            Require(MatchesInterruptedCraftInventory(intent,frame),"stored_enchant_recovery_quantity_changed");
             StoredCraftProof parsed;parsed.inputs=std::move(intent.inputs);parsed.attempt.recipe=job.recipe;
             parsed.attempt.subjectItem=job.subjectItem;parsed.attempt.skillBefore=parsed.attempt.skillAfter=frame.skill;
             parsed.attempt.receipt=receipt;parsed.attempt.committed=true;result=std::move(parsed);return true;
@@ -160,6 +158,7 @@ namespace {
         Require(Number(captured.get_child("recipe"))==job.recipe && Number(captured.get_child("skill_id"))==job.skill &&
             Number(captured.get_child("enchantment"))==intent.spec.id && frameBefore.skill==intent.skill && frameBefore.money==intent.money &&
             SameEnchantSubject(subjectBefore,intent.before) &&
+            (!intent.inventoryBefore || SameCraftFrame(*intent.inventoryBefore,frameBefore)) &&
             DecodeClaimProjection(EnchantCodec::Json(captured.get_child("subject_claim")),subject,blocker) &&
             SameResourceClaim(subject,intent.claim),"stored_enchant_intent_changed");
         InputBacking(task,job,inputs,frameBefore);
@@ -216,10 +215,7 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
             const auto frame=Frame(task.actor,recovered.get_child("frame"));
             Require(frame.skill==decoded.skill && frame.money==decoded.money,"stored_craft_recovery_state_changed");
             InputBacking(task,job,decoded.inputs,frame);
-            std::map<uint32_t,uint64_t> reserved;
-            for(const auto& use:decoded.inputs)reserved[use.before.itemGuid]+=use.before.quantity;
-            for(const auto& stack:frame.stacks)if(reserved.count(stack.guid))
-                Require(stack.count==reserved[stack.guid],"stored_craft_recovery_quantity_changed");
+            Require(MatchesInterruptedCraftInventory(decoded,frame),"stored_craft_recovery_quantity_changed");
             StoredCraftProof parsed;parsed.inputs=std::move(decoded.inputs);
             parsed.attempt.recipe=job.recipe;parsed.attempt.skillBefore=parsed.attempt.skillAfter=frame.skill;
             parsed.attempt.receipt=receipt;parsed.attempt.committed=true;
@@ -238,7 +234,8 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
         const auto output=Gain(before.get_child("item_gain"));
         Require(output.entry==job.outputEntry,"stored_craft_recipe_output_mismatch");
         Object(before.get_child("native"),{"native","claimed_consumption"});
-        const auto& intended=before.get_child("native.native");Object(intended,{"recipe","skill","money"});
+        const auto& intended=before.get_child("native.native");ProfessionCastIntent intent;
+        Require(DecodeCraftIntent(task.actor,job,EnchantCodec::Json(intended),intent,blocker),"stored_craft_intent_invalid");
         auto inputs=Inputs(task,before.get_child("native.claimed_consumption"));
         const auto& captured=verified ? after.get_child("native.result") : after;
         Object(captured,{"recipe","skill_id","effect_entered","native_finished","native_succeeded",
@@ -247,7 +244,8 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
             Number(intended.get_child("recipe"))==job.recipe,"stored_craft_recipe_identity_mismatch");
         const auto frameBefore=Frame(task.actor,captured.get_child("before"));
         const auto frameAfter=Frame(task.actor,captured.get_child("after"));
-        Require(Number(intended.get_child("skill"))==frameBefore.skill && Number(intended.get_child("money"))==frameBefore.money,
+        Require(intent.skill==frameBefore.skill && intent.money==frameBefore.money &&
+            (!intent.inventoryBefore || SameCraftFrame(*intent.inventoryBefore,frameBefore)),
             "stored_craft_intent_snapshot_mismatch");
         InputBacking(task,job,inputs,frameBefore);
         Require(Flag(captured.get_child("native_finished")),"stored_craft_native_finish_missing");
@@ -310,8 +308,12 @@ bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& r
         if (enchant) {
             EnchantIntent target;
             if (!DecodeEnchantIntent(task,job,EnchantCodec::Json(native),target,blocker)) return false;
-            decoded.enchant=std::move(target);
-        } else {Object(native,{"recipe","skill","money"});decoded.output=Gain(before.get_child("item_gain"));}
+            decoded.inventoryBefore=target.inventoryBefore;decoded.enchant=std::move(target);
+        } else {
+            ProfessionCastIntent cast;
+            Require(DecodeCraftIntent(task.actor,job,EnchantCodec::Json(native),cast,blocker),"interrupted_craft_intent_invalid");
+            decoded.inventoryBefore=std::move(cast.inventoryBefore);decoded.output=Gain(before.get_child("item_gain"));
+        }
         decoded.skill=Number<uint16_t>(native.get_child("skill"));decoded.money=Number(native.get_child("money"));
         decoded.inputs=Inputs(task,before.get_child("native.claimed_consumption"));
         if(captured) {
@@ -331,6 +333,7 @@ bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& r
                 DecodeClaimProjection(EnchantCodec::Json(observed.get_child("subject_claim")),held,blocker) &&
                 SameResourceClaim(held,decoded.enchant->claim),"interrupted_enchant_capture_has_possible_effect");
             InputBacking(task,job,decoded.inputs,original);
+            Require(!decoded.inventoryBefore || SameCraftFrame(*decoded.inventoryBefore,original),"interrupted_enchant_capture_before_changed");
             const auto& empty=observed.get_child("after");Object(empty,{"skill","money","stacks"});
             Require(!Number(empty.get_child("skill")) && !Number(empty.get_child("money")) && empty.get_child("stacks").empty(),
                 "interrupted_enchant_capture_has_after_state");
@@ -351,10 +354,23 @@ bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& r
             Require(used==need.perAttempt,"interrupted_craft_recipe_mismatch");
         }
         Require(matched==decoded.inputs.size(),"interrupted_craft_recipe_mismatch");
+        if(decoded.inventoryBefore)InputBacking(task,job,decoded.inputs,*decoded.inventoryBefore);
         result=std::move(decoded);return true;
     } catch(const std::invalid_argument& error) {blocker=error.what();}
       catch(const std::exception&) {blocker="interrupted_craft_evidence_malformed";}
     return false;
+}
+
+bool MatchesInterruptedCraftInventory(const InterruptedCraftIntent& intent,const CraftFrame& current) {
+    if(!ValidCraftFrame(current) || current.skill!=intent.skill || current.money!=intent.money)return false;
+    if(intent.inventoryBefore)return SameCraftFrame(*intent.inventoryBefore,current);
+    std::map<uint32_t,uint64_t> quantities;
+    for(const auto& use:intent.inputs)quantities[use.before.itemGuid]+=use.before.quantity;
+    for(const auto& stack:current.stacks)if(quantities.count(stack.guid)) {
+        if(stack.count!=quantities.at(stack.guid))return false;
+        quantities.erase(stack.guid);
+    }
+    return quantities.empty();
 }
 
 std::string ProfessionHistoryQuery(const Task& task) {

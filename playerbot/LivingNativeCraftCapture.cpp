@@ -84,6 +84,9 @@ namespace LivingActivity {
         if (!DecodeProfessionJob(task.checkpoint.data,job,blocker) || !FindEnchantClaim(task,job,claims,intent.claim,blocker) ||
             !ReadNativeEnchantSpec(actor,job,intent.spec,blocker) || !ReadNativeEnchantSubject(actor,job,intent.before,blocker)) return false;
         intent.skill=actor.GetSkillValuePure(job.skill);intent.money=actor.GetMoney();
+        CraftFrame frame;
+        if(!ReadNativeCraftFrame(actor,job,frame,blocker))return false;
+        intent.inventoryBefore=std::move(frame);
         beforeState=EncodeEnchantIntent(job,intent);EnchantIntent checked;
         return DecodeEnchantIntent(task,job,beforeState,checked,blocker);
     }
@@ -176,9 +179,10 @@ namespace LivingActivity {
         blocker.clear();return true;
     }
     NativeProfessionCraftCast::NativeProfessionCraftCast(Task executing,ActionContext action,ProfessionJob job,
-        std::vector<ClaimConsumption> consumption,ItemGainSpec output,EnchantIntent enchant)
+        std::vector<ClaimConsumption> consumption,ItemGainSpec output,EnchantIntent enchant,std::optional<CraftFrame> inventoryBefore)
         : task(std::move(executing)),action(std::move(action)),job(std::move(job)),consumption(std::move(consumption)),
-          output(output),enchant(std::move(enchant)),identity(Identity(task,this->action,this->job)),capture(std::make_shared<CraftCapture>(identity)) {
+          output(output),enchant(std::move(enchant)),inventoryBefore(std::move(inventoryBefore)),
+          identity(Identity(task,this->action,this->job)),capture(std::make_shared<CraftCapture>(identity)) {
         std::string blocker;
         if (!ValidateProfessionTask(task,blocker) || task.phase!=Phase::Executing || task.mode!=Mode::Active ||
             !task.accepted || !Fresh(task,this->action,task.context) ||
@@ -235,6 +239,7 @@ namespace LivingActivity {
     }
     bool NativeProfessionCraftCast::InputsAllowed(Player& actor,const CraftFrame& frame,std::string& blocker) const {
         auto reject=[&](const char* code){blocker=code;return false;};
+        if(inventoryBefore && !SameCraftFrame(*inventoryBefore,frame))return reject("native_craft_intent_inventory_changed");
         const auto protectedItems=sLivingActivityCoordinator.ResourceReservations().Inspect();
         if (!protectedItems || !protectedItems->ready) return reject("native_craft_claim_projection_unavailable");
         const auto trade=sPlayerbotActionBroker.ReservedItemsView();
@@ -411,8 +416,15 @@ namespace LivingActivity {
             if (!DecodeEnchantIntent(request.transition.task,job,request.beforeState,intent,blocker) ||
                 !ReadNativeEnchantSpec(actor,job,spec,blocker) || !ReadNativeEnchantSubject(actor,job,target,blocker)) return false;
             if (!sLivingActivityCoordinator.AcknowledgedResourceClaim(intent.claim) || spec.id!=intent.spec.id ||
-                !SameEnchantSubject(target,intent.before) || frame.skill!=intent.skill || frame.money!=intent.money)
+                !SameEnchantSubject(target,intent.before) || frame.skill!=intent.skill || frame.money!=intent.money ||
+                (intent.inventoryBefore && !SameCraftFrame(frame,*intent.inventoryBefore)))
                 return reject("native_enchant_intent_state_changed");
+        } else {
+            ProfessionCastIntent intent;
+            if(!DecodeCraftIntent(actor.GetGUIDLow(),job,request.beforeState,intent,blocker))return false;
+            if(frame.skill!=intent.skill || frame.money!=intent.money ||
+                (intent.inventoryBefore && !SameCraftFrame(frame,*intent.inventoryBefore)))
+                return reject("native_craft_intent_state_changed");
         }
         if(!MatchProfessionInputClaims(request.transition.task,job,frame,request.consumption,blocker))return false;
         blocker.clear();return true;
@@ -421,10 +433,16 @@ namespace LivingActivity {
         const Task& executing,const ActionContext& action) const {
         ProfessionJob job;std::string blocker;
         if (!DecodeProfessionJob(executing.checkpoint.data,job,blocker)) throw std::invalid_argument(blocker);
-        EnchantIntent intent;
+        EnchantIntent intent;std::optional<CraftFrame> before;
         if (job.operation==ProfessionOperation::EnchantItem && !DecodeEnchantIntent(executing,job,request.beforeState,intent,blocker))
             throw std::invalid_argument(blocker);
-        return std::make_shared<NativeProfessionCraftCast>(executing,action,job,request.consumption,request.itemGain,std::move(intent));
+        if(job.operation==ProfessionOperation::EnchantItem)before=intent.inventoryBefore;
+        else {
+            ProfessionCastIntent decoded;
+            if(!DecodeCraftIntent(executing.actor,job,request.beforeState,decoded,blocker))throw std::invalid_argument(blocker);
+            before=std::move(decoded.inventoryBefore);
+        }
+        return std::make_shared<NativeProfessionCraftCast>(executing,action,job,request.consumption,request.itemGain,std::move(intent),std::move(before));
     }
     std::unique_ptr<ExecutionScope> NativeProfessionCraftCast::EnterEffect(Spell& spell) {
         auto* actor=Actor(spell);std::string blocker;CraftFrame current;

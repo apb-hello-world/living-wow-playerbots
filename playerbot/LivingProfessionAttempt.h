@@ -3,6 +3,7 @@
 #include "LivingActivityClaimConsumption.h"
 #include "LivingEnchantIntent.h"
 #include "LivingProfessionConsumption.h"
+#include "LivingCraftIntent.h"
 #include <algorithm>
 #include <set>
 
@@ -74,7 +75,7 @@ namespace LivingActivity {
         if ((!enchant && job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial) ||
             (!enchant && job.subjectItem))
             return reject("profession_attempt_operation_not_supported");
-        if (!batch.complete || batch.claims.size()>16 || !ValidCraftFrame(frame) || frame.actor!=task.actor ||
+        if (!batch.complete || batch.claims.size()>16 || !ValidCraftFrame(frame) || frame.stacks.size()>32 || frame.actor!=task.actor ||
             frame.skill!=snapshot.skill || (enchant ? snapshot.outputPerAttempt!=0 : !snapshot.outputPerAttempt))
             return reject("profession_attempt_native_snapshot_incomplete");
         std::set<std::string> ids;
@@ -112,8 +113,7 @@ namespace LivingActivity {
             result.output={job.outputEntry,snapshot.outputPerAttempt};
             if (!ValidItemGainSpec(result.output)) return reject("profession_attempt_native_output_invalid");
         }
-        result.beforeState="{\"recipe\":"+std::to_string(job.recipe)+",\"skill\":"+std::to_string(frame.skill)+
-            ",\"money\":"+std::to_string(frame.money)+'}';
+        result.beforeState=EncodeCraftIntent(job,frame);
         plan=std::move(result);blocker.clear();return true;
     }
 }

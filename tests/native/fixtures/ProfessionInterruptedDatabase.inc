@@ -20,6 +20,15 @@ static void ProfessionInterruptedDatabase(Connection& db) {
         const auto at=intent.beforeState.find(old);assert(at!=std::string::npos);
         intent.beforeState.replace(at,old.size(),use.before.id);f.batch.claims.push_back(use.before);
     }
+    // Two paid portions share the second consumed stack. Only two of twenty
+    // units are selected; the other eighteen stay claimed to this same root.
+    auto unused=decoded.inputs.back().before;
+    unused.id="b71b6cac-8b42-44d9-9f1f-24e4e40a0015";unused.quantity=18;
+    decoded.inputs.back().before.quantity=2;f.batch.claims.back().quantity=2;
+    f.batch.claims.push_back(unused);
+    intent.beforeState="{\"effects\":21,\"persistence\":2,\"native\":"+
+        ClaimedNativeState(EncodeCraftIntent(split,f.frame),decoded.inputs)+
+        ",\"item_gain\":"+ItemGainSpecJson(decoded.output)+'}';
     f.history.interruptedCraft=intent;f.AddBankDependency();
     const auto rid=[](unsigned n){return std::string("ff2efbdf-f0ec-4539-b840-29984797802")+std::to_string(n);};
     auto initial=f.task;initial.revision=1;initial.phase=Phase::Queued;
@@ -27,9 +36,10 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     initial.revision=2;initial.phase=Phase::Preparing;
     assert(db.Write(TaskWrite(initial,1,rid(2),"fixture_preparing")));
     std::vector<ClaimReceiptChange> changes;std::vector<NativeResourceBalance> balances;
-    for(const auto& c:f.batch.claims) {
-        changes.push_back({c,0});balances.push_back({c.actor,c.itemGuid,c.itemEntry,uint32_t(c.quantity),0,c.location});
-    }
+    for(const auto& c:f.batch.claims)changes.push_back({c,0});
+    for(const auto& item:f.frame.stacks)
+        balances.push_back({item.actor,item.guid,item.entry,item.count,0,"bags"});
+    for(const auto& item:f.bank)balances.push_back({item.actor,item.guid,item.entry,item.count,0,"bank"});
     initial.revision=3;assert(db.Write(ResourceReservationWrite(initial,2,rid(3),changes,balances)));
     const auto& op=*f.history.interruptedCraft;
     assert(db.Write(OperationIntentWrite(f.task,3,op.receipt.id,"profession_craft",op.beforeState)));
@@ -71,6 +81,11 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     const auto operation=SqlValue(op.receipt.id),claim=SqlValue(f.batch.claims[0].id);
     rejectRace("UPDATE living_activity_claim SET revision=2 WHERE claim_id="+claim,
         "UPDATE living_activity_claim SET revision=1 WHERE claim_id="+claim);
+    const auto unusedId=SqlValue(unused.id);
+    rejectRace("UPDATE living_activity_claim SET quantity=19 WHERE claim_id="+unusedId,
+        "UPDATE living_activity_claim SET quantity=18 WHERE claim_id="+unusedId);
+    rejectRace("UPDATE living_activity_claim SET state='released' WHERE claim_id="+unusedId,
+        "UPDATE living_activity_claim SET state='held' WHERE claim_id="+unusedId);
     rejectRace("UPDATE living_activity_operation SET state='reconciling' WHERE operation_id="+operation,
         "UPDATE living_activity_operation SET state='intent' WHERE operation_id="+operation);
     rejectRace("UPDATE living_activity_operation SET after_state='{\"possible\":true}' WHERE operation_id="+operation,
@@ -87,7 +102,7 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     assert(db.Scalar("SELECT money FROM characters WHERE guid=705")=="100");
     assert(db.Scalar("SELECT SUM(count) FROM item_instance WHERE owner_guid=705")=="38");
     assert(db.Scalar("SELECT count FROM item_instance WHERE guid=100806")=="9");
-    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+id+" AND state='held' AND revision=1")=="5");
+    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+id+" AND state='held' AND revision=1")=="6");
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_transition WHERE transition_id="+SqlValue(f.receipt))=="1");
     ProfessionHistoryCursor recovered;assert(recovered.Begin(prepared.task,db.History(prepared.task),blocker));
     while(!recovered.Result().complete) assert(recovered.Advance(blocker));

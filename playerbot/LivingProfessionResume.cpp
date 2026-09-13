@@ -26,7 +26,7 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
     const auto& row=*history.interruptedCraft;InterruptedCraftIntent intent;ProfessionJob job;
     if(!DecodeInterruptedCraftIntent(saved,row,intent,blocker) ||
         !DecodeProfessionJob(saved.checkpoint.data,job,blocker)) return false;
-    if(!ValidCraftFrame(frame) || frame.actor!=saved.actor || frame.skill!=intent.skill || frame.money!=intent.money)
+    if(!ValidCraftFrame(frame) || frame.actor!=saved.actor || !MatchesInterruptedCraftInventory(intent,frame))
         return reject("interrupted_craft_native_state_changed");
     if(!MatchProfessionInputClaims(saved,job,frame,intent.inputs,blocker))return false;
     const size_t subjects=intent.enchant?1:0;
@@ -41,11 +41,23 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
     std::set<uint32_t> bankIds;
     std::map<uint32_t,uint64_t> inputQuantities;
     for(const auto& input:intent.inputs)inputQuantities[input.before.itemGuid]+=input.before.quantity;
+    for(const auto& input:intent.inputs)
+        if(std::none_of(batch.claims.begin(),batch.claims.end(),[&](const auto& c){return SameResourceClaim(c,input.before);}))
+            return reject("interrupted_craft_selected_claim_missing");
+    std::map<uint32_t,uint64_t> bagTotals;
     for(const auto& c:batch.claims) {
         const auto use=std::find_if(intent.inputs.begin(),intent.inputs.end(),[&](const auto& v){return v.before.id==c.id;});
         if(!ids.insert(c.id).second || !ValidResourceClaim(c) || c.task!=saved.id || c.actor!=saved.actor ||
             c.state!="held" || c.copper || c.nativeReference)
             return reject("interrupted_craft_claim_changed");
+        const bool sharedInput=intent.inventoryBefore && c.location=="bags" && inputQuantities.count(c.itemGuid);
+        if(sharedInput) {
+            const auto item=std::find_if(frame.stacks.begin(),frame.stacks.end(),[&](const auto& v){return v.guid==c.itemGuid;});
+            if(item==frame.stacks.end() || item->entry!=c.itemEntry || c.quantity>item->count ||
+                bagTotals[c.itemGuid]>item->count-c.quantity)
+                return reject("interrupted_craft_shared_input_claim_changed");
+            bagTotals[c.itemGuid]+=c.quantity;
+        }
         if (intent.enchant && c.id==intent.enchant->claim.id) {
             if (!SameResourceClaim(c,intent.enchant->claim)) return reject("interrupted_enchant_subject_claim_changed");
             const auto& item=subject->item;std::string fields;
@@ -54,7 +66,7 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
                 n(saved.actor)+" AND v.item="+n(item.guid)+" AND v.item_template="+n(item.entry)+" AND v.bag="+n(item.bagGuid)+
                 " AND v.slot="+n(item.slot)+" AND i.owner_guid="+n(saved.actor)+" AND i.itemEntry="+n(item.entry)+
                 " AND i.count=1 AND i.enchantments="+SqlValue(fields)+')';
-        } else if(use==intent.inputs.end()) {
+        } else if(use==intent.inputs.end() && !sharedInput) {
             // Dependent capacity work shares this root; banking its surplus
             // does not release the claim before the whole job is settled.
             const auto& storage=c.location=="bags"?frame.stacks:preservedBank;
@@ -71,9 +83,9 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
                 " AND b.item="+n(item->bagGuid)+" AND b.bag=0 AND "+
                 (c.location=="bank"?"b.slot>=67 AND b.slot<74)":"b.slot>=19 AND b.slot<23)");
         } else {
-        if(!SameResourceClaim(c,use->before)) return reject("interrupted_craft_claim_changed");
+        if(use!=intent.inputs.end() && !SameResourceClaim(c,use->before)) return reject("interrupted_craft_claim_changed");
         const auto item=std::find_if(frame.stacks.begin(),frame.stacks.end(),[&](const auto& v){return v.guid==c.itemGuid;});
-        if(item==frame.stacks.end() || item->entry!=c.itemEntry || item->count!=inputQuantities[c.itemGuid])
+        if(item==frame.stacks.end() || item->entry!=c.itemEntry || (!sharedInput && item->count!=inputQuantities[c.itemGuid]))
             return reject("interrupted_craft_native_quantity_changed");
         // Each selected stack's full held before-quantity must still exist.
         // The order/used portions were checked above against native inventory;

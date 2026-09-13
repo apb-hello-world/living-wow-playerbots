@@ -46,7 +46,18 @@ void TestProfessionAttemptPlan() {
     assert(result.consumption.size()==3 && result.output.entry==2454 && result.output.quantity==1);
     assert(result.consumption.back().before.id==claims.claims.back().id && result.consumption.back().before.quantity==5 &&
         result.consumption.back().used==1); // Preserve the paid bundle's existing claim.
-    assert(result.beforeState=="{\"recipe\":2329,\"skill\":1,\"money\":81}");
+    ProfessionCastIntent intended;
+    assert(DecodeCraftIntent(task.actor,job,result.beforeState,intended,blocker) && intended.inventoryBefore &&
+        SameCraftFrame(*intended.inventoryBefore,frame));
+    const auto savedIntent=result.beforeState;
+    assert(DecodeCraftIntent(task.actor,job,"{\"recipe\":2329,\"skill\":1,\"money\":81}",intended,blocker) &&
+        !intended.inventoryBefore); // Existing journals are still supported.
+    for(const auto& malformed:std::vector<std::string>{"{}", "[]", "{\"recipe\":2329,\"skill\":0,\"money\":81}",
+        savedIntent.substr(0,savedIntent.size()-1)+",\"inventory_before\":{}}",
+        "{\"recipe\":2329,\"skill\":2,\"money\":81,\"inventory_before\":"+EncodeCraftFrame(frame)+'}'})
+        assert(!DecodeCraftIntent(task.actor,job,malformed,intended,blocker));
+    auto wrongJob=job;++wrongJob.recipe;
+    assert(!DecodeCraftIntent(task.actor,wrongJob,savedIntent,intended,blocker));
     auto fail=[&](const Task& owner,const ProfessionSnapshot& snapshot,const UnsettledClaimBatch& resources,const CraftFrame& native) {
         assert(!run(owner,snapshot,resources,native) && !blocker.empty() && result.consumption.empty() && result.beforeState.empty());
     };

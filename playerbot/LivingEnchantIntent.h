@@ -1,6 +1,7 @@
 #pragma once
 #include "LivingEnchantCapture.h"
 #include "LivingActivityClaimCodec.h"
+#include "LivingCraftIntent.h"
 
 namespace LivingActivity {
     inline bool ValidEnchantClaim(const Task& task,const ProfessionJob& job,const ResourceClaim& claim) {
@@ -82,11 +83,13 @@ namespace LivingActivity {
         EnchantSpec spec;
         EnchantSubject before;
         uint32_t skill=0,money=0;
+        std::optional<CraftFrame> inventoryBefore;
     };
     inline std::string EncodeEnchantIntent(const ProfessionJob& job,const EnchantIntent& intent) {
         return "{\"recipe\":"+std::to_string(job.recipe)+",\"skill\":"+std::to_string(intent.skill)+
             ",\"money\":"+std::to_string(intent.money)+",\"subject_claim\":"+EnchantClaimJson(intent.claim)+
-            ",\"enchantment\":"+std::to_string(intent.spec.id)+",\"subject_before\":"+EnchantSubjectJson(intent.before)+'}';
+            ",\"enchantment\":"+std::to_string(intent.spec.id)+",\"subject_before\":"+EnchantSubjectJson(intent.before)+
+            (intent.inventoryBefore?",\"inventory_before\":"+EncodeCraftFrame(*intent.inventoryBefore):"")+'}';
     }
     inline bool DecodeEnchantIntent(const Task& task,const ProfessionJob& job,const std::string& json,
         EnchantIntent& result,std::string& blocker) {
@@ -94,9 +97,12 @@ namespace LivingActivity {
         try {
             if (json.empty() || json.size()>4096) throw std::invalid_argument("native_enchant_intent_bound");
             EnchantCodec::Tree p;std::istringstream in(json);boost::property_tree::read_json(in,p);
-            EnchantCodec::Object(p,{"recipe","skill","money","subject_claim","enchantment","subject_before"});
+            if(p.count("inventory_before"))
+                EnchantCodec::Object(p,{"recipe","skill","money","subject_claim","enchantment","subject_before","inventory_before"});
+            else EnchantCodec::Object(p,{"recipe","skill","money","subject_claim","enchantment","subject_before"});
             EnchantIntent value;
             value.skill=EnchantCodec::Number(p.get_child("skill"));value.money=EnchantCodec::Number(p.get_child("money"));
+            value.inventoryBefore=CraftIntentCodec::OptionalFrame(p,task.actor,value.skill,value.money);
             value.spec.id=EnchantCodec::Number(p.get_child("enchantment"));value.before=EnchantCodec::Subject(p.get_child("subject_before"));
             if (EnchantCodec::Number(p.get_child("recipe"))!=job.recipe || !value.skill ||
                 !DecodeClaimProjection(EnchantCodec::Json(p.get_child("subject_claim")),value.claim,blocker) ||
