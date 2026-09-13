@@ -14,6 +14,7 @@
 #include "LivingProfessionEconomy.h"
 #include "LivingRecipeLearningSettlement.h"
 #include "LivingGuildDeliverySettlement.h"
+#include "LivingGuildDeliveryCancellation.h"
 #include "LivingGuildDeposit.h"
 #include "fixtures/CraftEvidence.h"
 #include <mysql.h>
@@ -104,6 +105,7 @@ public:
 #include "fixtures/EnchantWorkflowDatabase.inc"
 #include "fixtures/GuildDepositDatabase.inc"
 #include "fixtures/GuildMailDatabase.inc"
+#include "fixtures/GuildCancellationDatabase.inc"
 #include "fixtures/GuildMailHandoffDatabase.inc"
 int main() {
     Connection db;
@@ -723,5 +725,6 @@ int main() {
     GuildMailDatabase(db);
     GuildMailHandoffDatabase(db);
     GuildMailRollbackDatabase(db);
+    GuildCancellationDatabase(db);
     std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history, skill-job settlement and exact-row legacy handoff; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

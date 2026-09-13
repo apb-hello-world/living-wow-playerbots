@@ -1,6 +1,7 @@
 #include "LivingGuildDeposit.h"
 #include "LivingGuildSaveFence.h"
 #include "LivingGuildDeliverySettlement.h"
+#include "LivingGuildDeliveryCancellation.h"
 #include "LivingPreparationWait.h"
 #include <cassert>
 #include <thread>
@@ -53,7 +54,55 @@ static void Settlement() {
     assert(PrepareGuildDeliverySettlement(task,restart,claims,1001,Operation,result,why,stock));
     assert(result.task.context==restart);
 }
+static void Cancellation() {
+    auto j=Quote().job;j.incomingMail=91;
+    Task t;t.id=t.root=TaskId;t.actor=t.context.actor=901;t.source="guild_delivery";
+    t.sourceKey=GuildDeliverySourceKey(j,t.actor);t.kind=Kind::GuildDelivery;t.priority=Priority::Delivery;
+    t.mode=Mode::Active;t.accepted=true;t.phase=Phase::Preparing;t.createdAtMs=t.updatedAtMs=1000;
+    t.context.boot=Operation;t.context.actorGeneration=t.context.mapGeneration=t.context.policyRevision=1;
+    t.checkpoint.step="guild_delivery_prepare";t.checkpoint.data=EncodeGuildDeliveryJob(j);
+    GuildDeliveryClosure closure;closure.goalState="cancelled";closure.target=50;closure.originalItem=1234;
+    ResourceClaim c;c.id=Operation;c.task=t.id;c.actor=t.actor;c.itemGuid=1235;c.itemEntry=j.entry;
+    c.quantity=j.quantity;c.location="bags";c.state="held";
+    UnsettledClaimBatch claims;claims.complete=true;claims.bookRevision=1;claims.claims={c};
+    NativeResourceBalance parcel{t.actor,1235,j.entry,12,0,"bags"};
+    std::vector<NativeResourceBalance> balances{parcel};GuildDeliverySettlement out;std::string why;
+    assert(PrepareGuildDeliveryCancellation(t,t.context,closure,parcel,claims,balances,1001,Operation,out,why));
+    assert(out.task.phase==Phase::Cancelled && out.task.checkpoint.step=="guild_delivery_closed");
+    assert(out.task.checkpoint.blocker=="guild_delivery_cancelled_items_preserved");
+    assert(out.claims.size()==1 && out.claims[0].after.state=="released" && out.claims[0].after.quantity==8);
+    for(unsigned fault=0;fault<14;++fault) {
+        auto task=t;auto state=closure;auto claim=claims;auto item=parcel;auto owned=balances;
+        switch(fault) {
+        case 0:state.goalState="";break; // Cache miss is not cancellation.
+        case 1:state.goalState="active";state.reserved=50;break; // Reserved is not deposited.
+        case 2:state.goalState="completed";break; // Old timer is not native stock.
+        case 3:task.phase=Phase::Executing;break;
+        case 4:task.phase=Phase::Verifying;break;
+        case 5:claim.complete=false;break;
+        case 6:claim.claims.clear();break;
+        case 7:claim.claims[0].location="mail";claim.claims[0].nativeReference=91;break;
+        case 8:--claim.claims[0].quantity;break;
+        case 9:item.quantity=7;break;
+        case 10:owned[0].quantity=7;break;
+        case 11:claim.claims[0].state="reconciling";break;
+        case 12:task.context.boot.clear();break;
+        case 13:claim.claims.push_back(c);break;
+        }
+        assert(!PrepareGuildDeliveryCancellation(task,t.context,state,item,claim,owned,1001,Operation,out,why));
+    }
+    closure.goalState="active";closure.banked=closure.target;
+    assert(PrepareGuildDeliveryCancellation(t,t.context,closure,parcel,claims,balances,1001,Operation,out,why));
+    assert(out.task.checkpoint.blocker=="guild_delivery_surplus_items_preserved" && out.task.phase!=Phase::Completed);
+    closure.deposited=3;claims.claims[0].quantity=5;
+    assert(PrepareGuildDeliveryCancellation(t,t.context,closure,parcel,claims,balances,1001,Operation,out,why));
+    assert(out.claims[0].after.quantity==5); // Earlier credit isn't erased or repeated.
+    j.incomingMail=0;j.donor=t.actor;t.sourceKey=GuildDeliverySourceKey(j,t.actor);t.checkpoint.data=EncodeGuildDeliveryJob(j);
+    closure.originalItem=parcel.itemGuid;claims.claims.clear();balances.clear();
+    assert(PrepareGuildDeliveryCancellation(t,t.context,closure,parcel,claims,balances,1001,Operation,out,why));
+}
 int main() {
+    Cancellation();
     Settlement();
     {
         Task task;task.id=task.root=TaskId;task.kind=Kind::GuildDelivery;task.source="guild_delivery";

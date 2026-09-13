@@ -18,14 +18,14 @@ boost::property_tree::ptree GuildMailFixtureInventory(Player& actor) {
     bags(INVENTORY_SLOT_BAG_START,INVENTORY_SLOT_BAG_END);bags(BANK_SLOT_BAG_START,BANK_SLOT_BAG_END);return rows;
 }
 template<class FixtureState>
-void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool forward=false,bool partial=false) {
+void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool forward=false,bool partial=false,bool cancelled=false) {
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
     state.fixtureNext=NowMs()+500;auto& f=state.guildDepositFixture;
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     auto emit=[&](bool passed,const std::string& why,Player* actor) {
         if(forward && f.setup.template get_optional<uint32_t>("forward_mail_delay_original"))
             sWorld.setConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY,f.setup.template get<uint32_t>("forward_mail_delay_original"));
-        auto report=f.setup;report.put("suite",partial?"activity-guild-mail-partial-v1":forward?"activity-guild-mail-forward-v1":fullBags?"activity-guild-mail-capacity-v1":"activity-guild-mail-v1");report.put("boot",state.boot);
+        auto report=f.setup;report.put("suite",cancelled?"activity-guild-mail-cancel-v1":partial?"activity-guild-mail-partial-v1":forward?"activity-guild-mail-forward-v1":fullBags?"activity-guild-mail-capacity-v1":"activity-guild-mail-v1");report.put("boot",state.boot);
         report.put("task",f.task);report.put("actor",f.actor);report.put("test_only",true);
         report.put("original_boot",f.originalBoot);report.put("resumed_same_task",f.resuming);
         report.put("outcome",passed?"passed":"failed");report.put("failure",why);report.put("blocker",f.blocker);
@@ -95,6 +95,7 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
                     f.setup.template get<std::string>("job")==saved->checkpoint.data &&
                     f.setup.template get<bool>("full_bag_requested",false)==fullBags &&
                     f.setup.template get<bool>("forward_requested",false)==forward &&
+                    f.setup.template get<bool>("cancelled_requested",false)==cancelled &&
                     f.setup.template get<bool>("partial_requested",false)==partial,"original_guild_mail_identity_changed");
                 if(forward)f.setup.put("recipient_login_requested",false);
                 state.enforceEffects.store(true,std::memory_order_release);f.started=f.admitted=true;return;
@@ -150,6 +151,11 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
             f.setup.put("money_grants",0);f.setup.put("permission_grants",0);f.setup.put("fixture_relocations",0);
             f.setup.put("donor_sending_proven",false);f.setup.put("capacity_preparation_proven",false);
             f.setup.put("full_bag_requested",fullBags);
+            if(cancelled) {
+                require(!fullBags && !forward && !partial,"separate_cancellation_fixture_required");
+                f.setup.put("cancelled_requested",true);
+                f.setup.add_child("inventory_before",GuildMailFixtureInventory(*actor));
+            }
             if(forward)f.setup.put("forward_requested",true);
             if(partial){require(forward && !fullBags,"partial_forward_scenario_required");
                 f.setup.put("partial_requested",true);f.setup.put("partial_input_quantity",8);}
@@ -239,8 +245,8 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
             f.task=SourceId("guild_delivery",GuildDeliverySourceKey(f.job,f.actor));
             f.setup.put("task",f.task);f.setup.put("job",EncodeGuildDeliveryJob(f.job));f.setup.put("item_guid",itemGuid);
             actor->SaveToDB();
-            CharacterDatabase.PExecute("INSERT INTO guild_society_supply_goal(goal_id,guild_id,goal_type,item_entry,required_quantity,state,created_at,updated_at,provenance,request_kind,purpose) VALUES('%s',%u,'supply',2772,%u,'active',%u,%u,'isolated_fixture','item','Isolated native mail collection and bank deposit test')",
-                f.job.goal.c_str(),f.job.guild,bank+4,uint32_t(time(nullptr)),uint32_t(time(nullptr)));
+            CharacterDatabase.PExecute("INSERT INTO guild_society_supply_goal(goal_id,guild_id,goal_type,item_entry,required_quantity,state,created_at,updated_at,provenance,request_kind,purpose) VALUES('%s',%u,'supply',2772,%u,'%s',%u,%u,'isolated_fixture','item','Isolated native mail collection and bank deposit test')",
+                f.job.goal.c_str(),f.job.guild,bank+4,cancelled?"cancelled":"active",uint32_t(time(nullptr)),uint32_t(time(nullptr)));
             CharacterDatabase.PExecute("INSERT INTO guild_society_supply_delivery(delivery_id,guild_id,goal_id,donor_guid,carrier_guid,item_guid,item_entry,quantity,mail_id,phase,created_at,updated_at) VALUES(%llu,%u,'%s',%u,%u,%u,2772,4,%u,'mailed',%u,%u)",
                 (unsigned long long)f.job.delivery,f.job.guild,f.job.goal.c_str(),donor,f.actor,itemGuid,mailId,uint32_t(time(nullptr)),uint32_t(time(nullptr)));
             std::ofstream setup("/isolated/evidence/guild-mail-setup-"+f.task+".json");setup<<Json(f.setup);setup.close();
@@ -274,6 +280,19 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
         if(key!=f.lastDiagnostic && f.diagnostics<128){f.lastDiagnostic=key;++f.diagnostics;
             sLog.outString("Living guild mail progress: actor=%u task=%s revision=%llu phase=%s step=%s blocker=%s",f.actor,f.task.c_str(),
                 (unsigned long long)saved->revision,Name(saved->phase),saved->checkpoint.step.c_str(),f.blocker.c_str());}
+        if(cancelled) {
+            require(!Terminal(saved->phase) || saved->phase==Phase::Cancelled,"cancelled_request_must_not_complete_delivery");
+            if(saved->phase!=Phase::Cancelled)return;
+            require(saved->checkpoint.step=="guild_delivery_closed" && saved->checkpoint.blocker=="guild_delivery_cancelled_items_preserved",
+                "exact_native_cancellation_required");
+            auto* guild=sGuildMgr.GetGuildById(f.job.guild);require(guild,"original_guild_required");
+            const auto counts=guild->GetBankItemCounts();const auto stock=counts.find(2772);
+            require((stock==counts.end()?0:stock->second)==f.setup.template get<uint32_t>("bank_before") &&
+                actor->GetItemCount(2772,false)==f.setup.template get<uint32_t>("bags_before")+4 &&
+                actor->GetMoney()==f.setup.template get<uint32_t>("money_before"),"cancelled_goods_and_wallet_must_remain_owned");
+            require(!sLivingActivityCoordinator.DefersNativeSave(f.actor) && !state.executionTimes.count(f.task),"cancelled_queue_must_release");
+            f.blocker.clear();emit(true,"",actor);return;
+        }
         require(!Terminal(saved->phase) || saved->phase==Phase::Completed,"guild_mail_ended_without_verified_success");
         if(saved->phase!=Phase::Completed)return;
         if(forward) {

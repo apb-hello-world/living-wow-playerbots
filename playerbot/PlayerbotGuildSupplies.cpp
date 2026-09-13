@@ -382,7 +382,7 @@ bool PlayerbotGuildSupplies::ReadDeliveryJob(uint64_t id,uint32_t actor,LivingAc
     if(!LivingActivity::ValidGuildDeliveryJob(job)){blocker="guild_delivery_native_identity_invalid";job={};return false;}
     blocker.clear();return true;
 }
-bool PlayerbotGuildSupplies::ReadManagedCarry(const LivingActivity::Task& task,LivingActivity::GuildDepositQuote& q,
+bool PlayerbotGuildSupplies::ReadManagedCustody(const LivingActivity::Task& task,LivingActivity::GuildDepositQuote& q,
     std::string& blocker) const {
     using namespace LivingActivity;
     q={};auto reject=[&](const char* why){blocker=why;return false;};
@@ -396,6 +396,14 @@ bool PlayerbotGuildSupplies::ReadManagedCarry(const LivingActivity::Task& task,L
         d.entry!=q.job.entry || d.quantity!=q.job.quantity || d.mail!=q.job.incomingMail || q.job.money)
         return reject("guild_delivery_native_identity_changed");
     if(d.phase!="carried" || d.deposited>=d.quantity)return reject("guild_delivery_not_carried");
+    q.actor=task.actor;q.item=d.item;q.deposited=d.deposited;
+    blocker.clear();return true;
+}
+bool PlayerbotGuildSupplies::ReadManagedCarry(const LivingActivity::Task& task,LivingActivity::GuildDepositQuote& q,
+    std::string& blocker) const {
+    if(!ReadManagedCustody(task,q,blocker))return false;
+    auto reject=[&](const char* why){blocker=why;return false;};
+    const auto& d=state_->deliveries.at(q.job.delivery);
     auto* guild=sGuildMgr.GetGuildById(d.guild);
     const auto enabled=state_->enabled.find(d.guild);
     if(!guild || enabled==state_->enabled.end() || !enabled->second || !sGuildGovernance.Allows(guild,"supplies"))
@@ -404,7 +412,6 @@ bool PlayerbotGuildSupplies::ReadManagedCarry(const LivingActivity::Task& task,L
     const auto goal=state_->goals.find(d.goal);
     if(goal==state_->goals.end() || goal->second.guild!=d.guild || goal->second.money)
         return reject("guild_delivery_goal_cancelled");
-    q.actor=task.actor;q.item=d.item;q.deposited=d.deposited;
     q.goalTarget=goal->second.required;q.goalReserved=goal->second.reserved;
     const auto counts=guild->GetBankItemCounts();const auto entry=counts.find(d.entry);
     q.bankCount=entry==counts.end()?0:entry->second;

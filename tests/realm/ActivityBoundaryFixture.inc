@@ -50,6 +50,9 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     if(requested && std::string(requested)=="activity-guild-mail-partial-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedGuildMailFixture(*state,false,true,true);return;
     }
+    if(requested && std::string(requested)=="activity-guild-mail-cancel-v1") {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedGuildMailFixture(*state,false,false,false,true);return;
+    }
     if(requested && (std::string(requested)=="activity-guild-mail-v1" || std::string(requested)=="activity-guild-mail-capacity-v1" ||
         std::string(requested)=="activity-guild-mail-forward-v1")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedGuildMailFixture(*state,std::string(requested)=="activity-guild-mail-capacity-v1",

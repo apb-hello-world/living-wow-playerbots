@@ -30,6 +30,7 @@
 #include "LivingNativeGuildDeposit.h"
 #include "LivingNativeGuildMail.h"
 #include "LivingGuildDeliverySettlement.h"
+#include "LivingGuildDeliveryCancellation.h"
 #include "LivingProfessionDemand.h"
 #include "LivingTaskItemRequirements.h"
 #include "LivingProfessionVendor.h"
@@ -283,8 +284,9 @@ struct LivingActivityCoordinator::State {
     struct GuildDeliveryRead {
         uint64_t revision=0,retryAt=0,lastRejected=0;
         uint32_t deposited=0,failures=0,unresolved=0;
-        bool pending=false,complete=false;
+        bool pending=false,complete=false,closureRead=false;
         std::string phase,blocker,sendRollback;
+        GuildDeliveryClosure closure;
     };
     std::map<std::string,GuildDeliveryRead> guildDeliveryReads;
     std::atomic<uint64_t> publishedPolicyRevision{0};
@@ -480,6 +482,7 @@ struct LivingActivityCoordinator::State {
         std::vector<ClaimReceiptChange> claims;
         std::shared_ptr<NativeSaveBatch> nativeSave;
         Task recipientTask; // Same atomic outbound-mail receipt, not another admission queue.
+        uint64_t closureRefreshRevision=0; // Safe, journal-only no-effect proposal; never native work.
     };
     struct PendingOperation {
         OperationRequest request;
@@ -655,6 +658,12 @@ struct LivingActivityCoordinator::State {
                 for (const auto& sql : pending[count].plan.statements) CharacterDatabase.Execute(sql.c_str());
             if (!query.empty()) query += " UNION ALL ";
             query += pending[count].plan.receiptQuery;
+            if(pending[count].closureRefreshRevision)
+                query+=" UNION ALL SELECT "+SqlValue("guild_closure_refresh:"+pending[count].task.id)+",revision"
+                    " FROM living_activity_task WHERE task_id="+SqlValue(pending[count].task.id)+
+                    " AND revision="+std::to_string(pending[count].closureRefreshRevision)+
+                    " AND phase='preparing' AND NOT EXISTS(SELECT 1 FROM living_activity_transition WHERE transition_id="+
+                    SqlValue(pending[count].admissionReceipt)+')';
             ++count;
             if (std::chrono::steady_clock::now() >= deadline) break;
         }
@@ -799,7 +808,19 @@ struct LivingActivityCoordinator::State {
                 }
                 ++acknowledged; ++transitionCount;
             });
-            if (accepted != count) {
+            unsigned refreshed=0;
+            if(healthy)for(auto it=pending.begin();it!=pending.end();) {
+                if(it->closureRefreshRevision && !it->nativeSave && it->operation.empty() &&
+                    receipts.count({"guild_closure_refresh:"+it->task.id,it->closureRefreshRevision})) {
+                    // The original task revision AND absent receipt prove this
+                    // journal did nothing. Re-read changed goal/stock instead
+                    // of retaining an optimistic cancellation forever.
+                    guildDeliveryReads.erase(it->task.id);
+                    executionBlockers[it->task.id]="guild_delivery_goal_changed_refresh_pending";
+                    it=pending.erase(it);++refreshed;
+                } else ++it;
+            }
+            if (accepted+refreshed != count) {
                 ++persistenceFailures;
                 blocker = healthy ? "actor_journal_receipt_pending" : "journal_ack_query_failed";
                 for (const auto& write : pending) if (write.nativeSave) {

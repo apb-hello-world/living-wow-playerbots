@@ -64,7 +64,10 @@ AdmissionResult LivingActivityCoordinator::AdmitGuildDelivery(uint32_t actor,con
     } else {
         // An original native envelope remains referenced after collection.
         // Import its actual carried state, never try to collect it twice.
-        if(!sGuildSupplies.ReadManagedCarry(task,current,why))return reject(AdmissionCode::NotReady,why);
+        // Admission preserves custody, not permission to execute a deposit.
+        // A cancelled/filled legacy request still needs its owned goods safely
+        // reconciled by the shared terminal path instead of an endless retry.
+        if(!sGuildSupplies.ReadManagedCustody(task,current,why))return reject(AdmissionCode::NotReady,why);
         if(current.deposited)return reject(AdmissionCode::ReconciliationRequired,"guild_delivery_prior_credit_requires_import");
     }
     request.receipt=SourceId("guild_delivery_admission",task.id);return SubmitTask(request);
@@ -129,7 +132,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         }
         auto& read=found->second;
         if(read.pending)return stop("guild_delivery_receipt_read_pending");
-        if(read.revision!=saved->revision)read={};
+        if(read.revision!=saved->revision || read.closureRead)read={};
         if(!read.complete) {
             if(read.retryAt>NowMs())return stop(read.blocker);
             if(state->ioPending)return stop("guild_delivery_database_queue_wait");
@@ -167,7 +170,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             if(!saved->context.boot.empty())return stop("guild_mail_rollback_requires_native_reload");
             if(ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) || bot->GetMap()->IsDungeon() ||
                 bot->GetTradeData() || LivingServiceExecution::Busy(bot))return stop("guild_mail_rollback_safety_wait");
-            GuildDepositQuote carry;if(!sGuildSupplies.ReadManagedCarry(*saved,carry,blocker))return stop(blocker);
+            // Prove custody even when a goal was cancelled while the native
+            // send acknowledgement was lost. This does not authorize sending.
+            GuildDepositQuote carry;if(!sGuildSupplies.ReadManagedCustody(*saved,carry,blocker))return stop(blocker);
             const auto& q=rollback.quote;auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,q.item));
             if(!item || item->GetPos()!=q.position || bot->GetItemCount(q.job.entry,false)!=q.bagBefore ||
                 bot->GetItemCount(q.job.entry,true)!=q.totalBefore)return stop("guild_mail_rollback_possessions_changed");
@@ -222,6 +227,11 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(ParseServiceStep(saved->checkpoint.step,preparation) && preparation!=ServiceDestination::GuildBank && preparation!=ServiceDestination::GuildMailbox)
         return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.entry,job.quantity}).blocker);
     if(saved->phase==Phase::Traveling) {
+        GuildDepositQuote custody;
+        if(sGuildSupplies.ReadManagedCustody(*saved,custody,blocker) &&
+            !sGuildSupplies.ReadManagedCarry(*saved,custody,blocker) &&
+            (blocker=="guild_delivery_goal_cancelled" || blocker=="guild_delivery_target_already_satisfied"))
+            return advance(Phase::Preparing,"guild_delivery_prepare");
         const auto destination=saved->checkpoint.step==ServiceStep(ServiceDestination::GuildMailbox)?ServiceDestination::GuildMailbox:ServiceDestination::GuildBank;
         const auto travel=sPlayerbotOrganicEconomy.ReachSavedService(actor,id,saved->revision,destination);
         const bool pause=travel.blocker=="recipe_service_safety_pause";
@@ -261,6 +271,71 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     GuildDepositQuote quote;ResourceClaim held;
     GuildDepositQuote carry;
     const bool direct=sGuildSupplies.ReadManagedDeposit(*saved,carry,blocker);
+    if(!direct && (blocker=="guild_delivery_goal_cancelled" || blocker=="guild_delivery_target_already_satisfied" ||
+        blocker=="guild_delivery_automation_paused" || blocker=="guild_delivery_member_departed")) {
+        const auto sourceBlocker=blocker;
+        auto found=state->guildDeliveryReads.find(id);
+        if(found==state->guildDeliveryReads.end()) {
+            for(auto it=state->guildDeliveryReads.begin();it!=state->guildDeliveryReads.end();) {
+                const auto task=state->cache.find(it->first);
+                if(!it->second.pending && (task==state->cache.end() || Terminal(task->second.phase)))it=state->guildDeliveryReads.erase(it);
+                else ++it;
+            }
+            if(state->guildDeliveryReads.size()>=64)return stop("guild_delivery_receipt_queue_full");
+            found=state->guildDeliveryReads.emplace(id,State::GuildDeliveryRead{}).first;
+        }
+        auto& read=found->second;
+        if(read.pending)return stop("guild_delivery_closure_read_pending");
+        if(read.revision!=saved->revision || !read.closureRead)read={};
+        if(!read.complete) {
+            if(read.retryAt>NowMs())return stop(read.blocker);
+            if(state->ioPending)return stop("guild_delivery_database_queue_wait");
+            read.revision=saved->revision;read.closureRead=read.pending=true;state->ioPending=true;
+            const auto revision=saved->revision;
+            if(!CharacterDatabase.AsyncQuery([this,id,revision](QueryResult* rows) {
+                state->ioPending=false;const auto found=state->guildDeliveryReads.find(id);
+                if(found==state->guildDeliveryReads.end())return;
+                auto& read=found->second;read.pending=false;if(read.revision!=revision || !read.closureRead)return;
+                if(!rows || rows->GetFieldCount()!=7){read.blocker="guild_delivery_closure_record_unavailable";read.retryAt=NowMs()+30000;return;}
+                const auto* f=rows->Fetch();auto& c=read.closure;
+                c.goalState=f[0].GetCppString();c.target=f[1].GetUInt32();c.reserved=f[2].GetUInt32();
+                c.goalUpdated=f[3].GetUInt32();c.deposited=f[4].GetUInt32();c.originalItem=f[5].GetUInt32();
+                c.banked=f[6].GetUInt64();read.complete=true;
+            },GuildDeliveryClosureQuery(job,actor).c_str())) {
+                state->ioPending=false;read.pending=false;read.retryAt=NowMs()+30000;read.blocker="guild_delivery_database_unavailable";
+                return stop(read.blocker);
+            }
+            return stop("guild_delivery_closure_read_pending");
+        }
+        if(GuildDeliveryClosureReason(read.closure).empty()) {
+            const auto& c=read.closure;
+            const std::string why=c.goalState.empty()?"guild_delivery_goal_record_missing":
+                sourceBlocker=="guild_delivery_automation_paused" || sourceBlocker=="guild_delivery_member_departed"?sourceBlocker:
+                c.goalState=="active" && c.target && c.banked<c.target && uint64_t(c.reserved)>=c.target-c.banked?
+                "guild_delivery_need_reserved_by_other_work":"guild_delivery_goal_changed_refresh_pending";
+            read.complete=false;read.retryAt=NowMs()+30000;read.blocker=why;return stop(why);
+        }
+        UnsettledClaimBatch claims;
+        if(!ReadTaskClaims(actor,id,saved->revision,claims,blocker))return stop(blocker);
+        auto balances=NativeClaimBalances(*bot,claims.claims,false);NativeResourceBalance parcel;
+        for(const auto& b:balances)if(b.itemEntry==job.entry && b.location=="bags") {
+            if(parcel.itemGuid)return stop("guild_delivery_cancellation_ambiguous_parcel");
+            parcel=b;
+        }
+        if(!parcel.itemGuid && !job.incomingMail) {
+            for(auto* item:bot->GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BAGS))
+                if(item && item->GetGUIDLow()==read.closure.originalItem && item->GetEntry()==job.entry)
+                    parcel={actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,"bags"};
+        }
+        GuildDeliverySettlement closed;const auto receipt=NewId();
+        if(!PrepareGuildDeliveryCancellation(*saved,current,read.closure,parcel,claims,balances,NowMs(),receipt,closed,blocker))return stop(blocker);
+        if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+            return stop("guild_delivery_settlement_backpressure");
+        State::Pending write;write.task=std::move(closed.task);write.plan=std::move(closed.plan);write.claims=std::move(closed.claims);
+        write.closureRefreshRevision=saved->revision;
+        write.admissionReceipt=receipt;state->pending.push_back(std::move(write));state->nextWork=0;
+        read={};return stop("guild_delivery_cancellation_pending");
+    }
     if(!direct && blocker=="guild_delivery_deposit_permission_revoked") {
         GuildMailQuote parcel;std::vector<ClaimConsumption> uses;
         if(!PlanNativeGuildMail(*bot,*saved,parcel,uses,blocker)) {

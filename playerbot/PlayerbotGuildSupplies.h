@@ -27,6 +27,7 @@ public:
     void RecordMoneyDeposit(uint32_t guild,uint32_t actor,uint32_t copper);
     bool ReadManagedDeposit(const LivingActivity::Task&,LivingActivity::GuildDepositQuote&,std::string&) const;
     bool ReadManagedCarry(const LivingActivity::Task&,LivingActivity::GuildDepositQuote&,std::string&) const;
+    bool ReadManagedCustody(const LivingActivity::Task&,LivingActivity::GuildDepositQuote&,std::string&) const;
     bool ReadManagedMail(const LivingActivity::Task&,LivingActivity::ResourceClaim&,std::string&) const;
     bool ReadDeliveryJob(uint64_t delivery,uint32_t actor,LivingActivity::GuildDeliveryJob&,std::string&) const;
     bool AllowsManagedClaim(const LivingActivity::ResourceClaim&) const;
