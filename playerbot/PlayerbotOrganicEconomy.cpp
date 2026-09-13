@@ -852,7 +852,25 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
                 // Use the native contact point and normal pathfinder, not a ray
                 // cast beginning inside the object or an unchecked MovePoint.
                 service->GetContactPoint(bot,x,y,z,1.0f);
-                RecipeServiceMovement movement(ai);movement.To(WorldPosition(bot->GetMapId(),x,y,z,0));
+                RecipeServiceMovement movement(ai);
+                const bool dispatched=movement.To(WorldPosition(bot->GetMapId(),x,y,z,0));
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+                // A nearby service may occupy another floor. Retain the native
+                // service and actual contact point when the final approach
+                // stalls; the ordinary travel target is empty for this leg.
+                // Copied-only, bounded output, no path mutation or extra query.
+                if(trip.work.NoProgressMs()>=30000 && now>=trip.nextApproachDiagnostic) {
+                    trip.nextApproachDiagnostic=now+30;
+                    const auto& path=context->GetValue<ai::LastMovement&>("last movement")->Get().lastPath;
+                    sLog.outString("Living isolated service approach: actor=%u task=%s item=%u service=%u map=%u distance=%.2f actor=%.2f,%.2f,%.2f service=%.2f,%.2f,%.2f contact=%.2f,%.2f,%.2f dispatched=%u path_nodes=%u",
+                        guid,saved->id.c_str(),purchaseItem,service->GetEntry(),bot->GetMapId(),distance,
+                        bot->GetPositionX(),bot->GetPositionY(),bot->GetPositionZ(),
+                        service->GetPositionX(),service->GetPositionY(),service->GetPositionZ(),x,y,z,
+                        uint32(dispatched),uint32(path.getPath().size()));
+                }
+#else
+                (void)dispatched;
+#endif
             } else if(bot->GetMap()->GetReachableRandomPointOnGround(x,y,z,1.0f,false)) {
                 bot->GetMotionMaster()->MovePoint(240,x,y,z);
             }
