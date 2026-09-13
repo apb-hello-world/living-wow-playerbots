@@ -7,7 +7,8 @@ namespace LivingActivity {
     // Exact external prerequisites only. Unknown errors, native uncertainty,
     // safety interruptions and unsupported adapters are NOT disguised as waits.
     inline uint64_t PreparationWaitDelay(const std::string& blocker) {
-        for(const auto* known : {"guild_mail_no_deposit_recipient", "guild_delivery_automation_paused",
+        for(const auto* known : {"guild_mail_no_deposit_recipient", "guild_mail_recipient_pending_delivery",
+            "guild_mail_recipient_mailbox_full", "guild_delivery_automation_paused",
             "guild_delivery_need_reserved_by_other_work", "guild_delivery_goal_changed_refresh_pending"})
             if(blocker==known)return 30000;
         for(const auto* known : {"purchase_hourly_limit", "purchase_seller_weekly_limit",
