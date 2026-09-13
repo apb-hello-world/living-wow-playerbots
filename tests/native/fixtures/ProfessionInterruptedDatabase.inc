@@ -6,8 +6,8 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     // stacks. Retain a separate bank dependency and a later unused vial stack.
     ProfessionJob split;assert(DecodeProfessionJob(f.task.checkpoint.data,split,blocker));
     split.reagents.back().perAttempt=7;f.task.checkpoint.data=EncodeProfessionJob(split);
-    f.frame.stacks.push_back({705,805,3371,20,0,26});
-    f.frame.stacks.push_back({705,806,3371,9,0,27});
+    f.frame.stacks.push_back({705,100805,3371,20,0,26});
+    f.frame.stacks.push_back({705,100806,3371,9,0,27});
     auto intent=SavedCraft(f.task,split,f.frame,f.frame,true,true);
     intent.receipt.id=f.history.interruptedCraft->receipt.id;
     intent.receipt.state=OperationState::Intent;intent.receipt.nativeReference.clear();
@@ -59,10 +59,10 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     rejectRace("UPDATE characters SET money=99 WHERE guid=705","UPDATE characters SET money=100 WHERE guid=705");
     rejectRace("UPDATE character_skills SET value=2 WHERE guid=705","UPDATE character_skills SET value=1 WHERE guid=705");
     rejectRace("UPDATE item_instance SET count=4 WHERE guid=802","UPDATE item_instance SET count=5 WHERE guid=802");
-    rejectRace("UPDATE item_instance SET count=19 WHERE guid=805","UPDATE item_instance SET count=20 WHERE guid=805");
-    rejectRace("UPDATE item_instance SET count=21 WHERE guid=805","UPDATE item_instance SET count=20 WHERE guid=805");
-    rejectRace("UPDATE character_inventory SET slot=28 WHERE item=805","UPDATE character_inventory SET slot=26 WHERE item=805");
-    rejectRace("UPDATE item_instance SET owner_guid=706 WHERE guid=805","UPDATE item_instance SET owner_guid=705 WHERE guid=805");
+    rejectRace("UPDATE item_instance SET count=19 WHERE guid=100805","UPDATE item_instance SET count=20 WHERE guid=100805");
+    rejectRace("UPDATE item_instance SET count=21 WHERE guid=100805","UPDATE item_instance SET count=20 WHERE guid=100805");
+    rejectRace("UPDATE character_inventory SET slot=28 WHERE item=100805","UPDATE character_inventory SET slot=26 WHERE item=100805");
+    rejectRace("UPDATE item_instance SET owner_guid=706 WHERE guid=100805","UPDATE item_instance SET owner_guid=705 WHERE guid=100805");
     rejectRace("UPDATE item_instance SET owner_guid=706 WHERE guid=800","UPDATE item_instance SET owner_guid=705 WHERE guid=800");
     rejectRace("UPDATE character_inventory SET slot=26 WHERE item=800","UPDATE character_inventory SET slot=23 WHERE item=800");
     rejectRace("UPDATE character_inventory SET slot=26 WHERE item=803","UPDATE character_inventory SET slot=43 WHERE item=803");
@@ -86,7 +86,7 @@ static void ProfessionInterruptedDatabase(Connection& db) {
     assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+operation)=="rejected");
     assert(db.Scalar("SELECT money FROM characters WHERE guid=705")=="100");
     assert(db.Scalar("SELECT SUM(count) FROM item_instance WHERE owner_guid=705")=="38");
-    assert(db.Scalar("SELECT count FROM item_instance WHERE guid=806")=="9");
+    assert(db.Scalar("SELECT count FROM item_instance WHERE guid=100806")=="9");
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+id+" AND state='held' AND revision=1")=="5");
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_transition WHERE transition_id="+SqlValue(f.receipt))=="1");
     ProfessionHistoryCursor recovered;assert(recovered.Begin(prepared.task,db.History(prepared.task),blocker));
