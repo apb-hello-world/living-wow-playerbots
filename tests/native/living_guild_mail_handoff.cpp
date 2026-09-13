@@ -85,5 +85,29 @@ int main() {
     assert(book.Inspect(uses[0].before.id)->state=="consumed");
     assert(book.Protection().ProtectedItem(q.receiver,q.item,q.job.entry)==4);
     assert(book.Reader().Inspect()->ProtectedItem(q.item)==4);
+    // A native partial-stack send consumes only the quoted portion. The new
+    // attachment GUID and original source are BOTH protected until the one
+    // cross-actor receipt commits; the remainder never becomes a donation.
+    auto split=q;split.sourceCount=12;split.splitPosition=q.position+1;
+    split.bagBefore=split.totalBefore=12;
+    auto splitParcel=parcel;++splitParcel.itemGuid;
+    assert(DecodeGuildMailQuote(EncodeGuildMailQuote(split),decoded) && decoded.sourceCount==12);
+    assert(!VerifyGuildMailAttachment(split,parcel) && VerifyGuildMailAttachment(split,splitParcel));
+    auto malformed=split;malformed.sourceCount=4;assert(!ValidGuildMailQuote(malformed));
+    malformed=split;malformed.splitPosition=malformed.position;assert(!ValidGuildMailQuote(malformed));
+    malformed=split;malformed.sourceCount=13;assert(!ValidGuildMailQuote(malformed));
+    const auto splitResult=GuildMailHandoffWrite(source,3,proof,receipt,"{}",split,uses,splitParcel,target,admission);
+    assert(splitResult.recipientClaim.itemGuid==splitParcel.itemGuid && splitResult.recipientClaim.quantity==4);
+    ResourceClaimBook partial;assert(partial.FinishRestore());
+    assert(partial.InstallReceipt({{uses[0].before,0},{uses[1].before,0}})==ClaimInstall::Installed);
+    assert(partial.ReserveMailedHandoff(receipt,splitResult.changes,splitParcel)==ClaimInstall::Installed);
+    assert(partial.ReserveMailedHandoff(receipt,splitResult.changes,splitParcel)==ClaimInstall::Duplicate);
+    assert(partial.Reader().Inspect()->ProtectedItem(q.item)==4);
+    assert(partial.Reader().Inspect()->ProtectedItem(splitParcel.itemGuid)==4);
+    assert(partial.CommitReservation(receipt)==ClaimInstall::Installed);
+    assert(partial.Reader().Inspect()->ProtectedItem(q.item)==0);
+    assert(partial.Reader().Inspect()->ProtectedItem(splitParcel.itemGuid)==4);
+    const auto splitProof=GuildMailNativeProof(split,source,splitParcel,1120,200000);
+    assert(splitProof.find("r.count=8")!=std::string::npos && splitProof.find("mi.item_guid="+std::to_string(splitParcel.itemGuid))!=std::string::npos);
     std::cout<<"guild mail handoff: lineage, exact claims, cross-actor protection and 23 rejected mutations passed\n";
 }

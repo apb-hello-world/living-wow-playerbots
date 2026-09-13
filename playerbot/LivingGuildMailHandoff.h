@@ -4,7 +4,8 @@
 #include "LivingActivityItemGain.h"
 
 namespace LivingActivity {
-// One exact whole-stack parcel and native postage, quoted before sending.
+// One exact parcel and native postage, quoted before sending. A larger source
+// may be split into a validated empty bag slot inside the SAME native operation.
 // This is neither an auction gain nor a same-actor bank/mail transfer.
 struct GuildMailQuote {
     GuildDeliveryJob job;
@@ -12,7 +13,10 @@ struct GuildMailQuote {
     uint32_t bagBefore=0,totalBefore=0;
     uint16_t position=0;
     uint64_t mailbox=0;
+    uint32_t sourceCount=0; // Zero preserves the original whole-stack wire format.
+    uint16_t splitPosition=0;
 };
+inline uint32_t GuildMailSourceCount(const GuildMailQuote& q) {return q.sourceCount?q.sourceCount:q.job.quantity;}
 bool ValidGuildMailQuote(const GuildMailQuote&);
 std::string EncodeGuildMailQuote(const GuildMailQuote&);
 bool DecodeGuildMailQuote(const std::string&,GuildMailQuote&);
@@ -41,6 +45,7 @@ struct GuildMailRollback {
     std::string before,after;
     GuildMailQuote quote;
     uint32_t attemptedMail=0;
+    uint32_t attemptedItem=0;
 };
 // Restart recovery for an unchanged intent or failed capture. Only exact
 // original possessions, postage and claims plus absent native effects permit

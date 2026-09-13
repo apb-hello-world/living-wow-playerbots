@@ -22,7 +22,7 @@ bool MayDeposit(Guild& guild,uint32_t actor) {
         if(guild.IsMemberHaveRights(actor,tab,GUILD_BANK_RIGHT_DEPOSIT_ITEM))return true;
     return false;
 }
-Player* EligibleRecipient(Player& sender,Guild& guild,Item& item,uint32_t actor) {
+Player* EligibleRecipient(Player& sender,Guild& guild,Item& item,uint32_t actor,uint32_t quantity) {
     auto* p=sRandomPlayerbotMgr.GetPlayerBot(actor);
     // A busy/dead bot can receive native mail without being interrupted. Its
     // queued collection/deposit still obeys all normal service safety checks.
@@ -30,8 +30,27 @@ Player* EligibleRecipient(Player& sender,Guild& guild,Item& item,uint32_t actor)
         !sPlayerbotAIConfig.IsInRandomAccountList(p->GetSession()->GetAccountId()) || !p->IsInWorld() ||
         p->GetGuildId()!=sender.GetGuildId() || p->GetTeam()!=sender.GetTeam() ||
         !guild.GetMemberSlot(p->GetObjectGuid()) || !MayDeposit(guild,actor) || p->GetMailSize()>=50 ||
-        sGuildSupplies.ReservedEntry(actor,item.GetEntry()) || guild.FindSupplyDepositTab(actor,&item,item.GetCount())<0)return nullptr;
+        sGuildSupplies.ReservedEntry(actor,item.GetEntry()) || guild.FindSupplyDepositTab(actor,&item,quantity)<0)return nullptr;
     return p;
+}
+bool EmptyParcelSlot(Player& actor,Item& item,uint32_t quantity,uint16_t& result) {
+    auto fits=[&](uint8_t bag,uint8_t slot) {
+        const auto position=uint16_t(uint16_t(bag)<<8|slot);
+        if(actor.GetItemByPos(position) || !Player::IsInventoryPos(position))return false;
+        ItemPosCountVec positions;
+        // Conservative preflight; the native split revalidates the cloned
+        // item's exact restrictions before it changes either stack.
+        if(actor.CanStoreNewItem(bag,slot,positions,item.GetEntry(),quantity)!=EQUIP_ERR_OK ||
+            positions.size()!=1 || positions[0].pos!=position || positions[0].count!=quantity)return false;
+        result=position;return true;
+    };
+    for(uint8_t slot=INVENTORY_SLOT_ITEM_START;slot<INVENTORY_SLOT_ITEM_END;++slot)
+        if(fits(INVENTORY_SLOT_BAG_0,slot))return true;
+    for(uint8_t bag=INVENTORY_SLOT_BAG_START;bag<INVENTORY_SLOT_BAG_END;++bag) {
+        auto* container=static_cast<Bag*>(actor.GetItemByPos(INVENTORY_SLOT_BAG_0,bag));
+        if(container)for(uint8_t slot=0;slot<container->GetBagSize();++slot)if(fits(bag,slot))return true;
+    }
+    return false;
 }
 bool FreshDelivery(const GuildMailQuote& q) {
     auto rows=CharacterDatabase.PQuery("SELECT d.delivery_id FROM guild_society_supply_delivery d "
@@ -60,7 +79,7 @@ bool PlanNativeGuildMail(Player& actor,const Task& task,GuildMailQuote& q,std::v
     const auto privateItems=sPlayerbotActionBroker.ReservedItemsView();
     for(auto* candidate:actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BAGS)) {
         if(!candidate || candidate->GetEntry()!=carry.job.entry || (!carry.job.incomingMail && candidate->GetGUIDLow()!=carry.item))continue;
-        if(candidate->GetCount()!=carry.job.quantity || !candidate->CanBeTraded() || candidate->IsConjuredConsumable() ||
+        if(candidate->GetCount()<carry.job.quantity || !candidate->CanBeTraded() || candidate->HasGeneratedLoot() || candidate->IsConjuredConsumable() ||
             ai::ItemUsageValue::IsNeededForQuest(&actor,candidate->GetEntry(),true) ||
             !privateItems || privateItems->Item(candidate->GetGUIDLow()))continue;
         ResourceClaim prospective;prospective.task=task.id;prospective.actor=task.actor;prospective.itemGuid=candidate->GetGUIDLow();
@@ -69,10 +88,16 @@ bool PlanNativeGuildMail(Player& actor,const Task& task,GuildMailQuote& q,std::v
         uint32_t available=0;
         if(!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,
             {task.actor,candidate->GetGUIDLow(),carry.job.entry,candidate->GetCount(),0,"bags"},available,why))return false;
-        if(available!=carry.job.quantity)continue;
-        if(!item || candidate->GetGUIDLow()<item->GetGUIDLow())item=candidate;
+        if(available<carry.job.quantity)continue;
+        if(!item || (candidate->GetCount()==carry.job.quantity && item->GetCount()!=carry.job.quantity) ||
+            ((candidate->GetCount()==carry.job.quantity)==(item->GetCount()==carry.job.quantity) && candidate->GetGUIDLow()<item->GetGUIDLow()))item=candidate;
     }
     if(!item)return reject("guild_mail_exact_whole_stack_required");
+    q.job=carry.job;q.sender=task.actor;q.item=item->GetGUIDLow();
+    if(item->GetCount()>carry.job.quantity) {
+        q.sourceCount=item->GetCount();
+        if(!EmptyParcelSlot(actor,*item,carry.job.quantity,q.splitPosition))return reject("guild_mail_split_capacity_required");
+    }
     for(const auto& c:claims.claims) {
         if(c.location=="money") {
             if(!postage.id.empty() || c.state!="held" || c.copper!=30 || c.task!=task.id)
@@ -85,11 +110,11 @@ bool PlanNativeGuildMail(Player& actor,const Task& task,GuildMailQuote& q,std::v
         }
     }
     Player* receiver=nullptr;
-    if(selectedReceiver)receiver=EligibleRecipient(actor,*guild,*item,selectedReceiver);
+    if(selectedReceiver)receiver=EligibleRecipient(actor,*guild,*item,selectedReceiver,carry.job.quantity);
     else {
         auto consider=[&](Player* member) {
             const auto guid=member->GetGUIDLow();
-            if(!receiver || guid<receiver->GetGUIDLow())if(auto* candidate=EligibleRecipient(actor,*guild,*item,guid))receiver=candidate;
+            if(!receiver || guid<receiver->GetGUIDLow())if(auto* candidate=EligibleRecipient(actor,*guild,*item,guid,carry.job.quantity))receiver=candidate;
         };
         guild->BroadcastWorker(consider,&actor); // Native online guild members, not a realm-wide bot scan.
     }
@@ -150,22 +175,38 @@ NativeObservation NativeGuildMail::ExecuteNative(Player& actor,const OperationRe
     struct Capture {bool active=true;~Capture(){if(active)sGuildSupplies.EndManagedMail();}} capture;
     auto* receiver=sRandomPlayerbotMgr.GetPlayerBot(quote.receiver);
     auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item));
+    if(quote.sourceCount) {
+        actor.SplitItem(quote.position,quote.splitPosition,quote.job.quantity);
+        auto* parcel=actor.GetItemByPos(quote.splitPosition);
+        if(!parcel || parcel->GetGUIDLow()==quote.item || parcel->GetOwnerGuid()!=actor.GetObjectGuid() ||
+            parcel->GetEntry()!=quote.job.entry || parcel->GetCount()!=quote.job.quantity ||
+            item->GetCount()!=quote.sourceCount-quote.job.quantity ||
+            actor.GetItemCount(quote.job.entry,false)!=quote.bagBefore) {
+            out.evidence="native_guild_split_requires_reconciliation";return out;
+        }
+        item=parcel;
+    }
+    const auto sentItem=item->GetGUIDLow();
     actor.MoveItemFromInventory(item->GetBagSlot(),item->GetSlot(),true);actor.ModifyMoney(-int32_t(quote.postage));
     MailDraft draft("Guild supply delivery","For guild supply request "+quote.job.goal+". Please deposit these items in the guild bank.");
     draft.AddItem(item);draft.SendMailTo(MailReceiver(receiver),MailSender(&actor),MAIL_CHECK_MASK_HAS_BODY,quote.delay);
     const auto mailId=sGuildSupplies.EndManagedMail();capture.active=false;
-    const auto* mail=receiver->GetMail(mailId);const auto* attached=receiver->GetMItem(quote.item);
-    if(mailId)out.nativeReference="mail:"+std::to_string(mailId)+":item:"+std::to_string(quote.item);
+    const auto* mail=receiver->GetMail(mailId);const auto* attached=receiver->GetMItem(sentItem);
+    if(mailId)out.nativeReference="mail:"+std::to_string(mailId)+":item:"+std::to_string(sentItem);
     out.afterState="{\"mail\":"+std::to_string(mailId)+",\"sender\":"+std::to_string(quote.sender)+
         ",\"receiver\":"+std::to_string(quote.receiver)+",\"original_donor\":"+std::to_string(quote.job.donor)+
-        ",\"item\":"+std::to_string(quote.item)+",\"money\":"+std::to_string(actor.GetMoney())+'}';
+        ",\"item\":"+std::to_string(sentItem)+",\"money\":"+std::to_string(actor.GetMoney())+
+        (quote.sourceCount?",\"source_item\":"+std::to_string(quote.item)+",\"source_remaining\":"+std::to_string(quote.sourceCount-quote.job.quantity):"")+'}';
+    const auto* remaining=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item));
     if(CharacterDatabase.HasOpenTransaction() && mail && attached && mail->sender==quote.sender &&
         mail->receiverGuid==receiver->GetObjectGuid() && !mail->money && !mail->COD && mail->items.size()==1 &&
-        mail->items.front().item_guid==quote.item && mail->items.front().item_template==quote.job.entry &&
+        mail->items.front().item_guid==sentItem && mail->items.front().item_template==quote.job.entry &&
         attached->GetOwnerGuid()==receiver->GetObjectGuid() && attached->GetEntry()==quote.job.entry && attached->GetCount()==quote.job.quantity &&
-        !actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item)) && actor.GetMoney()==quote.moneyBefore-quote.postage &&
+        (quote.sourceCount?remaining && remaining->GetOwnerGuid()==actor.GetObjectGuid() && remaining->GetPos()==quote.position &&
+            remaining->GetEntry()==quote.job.entry && remaining->GetCount()==quote.sourceCount-quote.job.quantity:!remaining) &&
+        !actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,sentItem)) && actor.GetMoney()==quote.moneyBefore-quote.postage &&
         actor.GetItemCount(quote.job.entry,false)==quote.bagBefore-quote.job.quantity && actor.GetItemCount(quote.job.entry,true)==quote.totalBefore-quote.job.quantity) {
-        sent={quote.receiver,quote.item,quote.job.entry,quote.job.quantity,0,"mail",mailId};
+        sent={quote.receiver,sentItem,quote.job.entry,quote.job.quantity,0,"mail",mailId};
         deliveredAt=mail->deliver_time;expiresAt=mail->expire_time;
         out.state=OperationState::Verified;out.evidence="native_guild_parcel_postage_and_handoff_observed";out.mailedItem=sent;
     } else out.evidence="native_guild_mail_requires_reconciliation";
@@ -178,6 +219,6 @@ std::string NativeGuildMail::PersistedNativeProof(Player&,const OperationRequest
     return "SELECT "+SqlValue(task.id)+','+std::to_string(task.revision)+" FROM characters c JOIN character_inventory v ON v.guid=c.guid"
         " JOIN item_instance i ON i.guid=v.item WHERE c.guid="+std::to_string(quote.sender)+" AND c.money="+std::to_string(quote.moneyBefore)+
         " AND i.guid="+std::to_string(quote.item)+" AND i.owner_guid=c.guid AND i.itemEntry="+std::to_string(quote.job.entry)+
-        " AND i.count="+std::to_string(quote.job.quantity)+" AND NOT EXISTS (SELECT 1 FROM mail_items a WHERE a.item_guid=i.guid)";
+        " AND i.count="+std::to_string(GuildMailSourceCount(quote))+" AND NOT EXISTS (SELECT 1 FROM mail_items a WHERE a.item_guid=i.guid)";
 }
 }

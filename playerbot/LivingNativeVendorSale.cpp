@@ -3,6 +3,7 @@
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingNativeMailCollection.h"
+#include "LivingNativeGuildMail.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingProfessionNative.h"
 #include "LivingTaskItemRequirements.h"
@@ -33,6 +34,12 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
     };
     std::vector<ProfessionReagent> requirements;
     if (!ReadNativeTaskItemRequirements(actor,task,requirements,blocker)) return false;
+    if(IsManagedGuildDelivery(task)) {
+        GuildMailQuote parcel;std::vector<ClaimConsumption> uses;std::string why;
+        if(!PlanNativeGuildMail(actor,task,parcel,uses,why) && why=="guild_mail_split_capacity_required") {
+            need={parcel.job.entry,parcel.job.quantity};return true;
+        }
+    }
     ItemGainSpec output;
     if (IsRecipeLearningTask(task)) output={requirements.front().entry,1};
     else if (!IsManagedGuildDelivery(task)) {

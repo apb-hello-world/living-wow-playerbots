@@ -255,6 +255,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(!direct && blocker=="guild_delivery_deposit_permission_revoked") {
         GuildMailQuote parcel;std::vector<ClaimConsumption> uses;
         if(!PlanNativeGuildMail(*bot,*saved,parcel,uses,blocker)) {
+            if(blocker=="guild_mail_split_capacity_required")
+                return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,{job.entry,job.quantity}).blocker);
             if(blocker=="guild_mailbox_send_travel_required" || (blocker=="guild_mail_safety_or_arrival_wait" && !bot->IsStopped()))
                 return advance(Phase::Traveling,ServiceStep(ServiceDestination::GuildMailbox));
             if(blocker=="guild_mail_no_deposit_recipient" || blocker=="guild_mail_insufficient_unreserved_postage" ||

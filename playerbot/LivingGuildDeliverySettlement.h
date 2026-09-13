@@ -16,7 +16,7 @@ inline bool PrepareGuildMailSenderSettlement(const Task& saved,const WorldContex
         !current.mapGeneration || !IsUuid(current.boot) || now<saved.updatedAtMs) {
         blocker="guild_mail_handoff_settlement_context_invalid";return false;
     }
-    for(const auto& c:claims.claims)if(!job.incomingMail || c.location!="bank" || c.state!="held" ||
+    for(const auto& c:claims.claims)if(c.location!="bank" || c.state!="held" ||
         c.copper || c.nativeReference || c.itemEntry==job.entry) {
         blocker="guild_mail_handoff_unsettled_resources";return false;
     }
@@ -47,6 +47,12 @@ inline bool PrepareGuildMailSenderSettlement(const Task& saved,const WorldContex
         " AND JSON_EXTRACT(receiver.checkpoint,'$.donor')="+std::to_string(job.donor)+
         " AND JSON_EXTRACT(receiver.checkpoint,'$.entry')="+std::to_string(job.entry)+
         " AND JSON_EXTRACT(receiver.checkpoint,'$.quantity')="+std::to_string(job.quantity)+')'+resources.guards;
+    for(const auto& claim:claims.claims)
+        result.plan.statements.front()+=" AND EXISTS(SELECT 1 FROM living_activity_operation prepared WHERE prepared.task_id=living_activity_task.task_id"
+            " AND prepared.kind='bank_deposit' AND prepared.state='verified'"
+            " AND JSON_EXTRACT(prepared.before_state,'$.native.native.guid')="+std::to_string(claim.itemGuid)+
+            " AND JSON_EXTRACT(prepared.before_state,'$.native.native.entry')="+std::to_string(claim.itemEntry)+
+            " AND JSON_EXTRACT(prepared.before_state,'$.native.native.quantity')="+std::to_string(claim.quantity)+')';
     AppendPersonalResourceSettlement(result.plan,resources,claims,now,receipt);
     result.claims=std::move(resources.claims);blocker.clear();return true;
 }

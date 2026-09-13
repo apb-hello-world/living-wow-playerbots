@@ -9,7 +9,8 @@ bool ValidGuildMailQuote(const GuildMailQuote& q) {
     return ValidGuildDeliveryJob(q.job) && !q.job.money && q.sender && q.receiver && q.sender!=q.receiver &&
         (q.job.incomingMail || q.sender==q.job.donor) && q.item && q.mailbox && q.postage==30 &&
         q.moneyBefore>=q.postage && q.bagBefore>=q.job.quantity && q.totalBefore>=q.bagBefore &&
-        q.delay<=30u*86400u;
+        q.delay<=30u*86400u && (q.sourceCount ? q.sourceCount>q.job.quantity &&
+            q.bagBefore>=q.sourceCount && q.splitPosition && q.splitPosition!=q.position : !q.splitPosition);
 }
 std::string EncodeGuildMailQuote(const GuildMailQuote& q) {
     if(!ValidGuildMailQuote(q))throw std::invalid_argument("exact_guild_mail_quote_required");
@@ -18,7 +19,8 @@ std::string EncodeGuildMailQuote(const GuildMailQuote& q) {
         ",\"money_before\":"+std::to_string(q.moneyBefore)+",\"postage\":"+std::to_string(q.postage)+
         ",\"delay\":"+std::to_string(q.delay)+",\"bag_before\":"+std::to_string(q.bagBefore)+
         ",\"total_before\":"+std::to_string(q.totalBefore)+",\"position\":"+std::to_string(q.position)+
-        ",\"mailbox\":"+std::to_string(q.mailbox)+'}';
+        ",\"mailbox\":"+std::to_string(q.mailbox)+
+        (q.sourceCount?",\"source_count\":"+std::to_string(q.sourceCount)+",\"split_position\":"+std::to_string(q.splitPosition):"")+'}';
 }
 bool DecodeGuildMailQuote(const std::string& text,GuildMailQuote& q) {
     q={};if(text.empty() || text.size()>2048)return false;
@@ -30,6 +32,7 @@ bool DecodeGuildMailQuote(const std::string& text,GuildMailQuote& q) {
         parsed.moneyBefore=p.get<uint32_t>("money_before");parsed.postage=p.get<uint32_t>("postage");parsed.delay=p.get<uint32_t>("delay");
         parsed.bagBefore=p.get<uint32_t>("bag_before");parsed.totalBefore=p.get<uint32_t>("total_before");
         parsed.position=p.get<uint16_t>("position");parsed.mailbox=p.get<uint64_t>("mailbox");
+        parsed.sourceCount=p.get<uint32_t>("source_count",0);parsed.splitPosition=p.get<uint16_t>("split_position",0);
         // Internal quotes are canonical, so duplicates, extra fields, signs,
         // narrowing overflows and alternative numeric spellings are rejected.
         if(!ValidGuildMailQuote(parsed) || EncodeGuildMailQuote(parsed)!=text)return false;
@@ -55,7 +58,7 @@ bool ExactGuildMailConsumption(const Task& task,const GuildMailQuote& q,const st
 }
 bool VerifyGuildMailAttachment(const GuildMailQuote& q,const NativeResourceBalance& b) {
     return ValidGuildMailQuote(q) && ValidNativeResourceBalance(b) && b.actor==q.receiver &&
-        b.itemGuid==q.item && b.itemEntry==q.job.entry && b.quantity==q.job.quantity &&
+        (q.sourceCount?b.itemGuid!=q.item:b.itemGuid==q.item) && b.itemEntry==q.job.entry && b.quantity==q.job.quantity &&
         !b.copper && b.location=="mail" && b.nativeReference && b.nativeReference<=UINT32_MAX &&
         b.nativeReference!=q.job.incomingMail;
 }
@@ -100,8 +103,8 @@ GuildMailHandoff GuildMailHandoffWrite(const Task& sender,uint64_t expected,cons
     // after dispatch. Keep old operation fingerprints byte-for-byte unchanged.
     consumed.journal.statements.front()+=" AND EXISTS (SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+
         SqlValue(result.id)+" AND JSON_COMPACT(JSON_EXTRACT(o.before_state,'$.native.native'))="+SqlValue(EncodeGuildMailQuote(q))+')';
-    ResourceClaim c;c.id=ItemGainClaimId(result.id,q.item);c.task=recipient.id;c.actor=q.receiver;
-    c.itemGuid=q.item;c.itemEntry=q.job.entry;c.quantity=q.job.quantity;c.location="mail";
+    ResourceClaim c;c.id=ItemGainClaimId(result.id,attachment.itemGuid);c.task=recipient.id;c.actor=q.receiver;
+    c.itemGuid=attachment.itemGuid;c.itemEntry=q.job.entry;c.quantity=q.job.quantity;c.location="mail";
     c.nativeReference=attachment.nativeReference;c.state="held";
     consumed.journal.statements.front()+=" AND NOT EXISTS (SELECT 1 FROM living_activity_task t WHERE t.task_id="+
         SqlValue(recipient.id)+" OR (t.source='guild_delivery' AND t.source_key="+SqlValue(recipient.sourceKey)+"))";
@@ -132,7 +135,7 @@ std::string GuildMailNativeProof(const GuildMailQuote& q,const Task& task,const 
         " JOIN guild_society_supply_execution e ON e.guild_id=d.guild_id WHERE m.id="+std::to_string(b.nativeReference)+
         " AND m.messageType=0 AND m.sender="+std::to_string(q.sender)+" AND m.receiver="+std::to_string(q.receiver)+
         " AND m.money=0 AND m.cod=0 AND m.deliver_time="+std::to_string(deliveredAt)+" AND m.expire_time="+std::to_string(expiresAt)+
-        " AND mi.item_guid="+std::to_string(q.item)+" AND mi.item_template="+std::to_string(q.job.entry)+
+        " AND mi.item_guid="+std::to_string(b.itemGuid)+" AND mi.item_template="+std::to_string(q.job.entry)+
         " AND mi.receiver="+std::to_string(q.receiver)+" AND i.owner_guid="+std::to_string(q.receiver)+
         " AND i.itemEntry="+std::to_string(q.job.entry)+" AND i.count="+std::to_string(q.job.quantity)+
         " AND (SELECT COUNT(*) FROM mail_items a WHERE a.mail_id=m.id)=1"
@@ -142,10 +145,15 @@ std::string GuildMailNativeProof(const GuildMailQuote& q,const Task& task,const 
         " AND c.money="+std::to_string(q.moneyBefore-q.postage)+')'+
         " AND d.delivery_id="+std::to_string(q.job.delivery)+" AND d.guild_id="+std::to_string(q.job.guild)+
         " AND d.goal_id="+SqlValue(q.job.goal)+" AND d.donor_guid="+std::to_string(q.job.donor)+
-        " AND d.carrier_guid="+std::to_string(q.receiver)+" AND d.item_guid="+std::to_string(q.item)+
+        " AND d.carrier_guid="+std::to_string(q.receiver)+" AND d.item_guid="+std::to_string(b.itemGuid)+
         " AND d.item_entry="+std::to_string(q.job.entry)+" AND d.quantity="+std::to_string(q.job.quantity)+
         " AND d.deposited_quantity=0 AND d.phase='mailed' AND g.state='active' AND g.request_kind='item'"
-        " AND g.item_entry="+std::to_string(q.job.entry)+" AND e.enabled=1";
+        " AND g.item_entry="+std::to_string(q.job.entry)+" AND e.enabled=1"+
+        (q.sourceCount?" AND EXISTS (SELECT 1 FROM character_inventory v JOIN item_instance r ON r.guid=v.item"
+            " WHERE v.guid="+std::to_string(q.sender)+" AND r.owner_guid=v.guid AND r.guid="+std::to_string(q.item)+
+            " AND r.itemEntry="+std::to_string(q.job.entry)+" AND r.count="+std::to_string(q.sourceCount-q.job.quantity)+
+            " AND NOT EXISTS (SELECT 1 FROM mail_items a WHERE a.item_guid=r.guid)"
+            " AND NOT EXISTS (SELECT 1 FROM guild_bank_item gbi WHERE gbi.item_guid=r.guid))":"");
 }
 std::string GuildMailRollbackProjection() {
     // Preserve exact journal bytes; MariaDB otherwise nests JSON-constrained
@@ -174,10 +182,11 @@ bool DecodeGuildMailRollback(const std::string& text,GuildMailRollback& out) {
             !DecodeGuildMailQuote(out.before.substr(prefix.size(),end-prefix.size()),out.quote))return false;
         if(o.state==OperationState::Intent)return true;
         boost::property_tree::ptree a;std::istringstream after(out.after);boost::property_tree::read_json(after,a);
-        out.attemptedMail=a.get<uint32_t>("mail");const auto& q=out.quote;
-        return out.attemptedMail && o.nativeReference=="mail:"+std::to_string(out.attemptedMail)+":item:"+std::to_string(q.item) &&
+        out.attemptedMail=a.get<uint32_t>("mail");out.attemptedItem=a.get<uint32_t>("item");const auto& q=out.quote;
+        return out.attemptedMail && out.attemptedItem && (q.sourceCount?out.attemptedItem!=q.item:out.attemptedItem==q.item) &&
+            o.nativeReference=="mail:"+std::to_string(out.attemptedMail)+":item:"+std::to_string(out.attemptedItem) &&
             a.get<uint32_t>("sender")==q.sender && a.get<uint32_t>("receiver")==q.receiver &&
-            a.get<uint32_t>("original_donor")==q.job.donor && a.get<uint32_t>("item")==q.item &&
+            a.get<uint32_t>("original_donor")==q.job.donor &&
             a.get<uint32_t>("money")==q.moneyBefore-q.postage;
     }catch(const std::exception&){out={};return false;}
 }
@@ -199,7 +208,7 @@ bool PrepareGuildMailRollback(const Task& saved,const WorldContext& context,cons
         return reject("guild_mail_rollback_exact_restored_operation_required");
     const auto expected="{\"effects\":76,\"persistence\":1,\"native\":"+ClaimedNativeState(EncodeGuildMailQuote(q),uses)+'}';
     if(rollback.before!=expected || item.actor!=saved.actor || item.guid!=q.item || item.entry!=q.job.entry ||
-        item.count!=q.job.quantity || item.slot!=uint8_t(q.position) || money!=q.moneyBefore)
+        item.count!=GuildMailSourceCount(q) || item.slot!=uint8_t(q.position) || money!=q.moneyBefore)
         return reject("guild_mail_rollback_possessions_changed");
     out.task=saved;auto& next=out.task;++next.revision;next.phase=Phase::Verifying;next.context=context;
     next.updatedAtMs=now;next.retryAtMs=0;next.checkpoint.blocker.clear();
@@ -225,10 +234,17 @@ bool PrepareGuildMailRollback(const Task& saved,const WorldContext& context,cons
         " AND actor_guid<>"+n(saved.actor)+" AND state='held')"+
         " AND EXISTS(SELECT 1 FROM guild_society_supply_delivery d WHERE d.delivery_id="+n(q.job.delivery)+
         " AND d.guild_id="+n(q.job.guild)+" AND d.goal_id="+SqlValue(q.job.goal)+" AND d.donor_guid="+n(q.job.donor)+
-        " AND d.carrier_guid="+n(q.sender)+" AND d.item_guid="+n(q.item)+" AND d.item_entry="+n(q.job.entry)+
+        " AND d.carrier_guid="+n(q.sender)+" AND (d.item_guid="+n(q.item)+
+        (q.job.incomingMail?" OR EXISTS(SELECT 1 FROM living_activity_operation collected WHERE collected.task_id="+SqlValue(saved.id)+
+            " AND collected.kind='mail_collect' AND collected.state='verified' AND collected.evidence_code='native_mail_attachment_collected'"
+            " AND JSON_EXTRACT(collected.before_state,'$.native.native.mail')="+n(q.job.incomingMail)+
+            " AND JSON_EXTRACT(collected.before_state,'$.native.native.guid')=d.item_guid"
+            " AND JSON_EXTRACT(collected.after_state,'$.native.surviving_guid')="+n(q.item)+")":"")+
+        ") AND d.item_entry="+n(q.job.entry)+
         " AND d.quantity="+n(q.job.quantity)+" AND d.deposited_quantity=0 AND d.phase='carried' AND d.mail_id="+n(q.job.incomingMail)+')';
     if(rollback.attemptedMail)out.journal.statements.front()+=" AND NOT EXISTS(SELECT 1 FROM living_activity_task WHERE source='guild_delivery' AND source_key="+
         SqlValue(GuildDeliverySourceKey(GuildMailRecipientJob(q,rollback.attemptedMail),q.receiver))+')';
+    if(q.sourceCount && rollback.attemptedItem)out.journal.statements.front()+=" AND NOT EXISTS(SELECT 1 FROM item_instance WHERE guid="+n(rollback.attemptedItem)+')';
     for(const auto& use:uses)out.journal.statements.front()+=" AND EXISTS(SELECT 1 FROM living_activity_claim c WHERE "+ConsumptionClaimPredicate(use.before)+')';
     out.journal.statements.insert(out.journal.statements.begin(),
         "UPDATE living_activity_task SET actor_guid=actor_guid WHERE actor_guid="+n(saved.actor));

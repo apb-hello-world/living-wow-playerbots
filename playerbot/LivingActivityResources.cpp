@@ -234,11 +234,17 @@ namespace LivingActivity {
             }
         }
         if(!source || !postage || !receiver || source->actor!=postage->actor || source->task!=postage->task ||
-            source->actor==receiver->actor || source->task==receiver->task || source->itemGuid!=receiver->itemGuid ||
+            source->actor==receiver->actor || source->task==receiver->task ||
             source->itemEntry!=receiver->itemEntry || source->quantity!=receiver->quantity ||
             protection.ProtectedItem(source->actor,source->itemGuid,source->itemEntry)!=source->quantity ||
             Lookup(protection.uncertainEntries,std::make_pair(receiver->actor,receiver->itemEntry)))return ClaimInstall::Invalid;
         PendingReservation hold;hold.mailedHandoff=true;hold.changes=changes;hold.balances={attachment};
+        // A split has a NEW native GUID; protect it before asynchronous save
+        // acknowledgement, as well as the original source's existing hold.
+        if(source->itemGuid!=receiver->itemGuid) {
+            if(protection.ProtectedItem(receiver->itemGuid))return ClaimInstall::Invalid;
+            hold.additional.push_back(*receiver);Index(*receiver,true);
+        }
         // The old exact GUID remains protected, for ANY actor. This pending
         // receipt locks all three claim identities; CommitReservation replaces
         // them atomically, publishing only the final one-owner projection.

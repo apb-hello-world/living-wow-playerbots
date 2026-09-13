@@ -99,12 +99,31 @@ static void GuildMailHandoffDatabase(Connection& db) {
     assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id="+SqlValue(recipient.id))=="queued");
     assert(db.Scalar("SELECT phase FROM guild_society_supply_delivery WHERE delivery_id=14")=="mailed");
     assert(db.Scalar("SELECT deposited_quantity FROM guild_society_supply_delivery WHERE delivery_id=14")=="0");
+    // Same native parcel may originate from a partial stack only with exact
+    // remainder ownership, count and absence from mail/bank storage.
+    auto split=q;split.item=9798006;split.sourceCount=12;split.splitPosition=q.position+1;
+    split.bagBefore=split.totalBefore=12;
+    assert(db.Execute("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES(9798006,2770,9798,8)"));
+    assert(db.Execute("INSERT INTO character_inventory(guid,item,bag,slot,item_template) VALUES(9798,9798006,0,23,2770)"));
+    const auto splitProof=GuildMailNativeProof(split,source,parcel,1120,200000);
+    assert(db.Scalar(splitProof)==source.id);
+    auto splitWrong=[&](const std::string& mutation,const std::string& repair) {
+        assert(db.Execute(mutation));assert(db.Scalar(splitProof).empty());assert(db.Execute(repair));assert(db.Scalar(splitProof)==source.id);
+    };
+    splitWrong("UPDATE item_instance SET count=12 WHERE guid=9798006","UPDATE item_instance SET count=8 WHERE guid=9798006");
+    splitWrong("UPDATE item_instance SET owner_guid=9799 WHERE guid=9798006","UPDATE item_instance SET owner_guid=9798 WHERE guid=9798006");
+    splitWrong("INSERT INTO mail_items VALUES(90015,9798006,2770,9799)","DELETE FROM mail_items WHERE mail_id=90015");
+    splitWrong("INSERT INTO guild_bank_item VALUES(31,9798006,2770)","DELETE FROM guild_bank_item WHERE item_guid=9798006");
 }
-static void GuildMailRollbackDatabase(Connection& db,bool intent=false) {
+static void GuildMailRollbackDatabase(Connection& db,bool intent=false,bool partial=false) {
     using namespace GuildMailFixture;
-    unsigned seq=0;const auto rid=[&](){return std::string(intent?"d399bccb-57bc-5367-84a7-":"c399bccb-57bc-5367-84a7-")+std::to_string(100000000000ull+ ++seq);};
-    auto q=Quote();q.sender+=intent?200:100;q.receiver+=intent?200:100;q.item+=intent?100:50;
-    q.job.delivery=intent?16:15;q.job.incomingMail=intent?90018:90016;
+    unsigned seq=0;const auto rid=[&](){return std::string(partial?(intent?"f399bccb-57bc-5367-84a7-":"e399bccb-57bc-5367-84a7-"):
+        (intent?"d399bccb-57bc-5367-84a7-":"c399bccb-57bc-5367-84a7-"))+std::to_string(100000000000ull+ ++seq);};
+    const uint32_t variant=1+uint32_t(intent)+2*uint32_t(partial);
+    auto q=Quote();q.sender+=variant*100;q.receiver+=variant*100;q.item+=variant*50;
+    q.job.delivery=14+variant;q.job.incomingMail=90014+variant*2;
+    if(partial){q.sourceCount=12;q.splitPosition=q.position+1;q.bagBefore=q.totalBefore=12;}
+    const auto attached=q.item+(partial?1:0);
     const auto attempt=q.job.incomingMail+1;auto n=[](uint64_t v){return std::to_string(v);};
     auto source=Sender(q);source.id=source.root=rid();auto uses=Uses(source,q);
     for(auto& use:uses)use.before.id=rid();
@@ -112,7 +131,7 @@ static void GuildMailRollbackDatabase(Connection& db,bool intent=false) {
     assert(db.Write(TaskWrite(source,0,rid(),"fixture_created")));
     source.phase=Phase::Preparing;++source.revision;assert(db.Write(TaskWrite(source,1,rid(),"fixture_preparing")));
     ++source.revision;assert(db.Write(ResourceReservationWrite(source,2,rid(),{{uses[0].before,0},{uses[1].before,0}},
-        {{q.sender,q.item,q.job.entry,4,0,"bags"},{q.sender,0,0,0,q.moneyBefore,"money"}})));
+        {{q.sender,q.item,q.job.entry,GuildMailSourceCount(q),0,"bags"},{q.sender,0,0,0,q.moneyBefore,"money"}})));
     OperationRequest request;request.kind="guild_mail_send";request.effects=76;request.persistence=NativePersistence::Inventory;
     request.beforeState=EncodeGuildMailQuote(q);request.consumption=uses;request.transition.task=source;
     request.transition.expectedRevision=source.revision;++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
@@ -120,10 +139,10 @@ static void GuildMailRollbackDatabase(Connection& db,bool intent=false) {
     auto proof=Proof(source);proof.id=request.transition.receipt;proof.taskRevision=source.revision;
     proof.state=intent?OperationState::Intent:OperationState::Reconciling;
     proof.evidence=intent?"":"native_save_capture_requires_reconciliation";
-    proof.nativeReference=intent?"":"mail:"+n(attempt)+":item:"+n(q.item);
+    proof.nativeReference=intent?"":"mail:"+n(attempt)+":item:"+n(attached);
     if(!intent){++source.revision;source.phase=Phase::Reconciling;source.updatedAtMs=2000;}
     const auto after=intent?std::string("{}"):"{\"mail\":"+n(attempt)+",\"sender\":"+std::to_string(q.sender)+",\"receiver\":"+std::to_string(q.receiver)+
-        ",\"original_donor\":"+std::to_string(q.job.donor)+",\"item\":"+std::to_string(q.item)+",\"money\":470}";
+        ",\"original_donor\":"+std::to_string(q.job.donor)+",\"item\":"+std::to_string(attached)+",\"money\":470}";
     if(!intent)assert(db.Write(OperationOutcomeWrite(source,source.revision-1,proof,rid(),after)));
     const auto before=db.Scalar("SELECT before_state FROM living_activity_operation WHERE operation_id="+SqlValue(proof.id));
     boost::property_tree::ptree encoded;encoded.put("id",proof.id);encoded.put("task",source.id);encoded.put("revision",proof.taskRevision);
@@ -141,7 +160,7 @@ static void GuildMailRollbackDatabase(Connection& db,bool intent=false) {
     }
     auto context=source.context;source.context.boot.clear();source.context.actorGeneration=source.context.mapGeneration=0;
     GuildMailRollbackWrite recovery;std::string why;const auto receipt=rid();
-    NativeItemStack item{q.sender,q.item,q.job.entry,4,0,uint8_t(q.position)};
+    NativeItemStack item{q.sender,q.item,q.job.entry,GuildMailSourceCount(q),0,uint8_t(q.position)};
     assert(PrepareGuildMailRollback(source,context,rollback,uses,item,500,2001,receipt,recovery,why));
     auto wrongItem=item;wrongItem.count=3;
     GuildMailRollbackWrite rejected;
@@ -157,7 +176,7 @@ static void GuildMailRollbackDatabase(Connection& db,bool intent=false) {
     auto unheld=uses;unheld[0].before.state="consumed";
     assert(!PrepareGuildMailRollback(source,context,rollback,unheld,item,500,2001,rid(),rejected,why));
     assert(db.Execute("INSERT INTO characters(guid,race,money) VALUES("+std::to_string(q.sender)+",5,500)"));
-    assert(db.Execute("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES("+std::to_string(q.item)+",2770,"+std::to_string(q.sender)+",4)"));
+    assert(db.Execute("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES("+std::to_string(q.item)+",2770,"+std::to_string(q.sender)+','+n(GuildMailSourceCount(q))+')'));
     assert(db.Execute("INSERT INTO character_inventory(guid,item,bag,slot,item_template) VALUES("+std::to_string(q.sender)+','+std::to_string(q.item)+",0,23,2770)"));
     assert(db.Execute("INSERT INTO guild_society_supply_delivery VALUES("+n(q.job.delivery)+",31,'guild_mail_handoff_fixture',9797,"+n(q.sender)+",2770,4,"+n(q.job.incomingMail)+",'carried',0,"+n(q.item)+')'));
     auto refuse=[&](const std::string& mutation,const std::string& repair) {
@@ -166,6 +185,8 @@ static void GuildMailRollbackDatabase(Connection& db,bool intent=false) {
     };
     refuse("UPDATE characters SET money=470 WHERE guid="+std::to_string(q.sender),"UPDATE characters SET money=500 WHERE guid="+std::to_string(q.sender));
     refuse("UPDATE item_instance SET owner_guid="+n(q.receiver)+" WHERE guid="+n(q.item),"UPDATE item_instance SET owner_guid="+n(q.sender)+" WHERE guid="+n(q.item));
+    if(partial)refuse("UPDATE item_instance SET count=8 WHERE guid="+n(q.item),"UPDATE item_instance SET count=12 WHERE guid="+n(q.item));
+    if(partial && !intent)refuse("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES("+n(attached)+",2770,"+n(q.receiver)+",4)","DELETE FROM item_instance WHERE guid="+n(attached));
     if(!intent)refuse("INSERT INTO mail VALUES("+n(attempt)+",0,"+n(q.sender)+','+n(q.receiver)+",0,0,1120,200000)","DELETE FROM mail WHERE id="+n(attempt));
     refuse("INSERT INTO mail_items VALUES("+n(attempt)+','+n(q.item)+",2770,"+n(q.receiver)+')',"DELETE FROM mail_items WHERE mail_id="+n(attempt));
     refuse("UPDATE guild_society_supply_delivery SET deposited_quantity=4 WHERE delivery_id="+n(q.job.delivery),"UPDATE guild_society_supply_delivery SET deposited_quantity=0 WHERE delivery_id="+n(q.job.delivery));
@@ -190,5 +211,6 @@ static void GuildMailRollbackDatabase(Connection& db,bool intent=false) {
     for(const auto& use:uses)assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(use.before.id))=="held");
     for(const auto& sql:recovery.journal.statements)assert(sql.size()<32*1024);
     assert(recovery.journal.receiptQuery.size()<=30000);
-    if(!intent)GuildMailRollbackDatabase(db,true);
+    if(!intent)GuildMailRollbackDatabase(db,true,partial);
+    else if(!partial)GuildMailRollbackDatabase(db,false,true);
 }

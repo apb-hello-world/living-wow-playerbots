@@ -496,9 +496,13 @@ void PlayerbotGuildSupplies::RecordMailed(uint32 sender,uint32 receiver,Item* it
     auto found=state_->deliveries.find(state_->mailing);if(found==state_->deliveries.end()||!item) return;
     auto& d=found->second;Player* source=Online(sender);
     const auto& managed=state_->managedMail;
+    const auto* remainder=source && managed.sourceCount?source->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,managed.item)):nullptr;
     const bool shared=managed.sender && LivingActivity::ExecutionScope::OwnsNativeOperation(sender) &&
         CharacterDatabase.HasOpenTransaction() && managed.sender==sender && managed.receiver==receiver &&
-        managed.job.delivery==d.id && managed.job.donor==d.donor && managed.item==item->GetGUIDLow() && !d.deposited;
+        managed.job.delivery==d.id && managed.job.donor==d.donor && !d.deposited && item->GetEntry()==d.entry &&
+        (managed.sourceCount?item->GetGUIDLow()!=managed.item && remainder && remainder->GetOwnerGuid()==source->GetObjectGuid() &&
+            remainder->GetEntry()==d.entry && remainder->GetCount()==managed.sourceCount-d.quantity && remainder->GetPos()==managed.position &&
+            !source->GetItemByPos(managed.splitPosition):item->GetGUIDLow()==managed.item);
     if(!source||state_->mailReceiver!=receiver||d.carrier!=sender||d.quantity!=item->GetCount()||d.phase!="carried" ||
         (managed.sender?!shared:(d.donor!=sender||d.item!=item->GetGUIDLow())))return;
     // Mail row, removed inventory, real postage, attachment and journal share

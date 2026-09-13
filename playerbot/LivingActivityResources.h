@@ -83,9 +83,10 @@ namespace LivingActivity {
         // native-save/claim receipt commits. This never proves the transfer.
         ClaimInstall ReserveTransferred(const std::string& receipt,const ClaimReceiptChange& change,
             const NativeResourceBalance& destination);
-        // Exact cross-actor whole-stack mail handoff. The old claim already
+        // Exact cross-actor native mail handoff. The old claim already
         // protects the physical GUID globally; do not double-count it as a new
-        // acquisition. Source item/postage and recipient claim settle together.
+        // acquisition. A verified split protects its new GUID too. Source
+        // item/postage and recipient claim settle together.
         ClaimInstall ReserveMailedHandoff(const std::string& receipt,const std::vector<ClaimReceiptChange>& changes,
             const NativeResourceBalance& attachment);
         ClaimInstall CommitReservation(const std::string& receipt);
