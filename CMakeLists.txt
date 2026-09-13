@@ -165,11 +165,13 @@ option(LIVING_ISOLATED_NATIVE_TESTS "Compile isolated-only Living native fixture
 if(LIVING_ISOLATED_NATIVE_TESTS)
   set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/playerbot/LivingActivityCoordinator.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/LivingActivityNativeCommit.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/LivingProfessionVendor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotAI.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotGuildSupplies.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotOrganicEconomy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/TravelNode.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/strategy/actions/MovementActions.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/strategy/actions/ChooseTravelTargetAction.cpp
     PROPERTIES COMPILE_DEFINITIONS LIVING_ISOLATED_NATIVE_TESTS=1)
 endif()
 
