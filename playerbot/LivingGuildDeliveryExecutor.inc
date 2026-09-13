@@ -241,7 +241,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             ++request.task.revision;request.task.updatedAtMs=NowMs();
             request.task.phase=travel.arrived?Phase::Preparing:travel.retryAtMs?Phase::Deferred:pause?Phase::Paused:Phase::Traveling;
             request.task.retryAtMs=travel.retryAtMs;request.task.checkpoint.activeElapsedMs=std::max(saved->checkpoint.activeElapsedMs,travel.activeElapsedMs);
-            request.task.checkpoint.blocker=(travel.retryAtMs || pause)?travel.blocker:"";
+            request.task.checkpoint.blocker=pause && !travel.safetyDetail.empty()?travel.safetyDetail:
+                (travel.retryAtMs || pause)?travel.blocker:"";
             if(travel.arrived){request.task.checkpoint.step="guild_delivery_prepare";request.task.checkpoint.lastProgressAtMs=NowMs();}
             return stop(SubmitTask(request).blocker);
         }

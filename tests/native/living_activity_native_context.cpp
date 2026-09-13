@@ -41,6 +41,14 @@ int main() {
     NativePlayer player; NativeGroup group;
     auto safety = [&] { return ReadNativeSafety(player, MovementFlags(Falling | FallingFar)); };
     assert(safety() == 0);
+    assert(std::string(NativeSafetyReason(0)).empty());
+    assert(std::string(NativeSafetyReason(uint32_t(Safety::Death)|uint32_t(Safety::Combat)))=="native_death_recovery");
+    assert(std::string(NativeSafetyReason(uint32_t(Safety::Combat)))=="native_combat");
+    assert(std::string(NativeSafetyReason(uint32_t(Safety::Transfer)))=="native_map_transfer");
+    assert(std::string(NativeSafetyReason(uint32_t(Safety::Taxi)))=="native_taxi_travel");
+    assert(std::string(NativeSafetyReason(uint32_t(Safety::Transport)))=="native_transport_travel");
+    assert(std::string(NativeSafetyReason(uint32_t(Safety::Falling)))=="native_falling");
+    assert(std::string(NativeSafetyReason(uint32_t(Safety::UnsafeOperation)))=="native_operation_safety");
     player.m_movementInfo.flags = FallingFar;
     assert(safety() == uint32_t(Safety::Falling));
     player.combat = player.taxi = true;

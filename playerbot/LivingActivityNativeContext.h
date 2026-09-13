@@ -3,6 +3,16 @@
 #include "LivingActivityEffects.h"
 
 namespace LivingActivity {
+    inline const char* NativeSafetyReason(uint32_t safety) {
+        // Diagnostics only: never clear or reinterpret the native safety mask.
+        if (safety & uint32_t(Safety::Death)) return "native_death_recovery";
+        if (safety & uint32_t(Safety::Combat)) return "native_combat";
+        if (safety & uint32_t(Safety::Transfer)) return "native_map_transfer";
+        if (safety & uint32_t(Safety::Taxi)) return "native_taxi_travel";
+        if (safety & uint32_t(Safety::Transport)) return "native_transport_travel";
+        if (safety & uint32_t(Safety::Falling)) return "native_falling";
+        return safety ? "native_operation_safety" : "";
+    }
     template<class NativePlayer, class MovementFlag>
     uint32_t ReadNativeSafety(NativePlayer& player, MovementFlag falling) {
         uint32_t safety = 0;

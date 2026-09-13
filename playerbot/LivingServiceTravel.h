@@ -34,6 +34,7 @@ namespace LivingActivity {
         bool arrived=false;
         std::string blocker;
         uint64_t activeElapsedMs=0,retryAtMs=0;
+        std::string safetyDetail; // Keep the pause classification separate from its exact native cause.
     };
     // Admission ordering only, not another scheduler or execution authority.
     // Both legacy and saved trips occupy the existing economy service queue.

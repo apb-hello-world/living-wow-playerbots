@@ -1810,7 +1810,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                 request.task.phase=route.arrived?Phase::Preparing:route.retryAtMs?Phase::Deferred:paused?Phase::Paused:Phase::Traveling;
                 request.task.checkpoint.activeElapsedMs=std::max(saved->checkpoint.activeElapsedMs,route.activeElapsedMs);
                 request.task.retryAtMs=route.retryAtMs;
-                request.task.checkpoint.blocker=paused || route.retryAtMs ? route.blocker : "";
+                request.task.checkpoint.blocker=paused && !route.safetyDetail.empty()?route.safetyDetail:
+                    paused || route.retryAtMs ? route.blocker : "";
                 if(route.arrived) {
                     request.task.checkpoint.step="profession_prepare";
                     request.task.checkpoint.lastProgressAtMs=request.task.updatedAtMs;
@@ -2137,8 +2138,11 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal) {
         // Waiting does not require another market/claim snapshot. In particular
         // an unchanged legacy reservation must not prevent eventual revalidation.
-        if(ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) ||
-            bot->GetMap()->IsDungeon() || LivingServiceExecution::Busy(bot))return stop("profession_safety_pause");
+        const auto safety=ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR));
+        if(safety)return stop(NativeSafetyReason(safety));
+        if(!bot->GetMap())return stop("native_map_unavailable");
+        if(bot->GetMap()->IsDungeon())return stop("native_dungeon_commitment");
+        if(LivingServiceExecution::Busy(bot))return stop(LivingServiceExecution::Blocker(bot));
         if(saved->retryAtMs>NowMs())return stop(saved->checkpoint.blocker.empty() ?
             "profession_retry_not_due" : saved->checkpoint.blocker);
         return advance(Phase::Reconciling);

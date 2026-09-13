@@ -705,9 +705,15 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     if(old!=serviceTrips.end()) result.activeElapsedMs=old->second.work.ActiveMs();
     if(old!=serviceTrips.end() && bool(old->second.managedTask.actor)!=bool(saved))
         return stop("recipe_service_other_owner_pending");
-    const bool unsafe=saved ? ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) ||
+    const auto safety=ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR));
+    const bool unsafe=saved ? safety ||
         !bot->GetMap() || bot->GetMap()->IsDungeon() || LivingServiceExecution::Busy(bot) : !SafeForEconomy(bot);
-    if(unsafe) {PauseRecipeService(guid,"recipe_service_safety_pause");return stop("recipe_service_safety_pause");}
+    if(unsafe) {
+        result.safetyDetail=safety?NativeSafetyReason(safety):!bot->GetMap()?"native_map_unavailable":
+            bot->GetMap()->IsDungeon()?"native_dungeon_commitment":LivingServiceExecution::Busy(bot)?
+            LivingServiceExecution::Blocker(bot):"economy_commitment_or_safety";
+        PauseRecipeService(guid,"recipe_service_safety_pause");return stop("recipe_service_safety_pause");
+    }
     if(!saved && !LivingServiceExecution::Prepare(bot)) {
         PauseRecipeService(guid,"recipe_service_preparation_wait");return stop(LivingServiceExecution::Blocker(bot));
     }
