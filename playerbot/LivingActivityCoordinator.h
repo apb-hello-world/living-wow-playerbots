@@ -109,6 +109,7 @@ public:
     // grants neither execution ownership nor permission to purchase anything.
     bool ReadGuildProcurementAvailability(const LivingActivity::Task&,uint32_t&,std::string&);
     bool ValidateGuildProcurementDemand(const LivingActivity::Task&,std::string&);
+    ProfessionProgress AdvanceGuildProcurement(uint32_t actor,const std::string& task);
     ProfessionProgress HandoffGuildProcurement(uint32_t actor,const std::string& task);
     LivingActivity::AdmissionResult AdmitGuildDelivery(uint32_t actor,const LivingActivity::GuildDeliveryJob& job);
     bool OwnsGuildDelivery(uint32_t actor,const LivingActivity::GuildDeliveryJob& job) const;

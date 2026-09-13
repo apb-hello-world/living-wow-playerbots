@@ -49,6 +49,8 @@
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
 #include "LivingGuildProcurementHandoff.h"
+#include "LivingNativeGuildProcurement.h"
+#include "LivingGuildProcurementRecovery.h"
 #include "PlayerbotOrganicEconomy.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -503,6 +505,7 @@ struct LivingActivityCoordinator::State {
         Task recipientTask; // Same atomic outbound-mail receipt, not another admission queue.
         std::vector<ResourceClaim> procurementParcels;
         ActivityLease custodyLease;
+        bool recoverySaveHold=false;
         uint64_t closureRefreshRevision=0; // Safe, journal-only no-effect proposal; never native work.
         bool observerRetirement=false;
     };
@@ -847,6 +850,8 @@ struct LivingActivityCoordinator::State {
                     const auto binding=bindings.find(held.actor);
                     if(binding!=bindings.end())binding->second.publisher.Publish(authority.Read(held.actor));
                 }
+                if(acknowledgedWrite.recoverySaveHold && claimProjectionValid)
+                    HoldNativeSave(acknowledgedWrite.task.actor,false);
                 if (!acknowledgedWrite.operation.empty()) {
                     auto operation = operations.find(acknowledgedWrite.operation);
                     MANGOS_ASSERT(operation != operations.end());
@@ -888,6 +893,10 @@ struct LivingActivityCoordinator::State {
                         const auto binding=bindings.find(it->custodyLease.actor);
                         if(binding!=bindings.end())binding->second.publisher.Publish(authority.Read(it->custodyLease.actor));
                         executionBlockers[it->task.id]="guild_procurement_handoff_changed_refresh_pending";
+                    }
+                    if(it->recoverySaveHold) {
+                        HoldNativeSave(it->task.actor,false);
+                        executionBlockers[it->task.id]="guild_procurement_recovery_changed_refresh_pending";
                     }
                     it=pending.erase(it);++refreshed;
                 } else ++it;
@@ -1333,6 +1342,7 @@ void LivingActivityCoordinator::Update() {
                 } turn(state->executingTask,id);
                 auto progress=IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
                     IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
+                    IsGuildProcurementTask(saved->second) ? AdvanceGuildProcurement(saved->second.actor,id) :
                     AdvanceProfessionJob(saved->second.actor,id);
                 Task waiting;
                 if(!progress.completed && PrepareExternalPreparationWait(saved->second,progress.blocker,now,waiting)) {
@@ -2170,6 +2180,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             request.authorization=grant.action;request.changes.push_back({claim,0});
             if (IsRecipeLearningTask(*saved)) {
                 NativeRecipeBookReservation adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
+            }
+            if (IsGuildProcurementTask(*saved)) {
+                NativeGuildProcurementReservation adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
             }
             ProfessionMaterialReservationAdapter adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
         }
@@ -3014,6 +3027,114 @@ bool LivingActivityCoordinator::ValidateGuildProcurementDemand(const Task& task,
         blocker="guild_procurement_demand_changed_reconciliation_required";return false;
     }
     blocker.clear();return true;
+}
+LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceGuildProcurement(uint32_t actor,const std::string& id) {
+    ProfessionProgress result;auto stop=[&](const std::string& why){result.blocker=why;return result;};
+    if(!OnWorldThread() || !EffectEnforcementEnabled() || !ProfessionStoreReady())return stop("guild_procurement_store_unavailable");
+    const auto saved=ReadSavedTask(id);GuildProcurementJob job;std::string why;
+    if(!saved || saved->actor!=actor || !IsGuildProcurementTask(*saved) || !ValidateGuildProcurementTask(*saved,why) ||
+        !DecodeGuildProcurementJob(saved->checkpoint.data,job,why))return stop("guild_procurement_saved_task_required");
+    if(saved->phase==Phase::Completed){result.completed=true;return result;}
+    if(Terminal(saved->phase))return stop("guild_procurement_task_terminal");
+    if(state->executingTask!=id)return stop("guild_procurement_due_queue_required");
+    for(const auto& write:state->pending)if(write.task.actor==actor)return stop("guild_procurement_transition_pending");
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || !bot->GetMap())return stop("guild_procurement_actor_unavailable");
+    if(DefersNativeSave(actor))return stop("guild_procurement_native_save_pending");
+    const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    if(saved->context==current) {
+        // Dispatch/reject an already journalled service before interpreting an
+        // edited request. Its native validator still rechecks spending authority.
+        if(const auto service=DispatchPendingItemService(actor,id))return stop(service->blocker);
+    }
+    for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)
+        return stop("guild_procurement_native_receipt_pending");
+    if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || bot->GetTradeData() || LivingServiceExecution::Busy(bot))
+        return stop("guild_procurement_safety_pause");
+    if(saved->retryAtMs>NowMs())return stop("guild_procurement_retry_wait");
+    UnsettledClaimBatch claims;
+    if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
+    auto queueRecovery=[&](GuildProcurementRecovery& recovery,const std::string& receipt) {
+        if(state->operationDispatching || state->ioPending || state->pending.size()>=state->batch ||
+            state->transitionCount+state->pending.size()>=200000)return stop("guild_procurement_recovery_backpressure");
+        State::Pending write;write.task=std::move(recovery.task);write.plan=std::move(recovery.plan);
+        write.claims=std::move(recovery.claims);write.admissionReceipt=receipt;write.closureRefreshRevision=saved->revision;
+        write.recoverySaveHold=true;
+        // Native saving/mutation must not race the inspected personal balances.
+        // The same pending journal acknowledgement releases this transient hold.
+        const auto owned=state->authority.Read(actor);
+        if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+        state->HoldNativeSave(actor,true);state->pending.push_back(std::move(write));state->nextWork=0;
+        return stop("guild_procurement_reconciliation_receipt_pending");
+    };
+    const bool resuming=!(saved->context==current) || saved->phase==Phase::Verifying ||
+        saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal;
+    if(resuming) {
+        GuildProcurementRecovery recovery;
+        const auto receipt=SourceId("guild_procurement_resume",id+":"+std::to_string(saved->revision)+":"+current.boot);
+        if(!PrepareGuildProcurementResumption(*saved,current,claims,NativeClaimBalances(*bot,claims.claims,false),
+            NowMs(),receipt,recovery,why))return stop(why);
+        return queueRecovery(recovery,receipt);
+    }
+    if(saved->phase==Phase::Reconciling)return stop("guild_procurement_native_outcome_requires_reconciliation");
+    if(saved->phase==Phase::Queued) {
+        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
+        request.task.phase=Phase::Preparing;request.task.updatedAtMs=NowMs();request.receipt=NewId();
+        return stop(SubmitTask(request).blocker);
+    }
+    if(!ValidateGuildProcurementDemand(*saved,why)) {
+        const auto original=why;
+        if(why!="guild_procurement_goal_not_active" && why!="guild_procurement_goal_item_changed" &&
+            why!="guild_procurement_demand_changed_reconciliation_required")return stop(why);
+        // Re-read exact native authority only for a demonstrated request edit,
+        // not every execution tick and never as a response to a route failure.
+        auto row=CharacterDatabase.Query(GuildProcurementClosureQuery(job).c_str());
+        if(!row)return stop("guild_procurement_closure_authority_unavailable");
+        const auto* f=row->Fetch();GuildProcurementClosure closure{f[0].GetCppString(),f[1].GetCppString(),
+            f[2].GetUInt32(),f[3].GetUInt32(),f[4].GetUInt32(),f[5].GetUInt32(),f[6].GetUInt64()};
+        if(GuildProcurementClosureReason(job,closure).empty())return stop(original);
+        // A cancellation cannot orphan a paid attachment. Collection/capacity
+        // are personal prerequisites and do not require fresh purchasing rights.
+        for(const auto& c:claims.claims)if(c.location=="mail")
+            return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.entry,job.quantity}).blocker);
+        if(saved->phase==Phase::Traveling) {
+            TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
+            request.task.phase=Phase::Preparing;request.task.checkpoint.step="guild_procurement_prepare";
+            request.task.updatedAtMs=NowMs();request.receipt=NewId();return stop(SubmitTask(request).blocker);
+        }
+        GuildProcurementRecovery recovery;
+        const auto receipt=SourceId("guild_procurement_cancel",id+":"+std::to_string(saved->revision));
+        if(!PrepareGuildProcurementCancellation(*saved,current,closure,claims,NativeClaimBalances(*bot,claims.claims,false),
+            NowMs(),receipt,recovery,why))return stop(why);
+        return queueRecovery(recovery,receipt);
+    }
+    ServiceDestination service;
+    if(ParseServiceStep(saved->checkpoint.step,service))
+        return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.entry,job.quantity}).blocker);
+    if(saved->phase!=Phase::Preparing)return stop("guild_procurement_preparation_required");
+    GuildProcurementMaterialPlan materials;
+    if(!ReadNativeGuildProcurementMaterials(*bot,*saved,claims,materials,why))return stop(why);
+    if(!materials.changes.empty()) {
+        const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"guild_procurement_materials");
+        if(!grant.Permitted())return stop(grant.blocker);
+        ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+        ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+        request.authorization=grant.action;request.changes=std::move(materials.changes);
+        for(auto& c:request.changes)if(!c.expectedRevision)c.after.id=NewId();
+        NativeGuildProcurementReservation adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
+    }
+    if(materials.carriedReady)return HandoffGuildProcurement(actor,id);
+    NativeProfessionDemand demand;
+    if(!InspectNativeProfessionDemand(*bot,*saved,demand))return stop(demand.blocker);
+    if(demand.stock.size()!=1 || demand.stock.front().entry!=job.entry)return stop("guild_procurement_demand_snapshot_changed");
+    const auto& stock=demand.stock.front();
+    // Exact paid mail wins over additional purchasing and survives planner
+    // refreshes. Whole bank/vendor bundles are normalized only once carried.
+    if(stock.delivered || stock.paidInTransit)
+        return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.entry,job.quantity}).blocker);
+    if(stock.bank)return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Withdraw,{job.entry,job.quantity}).blocker);
+    if(stock.bag>=job.quantity)return stop("guild_procurement_owned_stock_requires_reconciliation");
+    return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Purchase,{job.entry,job.quantity}).blocker);
 }
 LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::HandoffGuildProcurement(uint32_t actor,const std::string& id) {
     ProfessionProgress result;auto stop=[&](const std::string& why){result.blocker=why;return result;};

@@ -48,11 +48,18 @@ int main(int argc,char**) {
         if(scenario==7){claims.claims[0].nativeReference=5;claims.claims[0].location="mail";}
         if(scenario==8)claims.claims[0].quantity=6;
         if(scenario==9)balances[0].quantity=1;
-        if(scenario==10)claims.claims[1].itemGuid=claims.claims[0].itemGuid;
+        if(scenario==10)claims.claims[1].id=claims.claims[0].id;
         if(scenario==11)claims.claims[0].task="a777d6d8-c912-4253-8ce3-6e16c9eaa442";
         if(scenario==12)claims.claims[0].state="proposed";
         assert(!PrepareGuildProcurementHandoff(task,context,claims,balances,2000,receipt,out,why));
     }
+    auto merged=batch;merged.claims[1].itemGuid=a.itemGuid;
+    assert(PrepareGuildProcurementHandoff(saved,saved.context,merged,{stock[0]},2000,receipt,out,why));
+    assert(out.parcels.size()==1 && out.parcels[0].id==a.id && out.parcels[0].quantity==5 && out.claims.size()==2);
+    std::reverse(merged.claims.begin(),merged.claims.end());
+    assert(PrepareGuildProcurementHandoff(saved,saved.context,merged,{stock[0]},2000,receipt,out,why));
+    assert(out.parcels[0].id==a.id && out.parcels[0].quantity==5);
+    assert(out.plan.receiptQuery.find("d.source_claim_id='"+a.id+"'")!=std::string::npos);
     // Additional personal preparations may be released but never converted to
     // requested goods. Incoming/unreconciled stock cannot be silently freed.
     auto money=a;money.id="8e9283f2-5dfe-45c3-89a8-9bbd382f092e";

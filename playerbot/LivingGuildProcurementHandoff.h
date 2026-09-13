@@ -31,20 +31,32 @@ inline bool PrepareGuildProcurementHandoff(const Task& saved,const WorldContext&
         return reject("guild_procurement_handoff_context_invalid");
     PersonalResourceSettlement resources;
     if(!PreparePersonalResourceSettlement(saved,batch,balances,resources,why,"guild_procurement_handoff_"))return false;
-    uint64_t quantity=0;std::set<uint32_t> items;
+    uint64_t quantity=0;std::set<uint32_t> items;std::map<uint32_t,ResourceClaim> carried;
     for(const auto& claim:batch.claims) {
         // Mail/proposals/uncertain transfers are still obligations, not goods.
         if(claim.state!="held" || claim.nativeReference)
             return reject("guild_procurement_handoff_unreconciled_claim");
         if(claim.itemEntry==job.entry) {
-            if(claim.location!="bags" || claim.copper || !items.insert(claim.itemGuid).second ||
+            if(claim.location!="bags" || claim.copper ||
                 claim.quantity>job.quantity || quantity>job.quantity-claim.quantity)
                 return reject("guild_procurement_handoff_carried_quantity_invalid");
-            quantity+=claim.quantity;out.parcels.push_back(claim);
+            quantity+=claim.quantity;items.insert(claim.itemGuid);
+            auto found=carried.find(claim.itemGuid);
+            if(found==carried.end())carried.emplace(claim.itemGuid,claim);
+            else {
+                // Native merging preserves separate purchase-claim receipts.
+                // One physical stack becomes one parcel; the canonical origin
+                // is the lowest claim ID. Every original claim is settled by
+                // this SAME journal, without moving or duplicating the stack.
+                const auto combined=found->second.quantity+claim.quantity;
+                if(claim.id<found->second.id)found->second=claim;
+                found->second.quantity=combined;
+            }
         } else if(claim.location!="bank" && claim.location!="money")
             return reject("guild_procurement_handoff_unrelated_claim");
     }
     if(quantity!=job.quantity)return reject("guild_procurement_handoff_goods_incomplete");
+    for(const auto& row:carried)out.parcels.push_back(row.second);
     out.task=saved;auto& next=out.task;++next.revision;next.phase=Phase::Completed;next.updatedAtMs=now;
     next.checkpoint.step="guild_procurement_handed_off";next.checkpoint.blocker.clear();next.retryAtMs=0;
     next.checkpoint.lastProgressAtMs=now;
