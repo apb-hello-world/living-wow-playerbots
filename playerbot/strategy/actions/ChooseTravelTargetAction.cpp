@@ -62,6 +62,11 @@ bool ChooseTravelTargetAction::Execute(Event& event)
     uint32 destinationPoints = 0;
     for (const auto& partition : destinationList)
         destinationPoints += partition.second.size();
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    if (LivingActivity::PreferNearbyService(LivingActivity::ExecutionScope::Origin(bot->GetGUIDLow())))
+        sLog.outString("Living isolated service search result: actor=%u purpose=%s ranges=%u points=%u",
+            bot->GetGUIDLow(),futureTravelPurpose.c_str(),uint32(destinationList.size()),destinationPoints);
+#endif
     if (recoveryRouteDiagnostic)
     {
         SET_AI_VALUE2(int, "manual int", "future travel range count", (int)destinationList.size());

@@ -135,6 +135,26 @@ namespace LivingActivity {
     }
     std::vector<int32_t> NearestNativePurchaseEntries(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries) {
         const auto best=NearestService(actor,purpose,entries);
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+        // Diagnose the exact old preselection before changing eligibility.
+        // Read-only copied-world evidence; do not search twice asynchronously,
+        // install a target, bypass a level gate or log this in production.
+        if(best.entry) {
+            const ai::PlayerTravelInfo info(&actor);const WorldPosition here(&actor);
+            uint32_t points=0,levelAllowed=0,legacyRangeAllowed=0,active=0;
+            for(const auto* dest:sTravelMgr.GetDestinations(info,purpose,{best.entry},true,0,false)) {
+                if(dest->IsActive(&actor,info))++active;
+                for(const auto* point:dest->GetPoints()) {
+                    if(!point)continue;
+                    ++points;
+                    if(ai::TravelMgr::IsLocationLevelValid(*point,info))++levelAllowed;
+                    if(here.distance(*point)<=10000.0f)++legacyRangeAllowed;
+                }
+            }
+            sLog.outString("Living isolated service preselection: actor=%u purpose=%u selected_entry=%i distance=%.2f points=%u level_allowed=%u legacy_range_allowed=%u active_destinations=%u",
+                actor.GetGUIDLow(),purpose,best.entry,best.distance,points,levelAllowed,legacyRangeAllowed,active);
+        }
+#endif
         return best.entry ? std::vector<int32_t>{best.entry} : entries;
     }
     PurchaseSourcePreference PreferNativeProfessionSource(Player& actor,const Task& saved,
