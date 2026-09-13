@@ -3,27 +3,28 @@ static void ProfessionResumeDatabase(Connection& db,bool retryWake=false) {
     using namespace LivingActivityTest;
     ResumeFixture f;std::string blocker;
     const std::string fixture=retryWake?"retry_wake":"preparation";
-    auto receipt=[&](const char* purpose){return SourceId("resume_database",fixture+":"+purpose);};
-    f.task.id=f.task.root=receipt("task");f.task.sourceKey=fixture;
-    f.receipt=receipt("resume");f.view.task=f.task.id;
-    f.batch.claims[0].id=receipt("claim");f.batch.claims[0].task=f.task.id;
+    auto receipt=[&](unsigned n){return std::string("ff2efbdf-f0ec-4539-b840-2998479770")+
+        (retryWake?"2":"1")+std::to_string(n);};
+    f.task.id=f.task.root=receipt(0);f.task.sourceKey=fixture;
+    f.receipt=receipt(1);f.view.task=f.task.id;
+    f.batch.claims[0].id=receipt(2);f.batch.claims[0].task=f.task.id;
     if(retryWake) {
         f.task.actor=f.task.context.actor=f.current.actor=f.view.context.actor=705;
         f.batch.claims[0].actor=f.balances[0].actor=705;
     }
     const auto id=SqlValue(f.task.id);
     auto initial=f.task;initial.revision=1;initial.phase=Phase::Queued;
-    assert(db.Write(TaskWrite(initial,0,receipt("created"),"fixture_created")));
+    assert(db.Write(TaskWrite(initial,0,receipt(3),"fixture_created")));
     initial.revision=2;initial.phase=Phase::Preparing;
-    assert(db.Write(TaskWrite(initial,1,receipt("preparing"),"fixture_preparing")));
-    assert(db.Write(ResourceReservationWrite(f.task,2,receipt("reservation"),
+    assert(db.Write(TaskWrite(initial,1,receipt(4),"fixture_preparing")));
+    assert(db.Write(ResourceReservationWrite(f.task,2,receipt(5),
         {{f.batch.claims[0],0}},f.balances)));
     if(retryWake) {
         ++f.task.revision;f.task.phase=Phase::WaitingExternal;
         f.task.checkpoint.blocker="purchase_daily_limit";
-        assert(db.Write(TaskWrite(f.task,3,receipt("waiting"),"fixture_waiting")));
+        assert(db.Write(TaskWrite(f.task,3,receipt(6),"fixture_waiting")));
         ++f.task.revision;f.task.phase=Phase::Reconciling;
-        assert(db.Write(TaskWrite(f.task,4,receipt("waking"),"fixture_retry_wake")));
+        assert(db.Write(TaskWrite(f.task,4,receipt(7),"fixture_retry_wake")));
         f.view.revision=f.task.revision;
     }
     const auto beforeRevision=std::to_string(f.task.revision);
@@ -40,7 +41,7 @@ static void ProfessionResumeDatabase(Connection& db,bool retryWake=false) {
     assert(db.Execute("UPDATE living_activity_claim SET state='reconciling' WHERE claim_id="+claim));
     assert(!db.Write(prepared.plan));
     assert(db.Execute("UPDATE living_activity_claim SET state='held' WHERE claim_id="+claim));
-    const std::string op=receipt("operation");
+    const std::string op=receipt(8);
     assert(db.Execute("INSERT INTO living_activity_operation (operation_id,task_id,task_revision,kind,request_hash,state,native_reference,before_state,after_state,evidence_code,created_at_ms,updated_at_ms) VALUES ("+
         SqlValue(op)+','+id+','+beforeRevision+",'vendor_purchase','fixture','intent','','{}','{}','',1100,1100)"));
     assert(!db.Write(prepared.plan));
