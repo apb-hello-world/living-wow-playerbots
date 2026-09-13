@@ -24,7 +24,7 @@ namespace LivingActivity
             "cancelled", "reconciling"};
         constexpr const char* kinds[] = {"human_request", "party_errand", "profession",
             "guild_delivery", "guild_event", "progression", "maintenance", "commission",
-            "collection_reconciliation"};
+            "collection_reconciliation", "guild_procurement"};
         template<size_t N, typename T>
         bool Parse(const std::string& value, const char* const (&names)[N], T& result) {
             for (size_t i = 0; i < N; ++i)

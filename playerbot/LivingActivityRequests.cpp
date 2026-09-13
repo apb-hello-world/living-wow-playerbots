@@ -1,6 +1,7 @@
 #include "LivingActivityRequests.h"
 #include "LivingProfessionJob.h"
 #include "LivingGuildDelivery.h"
+#include "LivingGuildProcurement.h"
 #include <limits>
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
@@ -34,6 +35,7 @@ namespace LivingActivity {
     AdmissionCode ValidateTaskRequest(const TaskRequest& request, const Task* saved,
         const WorldContext& current, std::string& reason, const Task* root) {
         const Task& task = request.task;
+        if (!ValidateGuildProcurementTask(task, reason)) return AdmissionCode::InvalidRequest;
         if (!ValidateGuildDeliveryTask(task, reason)) return AdmissionCode::InvalidRequest;
         if (!ValidateProfessionTask(task, reason)) return AdmissionCode::InvalidRequest;
         if (!Validate(task, reason) || !IsUuid(request.receipt) || !IsSourceKey(task.sourceKey) ||
@@ -70,6 +72,7 @@ namespace LivingActivity {
                 reason = "new_task_must_be_queued"; return AdmissionCode::InvalidRequest;
             }
         } else {
+            if (!PreserveGuildProcurementIntent(*saved, task, reason)) return AdmissionCode::InvalidRequest;
             if (!PreserveGuildDeliveryIntent(*saved, task, reason)) return AdmissionCode::InvalidRequest;
             if (!PreserveProfessionIntent(*saved, task, reason)) return AdmissionCode::InvalidRequest;
             if (saved->revision != request.expectedRevision) {
@@ -111,6 +114,11 @@ namespace LivingActivity {
     }
     bool SavedTaskExecutable(const Task& saved, uint64_t revision,
         const WorldContext& current, uint64_t wallNow, std::string& reason) {
+        if (!ValidateGuildProcurementTask(saved, reason)) return false;
+        // Fail closed until native goal/permission/quantity admission and
+        // custody settlement are wired. Merely having a valid checkpoint is
+        // not authorization to spend guild members' money or acquire a route.
+        if (IsGuildProcurementTask(saved)) {reason="guild_procurement_executor_not_enabled";return false;}
         if (!ValidateGuildDeliveryTask(saved, reason)) return false;
         if (!ValidateProfessionTask(saved, reason)) return false;
         if (saved.revision != revision) reason = "stale_task_revision";

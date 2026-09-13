@@ -20,7 +20,7 @@ namespace LivingActivity
     };
     enum class Kind {
         HumanRequest, PartyErrand, Profession, GuildDelivery, GuildEvent,
-        Progression, Maintenance, Commission, CollectionReconciliation
+        Progression, Maintenance, Commission, CollectionReconciliation, GuildProcurement
     };
     enum class Effect : uint32_t {
         Inspect = 0, Movement = 1, Group = 2, Inventory = 4, Money = 8,
