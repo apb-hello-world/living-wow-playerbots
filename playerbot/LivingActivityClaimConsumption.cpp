@@ -45,6 +45,10 @@ namespace LivingActivity {
                 " AND c.revision="+std::to_string(c.revision);
         }
     }
+    std::string ConsumptionClaimPredicate(const ResourceClaim& claim) {
+        if(!ValidResourceClaim(claim))throw std::invalid_argument("valid_consumption_claim_required");
+        return Predicate(claim);
+    }
     std::string ClaimedNativeState(const std::string& nativeState,
         const std::vector<ClaimConsumption>& consumption,size_t limit) {
         if (nativeState.empty() || nativeState.size() > 4096 || limit > 8192 ||

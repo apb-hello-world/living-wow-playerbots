@@ -2,6 +2,9 @@
 #define LIVING_ACTIVITY_CLAIM_CONSUMPTION_H
 #include "LivingActivityResources.h"
 namespace LivingActivity {
+    // Full identity for either item or money claims. Item-transfer predicates
+    // intentionally require zero copper and cannot validate postage holds.
+    std::string ConsumptionClaimPredicate(const ResourceClaim&);
     // A compiled native adapter supplies the exact held claim and the quantity
     // its operation will consume. This is not proof that consumption occurred.
     struct ClaimConsumption { ResourceClaim before; uint32_t used = 0; };

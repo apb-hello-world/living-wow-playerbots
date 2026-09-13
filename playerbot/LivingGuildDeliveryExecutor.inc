@@ -115,24 +115,52 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             read.revision=saved->revision;read.pending=true;state->ioPending=true;const auto revision=saved->revision;
             const std::string query="SELECT IF(d.carrier_guid="+std::to_string(actor)+" AND d.mail_id="+
                 std::to_string(job.incomingMail)+",d.phase,'handed_off'),d.deposited_quantity,(SELECT COUNT(*) FROM living_activity_operation o WHERE o.task_id="+
-                SqlValue(id)+" AND o.state='rejected'),(SELECT COALESCE(MAX(o.updated_at_ms),0) FROM living_activity_operation o WHERE o.task_id="+
-                SqlValue(id)+" AND o.state='rejected'),(SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
+                SqlValue(id)+" AND o.state='rejected' AND o.evidence_code<>'native_guild_mail_not_committed'),(SELECT COALESCE(MAX(o.updated_at_ms),0) FROM living_activity_operation o WHERE o.task_id="+
+                SqlValue(id)+" AND o.state='rejected' AND o.evidence_code<>'native_guild_mail_not_committed'),(SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
                 " WHERE t.actor_guid="+std::to_string(actor)+" AND o.state IN ('intent','reconciling')) FROM guild_society_supply_delivery d WHERE d.delivery_id="+
                 std::to_string(job.delivery)+" AND d.guild_id="+std::to_string(job.guild)+" AND d.goal_id="+SqlValue(job.goal)+
                 " AND d.donor_guid="+std::to_string(job.donor)+
                 " AND d.item_entry="+std::to_string(job.entry)+" AND d.quantity="+std::to_string(job.quantity);
+            // One bounded operation snapshot only on verification/restart,
+            // never a per-tick database scan or inferred resend permission.
+            auto snapshot=query;
+            const auto marker=snapshot.find(" FROM guild_society_supply_delivery d");
+            snapshot.insert(marker,",COALESCE((SELECT "+GuildMailRollbackProjection()+
+                " FROM living_activity_operation o WHERE o.task_id="+SqlValue(id)+" AND o.kind='guild_mail_send'"
+                " AND o.state='reconciling' AND o.evidence_code='native_save_capture_requires_reconciliation' LIMIT 1),'')");
             if(!CharacterDatabase.AsyncQuery([this,id,revision](QueryResult* rows) {
                 state->ioPending=false;const auto found=state->guildDeliveryReads.find(id);
                 if(found==state->guildDeliveryReads.end())return;
                 auto& read=found->second;read.pending=false;if(read.revision!=revision)return;
-                if(!rows || rows->GetFieldCount()!=5){read.blocker="guild_delivery_native_record_missing";read.retryAt=NowMs()+30000;return;}
+                if(!rows || rows->GetFieldCount()!=6){read.blocker="guild_delivery_native_record_missing";read.retryAt=NowMs()+30000;return;}
                 auto* f=rows->Fetch();read.phase=f[0].GetCppString();read.deposited=f[1].GetUInt32();read.failures=f[2].GetUInt32();
-                read.lastRejected=f[3].GetUInt64();read.unresolved=f[4].GetUInt32();read.complete=true;
-            },query.c_str())) {state->ioPending=false;read.pending=false;read.retryAt=NowMs()+30000;
+                read.lastRejected=f[3].GetUInt64();read.unresolved=f[4].GetUInt32();read.sendRollback=f[5].GetCppString();read.complete=true;
+            },snapshot.c_str())) {state->ioPending=false;read.pending=false;read.retryAt=NowMs()+30000;
                 read.blocker="guild_delivery_database_unavailable";return stop(read.blocker);}
             return stop("guild_delivery_receipt_read_pending");
         }
-        if(read.unresolved)return stop("guild_delivery_operation_requires_reconciliation");
+        if(read.unresolved) {
+            GuildMailRollback rollback;
+            if(read.unresolved!=1 || !DecodeGuildMailRollback(read.sendRollback,rollback))
+                return stop("guild_delivery_operation_requires_reconciliation");
+            if(!saved->context.boot.empty())return stop("guild_mail_rollback_requires_native_reload");
+            if(ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) || bot->GetMap()->IsDungeon() ||
+                bot->GetTradeData() || LivingServiceExecution::Busy(bot))return stop("guild_mail_rollback_safety_wait");
+            GuildDepositQuote carry;if(!sGuildSupplies.ReadManagedCarry(*saved,carry,blocker))return stop(blocker);
+            const auto& q=rollback.quote;auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,q.item));
+            if(!item || item->GetPos()!=q.position || bot->GetItemCount(q.job.entry,false)!=q.bagBefore ||
+                bot->GetItemCount(q.job.entry,true)!=q.totalBefore)return stop("guild_mail_rollback_possessions_changed");
+            UnsettledClaimBatch claims;if(!ReadTaskClaims(actor,id,saved->revision,claims,blocker))return stop(blocker);
+            std::vector<ClaimConsumption> uses;for(const auto& claim:claims.claims)uses.push_back({claim,claim.copper?claim.copper:claim.quantity});
+            NativeItemStack stack{actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),
+                item->GetContainer()?item->GetContainer()->GetGUIDLow():0,item->GetSlot()};
+            GuildMailRollbackWrite recovered;const auto receipt=SourceId("guild_send_rollback",rollback.interrupted.id);
+            if(!PrepareGuildMailRollback(*saved,current,rollback,uses,stack,bot->GetMoney(),NowMs(),receipt,recovered,blocker))return stop(blocker);
+            if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)return stop("guild_delivery_recovery_backpressure");
+            State::Pending write;write.task=std::move(recovered.task);write.plan=std::move(recovered.journal);
+            write.admissionReceipt=receipt;state->pending.push_back(std::move(write));state->nextWork=0;
+            return stop("guild_mail_rollback_native_proof_pending");
+        }
         if((read.phase=="completed" && read.deposited==job.quantity) ||
             (read.phase=="handed_off" && saved->checkpoint.step=="guild_mail_send")) {
             UnsettledClaimBatch claims;GuildDeliverySettlement settled;

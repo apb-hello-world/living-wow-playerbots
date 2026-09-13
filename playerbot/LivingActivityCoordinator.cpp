@@ -284,7 +284,7 @@ struct LivingActivityCoordinator::State {
         uint64_t revision=0,retryAt=0,lastRejected=0;
         uint32_t deposited=0,failures=0,unresolved=0;
         bool pending=false,complete=false;
-        std::string phase,blocker;
+        std::string phase,blocker,sendRollback;
     };
     std::map<std::string,GuildDeliveryRead> guildDeliveryReads;
     std::atomic<uint64_t> publishedPolicyRevision{0};
@@ -3413,13 +3413,21 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
             const auto nativeProof=adapter ? adapter->PersistedNativeProof(*bot,request,write.task) :
                 pending.craft->PersistedProof(*bot,write.task);
             write.nativeSave=NativeSaveBatch::Capture(CharacterDatabase,write.plan,nativeProof+NativeGainProof(nativeGains));
-        } catch (const std::exception&) {
+        } catch (const std::exception& error) {
             // Never emit the old success receipt alone after a native save
             // could not be sealed. Preserve uncertainty and both actor holds.
             if (CharacterDatabase.HasOpenTransaction()) CharacterDatabase.RollbackTransaction();
             pending.saveBlocked=pending.uncertain=true;
             pending.outcome=proof.state=OperationState::Reconciling;
             proof.evidence="native_save_capture_requires_reconciliation";
+            // Bounded diagnostic metadata, never SQL text or private items.
+            size_t largest=0;for(const auto& sql:write.plan.statements)largest=std::max(largest,sql.size());
+            const std::string reason=error.what();
+            sLog.outError("Living native save capture failed: task=%s kind=%s reason=%s statements=%u largest_bytes=%u receipt_bytes=%u",
+                write.task.id.c_str(),request.kind.c_str(),
+                (reason=="invalid_native_save_journal" || reason=="invalid_native_save_statement" || reason=="native_transaction_escaped" ||
+                 reason=="native_save_journal_queue_failed" || reason=="native_save_transaction_missing")?reason.c_str():"native_capture_exception",
+                unsigned(write.plan.statements.size()),unsigned(largest),unsigned(write.plan.receiptQuery.size()));
             write.task.phase=Phase::Reconciling; write.task.checkpoint.blocker=proof.evidence;
             write.claims.clear();
             write.recipientTask={};

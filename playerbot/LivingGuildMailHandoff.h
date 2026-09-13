@@ -1,6 +1,7 @@
 #pragma once
 #include "LivingGuildDelivery.h"
 #include "LivingActivityClaimConsumption.h"
+#include "LivingActivityItemGain.h"
 
 namespace LivingActivity {
 // One exact whole-stack parcel and native postage, quoted before sending.
@@ -35,4 +36,18 @@ GuildMailHandoff GuildMailHandoffWrite(const Task& sender,uint64_t expected,
 // database fault tests; a plausible after-state JSON alone is never sufficient.
 std::string GuildMailNativeProof(const GuildMailQuote&,const Task& outcome,
     const NativeResourceBalance& attachment,uint64_t deliveredAt,uint64_t expiresAt);
+struct GuildMailRollback {
+    OperationResult interrupted;
+    std::string before,after;
+    GuildMailQuote quote;
+    uint32_t attemptedMail=0;
+};
+// Narrow restart recovery for a captured native transaction that was rolled
+// back before sealing. Ambiguous commits remain held; they are never resent.
+bool DecodeGuildMailRollback(const std::string& stored,GuildMailRollback&);
+std::string GuildMailRollbackProjection();
+struct GuildMailRollbackWrite { Task task;WritePlan journal; };
+bool PrepareGuildMailRollback(const Task&,const WorldContext&,const GuildMailRollback&,
+    const std::vector<ClaimConsumption>&,const NativeItemStack&,uint32_t money,uint64_t now,
+    const std::string& receipt,GuildMailRollbackWrite&,std::string& blocker);
 }

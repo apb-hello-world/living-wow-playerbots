@@ -81,11 +81,19 @@ GuildMailHandoff GuildMailHandoffWrite(const Task& sender,uint64_t expected,cons
         receipt==recipientReceipt)
         throw std::invalid_argument("verified_guild_parcel_handoff_required");
     const auto creation=TaskWrite(recipient,0,recipientReceipt,"guild_mail_handoff",result.id);
+    auto insert=creation.statements.front();
+    const auto values=insert.find(") VALUES (");
+    const auto suffix=insert.rfind(") ON DUPLICATE KEY UPDATE task_id=task_id");
+    if(values==std::string::npos || suffix==std::string::npos || suffix<=values)
+        throw std::logic_error("guild_recipient_insert_contract_changed");
     boost::property_tree::ptree contract,observed;std::istringstream input(nativeAfter);
     boost::property_tree::read_json(input,observed);contract.add_child("result",observed);
-    // Bind every recipient task field and its receipt fingerprint into the
-    // sender's outcome. Reusing a receipt cannot create a second recipient leg.
-    contract.put("recipient_contract",creation.receiptQuery);
+    // Bind every persisted recipient field, including the unique admission
+    // receipt, in TaskWrite's canonical column order. Embedding the whole
+    // receipt SELECT here recursively hex-encoded its own fingerprint and
+    // exceeded the native 32KiB query bound. The exact values preserve the
+    // same changed-field/duplicate safeguards without recursive SQL nesting.
+    contract.put("recipient_contract",insert.substr(values+10,suffix-(values+10)));
     std::ostringstream encoded;boost::property_tree::write_json(encoded,contract,false);
     auto consumed=ConsumedOperationWrite(sender,expected,result,receipt,encoded.str(),use);
     // Bind to the exact planned receiver/parcel, not a new destination chosen
@@ -101,11 +109,6 @@ GuildMailHandoff GuildMailHandoffWrite(const Task& sender,uint64_t expected,cons
     const auto senderReceipt=consumed.journal.receiptQuery;
     // All plans execute in ONE transaction and the composite receipt is the
     // commit predicate. A fault after any statement rolls back BOTH legs.
-    auto insert=creation.statements.front();
-    const auto values=insert.find(") VALUES (");
-    const auto suffix=insert.rfind(") ON DUPLICATE KEY UPDATE task_id=task_id");
-    if(values==std::string::npos || suffix==std::string::npos || suffix<=values)
-        throw std::logic_error("guild_recipient_insert_contract_changed");
     insert=insert.substr(0,values+1)+" SELECT "+insert.substr(values+10,suffix-(values+10))+
         " WHERE EXISTS ("+senderReceipt+") ON DUPLICATE KEY UPDATE task_id=task_id";
     consumed.journal.statements.push_back(insert);
@@ -143,5 +146,80 @@ std::string GuildMailNativeProof(const GuildMailQuote& q,const Task& task,const 
         " AND d.item_entry="+std::to_string(q.job.entry)+" AND d.quantity="+std::to_string(q.job.quantity)+
         " AND d.deposited_quantity=0 AND d.phase='mailed' AND g.state='active' AND g.request_kind='item'"
         " AND g.item_entry="+std::to_string(q.job.entry)+" AND e.enabled=1";
+}
+std::string GuildMailRollbackProjection() {
+    // Preserve exact journal bytes; MariaDB otherwise nests JSON-constrained
+    // TEXT columns as objects and loses the string envelope used for recovery.
+    return "JSON_OBJECT('id',o.operation_id,'task',o.task_id,'revision',o.task_revision,"
+        "'reference',o.native_reference,'evidence',o.evidence_code,'before',CONCAT('',o.before_state),'after',CONCAT('',o.after_state))";
+}
+bool DecodeGuildMailRollback(const std::string& text,GuildMailRollback& out) {
+    out={};if(text.empty() || text.size()>16000)return false;
+    try {
+        boost::property_tree::ptree p;std::istringstream input(text);boost::property_tree::read_json(input,p);
+        auto& o=out.interrupted;o.id=p.get<std::string>("id");o.task=p.get<std::string>("task");
+        o.taskRevision=p.get<uint64_t>("revision");o.kind="guild_mail_send";o.state=OperationState::Reconciling;
+        o.nativeReference=p.get<std::string>("reference");o.evidence=p.get<std::string>("evidence");
+        out.before=p.get<std::string>("before");out.after=p.get<std::string>("after");
+        if(!IsUuid(o.id) || !IsUuid(o.task) || !o.taskRevision || o.evidence!="native_save_capture_requires_reconciliation")return false;
+        const std::string prefix="{\"effects\":76,\"persistence\":1,\"native\":{\"native\":";
+        const auto end=out.before.find(",\"claimed_consumption\":",prefix.size());
+        if(out.before.compare(0,prefix.size(),prefix)!=0 || end==std::string::npos ||
+            !DecodeGuildMailQuote(out.before.substr(prefix.size(),end-prefix.size()),out.quote))return false;
+        boost::property_tree::ptree a;std::istringstream after(out.after);boost::property_tree::read_json(after,a);
+        out.attemptedMail=a.get<uint32_t>("mail");const auto& q=out.quote;
+        return out.attemptedMail && o.nativeReference=="mail:"+std::to_string(out.attemptedMail)+":item:"+std::to_string(q.item) &&
+            a.get<uint32_t>("sender")==q.sender && a.get<uint32_t>("receiver")==q.receiver &&
+            a.get<uint32_t>("original_donor")==q.job.donor && a.get<uint32_t>("item")==q.item &&
+            a.get<uint32_t>("money")==q.moneyBefore-q.postage;
+    }catch(const std::exception&){out={};return false;}
+}
+bool PrepareGuildMailRollback(const Task& saved,const WorldContext& context,const GuildMailRollback& rollback,
+    const std::vector<ClaimConsumption>& uses,const NativeItemStack& item,uint32_t money,uint64_t now,
+    const std::string& receipt,GuildMailRollbackWrite& out,std::string& why) {
+    out={};auto reject=[&](const char* text){why=text;return false;};
+    const auto& q=rollback.quote;const auto& interrupted=rollback.interrupted;
+    if(!saved.context.boot.empty() || saved.context.actorGeneration || saved.context.mapGeneration ||
+        saved.phase!=Phase::Reconciling || saved.checkpoint.step!="guild_mail_send" || saved.revision>=UINT64_MAX-1 ||
+        context.actor!=saved.actor || !context.actorGeneration || !context.mapGeneration || !IsUuid(context.boot) ||
+        !context.policyRevision || now<saved.updatedAtMs || !IsUuid(receipt) ||
+        interrupted.task!=saved.id || interrupted.taskRevision>=saved.revision || interrupted.state!=OperationState::Reconciling ||
+        interrupted.kind!="guild_mail_send" || interrupted.evidence!="native_save_capture_requires_reconciliation" ||
+        !IsUuid(interrupted.id) || !rollback.attemptedMail || !ExactGuildMailConsumption(saved,q,uses))
+        return reject("guild_mail_rollback_exact_restored_operation_required");
+    const auto expected="{\"effects\":76,\"persistence\":1,\"native\":"+ClaimedNativeState(EncodeGuildMailQuote(q),uses)+'}';
+    if(rollback.before!=expected || item.actor!=saved.actor || item.guid!=q.item || item.entry!=q.job.entry ||
+        item.count!=q.job.quantity || item.slot!=uint8_t(q.position) || money!=q.moneyBefore)
+        return reject("guild_mail_rollback_possessions_changed");
+    out.task=saved;auto& next=out.task;++next.revision;next.phase=Phase::Verifying;next.context=context;
+    next.updatedAtMs=now;next.retryAtMs=0;next.checkpoint.blocker.clear();
+    auto result=interrupted;result.state=OperationState::Rejected;result.evidence="native_guild_mail_not_committed";
+    out.journal=OperationOutcomeWrite(next,saved.revision,result,receipt,
+        "{\"recovery\":\"atomic_native_save_absent\",\"item\":"+std::to_string(q.item)+",\"money\":"+std::to_string(money)+'}');
+    auto n=[](uint64_t v){return std::to_string(v);};
+    out.journal.statements.front()+=" AND phase='reconciling' AND checkpoint="+SqlValue(saved.checkpoint.data)+
+        " AND EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+SqlValue(interrupted.id)+
+        " AND o.state='reconciling' AND o.kind='guild_mail_send' AND o.before_state="+SqlValue(rollback.before)+
+        " AND o.after_state="+SqlValue(rollback.after)+" AND o.evidence_code='native_save_capture_requires_reconciliation'"
+        " AND o.native_reference="+SqlValue(interrupted.nativeReference)+')'+
+        " AND (SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
+        " WHERE t.actor_guid="+n(saved.actor)+" AND o.state IN ('intent','reconciling'))=1"
+        " AND EXISTS(SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+n(saved.actor)+
+        " AND i.owner_guid=v.guid AND i.guid="+n(item.guid)+" AND i.itemEntry="+n(item.entry)+" AND i.count="+n(item.count)+
+        " AND v.bag="+n(item.bagGuid)+" AND v.slot="+n(item.slot)+')'+
+        " AND EXISTS(SELECT 1 FROM characters c WHERE c.guid="+n(saved.actor)+" AND c.money="+n(money)+')'+
+        " AND NOT EXISTS(SELECT 1 FROM mail WHERE id="+n(rollback.attemptedMail)+')'+
+        " AND NOT EXISTS(SELECT 1 FROM mail_items WHERE item_guid="+n(item.guid)+')'+
+        " AND NOT EXISTS(SELECT 1 FROM guild_bank_item WHERE item_guid="+n(item.guid)+')'+
+        " AND NOT EXISTS(SELECT 1 FROM living_activity_task WHERE source='guild_delivery' AND source_key="+
+        SqlValue(GuildDeliverySourceKey(GuildMailRecipientJob(q,rollback.attemptedMail),q.receiver))+')'+
+        " AND EXISTS(SELECT 1 FROM guild_society_supply_delivery d WHERE d.delivery_id="+n(q.job.delivery)+
+        " AND d.guild_id="+n(q.job.guild)+" AND d.goal_id="+SqlValue(q.job.goal)+" AND d.donor_guid="+n(q.job.donor)+
+        " AND d.carrier_guid="+n(q.sender)+" AND d.item_guid="+n(q.item)+" AND d.item_entry="+n(q.job.entry)+
+        " AND d.quantity="+n(q.job.quantity)+" AND d.deposited_quantity=0 AND d.phase='carried' AND d.mail_id="+n(q.job.incomingMail)+')';
+    for(const auto& use:uses)out.journal.statements.front()+=" AND EXISTS(SELECT 1 FROM living_activity_claim c WHERE "+ConsumptionClaimPredicate(use.before)+')';
+    out.journal.statements.insert(out.journal.statements.begin(),
+        "UPDATE living_activity_task SET actor_guid=actor_guid WHERE actor_guid="+n(saved.actor));
+    why.clear();return true;
 }
 }

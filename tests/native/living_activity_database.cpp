@@ -722,5 +722,6 @@ int main() {
     GuildDepositDatabase(db);
     GuildMailDatabase(db);
     GuildMailHandoffDatabase(db);
+    GuildMailRollbackDatabase(db);
     std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history, skill-job settlement and exact-row legacy handoff; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

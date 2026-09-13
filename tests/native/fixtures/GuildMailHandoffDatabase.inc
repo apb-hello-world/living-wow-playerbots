@@ -100,3 +100,78 @@ static void GuildMailHandoffDatabase(Connection& db) {
     assert(db.Scalar("SELECT phase FROM guild_society_supply_delivery WHERE delivery_id=14")=="mailed");
     assert(db.Scalar("SELECT deposited_quantity FROM guild_society_supply_delivery WHERE delivery_id=14")=="0");
 }
+static void GuildMailRollbackDatabase(Connection& db) {
+    using namespace GuildMailFixture;
+    unsigned seq=0;const auto rid=[&](){return "c399bccb-57bc-5367-84a7-"+std::to_string(100000000000ull+ ++seq);};
+    auto q=Quote();q.sender+=100;q.receiver+=100;q.item+=50;q.job.delivery=15;q.job.incomingMail=90016;
+    auto source=Sender(q);source.id=source.root=rid();auto uses=Uses(source,q);
+    for(auto& use:uses)use.before.id=rid();
+    const auto sourceId=SqlValue(source.id);
+    assert(db.Write(TaskWrite(source,0,rid(),"fixture_created")));
+    source.phase=Phase::Preparing;++source.revision;assert(db.Write(TaskWrite(source,1,rid(),"fixture_preparing")));
+    ++source.revision;assert(db.Write(ResourceReservationWrite(source,2,rid(),{{uses[0].before,0},{uses[1].before,0}},
+        {{q.sender,q.item,q.job.entry,4,0,"bags"},{q.sender,0,0,0,q.moneyBefore,"money"}})));
+    OperationRequest request;request.kind="guild_mail_send";request.effects=76;request.persistence=NativePersistence::Inventory;
+    request.beforeState=EncodeGuildMailQuote(q);request.consumption=uses;request.transition.task=source;
+    request.transition.expectedRevision=source.revision;++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+    request.transition.receipt=rid();assert(db.Write(OperationRequestWrite(request)));source=request.transition.task;
+    auto proof=Proof(source);proof.id=request.transition.receipt;proof.taskRevision=source.revision;
+    proof.state=OperationState::Reconciling;proof.evidence="native_save_capture_requires_reconciliation";
+    proof.nativeReference="mail:90017:item:"+std::to_string(q.item);
+    ++source.revision;source.phase=Phase::Reconciling;source.updatedAtMs=2000;
+    const auto after="{\"mail\":90017,\"sender\":"+std::to_string(q.sender)+",\"receiver\":"+std::to_string(q.receiver)+
+        ",\"original_donor\":"+std::to_string(q.job.donor)+",\"item\":"+std::to_string(q.item)+",\"money\":470}";
+    assert(db.Write(OperationOutcomeWrite(source,source.revision-1,proof,rid(),after)));
+    const auto before=db.Scalar("SELECT before_state FROM living_activity_operation WHERE operation_id="+SqlValue(proof.id));
+    boost::property_tree::ptree encoded;encoded.put("id",proof.id);encoded.put("task",source.id);encoded.put("revision",proof.taskRevision);
+    encoded.put("reference",proof.nativeReference);encoded.put("evidence",proof.evidence);encoded.put("before",before);encoded.put("after",after);
+    std::ostringstream json;boost::property_tree::write_json(json,encoded,false);
+    GuildMailRollback rollback;assert(DecodeGuildMailRollback(json.str(),rollback));
+    const auto nativeEnvelope=db.Scalar("SELECT "+GuildMailRollbackProjection()+" FROM living_activity_operation o WHERE o.operation_id="+SqlValue(proof.id));
+    assert(DecodeGuildMailRollback(nativeEnvelope,rollback) && rollback.before==before && rollback.after==after);
+    auto context=source.context;source.context.boot.clear();source.context.actorGeneration=source.context.mapGeneration=0;
+    GuildMailRollbackWrite recovery;std::string why;const auto receipt=rid();
+    NativeItemStack item{q.sender,q.item,q.job.entry,4,0,uint8_t(q.position)};
+    assert(PrepareGuildMailRollback(source,context,rollback,uses,item,500,2001,receipt,recovery,why));
+    auto wrongItem=item;wrongItem.count=3;
+    GuildMailRollbackWrite rejected;
+    assert(!PrepareGuildMailRollback(source,context,rollback,uses,wrongItem,500,2001,rid(),rejected,why));
+    assert(!PrepareGuildMailRollback(source,context,rollback,uses,item,470,2001,rid(),rejected,why));
+    auto changed=rollback;changed.before+=' ';assert(!PrepareGuildMailRollback(source,context,changed,uses,item,500,2001,rid(),rejected,why));
+    auto unheld=uses;unheld[0].before.state="consumed";
+    assert(!PrepareGuildMailRollback(source,context,rollback,unheld,item,500,2001,rid(),rejected,why));
+    assert(db.Execute("INSERT INTO characters(guid,race,money) VALUES("+std::to_string(q.sender)+",5,500)"));
+    assert(db.Execute("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES("+std::to_string(q.item)+",2770,"+std::to_string(q.sender)+",4)"));
+    assert(db.Execute("INSERT INTO character_inventory(guid,item,bag,slot,item_template) VALUES("+std::to_string(q.sender)+','+std::to_string(q.item)+",0,23,2770)"));
+    assert(db.Execute("INSERT INTO guild_society_supply_delivery VALUES(15,31,'guild_mail_handoff_fixture',9797,"+std::to_string(q.sender)+",2770,4,90016,'carried',0,"+std::to_string(q.item)+')'));
+    auto refuse=[&](const std::string& mutation,const std::string& repair) {
+        assert(db.Execute(mutation));assert(!db.Write(recovery.journal));assert(db.Execute(repair));
+        assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+SqlValue(proof.id))=="reconciling");
+    };
+    refuse("UPDATE characters SET money=470 WHERE guid="+std::to_string(q.sender),"UPDATE characters SET money=500 WHERE guid="+std::to_string(q.sender));
+    refuse("UPDATE item_instance SET owner_guid=9899 WHERE guid="+std::to_string(q.item),"UPDATE item_instance SET owner_guid=9898 WHERE guid="+std::to_string(q.item));
+    refuse("INSERT INTO mail VALUES(90017,0,9898,9899,0,0,1120,200000)","DELETE FROM mail WHERE id=90017");
+    refuse("INSERT INTO mail_items VALUES(90017,"+std::to_string(q.item)+",2770,9899)","DELETE FROM mail_items WHERE mail_id=90017");
+    refuse("UPDATE guild_society_supply_delivery SET deposited_quantity=4 WHERE delivery_id=15","UPDATE guild_society_supply_delivery SET deposited_quantity=0 WHERE delivery_id=15");
+    refuse("UPDATE living_activity_claim SET state='consumed' WHERE claim_id="+SqlValue(uses[0].before.id),
+        "UPDATE living_activity_claim SET state='held' WHERE claim_id="+SqlValue(uses[0].before.id));
+    for(size_t at=0;at<recovery.journal.statements.size();++at) {
+        assert(db.Execute("START TRANSACTION"));
+        for(size_t i=0;i<=at;++i)assert(db.Execute(recovery.journal.statements[i]));
+        assert(!db.Execute("INSERT INTO absent_guild_recovery_fault VALUES(1)"));assert(db.Execute("ROLLBACK"));
+        assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id="+sourceId)=="reconciling");
+    }
+    const bool restored=db.Write(recovery.journal);
+    if(!restored) {
+        assert(db.Execute("START TRANSACTION"));
+        for(const auto& sql:recovery.journal.statements)
+            if(!db.Execute(sql))std::cerr<<"Guild rollback journal SQL error: "<<mysql_error(db.db)<<std::endl;
+        assert(db.Execute("ROLLBACK"));
+    }
+    assert(restored && db.Write(recovery.journal));
+    assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+SqlValue(proof.id))=="rejected");
+    assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id="+sourceId)=="verifying");
+    for(const auto& use:uses)assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(use.before.id))=="held");
+    for(const auto& sql:recovery.journal.statements)assert(sql.size()<32*1024);
+    assert(recovery.journal.receiptQuery.size()<=30000);
+}

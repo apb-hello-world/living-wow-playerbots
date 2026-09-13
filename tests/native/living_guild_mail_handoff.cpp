@@ -25,6 +25,21 @@ int main() {
     assert(result.recipientClaim.actor==9799 && result.recipientClaim.task==target.id && result.recipientClaim.nativeReference==90014);
     assert(result.journal.receiptQuery.find(SqlValue(admission))!=std::string::npos &&
         result.journal.receiptQuery.find(SqlValue(result.recipientClaim.id))!=std::string::npos);
+    size_t largest=0;for(const auto& sql:result.journal.statements)largest=std::max(largest,sql.size());
+    std::cout<<"handoff native bounds: statements="<<result.journal.statements.size()<<" largest="<<largest
+        <<" receipt="<<result.journal.receiptQuery.size()<<std::endl;
+    assert(largest<32*1024 && result.journal.receiptQuery.size()<=30000);
+    // Production-sized source IDs, timestamps, party context and a measured
+    // native result must also fit the pinned CMaNGOS save/query limits.
+    auto longQ=q;longQ.job.goal=std::string(64,'g');longQ.job.delivery=UINT64_MAX;
+    auto longSource=Sender(longQ);longSource.revision=14;longSource.phase=Phase::Verifying;
+    longSource.createdAtMs=longSource.updatedAtMs=1789268399000;
+    auto longTarget=Recipient(longSource,longQ);longTarget.context.session=std::string(120,'s');
+    const auto bounded=GuildMailHandoffWrite(longSource,13,Proof(longSource),receipt,
+        R"({"mail":90014,"sender":9798,"receiver":9799,"original_donor":9797,"item":9798004,"money":470})",
+        longQ,Uses(longSource,longQ),Parcel(longQ),longTarget,admission);
+    for(const auto& sql:bounded.journal.statements)assert(sql.size()<32*1024);
+    assert(bounded.journal.receiptQuery.size()<=30000);
     for(unsigned fault=0;fault<23;++fault) {
         auto x=q;auto s=source;auto t=target;auto u=uses;auto p=parcel;auto r=proof;
         switch(fault) {
