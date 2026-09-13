@@ -49,7 +49,7 @@ void TestProfessionResumption() {
     assert(result.task.phase==Phase::Preparing && result.task.context==f.current);
     assert(result.task.retryAtMs==f.task.retryAtMs && result.task.checkpoint.activeElapsedMs==500 &&
         result.task.checkpoint.lastProgressAtMs==1050 && result.task.checkpoint.data==f.task.checkpoint.data);
-    assert(result.plan.statements[1].find("phase='reconciling'")!=std::string::npos);
+    assert(result.plan.statements[1].find("phase="+SqlValue("reconciling"))!=std::string::npos);
     assert(result.plan.statements[1].find("o.state IN ('intent','reconciling')")!=std::string::npos);
     assert(result.plan.statements[1].find("c.state NOT IN ('consumed','released')")!=std::string::npos);
     bad=wake;bad.view.unresolvedOperation=true;fail(bad);
