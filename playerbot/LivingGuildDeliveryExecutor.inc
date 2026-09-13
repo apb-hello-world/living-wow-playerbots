@@ -84,7 +84,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(!grant.Permitted())return stop(grant.blocker);
         return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
     }
-    if(saved->phase==Phase::Executing)return stop("guild_delivery_interrupted_operation_requires_reconciliation");
+    const bool restoredSend=saved->phase==Phase::Executing && saved->checkpoint.step=="guild_mail_send" && saved->context.boot.empty();
+    if(saved->phase==Phase::Executing && !restoredSend)return stop("guild_delivery_interrupted_operation_requires_reconciliation");
     if(DefersNativeSave(actor))return stop("native_save_pending");
     const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
     auto advance=[&](Phase phase,const char* step=nullptr) {
@@ -95,7 +96,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     };
     const bool serviceResult=saved->checkpoint.step=="guild_bank_deposit" || saved->checkpoint.step=="guild_mail_send" || saved->checkpoint.step=="profession_mail_collect" ||
         saved->checkpoint.step=="profession_capacity_sale" || saved->checkpoint.step=="profession_capacity_bank";
-    if((saved->phase==Phase::Verifying || saved->phase==Phase::Reconciling) && serviceResult) {
+    if((saved->phase==Phase::Verifying || saved->phase==Phase::Reconciling || restoredSend) && serviceResult) {
         auto found=state->guildDeliveryReads.find(id);
         if(found==state->guildDeliveryReads.end()) {
             for(auto it=state->guildDeliveryReads.begin();it!=state->guildDeliveryReads.end();) {

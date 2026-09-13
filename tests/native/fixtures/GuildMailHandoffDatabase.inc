@@ -121,11 +121,10 @@ static void GuildMailRollbackDatabase(Connection& db,bool intent=false) {
     proof.state=intent?OperationState::Intent:OperationState::Reconciling;
     proof.evidence=intent?"":"native_save_capture_requires_reconciliation";
     proof.nativeReference=intent?"":"mail:"+n(attempt)+":item:"+n(q.item);
-    ++source.revision;source.phase=Phase::Reconciling;source.updatedAtMs=2000;
+    if(!intent){++source.revision;source.phase=Phase::Reconciling;source.updatedAtMs=2000;}
     const auto after=intent?std::string("{}"):"{\"mail\":"+n(attempt)+",\"sender\":"+std::to_string(q.sender)+",\"receiver\":"+std::to_string(q.receiver)+
         ",\"original_donor\":"+std::to_string(q.job.donor)+",\"item\":"+std::to_string(q.item)+",\"money\":470}";
-    assert(db.Write(intent?TaskWrite(source,source.revision-1,rid(),"restart_revalidation_required"):
-        OperationOutcomeWrite(source,source.revision-1,proof,rid(),after)));
+    if(!intent)assert(db.Write(OperationOutcomeWrite(source,source.revision-1,proof,rid(),after)));
     const auto before=db.Scalar("SELECT before_state FROM living_activity_operation WHERE operation_id="+SqlValue(proof.id));
     boost::property_tree::ptree encoded;encoded.put("id",proof.id);encoded.put("task",source.id);encoded.put("revision",proof.taskRevision);
     encoded.put("state",intent?"intent":"reconciling");
@@ -146,6 +145,12 @@ static void GuildMailRollbackDatabase(Connection& db,bool intent=false) {
     assert(PrepareGuildMailRollback(source,context,rollback,uses,item,500,2001,receipt,recovery,why));
     auto wrongItem=item;wrongItem.count=3;
     GuildMailRollbackWrite rejected;
+    auto notRestored=source;notRestored.context=context;
+    assert(!PrepareGuildMailRollback(notRestored,context,rollback,uses,item,500,2001,rid(),rejected,why));
+    auto wrongPhase=source;wrongPhase.phase=intent?Phase::Reconciling:Phase::Executing;
+    assert(!PrepareGuildMailRollback(wrongPhase,context,rollback,uses,item,500,2001,rid(),rejected,why));
+    if(intent){auto wrongRevision=source;++wrongRevision.revision;
+        assert(!PrepareGuildMailRollback(wrongRevision,context,rollback,uses,item,500,2001,rid(),rejected,why));}
     assert(!PrepareGuildMailRollback(source,context,rollback,uses,wrongItem,500,2001,rid(),rejected,why));
     assert(!PrepareGuildMailRollback(source,context,rollback,uses,item,470,2001,rid(),rejected,why));
     auto changed=rollback;changed.before+=' ';assert(!PrepareGuildMailRollback(source,context,changed,uses,item,500,2001,rid(),rejected,why));
@@ -170,7 +175,7 @@ static void GuildMailRollbackDatabase(Connection& db,bool intent=false) {
         assert(db.Execute("START TRANSACTION"));
         for(size_t i=0;i<=at;++i)assert(db.Execute(recovery.journal.statements[i]));
         assert(!db.Execute("INSERT INTO absent_guild_recovery_fault VALUES(1)"));assert(db.Execute("ROLLBACK"));
-        assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id="+sourceId)=="reconciling");
+        assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id="+sourceId)==(intent?"executing":"reconciling"));
     }
     const bool restored=db.Write(recovery.journal);
     if(!restored) {

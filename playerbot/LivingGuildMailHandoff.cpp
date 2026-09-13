@@ -191,10 +191,10 @@ bool PrepareGuildMailRollback(const Task& saved,const WorldContext& context,cons
         rollback.after=="{}" && !rollback.attemptedMail:
         interrupted.state==OperationState::Reconciling && interrupted.evidence=="native_save_capture_requires_reconciliation" && rollback.attemptedMail;
     if(!saved.context.boot.empty() || saved.context.actorGeneration || saved.context.mapGeneration ||
-        saved.phase!=Phase::Reconciling || saved.checkpoint.step!="guild_mail_send" || saved.revision>=UINT64_MAX-1 ||
+        saved.phase!=(intent?Phase::Executing:Phase::Reconciling) || saved.checkpoint.step!="guild_mail_send" || saved.revision>=UINT64_MAX-1 ||
         context.actor!=saved.actor || !context.actorGeneration || !context.mapGeneration || !IsUuid(context.boot) ||
         !context.policyRevision || now<saved.updatedAtMs || !IsUuid(receipt) ||
-        interrupted.task!=saved.id || interrupted.taskRevision>=saved.revision || !exactOutcome ||
+        interrupted.task!=saved.id || (intent?interrupted.taskRevision!=saved.revision:interrupted.taskRevision>=saved.revision) || !exactOutcome ||
         interrupted.kind!="guild_mail_send" || !IsUuid(interrupted.id) || !ExactGuildMailConsumption(saved,q,uses))
         return reject("guild_mail_rollback_exact_restored_operation_required");
     const auto expected="{\"effects\":76,\"persistence\":1,\"native\":"+ClaimedNativeState(EncodeGuildMailQuote(q),uses)+'}';
@@ -207,7 +207,7 @@ bool PrepareGuildMailRollback(const Task& saved,const WorldContext& context,cons
     out.journal=OperationOutcomeWrite(next,saved.revision,result,receipt,
         "{\"recovery\":\"atomic_native_save_absent\",\"item\":"+std::to_string(q.item)+",\"money\":"+std::to_string(money)+'}');
     auto n=[](uint64_t v){return std::to_string(v);};
-    out.journal.statements.front()+=" AND phase='reconciling' AND checkpoint="+SqlValue(saved.checkpoint.data)+
+    out.journal.statements.front()+=" AND phase="+SqlValue(Name(saved.phase))+" AND checkpoint="+SqlValue(saved.checkpoint.data)+
         " AND EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+SqlValue(interrupted.id)+
         " AND o.state="+SqlValue(intent?"intent":"reconciling")+" AND o.kind='guild_mail_send' AND o.before_state="+SqlValue(rollback.before)+
         " AND o.after_state="+SqlValue(rollback.after)+" AND o.evidence_code="+SqlValue(interrupted.evidence)+
