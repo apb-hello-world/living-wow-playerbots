@@ -90,7 +90,9 @@ int main(int argc,char**) {
     assert(why=="guild_procurement_cancel_collect_paid_mail_first");
     goal.state="active";assert(GuildProcurementClosureReason(job,goal).empty());
     goal.banked=5;assert(GuildProcurementClosureReason(job,goal)=="guild_procurement_surplus_items_preserved");
-    goal.reserved=1;assert(GuildProcurementClosureReason(job,goal).empty());
+    goal.reserved=1;assert(GuildProcurementClosureReason(job,goal)=="guild_procurement_reduced_request_items_preserved");
+    goal.banked=1;assert(GuildProcurementClosureReason(job,goal).empty());
+    goal.target=2;assert(GuildProcurementClosureReason(job,goal)=="guild_procurement_reduced_request_items_preserved");
     goal.entry=159;assert(GuildProcurementClosureReason(job,goal)=="guild_procurement_changed_request_items_preserved");
     goal={};assert(GuildProcurementClosureReason(job,goal).empty()); // Failed reads are not cancelled work.
     // Export actual compiled metadata journals for copied MariaDB integration.

@@ -59,7 +59,7 @@ int main(int argc,char**) {
     std::reverse(merged.claims.begin(),merged.claims.end());
     assert(PrepareGuildProcurementHandoff(saved,saved.context,merged,{stock[0]},2000,receipt,out,why));
     assert(out.parcels[0].id==a.id && out.parcels[0].quantity==5);
-    assert(out.plan.receiptQuery.find("d.source_claim_id='"+a.id+"'")!=std::string::npos);
+    assert(out.plan.receiptQuery.find("d.source_claim_id="+SqlValue(a.id))!=std::string::npos);
     // Additional personal preparations may be released but never converted to
     // requested goods. Incoming/unreconciled stock cannot be silently freed.
     auto money=a;money.id="8e9283f2-5dfe-45c3-89a8-9bbd382f092e";

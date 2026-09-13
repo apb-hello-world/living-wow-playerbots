@@ -3009,7 +3009,7 @@ bool LivingActivityCoordinator::ReadGuildProcurementAvailability(const Task& tas
     if(!sGuildSupplies.ReadProcurementGoal(*actor,job,goal,blocker))return false;
     GuildProcurementCoverage coverage(job.guild,job.entry,task.id);
     for(const auto& row:state->cache)if(!coverage.Add(row.second,blocker))return false;
-    for(const auto& write:state->pending)if(!coverage.Add(write.task,blocker))return false;
+    for(const auto& write:state->pending)if(!coverage.AddPending(write.task,blocker))return false;
     available=UnassignedGuildProcurement(goal.target,goal.banked,goal.bankReserved,goal.nativeTransit,coverage.Assigned());
     blocker.clear();return true;
 }

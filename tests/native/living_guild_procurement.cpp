@@ -61,6 +61,11 @@ int main() {
     assert(coverage.Add(task,why) && coverage.Assigned()==20); // Cache + same pending write, once.
     after=task;++after.revision;after.phase=Phase::WaitingExternal;
     assert(coverage.Add(after,why) && coverage.Assigned()==20); // Paid mail still covers demand.
+    auto pending=after;++pending.revision;pending.phase=Phase::Completed;
+    assert(coverage.AddPending(pending,why) && coverage.Assigned()==20); // No parcel exists before the native commit.
+    pending.phase=Phase::Cancelled;
+    assert(coverage.AddPending(pending,why) && coverage.Assigned()==20); // Failed cancellation keeps its obligation.
+    pending.revision=after.revision;assert(!coverage.AddPending(pending,why));
     assert(!coverage.Add(task,why) && why=="guild_procurement_coverage_revision_conflict");
     after.phase=Phase::Completed;
     assert(!coverage.Add(after,why)); // A conflicting same-revision projection is not proof.

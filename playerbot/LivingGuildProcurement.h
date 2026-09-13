@@ -110,6 +110,20 @@ public:
         if(prior==rows_.end() && rows_.size()>=20000){blocker="guild_procurement_coverage_unbounded";return false;}
         rows_[task.id]={task.revision,quantity};return true;
     }
+    bool AddPending(const Task& task,std::string& blocker) {
+        // Proposed terminal state is NOT a receipt. Until its journal commits,
+        // nativeTransit still excludes its parcels; keep the original accepted
+        // coverage to avoid a second donor ordering during that handoff gap.
+        if(IsGuildProcurementTask(task) && Terminal(task.phase)) {
+            if(!ValidateGuildProcurementTask(task,blocker))return false;
+            const auto prior=rows_.find(task.id);
+            if(prior!=rows_.end() && prior->second.second) {
+                if(task.revision<=prior->second.first){blocker="guild_procurement_coverage_revision_conflict";return false;}
+                blocker.clear();return true;
+            }
+        }
+        return Add(task,blocker);
+    }
     uint64_t Assigned() const {uint64_t total=0;for(const auto& row:rows_)total+=row.second.second;return total;}
 private:
     uint32_t guild_,entry_;

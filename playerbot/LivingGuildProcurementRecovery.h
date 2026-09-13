@@ -117,6 +117,8 @@ inline std::string GuildProcurementClosureReason(const GuildProcurementJob& job,
     if(goal.kind!="item" || goal.entry!=job.entry)return "guild_procurement_changed_request_items_preserved";
     const auto usable=goal.banked>goal.reserved?goal.banked-goal.reserved:0;
     if(goal.target && usable>=goal.target)return "guild_procurement_surplus_items_preserved";
+    if(goal.target && job.quantity>goal.target-std::min<uint64_t>(goal.target,usable))
+        return "guild_procurement_reduced_request_items_preserved";
     return "";
 }
 inline bool PrepareGuildProcurementCancellation(const Task& saved,const WorldContext& current,
@@ -147,6 +149,8 @@ inline bool PrepareGuildProcurementCancellation(const Task& saved,const WorldCon
         " AND g.required_quantity="+n(goal.target)+" AND g.reserved_quantity="+n(goal.reserved)+" AND g.updated_at="+n(goal.updated)+')';
     if(reason=="guild_procurement_surplus_items_preserved")
         out.plan.statements.front()+=" AND "+GuildProcurementBankCount(job)+">="+n(uint64_t(goal.target)+goal.reserved);
+    if(reason=="guild_procurement_reduced_request_items_preserved" && job.quantity<=goal.target)
+        out.plan.statements.front()+=" AND "+GuildProcurementBankCount(job)+">"+n(uint64_t(goal.target)+goal.reserved-job.quantity);
     out.plan.statements.insert(out.plan.statements.begin(),
         "UPDATE living_activity_task SET actor_guid=actor_guid WHERE actor_guid="+n(saved.actor));
     out.plan.statements.insert(out.plan.statements.begin()+1,
