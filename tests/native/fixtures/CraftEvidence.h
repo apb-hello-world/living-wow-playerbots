@@ -1,6 +1,7 @@
 #ifndef LIVING_TEST_CRAFT_EVIDENCE_H
 #define LIVING_TEST_CRAFT_EVIDENCE_H
 #include "LivingProfessionEvidence.h"
+#include "LivingProfessionConsumption.h"
 #include <cassert>
 namespace LivingActivityTest {
     using namespace LivingActivity;
@@ -23,10 +24,15 @@ namespace LivingActivityTest {
         row.receipt.evidence=interrupted ? "native_cast_cancelled_without_effect" : "native_craft_consumption_output_and_skill_observed";
         const char* ids[]={"137e6854-06ea-5e21-8371-6b40c8c19f4e","2c60183b-4a76-41f4-a62e-01d8c65e273d","37cfba40-31fe-4664-86db-fb2e87036cb8"};
         std::vector<ClaimConsumption> inputs;
-        for (const auto& need : job.reagents) for (const auto& item : before.stacks) if (item.entry==need.entry) {
-            ResourceClaim c;c.id=ids[inputs.size()];c.actor=task.actor;c.task=task.root;c.state="held";c.location="bags";
-            c.itemGuid=item.guid;c.itemEntry=item.entry;c.quantity=reserveFullStacks ? item.count : need.perAttempt;
-            inputs.push_back({c,need.perAttempt});
+        std::vector<ProfessionInputStack> selected;std::string blocker;
+        assert(PlanProfessionInputStacks(job,before,selected,blocker));
+        for (const auto& input : selected) {
+            const auto& item=input.item;
+            ResourceClaim c;c.id=inputs.size()<3?ids[inputs.size()]:
+                "477a5e97-cfea-50b1-bda1-38bcc3f500"+(inputs.size()<10?std::string("0"):std::string())+std::to_string(inputs.size());
+            c.actor=task.actor;c.task=task.root;c.state="held";c.location="bags";
+            c.itemGuid=item.guid;c.itemEntry=item.entry;c.quantity=reserveFullStacks ? item.count : input.used;
+            inputs.push_back({c,input.used});
         }
         const ItemGainSpec output{job.outputEntry,1};
         const auto native="{\"recipe\":"+std::to_string(job.recipe)+",\"skill\":"+std::to_string(before.skill)+",\"money\":"+std::to_string(before.money)+'}';

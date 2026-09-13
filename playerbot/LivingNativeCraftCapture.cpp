@@ -4,6 +4,8 @@
 #include "LivingActivityGameplay.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingProfessionNative.h"
+#include "LivingProfessionConsumption.h"
+#include "Entities/Bag.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
 #include "strategy/values/ItemUsageValue.h"
@@ -147,13 +149,29 @@ namespace LivingActivity {
         for (const auto& reagent : job.reagents) relevant.insert(reagent.entry);
         frame.actor=actor.GetGUIDLow();frame.skill=actor.GetSkillValuePure(job.skill);frame.money=actor.GetMoney();
         unsigned inspected=0;
-        for (auto* stack : actor.GetPlayerbotAI()->InventoryParseItems("inventory",IterateItemsMask::ITERATE_ITEMS_IN_BAGS)) {
+        auto append=[&](Item* stack) {
+            if (!stack) return true;
             if (++inspected>256) return reject("native_craft_inventory_snapshot_bound");
-            if (!stack || !relevant.count(stack->GetEntry())) continue;
-            if (stack->GetOwnerGuid()!=actor.GetObjectGuid()) return reject("native_craft_inventory_owner_mismatch");
+            if (!relevant.count(stack->GetEntry())) return true;
+            if (stack->GetOwnerGuid()!=actor.GetObjectGuid() || stack->IsInTrade())
+                return reject("native_craft_inventory_owner_or_trade_changed");
             frame.stacks.push_back({actor.GetGUIDLow(),stack->GetGUIDLow(),stack->GetEntry(),stack->GetCount(),
                 stack->GetContainer() ? stack->GetContainer()->GetGUIDLow() : 0,stack->GetSlot()});
+            return true;
+        };
+        // Exactly the pinned Player::DestroyItemCount order. InventoryParseItems
+        // sorts by item properties/pointers; that order cannot authorize reagent
+        // consumption. Native effects still choose and consume the real stacks.
+        for(uint32_t slot=INVENTORY_SLOT_ITEM_START;slot<INVENTORY_SLOT_ITEM_END;++slot)
+            if(!append(actor.GetItemByPos(INVENTORY_SLOT_BAG_0,slot)))return false;
+        for(uint32_t slot=KEYRING_SLOT_START;slot<KEYRING_SLOT_END;++slot) {
+            const auto* item=actor.GetItemByPos(INVENTORY_SLOT_BAG_0,slot);
+            if(item && relevant.count(item->GetEntry()))return reject("native_craft_keyring_input_unsupported");
         }
+        for(uint32_t slot=INVENTORY_SLOT_BAG_START;slot<INVENTORY_SLOT_BAG_END;++slot)
+            if(auto* bag=dynamic_cast<Bag*>(actor.GetItemByPos(INVENTORY_SLOT_BAG_0,slot)))
+                for(uint32_t inner=0;inner<bag->GetBagSize();++inner)
+                    if(!append(bag->GetItemByPos(inner)))return false;
         if (!ValidCraftFrame(frame)) return reject("native_craft_inventory_snapshot_invalid");
         blocker.clear();return true;
     }
@@ -221,35 +239,20 @@ namespace LivingActivity {
         if (!protectedItems || !protectedItems->ready) return reject("native_craft_claim_projection_unavailable");
         const auto trade=sPlayerbotActionBroker.ReservedItemsView();
         const auto supply=sGuildSupplies.ReservedItemsView();
-        if (consumption.size()<job.reagents.size() || consumption.size()>16) return reject("native_craft_exact_input_claims_required");
-        std::set<std::string> usedClaims;
-        for (const auto& reagent : job.reagents) {
-            const NativeItemStack* native=nullptr;
-            for (const auto& stack : frame.stacks) if (stack.entry==reagent.entry) {
-                // Native DestroyItemCount chooses the stack itself. Until the
-                // shared splitter is available, never guess its mixed-stack order.
-                if (native) return reject("native_craft_input_split_preparation_required");
-                native=&stack;
-            }
-            if (!native || native->count<reagent.perAttempt) return reject("native_craft_material_missing");
-            uint64_t held=0,used=0;
+        std::vector<ProfessionInputStack> inputs;
+        if(!MatchProfessionInputClaims(task,job,frame,consumption,blocker) ||
+            !PlanProfessionInputStacks(job,frame,inputs,blocker))return false;
+        for (const auto& input : inputs) {
+            const auto* native=&input.item;
+            uint64_t held=0;
             for (const auto& use : consumption) if (use.before.itemGuid==native->guid) {
-                const auto& c=use.before;
-                if (!ValidResourceClaim(c) || c.actor!=actor.GetGUIDLow() || c.task!=task.root ||
-                    c.itemEntry!=reagent.entry || c.state!="held" || c.location!="bags" ||
-                    c.copper || c.nativeReference || !use.used || use.used>c.quantity ||
-                    !usedClaims.insert(c.id).second)
-                    return reject("native_craft_exact_input_claims_required");
-                held+=c.quantity;used+=use.used;
+                held+=use.before.quantity;
             }
-            if (used!=reagent.perAttempt || held>native->count)
-                return reject("native_craft_exact_input_claims_required");
-            if (trade->Item(native->guid) || supply->Item(native->guid) || supply->Entry(actor.GetGUIDLow(),reagent.entry) ||
-                protectedItems->HasUncertainItem(actor.GetGUIDLow(),reagent.entry) ||
+            if (trade->Item(native->guid) || supply->Item(native->guid) || supply->Entry(actor.GetGUIDLow(),native->entry) ||
+                protectedItems->HasUncertainItem(actor.GetGUIDLow(),native->entry) ||
                 protectedItems->ProtectedItem(native->guid)!=held)
                 return reject("native_craft_other_obligation_protects_material");
         }
-        if (usedClaims.size()!=consumption.size()) return reject("native_craft_exact_input_claims_required");
         blocker.clear();return true;
     }
     bool NativeProfessionCraftCast::Attach(Spell& spell,std::string& blocker) {
@@ -409,23 +412,7 @@ namespace LivingActivity {
                 !SameEnchantSubject(target,intent.before) || frame.skill!=intent.skill || frame.money!=intent.money)
                 return reject("native_enchant_intent_state_changed");
         }
-        std::set<std::string> matched;
-        for (const auto& reagent : job.reagents) {
-            unsigned stacks=0;uint64_t held=0,used=0,count=0;
-            for (const auto& stack : frame.stacks) if (stack.entry==reagent.entry) {
-                ++stacks;count=stack.count;
-                for (const auto& use : request.consumption) if (use.before.itemGuid==stack.guid &&
-                    use.before.itemEntry==reagent.entry && use.before.actor==actor.GetGUIDLow() &&
-                    use.before.task==request.transition.task.root && use.before.location=="bags" &&
-                    use.before.state=="held" && use.used && use.before.quantity>=use.used &&
-                    !use.before.copper && !use.before.nativeReference && ValidResourceClaim(use.before)) {
-                    if(!matched.insert(use.before.id).second) return reject("native_craft_exact_input_preparation_required");
-                    held+=use.before.quantity;used+=use.used;
-                }
-            }
-            if (stacks!=1 || used!=reagent.perAttempt || held>count) return reject("native_craft_exact_input_preparation_required");
-        }
-        if (matched.size()!=request.consumption.size()) return reject("native_craft_exact_input_preparation_required");
+        if(!MatchProfessionInputClaims(request.transition.task,job,frame,request.consumption,blocker))return false;
         blocker.clear();return true;
     }
     std::shared_ptr<NativeCraftCast> NativeCraftOperation::ReserveNativeCast(const OperationRequest& request,

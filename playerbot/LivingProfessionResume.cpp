@@ -1,5 +1,6 @@
 #include "LivingProfessionResume.h"
 #include "LivingActivityJournal.h"
+#include "LivingProfessionConsumption.h"
 #include <algorithm>
 #include <limits>
 #include <map>
@@ -27,11 +28,12 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
         !DecodeProfessionJob(saved.checkpoint.data,job,blocker)) return false;
     if(!ValidCraftFrame(frame) || frame.actor!=saved.actor || frame.skill!=intent.skill || frame.money!=intent.money)
         return reject("interrupted_craft_native_state_changed");
+    if(!MatchProfessionInputClaims(saved,job,frame,intent.inputs,blocker))return false;
     const size_t subjects=intent.enchant?1:0;
     if (bool(subject)!=bool(intent.enchant) || (subject && !SameEnchantSubject(*subject,intent.enchant->before)))
         return reject("interrupted_enchant_subject_changed");
     if(!batch.complete || !batch.bookRevision || batch.claims.size()<intent.inputs.size()+subjects || batch.claims.size()>16 ||
-        preservedBank.size()!=batch.claims.size()-intent.inputs.size()-subjects)
+        preservedBank.size()!=size_t(std::count_if(batch.claims.begin(),batch.claims.end(),[](const auto& c){return c.location=="bank";})))
         return reject("interrupted_craft_claim_batch_changed");
     auto n=[](uint64_t v){return std::to_string(v);};
     std::string guard,frames="{\"skill\":"+n(frame.skill)+",\"money\":"+n(frame.money)+",\"stacks\":[";
@@ -55,26 +57,27 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
         } else if(use==intent.inputs.end()) {
             // Dependent capacity work shares this root; banking its surplus
             // does not release the claim before the whole job is settled.
-            const auto item=std::find_if(preservedBank.begin(),preservedBank.end(),[&](const auto& v){return v.guid==c.itemGuid;});
-            if(c.location!="bank" || item==preservedBank.end() || item->actor!=saved.actor ||
+            const auto& storage=c.location=="bags"?frame.stacks:preservedBank;
+            const auto item=std::find_if(storage.begin(),storage.end(),[&](const auto& v){return v.guid==c.itemGuid;});
+            if((c.location!="bank" && c.location!="bags") || item==storage.end() || item->actor!=saved.actor ||
                 item->entry!=c.itemEntry || item->count!=c.quantity || !bankIds.insert(item->guid).second ||
-                (!item->bagGuid && (item->slot<39 || item->slot>=67)))
+                (!item->bagGuid && (c.location=="bank"?(item->slot<39 || item->slot>=67):(item->slot<23 || item->slot>=39))))
                 return reject("interrupted_craft_preserved_bank_changed");
             guard+=" AND EXISTS(SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+
                 n(saved.actor)+" AND v.item="+n(item->guid)+" AND v.item_template="+n(item->entry)+" AND v.bag="+n(item->bagGuid)+
                 " AND v.slot="+n(item->slot)+" AND i.owner_guid="+n(saved.actor)+" AND i.itemEntry="+n(item->entry)+
                 " AND i.count="+n(item->count)+')';
             if(item->bagGuid) guard+=" AND EXISTS(SELECT 1 FROM character_inventory b WHERE b.guid="+n(saved.actor)+
-                " AND b.item="+n(item->bagGuid)+" AND b.bag=0 AND b.slot>=67 AND b.slot<74)";
+                " AND b.item="+n(item->bagGuid)+" AND b.bag=0 AND "+
+                (c.location=="bank"?"b.slot>=67 AND b.slot<74)":"b.slot>=19 AND b.slot<23)");
         } else {
         if(!SameResourceClaim(c,use->before)) return reject("interrupted_craft_claim_changed");
         const auto item=std::find_if(frame.stacks.begin(),frame.stacks.end(),[&](const auto& v){return v.guid==c.itemGuid;});
         if(item==frame.stacks.end() || item->entry!=c.itemEntry || item->count!=inputQuantities[c.itemGuid])
             return reject("interrupted_craft_native_quantity_changed");
-        // Conservative compatibility for intents without an entire before-frame:
-        // require one exact, fully reserved native stack per recipe input.
-        if(std::count_if(frame.stacks.begin(),frame.stacks.end(),[&](const auto& v){return v.entry==c.itemEntry;})!=1)
-            return reject("interrupted_craft_mixed_stack_unsupported");
+        // Each selected stack's full held before-quantity must still exist.
+        // The order/used portions were checked above against native inventory;
+        // additional untouched stacks are not evidence of an uncertain craft.
         }
         guard+=" AND EXISTS(SELECT 1 FROM living_activity_claim c WHERE c.claim_id="+SqlValue(c.id)+
             " AND c.task_id="+SqlValue(saved.id)+" AND c.actor_guid="+n(saved.actor)+" AND c.item_guid="+n(c.itemGuid)+

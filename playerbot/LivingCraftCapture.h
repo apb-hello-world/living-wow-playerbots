@@ -15,7 +15,8 @@ namespace LivingActivity {
     struct CraftFrame {
         uint32_t actor=0, skill=0, money=0;
         // Only the recipe's inputs and output; exact native bag identities.
-        // The compiled collector validates ownership before publishing values.
+        // The compiled collector validates ownership and preserves the pinned
+        // core's reagent consumption order before publishing values.
         std::vector<NativeItemStack> stacks;
     };
     enum class CraftCapturePhase { Reserved, Casting, Applying, Finished, Abandoned };

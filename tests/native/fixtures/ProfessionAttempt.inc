@@ -29,13 +29,13 @@ void TestProfessionAttemptPlan() {
         auto partial=claims;partial.claims.erase(partial.claims.begin(),partial.claims.begin()+2);
         assert(plan(partial,frame) && missing.size()==2 && missing[0].quantity==1 && missing[1].quantity==1);
         assert(partial.claims[0].quantity==5); // Paid surplus is inherited, not re-reserved.
-        partial.claims.clear();assert(plan(partial,frame) && missing.size()==3 && missing[2].quantity==1);
+        partial.claims.clear();assert(plan(partial,frame) && missing.size()==3 && missing[2].quantity==5);
         partial.complete=false;assert(!plan(partial,frame) && missing.empty());
         partial=claims;partial.claims.back().state="reconciling";assert(!plan(partial,frame) && missing.empty());
         partial=claims;partial.claims.back().actor=704;assert(!plan(partial,frame) && missing.empty());
         partial=claims;partial.claims.back().location="bank";assert(!plan(partial,frame) && missing.empty());
         auto mixed=frame;auto extra=mixed.stacks.back();extra.guid=103;extra.slot=26;mixed.stacks.push_back(extra);
-        assert(!plan(claims,mixed) && missing.empty());
+        assert(plan(claims,mixed) && missing.empty()); // Untouched later stack needs no new claim.
         auto stale=view;++stale.revision;
         assert(!PlanProfessionMaterialReservations(task,stale,claims,frame,missing,blocker) && missing.empty());
     }
@@ -82,7 +82,11 @@ void TestProfessionAttemptPlan() {
     native=frame;native.stacks.pop_back();fail(task,view,claims,native);
     native=frame;native.stacks.back().count=4;fail(task,view,claims,native);
     native=frame;auto extra=native.stacks.back();extra.guid=103;extra.slot=26;native.stacks.push_back(extra);
-    fail(task,view,claims,native); // Native consumption order needs explicit safe split preparation.
+    assert(run(task,view,claims,native) && result.consumption.size()==3);
+    assert(MatchProfessionInputClaims(task,job,native,result.consumption,blocker));
+    // Inserting a new earlier native stack must not redirect an existing intent.
+    std::swap(native.stacks[2],native.stacks[3]);
+    assert(!MatchProfessionInputClaims(task,job,native,result.consumption,blocker));
     assert(run(task,view,claims,frame));
     assert(claims.claims.back().quantity==5 && frame.money==81 && task.phase==Phase::Preparing);
     // Separate paid receipts can own portions of one native merged stack.
@@ -99,5 +103,24 @@ void TestProfessionAttemptPlan() {
     assert(PlanProfessionMaterialReservations(mergedTask,mergedView,mergedClaims,mergedFrame,missing,blocker) && missing.empty());
     mergedClaims.claims.back().quantity=3;
     assert(!run(mergedTask,mergedView,mergedClaims,mergedFrame)); // Aggregate protection cannot exceed physical stock.
+
+    // One recipe consumes two physical stacks, preserving paid claim identities
+    // and consuming only the required part of the final stack.
+    auto multipleTask=task;auto multipleJob=job;multipleJob.reagents.back().perAttempt=7;
+    multipleTask.checkpoint.data=EncodeProfessionJob(multipleJob);
+    auto multipleView=view;multipleView.stock.back().bag=25;
+    auto multipleFrame=frame;multipleFrame.stacks.push_back({703,103,3371,20,900,0});
+    auto multipleClaims=claims;auto extraClaim=claims.claims.back();
+    extraClaim.id="ff2efbdf-f0ec-4539-b840-299847972104";extraClaim.itemGuid=103;extraClaim.quantity=20;
+    multipleClaims.claims.push_back(extraClaim);
+    assert(run(multipleTask,multipleView,multipleClaims,multipleFrame));
+    assert(result.consumption.size()==4 && result.consumption[2].used==5 && result.consumption[3].used==2);
+    assert(MatchProfessionInputClaims(multipleTask,multipleJob,multipleFrame,result.consumption,blocker));
+    auto forged=result.consumption;forged[2].used=4;forged[3].used=3;
+    assert(!MatchProfessionInputClaims(multipleTask,multipleJob,multipleFrame,forged,blocker));
+    multipleClaims.claims.pop_back();
+    assert(PlanProfessionMaterialReservations(multipleTask,multipleView,multipleClaims,multipleFrame,missing,blocker));
+    assert(missing.size()==1 && missing[0].guid==103 && missing[0].quantity==20);
+    assert(!run(multipleTask,multipleView,multipleClaims,multipleFrame)); // No unclaimed fallback.
 }
 }

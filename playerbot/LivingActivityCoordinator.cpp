@@ -72,6 +72,8 @@ namespace {
             if (!DecodeProfessionJob(request.transition.task.checkpoint.data,job,blocker)) return false;
             std::vector<ProfessionReagent> requirements;
             if (!ReadNativeTaskItemRequirements(actor,request.transition.task,requirements,blocker)) return false;
+            std::vector<ProfessionMaterialReservation> bagPreparation;
+            bool bagPreparationRead=false;
             for (const auto& change : request.changes) {
                 const auto& claim=change.after;
                 if (job.operation==ProfessionOperation::EnchantItem && claim.itemGuid==job.subjectItem) {
@@ -90,9 +92,24 @@ namespace {
                 if (change.expectedRevision || claim.revision!=1 || claim.actor!=actor.GetGUIDLow() ||
                     claim.task!=request.transition.task.root || claim.state!="held" ||
                     (claim.location!="bags" && claim.location!="bank") ||
-                    !claim.itemGuid || claim.copper || claim.nativeReference || need==requirements.end() ||
-                    (claim.location=="bags" && claim.quantity!=need->perAttempt)) {
+                    !claim.itemGuid || claim.copper || claim.nativeReference || need==requirements.end()) {
                     blocker="profession_material_reservation_mismatch";return false;
+                }
+                if(claim.location=="bags") {
+                    if(!bagPreparationRead) {
+                        const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);
+                        ProfessionSnapshot snapshot;UnsettledClaimBatch batch;CraftFrame frame;
+                        if(!saved || saved->revision!=request.transition.expectedRevision ||
+                            saved->checkpoint.data!=request.transition.task.checkpoint.data ||
+                            !sLivingActivityCoordinator.ReadProfessionSnapshot(actor.GetGUIDLow(),saved->id,saved->revision,snapshot,blocker) ||
+                            !sLivingActivityCoordinator.ReadTaskClaims(actor.GetGUIDLow(),saved->id,saved->revision,batch,blocker) ||
+                            !ReadNativeCraftFrame(actor,job,frame,blocker) ||
+                            !PlanProfessionMaterialReservations(*saved,snapshot,batch,frame,bagPreparation,blocker))return false;
+                        bagPreparationRead=true;
+                    }
+                    if(std::none_of(bagPreparation.begin(),bagPreparation.end(),[&](const auto& material){
+                        return material.guid==claim.itemGuid && material.entry==claim.itemEntry && material.quantity==claim.quantity;
+                    })) {blocker="profession_material_reservation_mismatch";return false;}
                 }
                 if (claim.location=="bank") {
                     auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,claim.itemGuid));

@@ -2,6 +2,7 @@
 #include "LivingCraftCapture.h"
 #include "LivingActivityClaimConsumption.h"
 #include "LivingEnchantIntent.h"
+#include "LivingProfessionConsumption.h"
 #include <algorithm>
 #include <set>
 
@@ -30,23 +31,23 @@ namespace LivingActivity {
         for (const auto& claim : batch.claims)
             if (!ValidResourceClaim(claim) || claim.actor!=task.actor || claim.task!=task.id || !ids.insert(claim.id).second)
                 return reject("profession_material_claim_identity_mismatch");
+        std::vector<ProfessionInputStack> inputs;
+        if(!PlanProfessionInputStacks(job,frame,inputs,blocker))return false;
         std::vector<ProfessionMaterialReservation> result;
-        for (const auto& reagent : job.reagents) {
-            const NativeItemStack* item=nullptr;
-            for (const auto& row : frame.stacks) if (row.entry==reagent.entry) {
-                if (item) return reject("profession_attempt_mixed_stack_preparation_required");
-                item=&row;
-            }
-            if (!item || item->actor!=task.actor || item->count<reagent.perAttempt)
-                return reject("profession_attempt_native_material_missing");
+        for (const auto& input : inputs) {
+            const auto* item=&input.item;
             uint64_t held=0;
-            for (const auto& claim : batch.claims) if (claim.itemEntry==reagent.entry) {
-                if (claim.itemGuid!=item->guid || claim.state!="held" || claim.location!="bags" ||
+            for (const auto& claim : batch.claims) if (claim.itemGuid==item->guid) {
+                if (claim.itemEntry!=item->entry || claim.state!="held" || claim.location!="bags" ||
                     claim.copper || claim.nativeReference || claim.quantity>item->count-held)
                     return reject("profession_attempt_exact_material_claim_required");
                 held+=claim.quantity;
             }
-            if (held<reagent.perAttempt) result.push_back({item->guid,reagent.entry,uint32_t(reagent.perAttempt-held)});
+            // Newly reserve the whole selected stack at ready-to-cast
+            // preparation, retaining a before quantity for crash recovery.
+            // Preserve sufficient existing claims rather than relabeling paid
+            // portions. Used remains exact; surplus is never spent.
+            if (held<input.used) result.push_back({item->guid,item->entry,uint32_t(item->count-held)});
         }
         if (batch.claims.size()+result.size()>16) return reject("profession_material_claim_batch_full");
         missing=std::move(result);blocker.clear();return true;
@@ -85,26 +86,22 @@ namespace LivingActivity {
             ResourceClaim subject;
             if (!FindEnchantClaim(task,job,batch,subject,blocker)) return false;
         }
-        for (const auto& reagent : job.reagents) {
-            const NativeItemStack* stack=nullptr;
-            for (const auto& candidate : frame.stacks) if (candidate.entry==reagent.entry) {
-                if (stack) return reject("profession_attempt_mixed_stack_preparation_required");
-                stack=&candidate;
-            }
-            if (!stack || stack->actor!=task.actor || stack->count<reagent.perAttempt)
-                return reject("profession_attempt_native_material_missing");
+        std::vector<ProfessionInputStack> inputs;
+        if(!PlanProfessionInputStacks(job,frame,inputs,blocker))return false;
+        for (const auto& input : inputs) {
+            const auto* stack=&input.item;
             std::vector<const ResourceClaim*> owned;uint64_t held=0;
-            for (const auto& claim : batch.claims) if (claim.itemEntry==reagent.entry) {
-                if (claim.itemGuid!=stack->guid || claim.state!="held" || claim.location!="bags" ||
+            for (const auto& claim : batch.claims) if (claim.itemGuid==stack->guid) {
+                if (claim.itemEntry!=stack->entry || claim.state!="held" || claim.location!="bags" ||
                     claim.copper || claim.nativeReference || claim.quantity>stack->count-held)
                     return reject("profession_attempt_exact_material_claim_required");
                 held+=claim.quantity;owned.push_back(&claim);
             }
-            if (held<reagent.perAttempt) return reject("profession_attempt_material_reservation_required");
+            if (held<input.used) return reject("profession_attempt_material_reservation_required");
             // Native merging does not merge purchase identities. Consume the
             // exact per-receipt portions in stable order on the shared stack.
             std::sort(owned.begin(),owned.end(),[](const auto* a,const auto* b){return a->id<b->id;});
-            uint32_t remaining=reagent.perAttempt;
+            uint32_t remaining=input.used;
             for (const auto* claim:owned) {
                 const auto used=uint32_t(std::min<uint64_t>(remaining,claim->quantity));
                 if (used) result.consumption.push_back({*claim,used});

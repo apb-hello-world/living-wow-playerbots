@@ -2,6 +2,7 @@
 #include "LivingActivityGameplay.h"
 #include "LivingActivityOperations.h"
 #include "LivingEnchantIntent.h"
+#include "LivingProfessionConsumption.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <algorithm>
 #include <limits>
@@ -89,22 +90,9 @@ namespace {
         for (size_t i=0;i<a.size();++i)
             Require(a[i].used==b[i].used && SameResourceClaim(a[i].before,b[i].before),"stored_craft_claims_changed");
     }
-    void InputBacking(const ProfessionJob& job,const std::vector<ClaimConsumption>& uses,const CraftFrame& frame) {
-        size_t matched=0;
-        for (const auto& reagent : job.reagents) {
-            unsigned count=0;const NativeItemStack* native=nullptr;
-            for (const auto& stack : frame.stacks) if (stack.entry==reagent.entry) {
-                ++count;native=&stack;
-            }
-            Require(count==1,"stored_craft_input_backing_mismatch");
-            uint64_t used=0,held=0;
-            for (const auto& claim:uses) if(claim.before.itemEntry==reagent.entry) {
-                ++matched;used+=claim.used;held+=claim.before.quantity;
-                Require(claim.before.itemGuid==native->guid,"stored_craft_input_backing_mismatch");
-            }
-            Require(used==reagent.perAttempt && held<=native->count,"stored_craft_recipe_claims_mismatch");
-        }
-        Require(matched==uses.size(),"stored_craft_recipe_claims_mismatch");
+    void InputBacking(const Task& task,const ProfessionJob& job,const std::vector<ClaimConsumption>& uses,const CraftFrame& frame) {
+        std::string blocker;
+        Require(MatchProfessionInputClaims(task,job,frame,uses,blocker),"stored_craft_input_backing_mismatch");
     }
     void GainedBacking(const Tree& rows,const std::vector<VerifiedItemGain>& gains) {
         Require(rows.data().empty() && rows.size()==gains.size(),"stored_craft_gains_mismatch");std::set<uint32_t> seen;
@@ -145,7 +133,7 @@ namespace {
                 frame.skill==intent.skill && frame.money==intent.money &&
                 SameEnchantSubject(EnchantCodec::Subject(recovered.get_child("subject")),intent.enchant->before),
                 "stored_enchant_recovery_changed");
-            InputBacking(job,intent.inputs,frame);std::map<uint32_t,uint64_t> quantities;
+            InputBacking(task,job,intent.inputs,frame);std::map<uint32_t,uint64_t> quantities;
             for (const auto& use:intent.inputs) quantities[use.before.itemGuid]+=use.before.quantity;
             for (const auto& item:frame.stacks) if (quantities.count(item.guid))
                 Require(item.count==quantities[item.guid],"stored_enchant_recovery_quantity_changed");
@@ -174,7 +162,7 @@ namespace {
             SameEnchantSubject(subjectBefore,intent.before) &&
             DecodeClaimProjection(EnchantCodec::Json(captured.get_child("subject_claim")),subject,blocker) &&
             SameResourceClaim(subject,intent.claim),"stored_enchant_intent_changed");
-        InputBacking(job,inputs,frameBefore);
+        InputBacking(task,job,inputs,frameBefore);
         Require(Flag(captured.get_child("native_finished")) && !Number(captured.get_child("created_calls")) &&
             !Number(captured.get_child("created_quantity")),"stored_enchant_finish_or_creation_mismatch");
         StoredCraftProof parsed;
@@ -227,7 +215,7 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
                 IsUuid(Scalar(basis.get_child("boot"))),"stored_craft_recovery_basis_invalid");
             const auto frame=Frame(task.actor,recovered.get_child("frame"));
             Require(frame.skill==decoded.skill && frame.money==decoded.money,"stored_craft_recovery_state_changed");
-            InputBacking(job,decoded.inputs,frame);
+            InputBacking(task,job,decoded.inputs,frame);
             std::map<uint32_t,uint64_t> reserved;
             for(const auto& use:decoded.inputs)reserved[use.before.itemGuid]+=use.before.quantity;
             for(const auto& stack:frame.stacks)if(reserved.count(stack.guid))
@@ -261,7 +249,7 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,
         const auto frameAfter=Frame(task.actor,captured.get_child("after"));
         Require(Number(intended.get_child("skill"))==frameBefore.skill && Number(intended.get_child("money"))==frameBefore.money,
             "stored_craft_intent_snapshot_mismatch");
-        InputBacking(job,inputs,frameBefore);
+        InputBacking(task,job,inputs,frameBefore);
         Require(Flag(captured.get_child("native_finished")),"stored_craft_native_finish_missing");
         StoredCraftProof parsed;
         if (verified) {
@@ -342,7 +330,7 @@ bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& r
                 SameEnchantSubject(EnchantCodec::Subject(observed.get_child("subject_before")),decoded.enchant->before) &&
                 DecodeClaimProjection(EnchantCodec::Json(observed.get_child("subject_claim")),held,blocker) &&
                 SameResourceClaim(held,decoded.enchant->claim),"interrupted_enchant_capture_has_possible_effect");
-            InputBacking(job,decoded.inputs,original);
+            InputBacking(task,job,decoded.inputs,original);
             const auto& empty=observed.get_child("after");Object(empty,{"skill","money","stacks"});
             Require(!Number(empty.get_child("skill")) && !Number(empty.get_child("money")) && empty.get_child("stacks").empty(),
                 "interrupted_enchant_capture_has_after_state");
@@ -356,10 +344,9 @@ bool DecodeInterruptedCraftIntent(const Task& task,const StoredCraftOperation& r
             "interrupted_craft_recipe_mismatch");
         size_t matched=0;
         for(const auto& need:job.reagents) {
-            uint64_t used=0;uint32_t guid=0;
+            uint64_t used=0;
             for(const auto& use:decoded.inputs) if(use.before.itemEntry==need.entry) {
-                Require(!guid || guid==use.before.itemGuid,"interrupted_craft_mixed_stack_unsupported");
-                guid=use.before.itemGuid;used+=use.used;++matched;
+                used+=use.used;++matched;
             }
             Require(used==need.perAttempt,"interrupted_craft_recipe_mismatch");
         }

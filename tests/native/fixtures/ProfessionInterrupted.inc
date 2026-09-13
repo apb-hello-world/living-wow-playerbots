@@ -35,7 +35,8 @@ void TestInterruptedProfession() {
     bad=f;++bad.frame.stacks[2].count;fail(bad);
     bad=f;--bad.frame.stacks[2].count;fail(bad);
     bad=f;++bad.frame.stacks[0].guid;fail(bad);
-    bad=f;bad.frame.stacks.push_back({705,803,3371,1,0,26});fail(bad);
+    bad=f;bad.frame.stacks.push_back({705,803,3371,1,0,26});assert(prepare(bad));
+    std::swap(bad.frame.stacks[2],bad.frame.stacks[3]);fail(bad); // Changed consumption order is not permission to retry.
     bad=f;bad.batch.complete=false;fail(bad);
     bad=f;++bad.batch.claims[0].revision;fail(bad);
     bad=f;bad.batch.claims[0].state="consumed";fail(bad);
@@ -109,5 +110,29 @@ void TestInterruptedProfession() {
     success.afterState=ClaimedNativeState(nativeAfter,inputs.inputs,8192);
     auto completed=merged.task;++completed.revision;completed.phase=Phase::Verifying;
     assert(DecodeStoredCraftProof(completed,success,proof,blocker) && proof.inputs.size()==4);
+
+    // Crash before a two-stack craft: same full before quantities, exact used
+    // portions and no native saved effect. Recovery writes metadata only.
+    InterruptedFixture split;auto splitJob=job;splitJob.reagents.back().perAttempt=7;
+    split.task.checkpoint.data=EncodeProfessionJob(splitJob);
+    split.frame.stacks.push_back({705,805,3371,20,900,0});
+    auto splitIntent=SavedCraft(split.task,splitJob,split.frame,split.frame,true,true);
+    splitIntent.receipt.state=OperationState::Intent;splitIntent.receipt.nativeReference.clear();
+    splitIntent.receipt.evidence.clear();splitIntent.afterState="{}";
+    assert(DecodeInterruptedCraftIntent(split.task,splitIntent,inputs,blocker) && inputs.inputs.size()==4);
+    split.history.interruptedCraft=splitIntent;split.batch.claims.clear();
+    for(const auto& input:inputs.inputs)split.batch.claims.push_back(input.before);
+    assert(prepare(split));const auto splitRecovered=result.task;
+    auto changedSplit=split;--changedSplit.frame.stacks.back().count;fail(changedSplit);
+    changedSplit=split;std::swap(changedSplit.frame.stacks[2],changedSplit.frame.stacks[3]);fail(changedSplit);
+    splitIntent.receipt.state=OperationState::Rejected;splitIntent.receipt.evidence="native_craft_intent_not_committed";
+    splitIntent.receipt.nativeReference="spell:"+std::to_string(splitJob.recipe)+":operation:"+splitIntent.receipt.id;
+    splitIntent.afterState="{\"recovery\":{\"version\":1,\"basis\":\"atomic_native_save_absent\",\"boot\":\""+
+        split.current.boot+"\"},\"frame\":"+FrameJson(split.frame)+'}';
+    assert(DecodeStoredCraftProof(splitRecovered,splitIntent,proof,blocker) && proof.inputs.size()==4);
+    auto splitAfter=split.frame;splitAfter.skill=2;
+    splitAfter.stacks={{705,805,3371,18,900,0},{705,806,splitJob.outputEntry,1,0,23}};
+    auto splitSuccess=SavedCraft(split.task,splitJob,split.frame,splitAfter,false,true);
+    assert(DecodeStoredCraftProof(splitRecovered,splitSuccess,proof,blocker) && proof.attempt.nativeEffectVerified);
 }
 }
