@@ -3,6 +3,7 @@
 #include "LivingActivityCoordinator.h"
 #include "LivingActivity.h"
 #include "LivingActivityAdmission.h"
+#include "LivingActivityObservation.h"
 #include "LivingActivityCodec.h"
 #include "LivingActivityClaimCodec.h"
 #include "LivingActivityReceipts.h"
@@ -500,6 +501,7 @@ struct LivingActivityCoordinator::State {
         std::shared_ptr<NativeSaveBatch> nativeSave;
         Task recipientTask; // Same atomic outbound-mail receipt, not another admission queue.
         uint64_t closureRefreshRevision=0; // Safe, journal-only no-effect proposal; never native work.
+        bool observerRetirement=false;
     };
     struct PendingOperation {
         OperationRequest request;
@@ -523,11 +525,14 @@ struct LivingActivityCoordinator::State {
         unsigned family = 0;
         uint32_t actor = 0;
         std::string id, source, key, payload;
+        bool retirement=false;
     };
     std::deque<Pending> pending;
     bool preferReceiptRetry = false;
     std::deque<Incoming> incoming;
     std::map<std::string, Task> cache;
+    std::map<uint32_t,std::set<std::string>> cachedByActor;
+    uint64_t nextRetirement=0, retiredObservations=0, retirementRechecks=0;
     // In-memory execution index within this coordinator, not a bot timer or
     // DB scan. Add domain adapters here as their old execution path is retired.
     std::set<std::pair<uint64_t,std::string>> executionDue;
@@ -553,7 +558,7 @@ struct LivingActivityCoordinator::State {
         const auto& row = incoming.front();
         const std::string id = row.restored ? row.id : SourceId(row.source, row.key);
         quarantined[id] = reason;
-        if (row.restored) loadCursor = row.id;
+        if (row.restored && !row.retirement) loadCursor = row.id;
         ++invalidRecords; blocker = reason;
         sLog.outError("Living activity record quarantined: task=%s reason=%s; native journal retained",
             id.c_str(), reason.c_str());
@@ -620,6 +625,7 @@ struct LivingActivityCoordinator::State {
     }
     void Remember(const Task& task) {
         cache[task.id] = task;
+        cachedByActor[task.actor].insert(task.id);
         const auto queued=executionTimes.find(task.id);
         if (queued!=executionTimes.end()) {executionDue.erase({queued->second,task.id});executionTimes.erase(queued);}
         if (ScheduledExecution(task)) {
@@ -637,11 +643,34 @@ struct LivingActivityCoordinator::State {
         const auto existing = preferred.find(task.actor);
         if (existing == preferred.end() || Before(task, cache.at(existing->second))) preferred[task.actor] = task.id;
     }
+    void ForgetRetiredObservation(const Task& task) {
+        // Called ONLY after the guarded retirement receipt. No task, source,
+        // claim, operation or transition row is deleted from the database.
+        cache.erase(task.id);admissionReceipts.erase(task.id);executionBlockers.erase(task.id);
+        const auto due=executionTimes.find(task.id);
+        if(due!=executionTimes.end()) {executionDue.erase({due->second,task.id});executionTimes.erase(due);}
+        const auto actor=cachedByActor.find(task.actor);
+        if(actor!=cachedByActor.end()) actor->second.erase(task.id);
+        const auto current=preferred.find(task.actor);
+        if(current!=preferred.end() && current->second==task.id) {
+            preferred.erase(current);
+            if(actor!=cachedByActor.end()) for(const auto& id:actor->second) {
+                const auto found=preferred.find(task.actor);
+                if(found==preferred.end() || Before(cache.at(id),cache.at(found->second))) preferred[task.actor]=id;
+            }
+        }
+        if(actor!=cachedByActor.end() && actor->second.empty()) cachedByActor.erase(actor);
+        ++retiredObservations;
+    }
     void Queue(Task task, uint64_t expected, const std::string& code) {
         for (const auto& write : pending) if (write.task.id == task.id) return; // Preserve the original failed write.
-        if (cache.size() + quarantined.size() + pending.size() >= maxCache) { blocker = "task_cache_backpressure"; return; }
+        const bool retirement=code=="observation_retired";
+        if (cache.size() + quarantined.size() + pending.size() >= maxCache && !(retirement && pending.size()<batch)) {
+            blocker = "task_cache_backpressure"; return;
+        }
         auto plan = TaskWrite(task, expected, NewId(), code);
         pending.push_back({std::move(task), std::move(plan), ""});
+        pending.back().observerRetirement=retirement;
     }
     void HoldNativeSave(uint32_t actor, bool hold) {
         auto next = std::make_shared<std::set<uint32_t>>(*std::atomic_load_explicit(&nativeSaveHolds, std::memory_order_acquire));
@@ -676,6 +705,9 @@ struct LivingActivityCoordinator::State {
                 for (const auto& sql : pending[count].plan.statements) CharacterDatabase.Execute(sql.c_str());
             if (!query.empty()) query += " UNION ALL ";
             query += pending[count].plan.receiptQuery;
+            if(pending[count].observerRetirement)
+                query+=" UNION ALL SELECT "+SqlValue("observer_retirement_no_effect:"+pending[count].task.id)+
+                    ",1 WHERE NOT EXISTS("+pending[count].plan.receiptQuery+')';
             if(pending[count].closureRefreshRevision)
                 query+=" UNION ALL SELECT "+SqlValue("guild_closure_refresh:"+pending[count].task.id)+",revision"
                     " FROM living_activity_task WHERE task_id="+SqlValue(pending[count].task.id)+
@@ -792,7 +824,8 @@ struct LivingActivityCoordinator::State {
                         }
                     }
                 }
-                Remember(acknowledgedWrite.task);
+                if(acknowledgedWrite.observerRetirement) ForgetRetiredObservation(acknowledgedWrite.task);
+                else Remember(acknowledgedWrite.task);
                 if(!acknowledgedWrite.recipientTask.id.empty()) {
                     Remember(acknowledgedWrite.recipientTask);++transitionCount;
                 }
@@ -836,6 +869,14 @@ struct LivingActivityCoordinator::State {
                     guildDeliveryReads.erase(it->task.id);
                     executionBlockers[it->task.id]="guild_delivery_goal_changed_refresh_pending";
                     it=pending.erase(it);++refreshed;
+                } else ++it;
+            }
+            if(healthy) for(auto it=pending.begin();it!=pending.end();) {
+                if(it->observerRetirement && receipts.count({"observer_retirement_no_effect:"+it->task.id,1})) {
+                    // Metadata-only optimistic retirement made no change. Do
+                    // not pin a receipt forever after source reactivation.
+                    it=pending.erase(it);++refreshed;++retirementRechecks;
+                    nextRetirement=NowMs()+60000;
                 } else ++it;
             }
             if (accepted+refreshed != count) {
@@ -1057,6 +1098,24 @@ struct LivingActivityCoordinator::State {
             resources.FinishRestore(); claimBlocker.clear();
         }
     }
+    void RetireObservations() {
+        nextRetirement=NowMs()+60000;
+        const auto count=std::min(batch,16u);
+        const auto query="SELECT * FROM (SELECT task_id,"+PersistedTaskProjection()+
+            " payload FROM living_activity_task WHERE "+EconomyObservationRetirementPredicate()+
+            " ORDER BY task_id LIMIT "+std::to_string(count)+") candidates UNION ALL SELECT '','{}'";
+        ioPending=true;
+        if(!CharacterDatabase.AsyncQuery([this,count](QueryResult* result) {
+            ioPending=false;
+            if(!result) {blocker="observation_retirement_query_failed";return;}
+            unsigned found=0;
+            do {
+                auto* row=result->Fetch();const auto id=row[0].GetCppString();if(id.empty())continue;
+                incoming.push_back({true,0,0,id,"","",row[1].GetCppString(),true});++found;
+            } while(result->NextRow());
+            if(found==count) nextRetirement=NowMs()+1000;
+        },query.c_str())) {ioPending=false;blocker="observation_retirement_query_unavailable";}
+    }
     void Import() {
         const unsigned family = importFamily;
         const auto query = ImportQuery(family, batch);
@@ -1078,7 +1137,7 @@ struct LivingActivityCoordinator::State {
     }
     void DecodeIncoming(std::chrono::steady_clock::time_point deadline) {
         do {
-            if (cache.size() + quarantined.size() + pending.size() >= maxCache) {
+            if (cache.size() + quarantined.size() + pending.size() >= maxCache && !incoming.front().retirement) {
                 blocker = "task_cache_backpressure"; nextWork = NowMs() + 60000; return;
             }
             const auto& row = incoming.front(); Task task;
@@ -1086,6 +1145,14 @@ struct LivingActivityCoordinator::State {
                 std::string error;
                 if (!DecodeTaskProjection(row.payload, task, error)) {
                     QuarantineIncoming(error); continue;
+                }
+                if(row.retirement) {
+                    Task retired;
+                    const auto current=cache.find(task.id);
+                    if((current==cache.end() || current->second.revision==task.revision) &&
+                        PrepareEconomyObservationRetirement(task,NowMs(),retired))
+                        Queue(std::move(retired),task.revision,"observation_retired");
+                    incoming.pop_front();continue;
                 }
                 // Active tasks are never downgraded or executed by this observer.
                 if (task.mode == Mode::Active || effective==Mode::Off) {
@@ -1205,6 +1272,8 @@ void LivingActivityCoordinator::Update() {
     }
     ObservationQueue queues;
     queues.enabled = state->effective != Mode::Off; queues.ioPending = state->ioPending;
+    queues.retirementDue=now>=state->nextRetirement;
+    queues.retirementIncoming=!state->incoming.empty() && state->incoming.front().retirement;
     queues.restoreOwnership=true;queues.claimsLoaded=state->claimsEnumerated;
     queues.due = now >= state->nextWork; queues.schemaReady = state->schemaReady; queues.loaded = state->loaded;
     queues.cached = state->cache.size() + state->quarantined.size() + state->pending.size();
@@ -1215,6 +1284,7 @@ void LivingActivityCoordinator::Update() {
     queues.incoming = state->incoming.size();
     queues.cacheLimit = state->maxCache; queues.retained = state->transitionCount;
     const auto work = NextObservationWork(queues);
+    if(work==ObservationWork::Retire) {state->RetireObservations();return;}
     // Native receipt verification stays ahead of read-only snapshots. Fairly
     // alternate budget/history reads on the SAME bounded database queue.
     if (state->effective!=Mode::Off && !state->ioPending && state->schemaReady && state->loaded &&
@@ -1317,6 +1387,8 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("action_cardinality_rejected", state->actionCardinalityRejected);
     p.put("native_views_published", state->nativeViewsPublished);
     p.put("stale_actor_observations", state->staleActorObservations);
+    p.put("retired_unaccepted_observations",state->retiredObservations);
+    p.put("observation_retirement_rechecks",state->retirementRechecks);
     p.put("task_admission_writes", state->taskAdmissions); p.put("saved_task_grants", state->savedGrants);
     p.put("execution_enforcement", state->enforceEffects.load(std::memory_order_acquire));
     p.put("compatibility_lease_index",state->compatibilityActors.size());

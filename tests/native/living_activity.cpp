@@ -1,6 +1,7 @@
 #include "LivingActivity.h"
 #include "LivingActivityReceipts.h"
 #include "LivingActivityAdmission.h"
+#include "LivingActivityObservation.h"
 #include <cassert>
 #include <limits>
 #include <stdexcept>
@@ -15,6 +16,38 @@ Task Sample() {
     return task;
 }
 int main() {
+    {
+        auto candidate=Sample();candidate.accepted=false;Task retired;
+        assert(PrepareEconomyObservationRetirement(candidate,2000,retired));
+        assert(retired.phase==Phase::Cancelled && retired.revision==2 && retired.id==candidate.id &&
+            retired.checkpoint.data==candidate.checkpoint.data && !retired.accepted);
+        const auto plan=TaskWrite(retired,1,Receipt,"observation_retired");
+        assert(plan.statements.front().find(EconomyObservationRetirementPredicate())!=std::string::npos);
+        for(unsigned field=0;field<8;++field) {
+            auto protectedTask=candidate;
+            if(field==0)protectedTask.accepted=true;
+            if(field==1)protectedTask.mode=Mode::Active;
+            if(field==2)protectedTask.ownerGeneration=1;
+            if(field==3)protectedTask.phase=Phase::Executing;
+            if(field==4)protectedTask.source="profession_job";
+            if(field==5)protectedTask.sourceKey="paid:42";
+            if(field==6)protectedTask.parent=Receipt;
+            if(field==7)protectedTask.phase=Phase::Cancelled;
+            assert(!PrepareEconomyObservationRetirement(protectedTask,2000,retired));
+        }
+        assert(!PrepareEconomyObservationRetirement(candidate,0,retired));
+        ObservationQueue q;q.enabled=q.schemaReady=q.retirementDue=true;
+        q.cached=q.cacheLimit;q.due=false;
+        assert(NextObservationWork(q)==ObservationWork::Retire); // Relief at capacity, not blocked by it.
+        q.pending=1;assert(NextObservationWork(q)==ObservationWork::Flush);
+        q.pending=0;q.ioPending=true;assert(NextObservationWork(q)==ObservationWork::Wait);
+        q.ioPending=false;q.enabled=false;assert(NextObservationWork(q)==ObservationWork::Wait);
+        q.enabled=true;q.retained=q.historyLimit;assert(NextObservationWork(q)==ObservationWork::Wait);
+        q.retained=0;q.incoming=1;assert(NextObservationWork(q)==ObservationWork::Wait);
+        q.retirementIncoming=true;assert(NextObservationWork(q)==ObservationWork::Decode);
+        q.pending=1;assert(NextObservationWork(q)==ObservationWork::Flush);
+        q.pending=0;q.incoming=17;assert(NextObservationWork(q)==ObservationWork::Wait);
+    }
     assert(IsSourceKey("18010501:64"));
     assert(IsSourceKey("chat-v2:ABC_0.1"));
     assert(IsSourceKey("637bd562-36d2-5b01-bc01-e2d831c49f38"));

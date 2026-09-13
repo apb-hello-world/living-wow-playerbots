@@ -6,10 +6,11 @@
 namespace LivingActivity {
     // A tested gate for the existing observer loop, not another scheduler.
     // It never discards an accepted write or an unacknowledged receipt.
-    enum class ObservationWork { Wait, Probe, Decode, Flush, Load, RestoreClaims, Import, CachePressure, HistoryPressure };
+    enum class ObservationWork { Wait, Probe, Decode, Flush, Load, RestoreClaims, Import, Retire, CachePressure, HistoryPressure };
     struct ObservationQueue {
         bool enabled = false, ioPending = false, due = false, schemaReady = false, loaded = false;
         bool restoreOwnership = false, claimsLoaded = true;
+        bool retirementDue = false, retirementIncoming = false;
         // pending counts writes whose OWN retry deadline has arrived. due is
         // the background import/load clock; it must not postpone those writes.
         size_t cached = 0, pending = 0, incoming = 0, cacheLimit = 20000;
@@ -44,6 +45,9 @@ namespace LivingActivity {
                 return ObservationWork::HistoryPressure;
             return ObservationWork::Flush;
         }
+        if(q.retirementDue && !q.incoming && q.retained<q.historyLimit) return ObservationWork::Retire;
+        if(q.retirementIncoming && q.incoming && q.incoming<=16 && q.retained<q.historyLimit)
+            return ObservationWork::Decode;
         if (!q.due) return ObservationWork::Wait;
         if (q.retained >= q.historyLimit) return ObservationWork::HistoryPressure;
         if (q.cached >= q.cacheLimit) return ObservationWork::CachePressure;

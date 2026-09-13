@@ -1,4 +1,5 @@
 #include "LivingActivity.h"
+#include "LivingActivityObservation.h"
 #include "LivingActivityJournal.h"
 #include <algorithm>
 #include <limits>
@@ -245,6 +246,13 @@ namespace LivingActivity
             plan.statements.front() += " AND mode='observe' AND phase='reconciling' "
                 "AND NOT EXISTS (SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id) "
                 "AND NOT EXISTS (SELECT 1 FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id)";
+        }
+        if (code=="observation_retired") {
+            auto original=task;original.phase=Phase::Reconciling;
+            if(!expected || !IsRetirableEconomyObservation(original) || task.phase!=Phase::Cancelled ||
+                task.checkpoint.step!="observer_retired" || task.checkpoint.blocker!="legacy_candidate_no_longer_active")
+                throw std::invalid_argument("Only empty, unaccepted economy observations may retire");
+            plan.statements.front()+=" AND ("+EconomyObservationRetirementPredicate()+')';
         }
         if (expected && Terminal(task.phase)) {
             plan.statements.front() += " AND NOT EXISTS (SELECT 1 FROM living_activity_operation o "

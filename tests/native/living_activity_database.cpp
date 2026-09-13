@@ -1,6 +1,7 @@
 // Actual journal SQL, exercised against a separate MariaDB fixture database.
 // Not linked into the game. No test controls enter the production executable.
 #include "LivingActivity.h"
+#include "LivingActivityObservation.h"
 #include "LivingActivityCodec.h"
 #include "LivingActivityResources.h"
 #include "LivingActivityClaimConsumption.h"
@@ -99,6 +100,7 @@ public:
     }
 };
 #include "fixtures/ProfessionSettlementDatabase.inc"
+#include "fixtures/ObservationRetirementDatabase.inc"
 #include "fixtures/ProfessionResumeDatabase.inc"
 #include "fixtures/ProfessionInterruptedDatabase.inc"
 #include "fixtures/RecipeLearningDatabase.inc"
@@ -718,6 +720,7 @@ int main() {
     assert(selected(true,13)=="completed"); // Pending legacy acknowledgement still finds its native owner.
     assert(db.Execute("UPDATE organic_economy_goal SET state='completed' WHERE goal_id=701"));
     assert(selected(true,11)=="0");
+    ObservationRetirementDatabase(db);
     RecipeLearningDatabase(db);
     ProfessionInterruptedDatabase(db);
     EnchantWorkflowDatabase(db);
