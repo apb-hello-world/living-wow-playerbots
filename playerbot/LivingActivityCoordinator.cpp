@@ -2962,6 +2962,23 @@ AdmissionResult LivingActivityCoordinator::SettleRecipeLearning(uint32_t actor,c
     state->nextWork=0;return stop(AdmissionCode::Pending);
 }
 
+bool LivingActivityCoordinator::ReadGuildProcurementAvailability(const Task& task,uint32_t& available,std::string& blocker) {
+    available=0;GuildProcurementJob job;
+    if(!OnWorldThread() || !ProfessionStoreReady() || !state->quarantined.empty()) {
+        blocker="guild_procurement_task_snapshot_unavailable";return false;
+    }
+    if(!ValidateGuildProcurementTask(task,blocker) || !IsGuildProcurementTask(task) ||
+        !DecodeGuildProcurementJob(task.checkpoint.data,job,blocker))return false;
+    auto* actor=sRandomPlayerbotMgr.GetPlayerBot(task.actor);
+    if(!actor){blocker="guild_procurement_actor_unavailable";return false;}
+    GuildProcurementGoalSnapshot goal;
+    if(!sGuildSupplies.ReadProcurementGoal(*actor,job,goal,blocker))return false;
+    GuildProcurementCoverage coverage(job.guild,job.entry,task.id);
+    for(const auto& row:state->cache)if(!coverage.Add(row.second,blocker))return false;
+    for(const auto& write:state->pending)if(!coverage.Add(write.task,blocker))return false;
+    available=UnassignedGuildProcurement(goal.target,goal.banked,goal.bankReserved,goal.nativeTransit,coverage.Assigned());
+    blocker.clear();return true;
+}
 AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request) {
     AdmissionResult result; result.task = request.task.id; result.revision = request.task.revision;
     auto reject = [&](AdmissionCode code, const std::string& reason = "") {
@@ -3010,6 +3027,12 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
     const auto valid = ValidateTaskRequest(request, saved == state->cache.end() ? nullptr : &saved->second, current, reason,
         parent == state->cache.end() ? nullptr : &parent->second);
     if (valid != AdmissionCode::Pending) return reject(valid, reason);
+    if(saved==state->cache.end() && IsGuildProcurementTask(task)) {
+        uint32_t available=0;GuildProcurementJob job;
+        if(!ReadGuildProcurementAvailability(task,available,reason) || !DecodeGuildProcurementJob(task.checkpoint.data,job,reason))
+            return reject(AdmissionCode::NotReady,reason);
+        if(job.quantity>available)return reject(AdmissionCode::InvalidRequest,"guild_procurement_demand_already_covered");
+    }
     if (task.mode != Mode::Active) return reject(AdmissionCode::InvalidRequest, "managed_task_requires_active_mode");
     // Check first admission only. Later cancellation/deferral/reconciliation
     // must remain possible if a recipe becomes obsolete or a subject changes.

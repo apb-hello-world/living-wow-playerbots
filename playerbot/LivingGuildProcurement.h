@@ -4,6 +4,7 @@
 #include "GuildSupplyPolicy.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <set>
+#include <map>
 #include <sstream>
 
 namespace LivingActivity {
@@ -84,4 +85,35 @@ inline uint32_t UnassignedGuildProcurement(uint32_t target,uint32_t bank,uint32_
     const auto missing=livingguild::SupplyOutstanding(target,bank,bankReserved,nativeTransit);
     return assignedNotInNativeDelivery>=missing?0:missing-uint32_t(assignedNotInNativeDelivery);
 }
+struct GuildProcurementGoalSnapshot {
+    uint32_t target=0,bankReserved=0,banked=0,nativeTransit=0;
+};
+// Admission-time view of accepted tasks, then their pending replacements.
+// A pending transition replaces the same task, not a second assignment. Count
+// across goals for the same guild/item, matching the native shared-bank target
+// semantics. No physical stock is inferred from any task phase.
+class GuildProcurementCoverage {
+public:
+    GuildProcurementCoverage(uint32_t guild,uint32_t entry,const std::string& excluded):guild_(guild),entry_(entry),excluded_(excluded) {}
+    bool Add(const Task& task,std::string& blocker) {
+        if(!IsGuildProcurementTask(task))return true;
+        GuildProcurementJob job;
+        if(!ValidateGuildProcurementTask(task,blocker) || !DecodeGuildProcurementJob(task.checkpoint.data,job,blocker))return false;
+        if(task.id==excluded_ || job.guild!=guild_ || job.entry!=entry_)return true;
+        if(!IsUuid(task.id) || !task.revision){blocker="guild_procurement_coverage_identity_invalid";return false;}
+        const uint32_t quantity=task.mode==Mode::Active && !Terminal(task.phase)?job.quantity:0;
+        auto prior=rows_.find(task.id);
+        if(prior!=rows_.end() && (task.revision<prior->second.first ||
+            (task.revision==prior->second.first && quantity!=prior->second.second))) {
+            blocker="guild_procurement_coverage_revision_conflict";return false;
+        }
+        if(prior==rows_.end() && rows_.size()>=20000){blocker="guild_procurement_coverage_unbounded";return false;}
+        rows_[task.id]={task.revision,quantity};return true;
+    }
+    uint64_t Assigned() const {uint64_t total=0;for(const auto& row:rows_)total+=row.second.second;return total;}
+private:
+    uint32_t guild_,entry_;
+    std::string excluded_;
+    std::map<std::string,std::pair<uint64_t,uint32_t>> rows_;
+};
 }

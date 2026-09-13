@@ -6,6 +6,7 @@
 #include "LivingLegacyResourceView.h"
 #include "LivingGuildDeposit.h"
 #include "LivingGuildMailHandoff.h"
+#include "LivingGuildProcurement.h"
 class Item;
 class Player;
 // Single world-thread executor. Native transaction hooks persist delivery proof.
@@ -30,6 +31,10 @@ public:
     bool ReadManagedCustody(const LivingActivity::Task&,LivingActivity::GuildDepositQuote&,std::string&) const;
     bool ReadManagedMail(const LivingActivity::Task&,LivingActivity::ResourceClaim&,std::string&) const;
     bool ReadDeliveryJob(uint64_t delivery,uint32_t actor,LivingActivity::GuildDeliveryJob&,std::string&) const;
+    // Indexed native request read at admission or purchase validation, not a
+    // per-tick guild scan and not dependent on an existing delivery parcel.
+    bool ReadProcurementGoal(Player&,const LivingActivity::GuildProcurementJob&,
+        LivingActivity::GuildProcurementGoalSnapshot&,std::string&) const;
     bool AllowsManagedClaim(const LivingActivity::ResourceClaim&) const;
     bool BeginManagedDeposit(const LivingActivity::GuildDepositQuote&);
     void EndManagedDeposit();

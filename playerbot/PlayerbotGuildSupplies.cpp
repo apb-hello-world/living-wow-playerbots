@@ -369,6 +369,50 @@ void PlayerbotGuildSupplies::RecordDeposit(uint32 guild,uint32 actor,uint32 entr
     // credit an attempt that did not commit. Donor remains distinct from courier.
     CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET phase=IF(deposited_quantity+%u>=quantity,'completed','carried'),deposited_quantity=deposited_quantity+%u,blocker='',updated_at=%u WHERE delivery_id=%llu AND phase='carried' AND deposited_quantity=%u",count,count,uint32(time(nullptr)),(unsigned long long)d.id,d.deposited);
 }
+bool PlayerbotGuildSupplies::ReadProcurementGoal(Player& actor,const LivingActivity::GuildProcurementJob& job,
+    LivingActivity::GuildProcurementGoalSnapshot& snapshot,std::string& blocker) const {
+    snapshot={};auto reject=[&](const char* why){blocker=why;return false;};
+    if(!sLivingActivityCoordinator.OnWorldThread() || !state_->ready || !Bot(&actor) || !actor.IsInWorld() ||
+        !LivingActivity::ValidGuildProcurementJob(job) || actor.GetGUIDLow()!=job.donor)
+        return reject("guild_procurement_actor_or_request_unavailable");
+    auto* guild=sGuildMgr.GetGuildById(job.guild);
+    if(!guild || actor.GetGuildId()!=job.guild || !guild->GetMemberSlot(ObjectGuid(HIGHGUID_PLAYER,job.donor)))
+        return reject("guild_procurement_membership_changed");
+    // Supplying a request does NOT require officer rank or bank-deposit rights.
+    // Those rights are checked when selecting the actual depositing carrier.
+    if(!sGuildGovernance.Allows(guild,"supplies"))return reject("guild_procurement_delegation_disabled");
+    if(!guild->GetPurchasedTabs())return reject("guild_procurement_bank_tab_required");
+    if(sLivingActivityCoordinator.DefersGuildMutation(job.guild,job.donor))return reject("guild_procurement_native_save_pending");
+    const auto* proto=sObjectMgr.GetItemPrototype(job.entry);
+    if(!proto || proto->Bonding==BIND_WHEN_PICKED_UP || proto->Bonding==BIND_QUEST_ITEM ||
+        proto->Bonding==BIND_QUEST_ITEM1 || proto->Class==ITEM_CLASS_QUEST || (proto->Flags&ITEM_FLAG_CONJURED))
+        return reject("guild_procurement_item_not_deliverable");
+    // The goal row is native authority. Do not reuse the delivery-only cache,
+    // or its 15-second refresh could authorize a cancelled/edited request.
+    auto row=CharacterDatabase.PQuery("SELECT g.item_entry,g.required_quantity,g.reserved_quantity,g.request_kind,"
+        "g.state,g.provenance,COALESCE(e.enabled,0),"
+        "(SELECT COALESCE(SUM(GREATEST(CAST(d.quantity AS SIGNED)-CAST(d.deposited_quantity AS SIGNED),0)),0) "
+        "FROM guild_society_supply_delivery d "
+        "WHERE d.guild_id=g.guild_id AND d.item_entry=g.item_entry AND d.phase IN ('carried','mailed')),"
+        "(SELECT COUNT(*) FROM guild_society_supply_delivery d WHERE d.guild_id=g.guild_id AND d.item_entry=g.item_entry "
+        "AND d.phase IN ('carried','mailed') AND d.deposited_quantity>d.quantity) "
+        "FROM guild_society_supply_goal g LEFT JOIN guild_society_supply_execution e ON e.guild_id=g.guild_id "
+        "WHERE g.goal_id='%s' AND g.guild_id=%u",job.goal.c_str(),job.guild);
+    if(!row)return reject("guild_procurement_goal_unavailable");
+    const auto* f=row->Fetch();
+    if(f[3].GetCppString()!="item" || f[0].GetUInt32()!=job.entry)return reject("guild_procurement_goal_item_changed");
+    if(f[4].GetCppString()!="active")return reject("guild_procurement_goal_not_active");
+    const auto provenance=f[5].GetCppString();
+    if(provenance!="human_request" && provenance!="event_requirement" && provenance!="profession_requirement" &&
+        provenance!="equipment_requirement")return reject("guild_procurement_goal_requires_review");
+    if(!f[6].GetBool())return reject("guild_procurement_execution_disabled");
+    const auto transit=f[7].GetUInt64();
+    if(f[8].GetUInt64() || transit>UINT32_MAX)return reject("guild_procurement_delivery_totals_invalid");
+    snapshot.target=f[1].GetUInt32();snapshot.bankReserved=f[2].GetUInt32();snapshot.nativeTransit=uint32(transit);
+    const auto stock=guild->GetBankItemCounts();const auto found=stock.find(job.entry);
+    if(found!=stock.end())snapshot.banked=found->second;
+    blocker.clear();return true;
+}
 bool PlayerbotGuildSupplies::ReadDeliveryJob(uint64_t id,uint32_t actor,LivingActivity::GuildDeliveryJob& job,std::string& blocker) const {
     job={};blocker="guild_delivery_projection_pending";
     if(!sLivingActivityCoordinator.OnWorldThread() || !state_->ready)return false;

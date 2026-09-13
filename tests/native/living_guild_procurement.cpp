@@ -53,4 +53,42 @@ int main() {
     // from assigned demand to the native delivery ledger. New assignable need
     // is unchanged, while the real delivery quantity increases.
     assert(UnassignedGuildProcurement(50,2,0,8,15)==UnassignedGuildProcurement(50,2,0,13,10));
+    GuildProcurementCoverage coverage(job.guild,job.entry,"pending-new-task");
+    assert(coverage.Add(task,why) && coverage.Assigned()==20);
+    assert(coverage.Add(task,why) && coverage.Assigned()==20); // Cache + same pending write, once.
+    after=task;++after.revision;after.phase=Phase::WaitingExternal;
+    assert(coverage.Add(after,why) && coverage.Assigned()==20); // Paid mail still covers demand.
+    assert(!coverage.Add(task,why) && why=="guild_procurement_coverage_revision_conflict");
+    after.phase=Phase::Completed;
+    assert(!coverage.Add(after,why)); // A conflicting same-revision projection is not proof.
+    ++after.revision;
+    assert(coverage.Add(after,why) && coverage.Assigned()==0); // Verified terminal replacement.
+    auto second=task;second.id=second.root="16959684-2f82-4d71-879a-b1455cefdba2";
+    auto otherGoal=job;otherGoal.goal="another_copper_goal";otherGoal.donor=45;
+    second.actor=otherGoal.donor;second.sourceKey=GuildProcurementSourceKey(otherGoal);
+    second.checkpoint.data=EncodeGuildProcurementJob(otherGoal);
+    assert(coverage.Add(second,why) && coverage.Assigned()==20); // Shared native bank, not per-goal double orders.
+    auto third=task;third.id=third.root="ae830df2-0ab5-4b0f-815f-48636d3a01e7";
+    auto otherItem=job;++otherItem.entry;third.sourceKey=GuildProcurementSourceKey(otherItem);
+    third.checkpoint.data=EncodeGuildProcurementJob(otherItem);
+    assert(coverage.Add(third,why) && coverage.Assigned()==20);
+    otherItem=job;++otherItem.guild;third.checkpoint.data=EncodeGuildProcurementJob(otherItem);
+    third.sourceKey=GuildProcurementSourceKey(otherItem);
+    assert(coverage.Add(third,why) && coverage.Assigned()==20);
+    third=task;third.id=third.root="ae830df2-0ab5-4b0f-815f-48636d3a01e7";third.mode=Mode::Observe;
+    assert(coverage.Add(third,why) && coverage.Assigned()==20);
+    GuildProcurementCoverage excluded(job.guild,job.entry,task.id);
+    assert(excluded.Add(task,why) && excluded.Assigned()==0); // Own demand is validated against other assignments.
+    auto invalidTask=task;invalidTask.revision=0;
+    assert(!coverage.Add(invalidTask,why) && why=="guild_procurement_coverage_identity_invalid");
+    invalidTask=task;invalidTask.checkpoint.data="{}";
+    assert(!coverage.Add(invalidTask,why)); // Corrupt accepted demand cannot silently disappear.
+    Task unrelated;unrelated.source="profession";
+    assert(coverage.Add(unrelated,why) && coverage.Assigned()==20);
+    GuildProcurementCoverage large(job.guild,job.entry,"");
+    auto huge=job;huge.quantity=UINT32_MAX;
+    third=task;third.checkpoint.data=EncodeGuildProcurementJob(huge);
+    assert(large.Add(third,why));
+    third.id=third.root="ae830df2-0ab5-4b0f-815f-48636d3a01e7";
+    assert(large.Add(third,why) && large.Assigned()==2ULL*UINT32_MAX);
 }
