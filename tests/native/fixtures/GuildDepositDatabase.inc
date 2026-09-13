@@ -26,7 +26,7 @@ static void GuildDepositDatabase(Connection& db) {
     native.state=OperationState::Verified;native.nativeReference="guild_delivery:12";
     native.evidence="native_guild_deposit_items_and_stock_observed";
     assert(db.Write(ConsumedOperationWrite(task,4,native,rid(5),"{\"source_count\":4,\"bank_count\":6}",{{item,4}}).journal));
-    assert(db.Execute("CREATE TABLE guild_society_supply_delivery(delivery_id BIGINT PRIMARY KEY,guild_id INT,goal_id VARCHAR(64),donor_guid INT,carrier_guid INT,item_entry INT,quantity INT,mail_id INT,phase VARCHAR(24),deposited_quantity INT)"));
+    assert(db.Execute("CREATE TABLE guild_society_supply_delivery(delivery_id BIGINT PRIMARY KEY,guild_id INT,goal_id VARCHAR(64),donor_guid INT,carrier_guid INT,item_entry INT,quantity INT,mail_id INT,phase VARCHAR(24),deposited_quantity INT,item_guid INT)"));
     assert(db.Execute("CREATE TABLE guild_society_supply_goal(guild_id INT,goal_id VARCHAR(64) PRIMARY KEY,state VARCHAR(24),request_kind VARCHAR(16),item_entry INT,required_quantity INT,reserved_quantity INT)"));
     assert(db.Execute("CREATE TABLE guild_society_supply_execution(guild_id INT PRIMARY KEY,enabled INT)"));
     assert(db.Execute("CREATE TABLE guild_bank_item(guildid INT,item_guid INT PRIMARY KEY,item_entry INT)"));
@@ -38,7 +38,7 @@ static void GuildDepositDatabase(Connection& db) {
     assert(db.Execute("INSERT INTO guild_society_supply_execution VALUES(31,1)"));
     const auto proof=GuildDepositNativeProof(q,task,4,4,6,500);
     assert(db.Scalar(proof).empty()); // No native delivery receipt.
-    assert(db.Execute("INSERT INTO guild_society_supply_delivery VALUES(12,31,'guild_database_fixture',798,798,2770,4,0,'completed',4)"));
+    assert(db.Execute("INSERT INTO guild_society_supply_delivery VALUES(12,31,'guild_database_fixture',798,798,2770,4,0,'completed',4,798001)"));
     assert(db.Scalar(proof)==task.id);
     assert(db.Execute("UPDATE guild_society_supply_goal SET state='cancelled'"));assert(db.Scalar(proof).empty());
     assert(db.Execute("UPDATE guild_society_supply_delivery SET phase='cancelled',deposited_quantity=0"));

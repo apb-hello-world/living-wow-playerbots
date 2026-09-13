@@ -360,7 +360,9 @@ bool PlayerbotGuildSupplies::ReadDeliveryJob(uint64_t id,uint32_t actor,LivingAc
     if(!sLivingActivityCoordinator.OnWorldThread() || !state_->ready)return false;
     const auto found=state_->deliveries.find(id);if(found==state_->deliveries.end())return false;
     const auto& d=found->second;
-    if(d.carrier!=actor || d.phase!="carried" || !d.entry){blocker="guild_delivery_carried_item_leg_required";return false;}
+    if(d.carrier!=actor || (d.phase!="carried" && d.phase!="mailed") || !d.entry) {
+        blocker="guild_delivery_native_item_leg_required";return false;
+    }
     job={d.id,d.guild,d.donor,d.entry,d.quantity,d.mail,d.goal,false};
     if(!LivingActivity::ValidGuildDeliveryJob(job)){blocker="guild_delivery_native_identity_invalid";job={};return false;}
     blocker.clear();return true;
@@ -400,21 +402,47 @@ bool PlayerbotGuildSupplies::ReadManagedDeposit(const LivingActivity::Task& task
 bool PlayerbotGuildSupplies::AllowsManagedClaim(const LivingActivity::ResourceClaim& claim) const {
     using namespace LivingActivity;
     if(!sLivingActivityCoordinator.OnWorldThread() || claim.copper || claim.state!="held" || !claim.quantity ||
-        claim.location!="bags" || claim.nativeReference)return false;
+        (claim.location!="bags" && claim.location!="mail"))return false;
     const auto task=sLivingActivityCoordinator.ReadSavedTask(claim.task);GuildDeliveryJob job;std::string why;
     if(!task || task->actor!=claim.actor || !IsManagedGuildDelivery(*task) || !ValidateGuildDeliveryTask(*task,why) ||
         !DecodeGuildDeliveryJob(task->checkpoint.data,job,why) || job.money || job.entry!=claim.itemEntry)return false;
     const auto found=state_->deliveries.find(job.delivery);
     if(found==state_->deliveries.end())return false;
     const auto& d=found->second;
-    if(d.phase!="carried" || d.carrier!=claim.actor || d.guild!=job.guild || d.goal!=job.goal ||
+    if(d.carrier!=claim.actor || d.guild!=job.guild || d.goal!=job.goal ||
         d.donor!=job.donor || d.mail!=job.incomingMail || d.quantity!=job.quantity || d.deposited>=d.quantity ||
-        claim.quantity>d.quantity-d.deposited || (!d.mail && d.item!=claim.itemGuid))return false;
+        claim.quantity>d.quantity-d.deposited)return false;
+    if(claim.location=="mail") {
+        if(d.phase!="mailed" || !d.mail || claim.nativeReference!=d.mail || d.item!=claim.itemGuid ||
+            d.deposited || claim.quantity!=d.quantity)return false;
+    } else if(d.phase!="carried" || claim.nativeReference || (!d.mail && d.item!=claim.itemGuid))return false;
     // The legacy entry-wide reservation is waived only for its exact saved
     // owner. Another delivery of the same entry remains conservatively held.
     for(const auto& other:state_->deliveries) if(other.first!=d.id && !SupplyTerminal(other.second.phase) &&
         other.second.carrier==claim.actor && other.second.entry==claim.itemEntry)return false;
     return true;
+}
+bool PlayerbotGuildSupplies::ReadManagedMail(const LivingActivity::Task& task,LivingActivity::ResourceClaim& claim,
+    std::string& blocker) const {
+    using namespace LivingActivity;
+    claim={};GuildDeliveryJob job,native;auto reject=[&](const char* why){blocker=why;return false;};
+    if(!sLivingActivityCoordinator.OnWorldThread() || !state_->ready || !IsManagedGuildDelivery(task) ||
+        !ValidateGuildDeliveryTask(task,blocker) || !DecodeGuildDeliveryJob(task.checkpoint.data,job,blocker) ||
+        !ReadDeliveryJob(job.delivery,task.actor,native,blocker))return false;
+    if(job.money || !job.incomingMail || EncodeGuildDeliveryJob(job)!=EncodeGuildDeliveryJob(native))
+        return reject("guild_delivery_mail_identity_changed");
+    const auto& d=state_->deliveries.at(job.delivery);
+    if(d.phase!="mailed")return reject("guild_delivery_mail_already_collected");
+    if(d.deposited || !d.item)return reject("guild_delivery_mail_credit_requires_reconciliation");
+    // Collection is personal custody of an already accepted attachment, not
+    // permission to deposit. A revoked guild duty must not erase owned mail.
+    auto* actor=Online(task.actor);auto* mail=actor?actor->GetMail(d.mail):nullptr;
+    if(!mail || mail->state==MAIL_STATE_DELETED || mail->sender!=d.donor ||
+        mail->receiverGuid!=actor->GetObjectGuid() || mail->COD || mail->expire_time<=time(nullptr))
+        return reject("guild_delivery_native_mail_changed");
+    claim.task=task.id;claim.actor=task.actor;claim.itemGuid=d.item;claim.itemEntry=d.entry;
+    claim.quantity=d.quantity;claim.state="held";claim.location="mail";claim.nativeReference=d.mail;
+    blocker.clear();return true;
 }
 bool PlayerbotGuildSupplies::BeginManagedDeposit(const LivingActivity::GuildDepositQuote& q) {
     if(!sLivingActivityCoordinator.OnWorldThread() || !LivingActivity::ValidGuildDepositQuote(q) ||

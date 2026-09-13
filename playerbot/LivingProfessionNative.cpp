@@ -96,7 +96,7 @@ namespace LivingActivity {
         std::vector<ProfessionReagent>& items,std::string& blocker,std::string* unavailable) {
         if (unavailable) unavailable->clear();
         if (!ReadTaskItemRequirements(task,items,blocker)) return false;
-        if (IsRecipeLearningTask(task)) return true;
+        if (IsRecipeLearningTask(task) || IsManagedGuildDelivery(task)) return true;
         std::vector<ProfessionReagent> tools;std::string missing;
         if (!ReadNativeProfessionTools(actor,task,tools,missing,blocker)) return false;
         if (unavailable) *unavailable=missing;

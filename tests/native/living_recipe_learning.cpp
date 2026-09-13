@@ -57,6 +57,14 @@ int main() {
     assert(!MatchesRecipeBookPurchase(service,6326,2,blocker));
     auto wrongDemand=service;wrongDemand.checkpoint.data="{}";
     assert(!MatchesRecipeBookPurchase(wrongDemand,6326,1,blocker));
+    auto guild=task;GuildDeliveryJob delivery{91,4,79,2770,4,992,"supplies",false};
+    guild.source="guild_delivery";guild.sourceKey=GuildDeliverySourceKey(delivery,79);
+    guild.kind=Kind::GuildDelivery;guild.priority=Priority::Delivery;guild.accepted=true;
+    guild.checkpoint.data=EncodeGuildDeliveryJob(delivery);guild.checkpoint.step="profession_service_mail";
+    assert(ReadTaskItemRequirements(guild,items,blocker) && items==std::vector<ProfessionReagent>({{2770,4}}));
+    assert(!IsProfessionJob(guild) && !IsRecipeLearningTask(guild));
+    auto badGuild=guild;badGuild.sourceKey="unrelated";assert(!ReadTaskItemRequirements(badGuild,items,blocker));
+    badGuild=guild;badGuild.accepted=false;assert(!ReadTaskItemRequirements(badGuild,items,blocker));
     wrongDemand=service;wrongDemand.source="guild_supply";wrongDemand.checkpoint.step="guild_supply";
     assert(!MatchesRecipeBookPurchase(wrongDemand,6326,1,blocker));
     auto changed=task;changed.checkpoint.data=EncodeRecipeLearningJob({6325,7751,185,483});

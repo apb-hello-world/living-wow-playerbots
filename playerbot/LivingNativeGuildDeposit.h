@@ -11,6 +11,10 @@ class NativeGuildDeliveryReservation final : public NativeReservationAdapter {
 public:
     bool ValidatePurpose(Player&,const ReservationRequest&,std::string&) override;
 };
+class NativeGuildMailReservation final : public NativeReservationAdapter {
+public:
+    bool ValidatePurpose(Player&,const ReservationRequest&,std::string&) override;
+};
 class NativeGuildDeposit final : public NativeOperationAdapter {
 public:
     explicit NativeGuildDeposit(GuildDepositQuote value):quote(std::move(value)) {}

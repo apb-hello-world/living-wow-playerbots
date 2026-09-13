@@ -103,6 +103,7 @@ public:
 #include "fixtures/RecipeLearningDatabase.inc"
 #include "fixtures/EnchantWorkflowDatabase.inc"
 #include "fixtures/GuildDepositDatabase.inc"
+#include "fixtures/GuildMailDatabase.inc"
 int main() {
     Connection db;
     Task task; task.id = task.root = Id; task.actor = task.context.actor = 497;
@@ -718,5 +719,6 @@ int main() {
     ProfessionInterruptedDatabase(db);
     EnchantWorkflowDatabase(db);
     GuildDepositDatabase(db);
+    GuildMailDatabase(db);
     std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history, skill-job settlement and exact-row legacy handoff; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

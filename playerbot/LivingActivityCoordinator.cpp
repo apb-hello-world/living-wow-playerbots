@@ -164,7 +164,9 @@ namespace {
         for (const auto& claim : claims) if (claim.state=="held" && claim.location=="mail") {
             NativeResourceBalance balance;
             if (ReadNativeMailBalance(bot,claim,balance) && (!admission ||
-                (!sPlayerbotActionBroker.IsItemReserved(claim.itemGuid) && !sGuildSupplies.ReservedEntry(actor,claim.itemEntry))))
+                (!sPlayerbotActionBroker.ReservedItemsView()->Item(claim.itemGuid) &&
+                 ((!sGuildSupplies.Reserved(claim.itemGuid) && !sGuildSupplies.ReservedEntry(actor,claim.itemEntry)) ||
+                  sGuildSupplies.AllowsManagedClaim(claim)))))
                 owned.emplace(claim.itemGuid,balance);
         }
         std::vector<NativeResourceBalance> result;
@@ -279,7 +281,7 @@ struct LivingActivityCoordinator::State {
     GuildSaveFence guildSaveHolds;
     struct GuildDeliveryRead {
         uint64_t revision=0,retryAt=0,lastRejected=0;
-        uint32_t deposited=0,failures=0;
+        uint32_t deposited=0,failures=0,unresolved=0;
         bool pending=false,complete=false;
         std::string phase,blocker;
     };
@@ -1984,6 +1986,14 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             if (!PlanNativeMailCollection(*bot,*saved,claim,quote,blocker)) {
                 if(blocker=="profession_mailbox_travel_required") return beginService(ServiceDestination::Mailbox);
                 if(blocker=="profession_mail_single_destination_required")return prepareCapacity();
+                if(blocker=="profession_mail_delivery_pending") {
+                    const auto* mail=bot->GetMail(uint32_t(claim.nativeReference));
+                    if(!mail || uint64_t(mail->deliver_time)>UINT64_MAX/1000)return stop("profession_mail_delivery_time_invalid");
+                    TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
+                    ++request.task.revision;request.task.phase=Phase::WaitingExternal;request.task.updatedAtMs=NowMs();
+                    request.task.retryAtMs=uint64_t(mail->deliver_time)*1000;request.task.checkpoint.blocker=blocker;
+                    request.receipt=NewId();return stop(SubmitTask(request).blocker);
+                }
                 return stop(blocker);
             }
             const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_mail_preparation");

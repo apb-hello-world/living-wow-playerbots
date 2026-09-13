@@ -44,7 +44,9 @@ NativeItemStack Stack(Player& actor,const Item* item) {
         item->GetContainer()?item->GetContainer()->GetGUIDLow():0,item->GetSlot()};
 }
 bool ProtectedLegacy(Player& actor,const ResourceClaim& c) {
-    return sPlayerbotActionBroker.IsItemReserved(c.itemGuid) || sGuildSupplies.ReservedEntry(c.actor,c.itemEntry) ||
+    return sPlayerbotActionBroker.ReservedItemsView()->Item(c.itemGuid) ||
+        ((sGuildSupplies.Reserved(c.itemGuid) || sGuildSupplies.ReservedEntry(c.actor,c.itemEntry)) &&
+         !sGuildSupplies.AllowsManagedClaim(c)) ||
         ai::ItemUsageValue::IsNeededForQuest(&actor,c.itemEntry,true);
 }
 }
@@ -74,6 +76,12 @@ bool PlanNativeMailCollection(Player& actor,const Task& task,const ResourceClaim
         return reject("profession_mail_safety_pause");
     NativeResourceBalance balance;
     if (c.task!=task.root || !ReadNativeMailBalance(actor,c,balance)) return reject("profession_mail_attachment_requires_reconciliation");
+    if(IsManagedGuildDelivery(task)) {
+        ResourceClaim exact;
+        if(!sGuildSupplies.ReadManagedMail(task,exact,blocker))return false;
+        exact.id=c.id;exact.revision=c.revision;
+        if(!SameResourceClaim(c,exact))return reject("guild_delivery_mail_claim_changed");
+    }
     const auto* mail=actor.GetMail(uint32_t(c.nativeReference));
     if (mail->COD) return reject("profession_cod_material_requires_explicit_acceptance");
     if (mail->deliver_time>time(nullptr)) return reject("profession_mail_delivery_pending");
@@ -169,12 +177,12 @@ NativeObservation NativeMailCollection::ExecuteNative(Player& actor,const Operat
     }
     return out;
 }
-std::string NativeMailCollection::PersistedNativeProof(Player& actor,const OperationRequest&,const Task& outcome) const {
+std::string NativeMailCollection::PersistedNativeProof(Player& actor,const OperationRequest& request,const Task& outcome) const {
     const auto survivingGuid=quote.mergeGuid ? quote.mergeGuid : quote.guid;
     const auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,survivingGuid));
     if (!item) return {};
     const auto bag=item->GetContainer() ? item->GetContainer()->GetGUIDLow() : 0;
-    return "SELECT "+SqlValue(outcome.id)+','+std::to_string(outcome.revision)+
+    std::string proof="SELECT "+SqlValue(outcome.id)+','+std::to_string(outcome.revision)+
         " FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+std::to_string(quote.actor)+
         " AND v.item="+std::to_string(survivingGuid)+" AND v.item_template="+std::to_string(quote.entry)+
         " AND v.bag="+std::to_string(bag)+" AND v.slot="+std::to_string(item->GetSlot())+
@@ -186,5 +194,19 @@ std::string NativeMailCollection::PersistedNativeProof(Player& actor,const Opera
         " AND m.expire_time="+std::to_string(quote.expiresAt)+')'+
         " AND (SELECT COUNT(*) FROM mail_items mi WHERE mi.mail_id="+std::to_string(quote.mail)+")="+std::to_string(quote.attachmentsBefore-1)+
         " AND EXISTS(SELECT 1 FROM characters c WHERE c.guid="+std::to_string(quote.actor)+" AND c.money="+std::to_string(quote.moneyBefore)+')';
+    if(IsManagedGuildDelivery(request.transition.task)) {
+        GuildDeliveryJob job;std::string blocker;
+        if(!DecodeGuildDeliveryJob(request.transition.task.checkpoint.data,job,blocker) || !job.incomingMail)return {};
+        // The existing native mail handler records the delivery's collection
+        // in this same transaction. A bag increase alone cannot credit a parcel.
+        proof+=" AND EXISTS(SELECT 1 FROM guild_society_supply_delivery d JOIN mail m ON m.id=d.mail_id"
+            " WHERE d.delivery_id="+std::to_string(job.delivery)+" AND d.guild_id="+std::to_string(job.guild)+
+            " AND d.goal_id="+SqlValue(job.goal)+" AND d.donor_guid="+std::to_string(job.donor)+
+            " AND d.carrier_guid="+std::to_string(quote.actor)+" AND d.mail_id="+std::to_string(job.incomingMail)+
+            " AND d.item_guid="+std::to_string(quote.guid)+" AND d.item_entry="+std::to_string(job.entry)+
+            " AND d.quantity="+std::to_string(job.quantity)+" AND d.deposited_quantity=0 AND d.phase='carried'"
+            " AND m.sender=d.donor_guid AND m.receiver=d.carrier_guid)";
+    }
+    return proof;
 }
 }

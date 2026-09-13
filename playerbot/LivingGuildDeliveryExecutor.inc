@@ -33,8 +33,14 @@ AdmissionResult LivingActivityCoordinator::AdmitGuildDelivery(uint32_t actor,con
     task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
     task.checkpoint.data=EncodeGuildDeliveryJob(job);task.checkpoint.step="guild_delivery_prepare";
     GuildDepositQuote current;std::string why;
-    if(!sGuildSupplies.ReadManagedDeposit(task,current,why))return reject(AdmissionCode::NotReady,why);
-    if(current.deposited)return reject(AdmissionCode::ReconciliationRequired,"guild_delivery_prior_credit_requires_import");
+    if(job.incomingMail) {
+        ResourceClaim mail;
+        if(!sGuildSupplies.ReadManagedMail(task,mail,why))return reject(AdmissionCode::ReconciliationRequired,why);
+        task.checkpoint.step="guild_mail_prepare";
+    } else {
+        if(!sGuildSupplies.ReadManagedDeposit(task,current,why))return reject(AdmissionCode::NotReady,why);
+        if(current.deposited)return reject(AdmissionCode::ReconciliationRequired,"guild_delivery_prior_credit_requires_import");
+    }
     request.receipt=SourceId("guild_delivery_admission",task.id);return SubmitTask(request);
 }
 LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceGuildDelivery(uint32_t actor,const std::string& id) {
@@ -52,6 +58,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     for(const auto& pending:state->pending)if(pending.task.actor==actor)return stop("guild_delivery_transition_pending");
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
     if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || !bot->GetMap())return stop("guild_delivery_actor_unavailable");
+    if(const auto service=DispatchPendingItemService(actor,id))return stop(service->blocker);
     for(const auto& row:state->operations)if(row.second.request.transition.task.actor==actor) {
         if(row.second.request.transition.task.id!=id || row.second.request.kind!="guild_bank_deposit")
             return stop("guild_delivery_other_operation_pending");
@@ -72,7 +79,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         request.task.checkpoint.blocker.clear();request.task.retryAtMs=0;if(step)request.task.checkpoint.step=step;
         return stop(SubmitTask(request).blocker);
     };
-    if((saved->phase==Phase::Verifying || saved->phase==Phase::Reconciling) && saved->checkpoint.step=="guild_bank_deposit") {
+    const bool serviceResult=saved->checkpoint.step=="guild_bank_deposit" || saved->checkpoint.step=="profession_mail_collect" ||
+        saved->checkpoint.step=="profession_capacity_sale" || saved->checkpoint.step=="profession_capacity_bank";
+    if((saved->phase==Phase::Verifying || saved->phase==Phase::Reconciling) && serviceResult) {
         auto found=state->guildDeliveryReads.find(id);
         if(found==state->guildDeliveryReads.end()) {
             for(auto it=state->guildDeliveryReads.begin();it!=state->guildDeliveryReads.end();) {
@@ -92,7 +101,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             read.revision=saved->revision;read.pending=true;state->ioPending=true;const auto revision=saved->revision;
             const std::string query="SELECT d.phase,d.deposited_quantity,(SELECT COUNT(*) FROM living_activity_operation o WHERE o.task_id="+
                 SqlValue(id)+" AND o.state='rejected'),(SELECT COALESCE(MAX(o.updated_at_ms),0) FROM living_activity_operation o WHERE o.task_id="+
-                SqlValue(id)+" AND o.state='rejected') FROM guild_society_supply_delivery d WHERE d.delivery_id="+
+                SqlValue(id)+" AND o.state='rejected'),(SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
+                " WHERE t.actor_guid="+std::to_string(actor)+" AND o.state IN ('intent','reconciling')) FROM guild_society_supply_delivery d WHERE d.delivery_id="+
                 std::to_string(job.delivery)+" AND d.guild_id="+std::to_string(job.guild)+" AND d.goal_id="+SqlValue(job.goal)+
                 " AND d.carrier_guid="+std::to_string(actor)+" AND d.donor_guid="+std::to_string(job.donor)+
                 " AND d.item_entry="+std::to_string(job.entry)+" AND d.quantity="+std::to_string(job.quantity)+
@@ -101,24 +111,28 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                 state->ioPending=false;const auto found=state->guildDeliveryReads.find(id);
                 if(found==state->guildDeliveryReads.end())return;
                 auto& read=found->second;read.pending=false;if(read.revision!=revision)return;
-                if(!rows || rows->GetFieldCount()!=4){read.blocker="guild_delivery_native_record_missing";read.retryAt=NowMs()+30000;return;}
+                if(!rows || rows->GetFieldCount()!=5){read.blocker="guild_delivery_native_record_missing";read.retryAt=NowMs()+30000;return;}
                 auto* f=rows->Fetch();read.phase=f[0].GetCppString();read.deposited=f[1].GetUInt32();read.failures=f[2].GetUInt32();
-                read.lastRejected=f[3].GetUInt64();read.complete=true;
+                read.lastRejected=f[3].GetUInt64();read.unresolved=f[4].GetUInt32();read.complete=true;
             },query.c_str())) {state->ioPending=false;read.pending=false;read.retryAt=NowMs()+30000;
                 read.blocker="guild_delivery_database_unavailable";return stop(read.blocker);}
             return stop("guild_delivery_receipt_read_pending");
         }
+        if(read.unresolved)return stop("guild_delivery_operation_requires_reconciliation");
         if(read.phase=="completed" && read.deposited==job.quantity) {
             UnsettledClaimBatch claims;GuildDeliverySettlement settled;
             if(!ReadTaskClaims(actor,id,saved->revision,claims,blocker) ||
-                !PrepareGuildDeliverySettlement(*saved,current,claims,NowMs(),SourceId("guild_delivery_settlement",id),settled,blocker))return stop(blocker);
+                !PrepareGuildDeliverySettlement(*saved,current,claims,NowMs(),SourceId("guild_delivery_settlement",id),settled,blocker,
+                    NativeClaimBalances(*bot,claims.claims,false)))return stop(blocker);
             if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
                 return stop("guild_delivery_settlement_backpressure");
             State::Pending write;write.task=std::move(settled.task);write.plan=std::move(settled.plan);
+            write.claims=std::move(settled.claims);
             write.admissionReceipt=SourceId("guild_delivery_settlement",id);
             state->pending.push_back(std::move(write));state->nextWork=0;return stop("guild_delivery_settlement_pending");
         }
-        if(read.phase!="carried" || read.deposited>=job.quantity)return stop("guild_delivery_native_state_requires_reconciliation");
+        if((read.phase!="carried" && !(read.phase=="mailed" && job.incomingMail && !read.deposited)) || read.deposited>=job.quantity)
+            return stop("guild_delivery_native_state_requires_reconciliation");
         const auto retry=GuildDepositRetryAt(read.failures,read.lastRejected);
         if(retry>NowMs()) {
             TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;request.receipt=NewId();
@@ -136,6 +150,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(!(saved->context==current))return advance(Phase::Reconciling);
     if(saved->phase==Phase::Queued || saved->phase==Phase::Reconciling || saved->phase==Phase::Paused ||
         saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal)return advance(Phase::Preparing);
+    ServiceDestination preparation;
+    if(ParseServiceStep(saved->checkpoint.step,preparation) && preparation!=ServiceDestination::GuildBank)
+        return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.entry,job.quantity}).blocker);
     if(saved->phase==Phase::Traveling) {
         const auto travel=sPlayerbotOrganicEconomy.ReachSavedService(actor,id,saved->revision,ServiceDestination::GuildBank);
         const bool pause=travel.blocker=="recipe_service_safety_pause";
@@ -152,6 +169,26 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return stop(travel.blocker);
     }
     if(saved->phase!=Phase::Preparing)return stop("guild_delivery_preparation_required");
+    if(job.incomingMail) {
+        ResourceClaim incoming;
+        if(sGuildSupplies.ReadManagedMail(*saved,incoming,blocker)) {
+            UnsettledClaimBatch claims;
+            if(!ReadTaskClaims(actor,id,saved->revision,claims,blocker))return stop(blocker);
+            for(const auto& claim:claims.claims)if(claim.location=="mail") {
+                incoming.id=claim.id;incoming.revision=claim.revision;
+                if(!SameResourceClaim(incoming,claim))return stop("guild_delivery_other_mail_claim_requires_reconciliation");
+                return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.entry,job.quantity}).blocker);
+            }
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"guild_mail_reservation");
+            if(!grant.Permitted())return stop(grant.blocker);
+            incoming.id=NewId();ReservationRequest request;
+            request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+            ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+            request.authorization=grant.action;request.changes.push_back({incoming,0});NativeGuildMailReservation adapter;
+            return stop(SubmitResourceReservation(request,adapter).blocker);
+        }
+        if(blocker!="guild_delivery_mail_already_collected")return stop(blocker);
+    }
     GuildDepositQuote quote;ResourceClaim held;
     if(!PlanNativeGuildDeposit(*bot,*saved,quote,held,blocker)) {
         if(blocker=="guild_bank_travel_required" || (blocker=="guild_delivery_safety_or_arrival_wait" && !bot->IsStopped()))

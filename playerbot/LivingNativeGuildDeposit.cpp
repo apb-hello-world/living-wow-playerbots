@@ -3,6 +3,7 @@
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingServiceExecution.h"
+#include "LivingNativeMailCollection.h"
 #include "PlayerbotGuildSupplies.h"
 #include "PlayerbotGuildGovernance.h"
 #include "PlayerbotActionBroker.h"
@@ -101,6 +102,18 @@ bool NativeGuildDeliveryReservation::ValidatePurpose(Player& actor,const Reserva
         if(blocker.empty())blocker="guild_delivery_exact_reservation_required";return false;
     }
     return FreshGoal(q) ? true : (blocker="guild_delivery_goal_changed",false);
+}
+bool NativeGuildMailReservation::ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& blocker) {
+    const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);
+    ResourceClaim exact;NativeResourceBalance native;
+    if(!saved || saved->revision!=request.transition.expectedRevision || request.changes.size()!=1 ||
+        request.changes[0].expectedRevision || request.changes[0].after.revision!=1 ||
+        !sGuildSupplies.ReadManagedMail(*saved,exact,blocker))return false;
+    exact.id=request.changes[0].after.id;
+    if(!SameResourceClaim(exact,request.changes[0].after) || !ReadNativeMailBalance(actor,exact,native)) {
+        blocker="guild_delivery_mail_reservation_changed";return false;
+    }
+    blocker.clear();return true;
 }
 bool NativeGuildDeposit::ValidateNative(Player& actor,const OperationRequest& request,std::string& blocker) {
     const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);
