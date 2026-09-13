@@ -28,6 +28,7 @@
 #include "PlayerbotLoginMgr.h"
 #include "PlayerbotChatDirector.h"
 #include "LivingActivityCoordinator.h"
+#include "LivingBotLoginAdmission.h"
 #include "PlayerbotGuildSupplies.h"
 #include "Entities/Transports.h"
 
@@ -767,7 +768,10 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 elapsed, bool minimal)
     //Log in bots
     if (sRandomPlayerbotMgr.GetDatabaseDelay("CharacterDatabase") < 10 * IN_MILLISECONDS && !sPlayerbotAIConfig.asyncBotLogin && onlineBotCount < maxAllowedBotCount && maxLogins > 0)
     {
-        LoginScheduledBots(availableBots, onlineBotCount, maxAllowedBotCount, maxLogins);
+        LivingActivity::LoginScheduledBots(availableBots,onlineBotCount,maxAllowedBotCount,maxLogins,
+            [&](uint32 bot){return GetPlayerBot(bot)!=nullptr;},
+            [&](uint32 bot){return GetEventValue(bot,"login")!=0;},
+            [&](uint32 bot){return ProcessBot(bot);});
     }
 
     LoginFreeBots();
@@ -789,34 +793,6 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 elapsed, bool minimal)
     CharacterDatabase.AsyncPQuery(&RandomPlayerbotMgr::DatabasePing, sWorld.GetCurrentMSTime(), std::string("CharacterDatabase"), "SELECT 1");
 
     PlayerbotHolder::UpdateAIInternal(elapsed, minimal);
-}
-
-void RandomPlayerbotMgr::LoginScheduledBots(const std::list<uint32>& availableBots,
-    uint32 onlineBotCount, uint32 maximum, uint32 maxLogins)
-{
-    // Reserve existing in-flight logins before considering ANY new candidate.
-    // Otherwise a pending higher GUID is counted only after lower GUIDs have
-    // already occupied its slot. A successful queue operation also consumes a
-    // slot now, not on the next tick when the session eventually appears.
-    std::set<uint32> pending;
-    for (const auto bot : availableBots)
-        if (!GetPlayerBot(bot) && GetEventValue(bot, "login"))
-            pending.insert(bot);
-    if (onlineBotCount >= maximum || pending.size() >= maximum - onlineBotCount)
-        return;
-    onlineBotCount += uint32(pending.size());
-    for (const auto bot : availableBots)
-    {
-        if (onlineBotCount >= maximum || !maxLogins)
-            break;
-        if (GetPlayerBot(bot) || GetEventValue(bot, "login"))
-            continue;
-        if (ProcessBot(bot))
-        {
-            ++onlineBotCount;
-            --maxLogins;
-        }
-    }
 }
 
 void RandomPlayerbotMgr::ScaleBotActivity()
