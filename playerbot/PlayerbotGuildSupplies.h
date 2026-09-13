@@ -35,6 +35,10 @@ public:
     // per-tick guild scan and not dependent on an existing delivery parcel.
     bool ReadProcurementGoal(Player&,const LivingActivity::GuildProcurementJob&,
         LivingActivity::GuildProcurementGoalSnapshot&,std::string&) const;
+    // World-thread ACK only, after the exact atomic parcel/claim receipt. This
+    // is protection, not a second parcel or an execution grant.
+    bool ProtectProcurementHandoff(const LivingActivity::Task&,
+        const std::vector<LivingActivity::ResourceClaim>&);
     bool AllowsManagedClaim(const LivingActivity::ResourceClaim&) const;
     bool BeginManagedDeposit(const LivingActivity::GuildDepositQuote&);
     void EndManagedDeposit();

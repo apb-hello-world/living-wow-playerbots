@@ -48,6 +48,7 @@
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
+#include "LivingGuildProcurementHandoff.h"
 #include "PlayerbotOrganicEconomy.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -500,6 +501,8 @@ struct LivingActivityCoordinator::State {
         std::vector<ClaimReceiptChange> claims;
         std::shared_ptr<NativeSaveBatch> nativeSave;
         Task recipientTask; // Same atomic outbound-mail receipt, not another admission queue.
+        std::vector<ResourceClaim> procurementParcels;
+        ActivityLease custodyLease;
         uint64_t closureRefreshRevision=0; // Safe, journal-only no-effect proposal; never native work.
         bool observerRetirement=false;
     };
@@ -792,6 +795,12 @@ struct LivingActivityCoordinator::State {
             }
 #endif
             const auto accepted = SettleReceiptBatch(pending,count,healthy,receipts,NowMs(),[this](const Pending& acknowledgedWrite) {
+                if(!acknowledgedWrite.procurementParcels.empty() &&
+                    !sGuildSupplies.ProtectProcurementHandoff(acknowledgedWrite.task,acknowledgedWrite.procurementParcels)) {
+                    resources.BlockProjection();claimRestoreFailed=true;++invalidClaims;
+                    claimBlocker="guild_procurement_custody_projection_invalid";
+                    return; // Keep old resource/native-save holds; restart reconciles native custody.
+                }
                 bool claimProjectionValid=true;
                 if (!acknowledgedWrite.gainReservation.empty()) {
                     const auto installed=resources.CommitReservation(acknowledgedWrite.gainReservation);
@@ -832,6 +841,12 @@ struct LivingActivityCoordinator::State {
                 if (!acknowledgedWrite.admissionReceipt.empty())
                     admissionReceipts[acknowledgedWrite.task.id] = acknowledgedWrite.admissionReceipt;
                 else admissionReceipts.erase(acknowledgedWrite.task.id);
+                if(acknowledgedWrite.custodyLease.actor && claimProjectionValid) {
+                    const auto& held=acknowledgedWrite.custodyLease;
+                    authority.Release(held);HoldNativeSave(held.actor,false);
+                    const auto binding=bindings.find(held.actor);
+                    if(binding!=bindings.end())binding->second.publisher.Publish(authority.Read(held.actor));
+                }
                 if (!acknowledgedWrite.operation.empty()) {
                     auto operation = operations.find(acknowledgedWrite.operation);
                     MANGOS_ASSERT(operation != operations.end());
@@ -868,6 +883,12 @@ struct LivingActivityCoordinator::State {
                     // of retaining an optimistic cancellation forever.
                     guildDeliveryReads.erase(it->task.id);
                     executionBlockers[it->task.id]="guild_delivery_goal_changed_refresh_pending";
+                    if(it->custodyLease.actor) {
+                        authority.Release(it->custodyLease);HoldNativeSave(it->custodyLease.actor,false);
+                        const auto binding=bindings.find(it->custodyLease.actor);
+                        if(binding!=bindings.end())binding->second.publisher.Publish(authority.Read(it->custodyLease.actor));
+                        executionBlockers[it->task.id]="guild_procurement_handoff_changed_refresh_pending";
+                    }
                     it=pending.erase(it);++refreshed;
                 } else ++it;
             }
@@ -2993,6 +3014,37 @@ bool LivingActivityCoordinator::ValidateGuildProcurementDemand(const Task& task,
         blocker="guild_procurement_demand_changed_reconciliation_required";return false;
     }
     blocker.clear();return true;
+}
+LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::HandoffGuildProcurement(uint32_t actor,const std::string& id) {
+    ProfessionProgress result;auto stop=[&](const std::string& why){result.blocker=why;return result;};
+    if(!OnWorldThread() || !EffectEnforcementEnabled() || !ProfessionStoreReady())return stop("guild_procurement_store_unavailable");
+    const auto saved=ReadSavedTask(id);
+    if(!saved || saved->actor!=actor || !IsGuildProcurementTask(*saved))return stop("guild_procurement_saved_task_required");
+    if(saved->phase==Phase::Completed){result.completed=true;return result;}
+    if(state->executingTask!=id)return stop("guild_procurement_due_queue_required");
+    for(const auto& p:state->pending)if(p.task.actor==actor)return stop("guild_procurement_transition_pending");
+    for(const auto& p:state->operations)if(p.second.request.transition.task.actor==actor)return stop("guild_procurement_native_receipt_pending");
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || !bot->GetMap())return stop("guild_procurement_actor_unavailable");
+    if(DefersNativeSave(actor) || ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) ||
+        bot->GetMap()->IsDungeon() || bot->GetTradeData() || LivingServiceExecution::Busy(bot))return stop("guild_procurement_safety_pause");
+    std::string why;UnsettledClaimBatch claims;
+    if(!ValidateGuildProcurementDemand(*saved,why) || !ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
+    GuildProcurementHandoff handoff;
+    const auto receipt=SourceId("guild_procurement_handoff",id+":"+std::to_string(saved->revision));
+    if(!PrepareGuildProcurementHandoff(*saved,ReadNativeContext(*bot,state->policyRevision,state->boot),claims,
+        NativeClaimBalances(*bot,claims.claims,false),NowMs(),receipt,handoff,why))return stop(why);
+    if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+        return stop("guild_procurement_handoff_backpressure");
+    // The normal executor gate is still closed until admission/recovery is
+    // complete. Having this compiled handoff does not enable new purchases.
+    const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Guild),60000,"guild_procurement_handoff");
+    if(!grant.Permitted())return stop(grant.blocker);
+    State::Pending write;write.task=std::move(handoff.task);write.plan=std::move(handoff.plan);
+    write.claims=std::move(handoff.claims);write.procurementParcels=std::move(handoff.parcels);
+    write.custodyLease=grant.authority.lease;write.closureRefreshRevision=saved->revision;write.admissionReceipt=receipt;
+    state->HoldNativeSave(actor,true);state->pending.push_back(std::move(write));state->nextWork=0;
+    return stop("guild_procurement_handoff_receipt_pending");
 }
 AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request) {
     AdmissionResult result; result.task = request.task.id; result.revision = request.task.revision;

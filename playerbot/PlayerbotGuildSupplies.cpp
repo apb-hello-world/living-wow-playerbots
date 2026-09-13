@@ -127,6 +127,7 @@ struct PlayerbotGuildSupplies::State {
     std::map<uint32,uint64> moving;
     std::set<uint32> protectedItems;
     LivingActivity::LegacyResourcePublisher protection;
+    LivingActivity::LegacyResourceView durableProtection{{},{},true};
     std::vector<Service> services;
     std::map<uint32,bool> enabled;
     std::set<uint32> moneyEnabled;
@@ -177,14 +178,36 @@ struct PlayerbotGuildSupplies::State {
             escaped.c_str(),now,(unsigned long long)d.id,d.carrier,d.mail);
     }
     void PublishProtection() {
-        LivingActivity::LegacyResourceView view;
-        view.items=protectedItems;
+        LivingActivity::LegacyResourceView view=durableProtection;
+        view.items.insert(protectedItems.begin(),protectedItems.end());
         view.items.erase(0);
         for (const auto& pair:deliveries) {
             const auto& d=pair.second;
             if (!SupplyTerminal(d.phase) && d.carrier && d.entry) view.entries.emplace(d.carrier,d.entry);
         }
         protection.Replace(std::move(view));
+    }
+    void ReloadProtection() {
+        // The 256-row execution cache is NOT a complete custody view. Restore
+        // all native reservations before ordinary AI may touch possessions,
+        // including a crash after procurement committed but before its ACK.
+        // A sentinel distinguishes no parcels from query failure. Oversized or
+        // corrupt snapshots fail closed instead of exposing unprotected items.
+        auto rows=CharacterDatabase.PQuery("SELECT 0 AS marker,0 AS item,0 AS actor,0 AS entry,0 AS quantity,0 AS deposited "
+            "UNION ALL SELECT 1,d.item_guid,d.carrier_guid,d.item_entry,d.quantity,d.deposited_quantity "
+            "FROM guild_society_supply_delivery d WHERE d.phase NOT IN ('completed','cancelled','failed') LIMIT 20002");
+        LivingActivity::LegacyResourceView fresh;bool sentinel=false;unsigned count=0;
+        if(!rows || rows->GetFieldCount()!=6)fresh.blocked=true;
+        else do {
+            const auto* f=rows->Fetch();
+            if(!f[0].GetUInt32()){sentinel=true;continue;}
+            if(++count>20000 || !f[2].GetUInt32() || bool(f[1].GetUInt32())!=bool(f[3].GetUInt32()) ||
+                !f[4].GetUInt32() || f[5].GetUInt32()>f[4].GetUInt32()){fresh.blocked=true;break;}
+            if(!f[3].GetUInt32())continue; // Existing currency donations have no item identity.
+            fresh.items.insert(f[1].GetUInt32());fresh.entries.emplace(f[2].GetUInt32(),f[3].GetUInt32());
+        }while(rows->NextRow());
+        fresh.blocked=fresh.blocked || !sentinel;
+        durableProtection=std::move(fresh);
     }
     void Reload(uint32 now) {
         load=now+15;enabled.clear();
@@ -218,7 +241,7 @@ struct PlayerbotGuildSupplies::State {
             if(d.phase=="carried"&&d.mail&&Bot(carrier)&&carrier->IsInWorld())
                 for(auto* item:Inventory(carrier)) if(item&&item->GetEntry()==d.entry) protectedItems.insert(item->GetGUIDLow());
         }
-        PublishProtection();
+        ReloadProtection();PublishProtection();
     }
     bool Busy(uint32 guid) const {for(const auto& d:deliveries) if(!SupplyTerminal(d.second.phase)&&(d.second.carrier==guid||d.second.donor==guid)) return true;return false;}
     const Service* Destination(Player* p,bool mail,uint32 npcFlag=0) const {
@@ -309,7 +332,7 @@ struct PlayerbotGuildSupplies::State {
         return false;
     }
 };
-PlayerbotGuildSupplies::PlayerbotGuildSupplies():state_(new State) {}
+PlayerbotGuildSupplies::PlayerbotGuildSupplies():state_(new State) {state_->PublishProtection();}
 PlayerbotGuildSupplies::~PlayerbotGuildSupplies()=default;
 PlayerbotGuildSupplies& PlayerbotGuildSupplies::instance(){static PlayerbotGuildSupplies value;return value;}
 bool PlayerbotGuildSupplies::ReservedEntry(uint32 player,uint32 entry) const {
@@ -368,6 +391,26 @@ void PlayerbotGuildSupplies::RecordDeposit(uint32 guild,uint32 actor,uint32 entr
     // Called INSIDE native bank transaction. Restart cannot lose the proof or
     // credit an attempt that did not commit. Donor remains distinct from courier.
     CharacterDatabase.PExecute("UPDATE guild_society_supply_delivery SET phase=IF(deposited_quantity+%u>=quantity,'completed','carried'),deposited_quantity=deposited_quantity+%u,blocker='',updated_at=%u WHERE delivery_id=%llu AND phase='carried' AND deposited_quantity=%u",count,count,uint32(time(nullptr)),(unsigned long long)d.id,d.deposited);
+}
+bool PlayerbotGuildSupplies::ProtectProcurementHandoff(const LivingActivity::Task& task,
+    const std::vector<LivingActivity::ResourceClaim>& parcels) {
+    using namespace LivingActivity;
+    GuildProcurementJob job;std::string why;uint64_t amount=0;std::set<uint32_t> items;
+    if(!sLivingActivityCoordinator.OnWorldThread() || !ValidateGuildProcurementTask(task,why) ||
+        !DecodeGuildProcurementJob(task.checkpoint.data,job,why) || task.phase!=Phase::Completed ||
+        task.mode!=Mode::Active || task.checkpoint.step!="guild_procurement_handed_off" || parcels.empty() || parcels.size()>16)return false;
+    for(const auto& c:parcels) {
+        if(!ValidResourceClaim(c) || c.task!=task.id || c.actor!=task.actor || c.itemEntry!=job.entry ||
+            c.location!="bags" || c.state!="held" || c.nativeReference || c.copper ||
+            !items.insert(c.itemGuid).second || c.quantity>job.quantity || amount>job.quantity-c.quantity)return false;
+        amount+=c.quantity;
+    }
+    if(amount!=job.quantity)return false;
+    // This callback follows the journal receipt, BEFORE the old claims release.
+    // Until the indexed/native reload, protection bridges the execution cache.
+    state_->durableProtection.items.insert(items.begin(),items.end());
+    state_->durableProtection.entries.emplace(task.actor,job.entry);
+    state_->PublishProtection();state_->load=0;return true;
 }
 bool PlayerbotGuildSupplies::ReadProcurementGoal(Player& actor,const LivingActivity::GuildProcurementJob& job,
     LivingActivity::GuildProcurementGoalSnapshot& snapshot,std::string& blocker) const {

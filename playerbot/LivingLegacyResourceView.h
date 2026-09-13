@@ -14,8 +14,9 @@ namespace LivingActivity {
     struct LegacyResourceView {
         std::set<uint32_t> items;
         std::set<std::pair<uint32_t,uint32_t>> entries;
-        bool Item(uint32_t guid) const { return guid && items.count(guid); }
-        bool Entry(uint32_t actor,uint32_t entry) const { return actor && entry && entries.count({actor,entry}); }
+        bool blocked=false; // Incomplete native custody snapshot: protect, never guess.
+        bool Item(uint32_t guid) const { return guid && (blocked || items.count(guid)); }
+        bool Entry(uint32_t actor,uint32_t entry) const { return actor && entry && (blocked || entries.count({actor,entry})); }
     };
     class LegacyResourcePublisher {
     public:
@@ -27,7 +28,7 @@ namespace LivingActivity {
             if (!guid) return;
             std::lock_guard<std::mutex> lock(writer);
             const auto old=Inspect();
-            if (old->Item(guid)==held) return;
+            if (bool(old->items.count(guid))==held) return;
             auto next=std::make_shared<LegacyResourceView>(*old);
             if (held) next->items.insert(guid); else next->items.erase(guid);
             Store(std::move(next));
@@ -35,7 +36,7 @@ namespace LivingActivity {
         void Replace(LegacyResourceView next) {
             std::lock_guard<std::mutex> lock(writer);
             const auto old=Inspect();
-            if (old->items==next.items && old->entries==next.entries) return;
+            if (old->items==next.items && old->entries==next.entries && old->blocked==next.blocked) return;
             Store(std::make_shared<LegacyResourceView>(std::move(next)));
         }
     private:
