@@ -188,6 +188,7 @@ public:
         time_t EventTimeSyncTimer;
         time_t OfflineGroupBotsTimer;
         uint32 AddRandomBots();
+        void LoginScheduledBots(const std::list<uint32>& availableBots, uint32 onlineBotCount, uint32 maximum, uint32 maxLogins);
         bool ProcessBot(uint32 bot);
         void ScheduleRandomize(uint32 bot, uint32 time);
         void RandomTeleport(Player* bot);

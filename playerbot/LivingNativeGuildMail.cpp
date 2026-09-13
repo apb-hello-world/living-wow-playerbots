@@ -22,19 +22,23 @@ bool MayDeposit(Guild& guild,uint32_t actor) {
         if(guild.IsMemberHaveRights(actor,tab,GUILD_BANK_RIGHT_DEPOSIT_ITEM))return true;
     return false;
 }
-Player* EligibleRecipient(Player& sender,Guild& guild,Item& item,uint32_t actor) {
+Player* EligibleRecipient(Player& sender,Guild& guild,Item& item,uint32_t actor,std::string& blocker) {
+    blocker="guild_mail_no_deposit_recipient";
     auto* p=sRandomPlayerbotMgr.GetPlayerBot(actor);
     // A busy/dead bot can receive native mail without being interrupted. Its
     // queued collection/deposit still obeys all normal service safety checks.
     if(!p || p==&sender || !p->GetSession() || !p->GetPlayerbotAI() || p->isRealPlayer() ||
         !sPlayerbotAIConfig.IsInRandomAccountList(p->GetSession()->GetAccountId()) || !p->IsInWorld() ||
         p->GetGuildId()!=sender.GetGuildId() || p->GetTeam()!=sender.GetTeam() ||
-        !guild.GetMemberSlot(p->GetObjectGuid()) || !MayDeposit(guild,actor) || p->GetMailSize()>=50 ||
-        sGuildSupplies.ReservedEntry(actor,item.GetEntry()))return nullptr;
+        !guild.GetMemberSlot(p->GetObjectGuid()) || !MayDeposit(guild,actor))return nullptr;
+    if(p->GetMailSize()>=50){blocker="guild_mail_recipient_mailbox_full";return nullptr;}
+    if(sGuildSupplies.ReservedEntry(actor,item.GetEntry())) {
+        blocker="guild_mail_recipient_pending_delivery";return nullptr;
+    }
     // Capacity is an execution prerequisite, not a recipient identity right.
     // A full bank must not look like the guild has no deposit-capable member.
     // The recipient checks actual space before any native deposit operation.
-    return p;
+    blocker.clear();return p;
 }
 bool EmptyParcelSlot(Player& actor,Item& item,uint32_t quantity,uint16_t& result) {
     auto fits=[&](uint8_t bag,uint8_t slot) {
@@ -113,15 +117,25 @@ bool PlanNativeGuildMail(Player& actor,const Task& task,GuildMailQuote& q,std::v
         }
     }
     Player* receiver=nullptr;
-    if(selectedReceiver)receiver=EligibleRecipient(actor,*guild,*item,selectedReceiver);
+    std::string recipientBlocker="guild_mail_no_deposit_recipient";
+    auto eligible=[&](uint32_t guid) {
+        std::string reason;auto* candidate=EligibleRecipient(actor,*guild,*item,guid,reason);
+        // Keep the most actionable valid-recipient wait independent of roster
+        // iteration order. Neither transient wait revokes the member's rights.
+        if(!candidate && (reason=="guild_mail_recipient_pending_delivery" ||
+            (reason=="guild_mail_recipient_mailbox_full" && recipientBlocker=="guild_mail_no_deposit_recipient")))
+            recipientBlocker=reason;
+        return candidate;
+    };
+    if(selectedReceiver)receiver=eligible(selectedReceiver);
     else {
         auto consider=[&](Player* member) {
             const auto guid=member->GetGUIDLow();
-            if(!receiver || guid<receiver->GetGUIDLow())if(auto* candidate=EligibleRecipient(actor,*guild,*item,guid))receiver=candidate;
+            if(!receiver || guid<receiver->GetGUIDLow())if(auto* candidate=eligible(guid))receiver=candidate;
         };
         guild->BroadcastWorker(consider,&actor); // Native online guild members, not a realm-wide bot scan.
     }
-    if(!receiver)return reject("guild_mail_no_deposit_recipient");
+    if(!receiver)return reject(recipientBlocker.c_str());
     uint32_t money=0;
     if(!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,{task.actor,0,0,0,actor.GetMoney(),"money"},money,why))return false;
     if(money<30)return reject("guild_mail_insufficient_unreserved_postage");
