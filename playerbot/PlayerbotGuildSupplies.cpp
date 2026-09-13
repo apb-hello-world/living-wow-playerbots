@@ -841,13 +841,14 @@ void PlayerbotGuildSupplies::Update() {
             }
         }
     }
-    // One candidate per sweep, maximum one held delivery per bot. Claim only
-    // genuinely spare stacks; gathering/crafting/purchases are a later phase.
+    // Existing bounded producer only. Managed item requests become durable
+    // obligations; the shared due queue performs all acquisition and delivery.
     const auto bots=sRandomPlayerbotMgr.GetChatBotGuids();if(bots.empty()||s.deliveries.size()>=128) return;
     uint32 guid=0;Player* bot=nullptr;
     for(uint32 n=0;n<10;++n) {
         guid=*std::next(bots.begin(),s.cursor++%bots.size());Player* candidate=Online(guid);
-        if(candidate&&s.enabled[candidate->GetGuildId()]&&!s.Busy(guid)&&Safe(candidate)) {bot=candidate;break;}
+        if(candidate&&s.enabled[candidate->GetGuildId()]&&!s.Busy(guid)&&Safe(candidate) &&
+            (!sLivingActivityCoordinator.GuildDeliveryAdmissionsEnabled() || !sLivingActivityCoordinator.HasGuildSupplyCommitment(guid))) {bot=candidate;break;}
     }
     if(!bot) return;
     Guild* guild=sGuildMgr.GetGuildById(bot->GetGuildId());if(!guild||!guild->GetPurchasedTabs()||!sGuildGovernance.Allows(guild,"supplies")) return;
@@ -870,6 +871,11 @@ void PlayerbotGuildSupplies::Update() {
             const uint32 amount=std::min(need,DonationAllowance(bot,now));if(!amount) continue;
             if(!CharacterDatabase.DirectPExecute("INSERT INTO guild_society_supply_delivery (guild_id,goal_id,donor_guid,carrier_guid,item_guid,item_entry,quantity,created_at,updated_at) VALUES (%u,'%s',%u,%u,0,0,%u,%u,%u)",guild->GetId(),goalId.c_str(),guid,guid,amount,now,now)) return;
             s.Reload(now);return;
+        }
+        if(sLivingActivityCoordinator.GuildDeliveryAdmissionsEnabled()) {
+            const auto admitted=sLivingActivityCoordinator.AdmitGuildProcurement(guid,guild->GetId(),f[0].GetCppString(),entry);
+            if(admitted.code==LivingActivity::AdmissionCode::Pending || admitted.code==LivingActivity::AdmissionCode::Saved)return;
+            continue; // NEVER fall through to the old spare-stack claim path.
         }
         for(const auto& pair:s.deliveries) {const auto& d=pair.second;if(d.guild==guild->GetId()&&d.entry==entry&&!SupplyTerminal(d.phase)) transit+=d.quantity-d.deposited;}
         auto stock=bank.find(entry);const uint32 need=SupplyOutstanding(f[2].GetUInt32(),stock==bank.end()?0:stock->second,f[3].GetUInt32(),transit);

@@ -284,6 +284,7 @@ struct LivingActivityCoordinator::State {
         std::string professionTask, professionDecision;
         uint64_t professionRevision = 0, professionDecisionAt = 0;
         boost::property_tree::ptree purchaseSource;
+        boost::property_tree::ptree procurementCandidate;
         std::string purchaseSourceKey;
     };
     std::map<uint32_t, Binding> bindings;
@@ -612,6 +613,7 @@ struct LivingActivityCoordinator::State {
     bool ScheduledExecution(const Task& task) const {
         if(task.mode!=Mode::Active || !task.accepted || Terminal(task.phase))return false;
         if(IsManagedGuildDelivery(task))return true;
+        if(IsGuildProcurementTask(task))return true;
         if(IsRecipeLearningTask(task))return true;
         if(!IsProfessionJob(task))return false;
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
@@ -1531,6 +1533,7 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
             // Keep the last source choice across travel revisions, explicitly
             // labelled as a past observation, not current execution proof.
             if(!decision.purchaseSource.empty())p.add_child("last_purchase_source",decision.purchaseSource);
+            if(!decision.procurementCandidate.empty())p.add_child("last_guild_procurement_admission",decision.procurementCandidate);
             const auto task=state->cache.find(decision.professionTask);
             if (task!=state->cache.end() && task->second.actor==guid &&
                 task->second.revision==decision.professionRevision && decision.professionDecisionAt) {
@@ -2996,6 +2999,58 @@ AdmissionResult LivingActivityCoordinator::SettleRecipeLearning(uint32_t actor,c
     state->nextWork=0;return stop(AdmissionCode::Pending);
 }
 
+bool LivingActivityCoordinator::HasGuildSupplyCommitment(uint32_t actor) const {
+    if(!OnWorldThread() || !ProfessionStoreReady() || !state->quarantined.empty())return true;
+    auto holds=[&](const Task& t){return t.actor==actor && t.mode==Mode::Active && t.accepted &&
+        !Terminal(t.phase) && (IsGuildProcurementTask(t) || IsManagedGuildDelivery(t));};
+    const auto indexed=state->cachedByActor.find(actor);
+    if(indexed!=state->cachedByActor.end())for(const auto& id:indexed->second)if(holds(state->cache.at(id)))return true;
+    for(const auto& p:state->pending)if(holds(p.task) || holds(p.recipientTask))return true;
+    return false;
+}
+AdmissionResult LivingActivityCoordinator::AdmitGuildProcurement(uint32_t actor,uint32_t guild,const std::string& goal,uint32_t entry) {
+    AdmissionResult result;NativeGuildProcurementSource source;
+    auto observed=[&](const AdmissionResult& outcome) {
+        if(OnWorldThread()) {
+            const auto binding=state->bindings.find(actor);
+            if(binding!=state->bindings.end()) {
+                auto& p=binding->second.procurementCandidate;p.clear();p.put("transient",true);p.put("observed_at_ms",NowMs());
+                p.put("guild_id",guild);p.put("goal_id",goal);p.put("item_entry",entry);p.put("quantity",source.quantity);
+                p.put("source_kind",source.kind);p.put("source_reference",source.reference);p.put("estimated_copper",source.estimatedCopper);
+                p.put("task_id",outcome.task);p.put("outcome",Name(outcome.code));p.put("blocker",outcome.blocker);
+                p.put("native_acquisition_verified",false);
+            }
+        }
+        return outcome;
+    };
+    auto reject=[&](AdmissionCode code,const std::string& why){result.code=code;result.blocker=why;return observed(result);};
+    if(!GuildDeliveryAdmissionsEnabled())return reject(AdmissionCode::Disabled,"guild_procurement_admission_disabled");
+    if(HasGuildSupplyCommitment(actor))return reject(AdmissionCode::ConflictingWrite,"guild_supply_commitment_already_accepted");
+    GuildProcurementJob job{guild,actor,entry,1,goal,NewId()};
+    if(!ValidGuildProcurementJob(job))return reject(AdmissionCode::InvalidRequest,"guild_procurement_request_invalid");
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || !bot->GetMap() || NativeSafety(bot) ||
+        bot->GetMap()->IsDungeon() || bot->GetTradeData() || LivingServiceExecution::Busy(bot))
+        return reject(AdmissionCode::StaleContext,"guild_procurement_actor_not_safely_available");
+    const auto party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+    if(!party.empty())return reject(AdmissionCode::NotReady,party);
+    TaskRequest request;auto& task=request.task;
+    task.source="guild_procurement";task.sourceKey=GuildProcurementSourceKey(job);task.id=task.root=SourceId(task.source,task.sourceKey);
+    task.actor=actor;task.kind=Kind::GuildProcurement;task.mode=Mode::Active;task.phase=Phase::Queued;
+    task.priority=Priority::Delivery;task.accepted=true;task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    task.createdAtMs=task.updatedAtMs=NowMs();task.checkpoint.data=EncodeGuildProcurementJob(job);
+    uint32_t available=0;std::string why;
+    if(!ReadGuildProcurementAvailability(task,available,why))return reject(AdmissionCode::NotReady,why);
+    if(!available)return reject(AdmissionCode::NotReady,"guild_procurement_demand_already_covered");
+    if(!ReadNativeGuildProcurementSource(*bot,entry,available,source,why))return reject(AdmissionCode::NotReady,why);
+    if(!source.quantity || source.quantity>available)return reject(AdmissionCode::InvalidRequest,"guild_procurement_source_quantity_changed");
+    job.quantity=source.quantity;task.checkpoint.data=EncodeGuildProcurementJob(job);
+    task.checkpoint.step="guild_procurement_"+source.kind;
+    request.receipt=SourceId("guild_procurement_admission",task.id);
+    // No native purchase, parcel, reservation or route is created here. A
+    // subsequent sweep sees the pending/accepted root and cannot submit twice.
+    return observed(SubmitTask(request));
+}
 bool LivingActivityCoordinator::ReadGuildProcurementAvailability(const Task& task,uint32_t& available,std::string& blocker) {
     available=0;GuildProcurementJob job;
     if(!OnWorldThread() || !ProfessionStoreReady() || !state->quarantined.empty()) {

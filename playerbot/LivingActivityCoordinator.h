@@ -105,6 +105,8 @@ public:
     LivingActivity::AdmissionResult AdmitRecipeLearning(uint32_t actor,uint32_t book);
     ProfessionProgress AdvanceRecipeLearning(uint32_t actor,const std::string& task);
     bool GuildDeliveryAdmissionsEnabled() const;
+    bool HasGuildSupplyCommitment(uint32_t actor) const;
+    LivingActivity::AdmissionResult AdmitGuildProcurement(uint32_t actor,uint32_t guild,const std::string& goal,uint32_t entry);
     // Read-only admission/dispatch validation. Counts pending task writes once;
     // grants neither execution ownership nor permission to purchase anything.
     bool ReadGuildProcurementAvailability(const LivingActivity::Task&,uint32_t&,std::string&);

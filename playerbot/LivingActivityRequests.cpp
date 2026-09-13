@@ -115,10 +115,9 @@ namespace LivingActivity {
     bool SavedTaskExecutable(const Task& saved, uint64_t revision,
         const WorldContext& current, uint64_t wallNow, std::string& reason) {
         if (!ValidateGuildProcurementTask(saved, reason)) return false;
-        // Fail closed until native goal/permission/quantity admission and
-        // custody settlement are wired. Merely having a valid checkpoint is
-        // not authorization to spend guild members' money or acquire a route.
-        if (IsGuildProcurementTask(saved)) {reason="guild_procurement_executor_not_enabled";return false;}
+        // Procurement uses the same acknowledged revision/context/backoff
+        // checks. Native domain adapters additionally revalidate the current
+        // guild request, authority, unpaid quantity and spending budget.
         if (!ValidateGuildDeliveryTask(saved, reason)) return false;
         if (!ValidateProfessionTask(saved, reason)) return false;
         if (saved.revision != revision) reason = "stale_task_revision";

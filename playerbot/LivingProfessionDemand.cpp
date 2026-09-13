@@ -3,6 +3,7 @@
 #include "LivingTaskItemRequirements.h"
 #include "LivingProfessionNative.h"
 #include "LivingNativeRecipeLearning.h"
+#include "LivingNativeGuildProcurement.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingNativeMailCollection.h"
 #include "LivingActivityTransfer.h"
@@ -30,6 +31,9 @@ namespace LivingActivity {
         auto tool=[&](uint32_t entry) {return std::none_of(consumed.begin(),consumed.end(),[&](const auto& r){return r.entry==entry;});};
         std::map<uint32_t,ProfessionStock> stock;
         for (const auto& reagent : requirements) stock.emplace(reagent.entry,ProfessionStock{reagent.entry});
+        UnsettledClaimBatch claims;
+        if (!sLivingActivityCoordinator.ReadTaskClaims(saved.actor,saved.id,saved.revision,claims,demand.blocker)) return false;
+        const bool procurement=IsGuildProcurementTask(saved);
         unsigned scanned=0; std::set<uint32_t> seen;
         for (unsigned location=0;location!=3;++location) {
             const bool bank=location==1,equipment=location==2;
@@ -40,6 +44,13 @@ namespace LivingActivity {
                 if (equipment && !tool(item->GetEntry())) continue;
                 if (item->GetOwnerGuid()!=actor.GetObjectGuid() || !seen.insert(item->GetGUIDLow()).second)
                     return reject("profession_inventory_identity_unresolved",item->GetGUIDLow());
+                const bool ownClaim=procurement && std::any_of(claims.claims.begin(),claims.claims.end(),[&](const auto& c){
+                    return c.itemGuid==item->GetGUIDLow() && c.itemEntry==item->GetEntry() && c.state=="held";
+                });
+                if(procurement && !NativeGuildProcurementItemUsable(actor,item->GetEntry(),item,ownClaim)) {
+                    if(ownClaim)return reject("guild_procurement_owned_item_requires_reconciliation",item->GetGUIDLow());
+                    continue; // Not donated; neither consume it nor count it against unpaid demand.
+                }
                 // Existing reservations stay protected during migration. They
                 // cannot be reclassified as missing stock and purchased again.
                 if (sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
@@ -52,6 +63,10 @@ namespace LivingActivity {
                     {demand.nativeReference=item->GetGUIDLow();return false;}
                 if (tool(item->GetEntry()) && !available)
                     return reject("profession_material_has_legacy_commitment",item->GetGUIDLow());
+                if(procurement && available!=item->GetCount()) {
+                    if(ownClaim)return reject("guild_procurement_shared_stack_requires_reconciliation",item->GetGUIDLow());
+                    continue;
+                }
                 auto& count=bank ? stock.at(item->GetEntry()).bank : stock.at(item->GetEntry()).bag;
                 if (uint64_t(count)+available>std::numeric_limits<uint32_t>::max()) return reject("profession_stock_overflow");
                 count+=available;
@@ -60,8 +75,6 @@ namespace LivingActivity {
         // The pinned core loads mail and attachment metadata before completing
         // login. Undelivered native attachments are present, not bag contents.
         if (actor.GetMailSize()>256) return reject("profession_mail_snapshot_limit");
-        UnsettledClaimBatch claims;
-        if (!sLivingActivityCoordinator.ReadTaskClaims(saved.actor,saved.id,saved.revision,claims,demand.blocker)) return false;
         std::map<uint32_t,ResourceClaim> incoming;
         for (const auto& claim : claims.claims) if (claim.location=="mail") {
             NativeResourceBalance balance;

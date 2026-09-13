@@ -8,6 +8,7 @@
 #include "LivingServiceExecution.h"
 #include "LivingTaskItemRequirements.h"
 #include "LivingProfessionNative.h"
+#include "LivingNativeGuildProcurement.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
@@ -153,8 +154,16 @@ bool PlanNativeBankWithdrawal(Player& actor,const Task& task,const ProfessionRea
     const auto reagent=std::find_if(requirements.begin(),requirements.end(),[&](const auto& r){return r.entry==need.entry;});
     if (reagent==requirements.end() || !need.perAttempt || need.perAttempt>reagent->perAttempt)
         return reject("profession_bank_exact_demand_required");
+    UnsettledClaimBatch procurementClaims;
+    if(IsGuildProcurementTask(task) && !sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,procurementClaims,blocker))return false;
     for (auto* item : actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BANK)) {
         if (!item || item->GetEntry()!=need.entry || ProtectedLegacy(actor,*item)) continue;
+        if(IsGuildProcurementTask(task)) {
+            const bool own=std::any_of(procurementClaims.claims.begin(),procurementClaims.claims.end(),[&](const auto& c){
+                return c.itemGuid==item->GetGUIDLow() && c.itemEntry==need.entry && c.state=="held";
+            });
+            if(!NativeGuildProcurementItemUsable(actor,need.entry,item,own))continue;
+        }
         uint32_t available=0;
         if (!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,
             {task.actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,"bank"},available,blocker)) return false;

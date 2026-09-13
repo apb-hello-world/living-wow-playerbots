@@ -27,6 +27,7 @@ namespace LivingActivity {
     // Existing cached native destinations, no DB or extra route worker. Empty
     // discovery preserves the normal unrestricted travel fallback.
     std::vector<int32_t> NearestNativePurchaseEntries(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries);
+    bool NativePurchaseServiceAvailable(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries);
     class NativeProfessionMoneyReservation final : public NativeReservationAdapter {
     public:
         NativeProfessionMoneyReservation(NativeVendorQuote quote,std::string operation)

@@ -44,7 +44,16 @@ int main() {
     assert(PreserveGuildProcurementIntent(task,after,why));
     auto changed=job;++changed.quantity;after.checkpoint.data=EncodeGuildProcurementJob(changed);
     assert(!PreserveGuildProcurementIntent(task,after,why));
-    assert(!SavedTaskExecutable(task,task.revision,task.context,0,why) && why=="guild_procurement_executor_not_enabled");
+    auto executable=task;executable.phase=Phase::Preparing;
+    executable.context.actor=task.actor;executable.context.actorGeneration=executable.context.mapGeneration=1;
+    executable.context.policyRevision=1;executable.context.boot="60426118-f43b-4869-9b55-60d3b13af70d";
+    assert(SavedTaskExecutable(executable,executable.revision,executable.context,0,why));
+    auto stale=executable.context;++stale.actorGeneration;
+    assert(!SavedTaskExecutable(executable,executable.revision,stale,0,why) && why=="stale_native_context");
+    executable.retryAtMs=10;
+    assert(!SavedTaskExecutable(executable,executable.revision,executable.context,0,why) && why=="task_backoff");
+    executable.retryAtMs=0;executable.phase=Phase::Paused;
+    assert(!SavedTaskExecutable(executable,executable.revision,executable.context,0,why) && why=="task_not_executable");
     assert(UnassignedGuildProcurement(50,2,0,8,0)==40);
     assert(UnassignedGuildProcurement(50,2,0,8,15)==25);
     assert(UnassignedGuildProcurement(50,10,8,8,15)==25); // Keep native bank-reservation semantics.

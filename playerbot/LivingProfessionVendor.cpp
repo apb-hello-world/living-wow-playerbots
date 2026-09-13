@@ -136,6 +136,9 @@ namespace LivingActivity {
         if(quote.actor) {blocker.clear();return true;}
         blocker=nearbyBlocker.empty()?"profession_vendor_travel_required":nearbyBlocker;return false;
     }
+    bool NativePurchaseServiceAvailable(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries) {
+        return sLivingActivityCoordinator.OnWorldThread() && NearestService(actor,purpose,entries).entry!=0;
+    }
     std::vector<int32_t> NearestNativePurchaseEntries(Player& actor,uint32_t purpose,const std::vector<int32_t>& entries) {
         const auto best=NearestService(actor,purpose,entries);
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
