@@ -121,7 +121,7 @@ void TestInterruptedProfession() {
     changedException=exception;++changedException.frame.skill;fail(changedException);
     changedException=exception;++changedException.frame.stacks.back().count;fail(changedException);
     changedException=exception;--changedException.frame.stacks.back().count;fail(changedException);
-    changedException=exception;++changedException.batch.claims.back().revision;fail(changedException);
+    changedException=exception;++changedException.batch.claims.front().revision;fail(changedException);
     changedException=exception;changedException.history.interruptedCraft->afterState="{\"possible_effect\":true}";fail(changedException);
     changedException=exception;changedException.history.interruptedCraft->receipt.nativeReference="spell:2329";fail(changedException);
     changedException=exception;changedException.history.interruptedCraft->receipt.evidence="unknown_failure";fail(changedException);
