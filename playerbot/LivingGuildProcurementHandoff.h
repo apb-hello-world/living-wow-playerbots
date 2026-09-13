@@ -109,6 +109,8 @@ inline bool PrepareGuildProcurementHandoff(const Task& saved,const WorldContext&
             " AND NOT EXISTS(SELECT 1 FROM living_activity_claim c WHERE c.item_guid="+n(c.itemGuid)+
             " AND c.task_id<>living_activity_task.task_id AND c.state NOT IN ('consumed','released'))";
     }
+    for(const auto& c:batch.claims)if(c.itemEntry==job.entry)
+        guard+=" AND NOT EXISTS(SELECT 1 FROM guild_society_supply_delivery d WHERE d.source_claim_id="+SqlValue(c.id)+')';
     out.plan.statements.insert(out.plan.statements.begin(),
         "UPDATE living_activity_task SET actor_guid=actor_guid WHERE actor_guid="+n(saved.actor));
     // Serializes policy/goal cancellation with this metadata-only transition.

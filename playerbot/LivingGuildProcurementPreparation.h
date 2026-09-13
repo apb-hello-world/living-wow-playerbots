@@ -51,7 +51,7 @@ inline bool PlanGuildProcurementMaterials(const Task& task,const UnsettledClaimB
     if(!out.incoming && out.carried>=job.quantity) {
         uint32_t remaining=job.quantity;
         for(const auto& row:held)for(const auto* c:row.second) {
-            const auto kept=std::min(remaining,c->quantity);remaining-=kept;
+            const auto kept=uint32_t(std::min<uint64_t>(remaining,c->quantity));remaining-=kept;
             if(kept==c->quantity)continue;
             auto after=*c;++after.revision;
             if(kept)after.quantity=kept;else after.state="released";

@@ -14,6 +14,12 @@ inline std::string GuildProcurementOperationGuard(const Task& saved) {
         " AND child.task_id<>living_activity_task.task_id AND child.phase NOT IN ('completed','cancelled','failed'))"
         " AND NOT EXISTS(SELECT 1 FROM guild_society_supply_delivery WHERE source_task_id="+SqlValue(saved.id)+')';
 }
+inline std::string GuildProcurementAcquisitionGuard(uint32_t entry) {
+    return " AND (NOT EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
+        " AND o.state='verified' AND o.kind IN ('vendor_purchase','auction_purchase','mail_collect','bank_withdraw'))"
+        " OR EXISTS(SELECT 1 FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id"
+        " AND c.state='held' AND c.item_entry="+std::to_string(entry)+" AND c.quantity>0))";
+}
 // One fresh, native-backed snapshot for preparation restart and cancellation.
 // This NEVER relocates goods or rewrites a saved claim's native location.
 inline bool GuildProcurementBacking(const Task& saved,const UnsettledClaimBatch& batch,
@@ -85,10 +91,7 @@ inline bool PrepareGuildProcurementResumption(const Task& saved,const WorldConte
         GuildProcurementOperationGuard(saved)+backing+
         // A committed acquisition must still have its claimed goods. Never
         // turn a missing claim after restart into another purchase.
-        " AND (NOT EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
-        " AND o.state='verified' AND o.kind IN ('vendor_purchase','auction_purchase','mail_collect','bank_withdraw'))"
-        " OR EXISTS(SELECT 1 FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id"
-        " AND c.state='held' AND c.item_entry="+std::to_string(job.entry)+" AND c.quantity>0))";
+        GuildProcurementAcquisitionGuard(job.entry);
     out.plan.statements.insert(out.plan.statements.begin(),
         "UPDATE living_activity_task SET actor_guid=actor_guid WHERE actor_guid="+std::to_string(saved.actor));
     why.clear();return true;
@@ -138,7 +141,7 @@ inline bool PrepareGuildProcurementCancellation(const Task& saved,const WorldCon
     next.checkpoint.step="guild_procurement_closed";next.checkpoint.blocker=reason;next.retryAtMs=0;
     out.plan=Detail::TaskTransitionWrite(next,saved.revision,receipt,reason,resources.fingerprint+backing+'|'+goal.state+'|'+n(goal.updated));
     out.plan.statements.front()+=" AND phase='preparing' AND mode='active' AND accepted=1 AND checkpoint="+SqlValue(saved.checkpoint.data)+
-        GuildProcurementOperationGuard(saved)+backing+resources.guards+
+        GuildProcurementOperationGuard(saved)+GuildProcurementAcquisitionGuard(job.entry)+backing+resources.guards+
         " AND EXISTS(SELECT 1 FROM guild_society_supply_goal g WHERE g.guild_id="+n(job.guild)+" AND g.goal_id="+SqlValue(job.goal)+
         " AND g.state="+SqlValue(goal.state)+" AND g.request_kind="+SqlValue(goal.kind)+" AND g.item_entry="+n(goal.entry)+
         " AND g.required_quantity="+n(goal.target)+" AND g.reserved_quantity="+n(goal.reserved)+" AND g.updated_at="+n(goal.updated)+')';
