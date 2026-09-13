@@ -18,14 +18,14 @@ boost::property_tree::ptree GuildMailFixtureInventory(Player& actor) {
     bags(INVENTORY_SLOT_BAG_START,INVENTORY_SLOT_BAG_END);bags(BANK_SLOT_BAG_START,BANK_SLOT_BAG_END);return rows;
 }
 template<class FixtureState>
-void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool forward=false,bool partial=false,bool cancelled=false) {
+void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool forward=false,bool partial=false,bool cancelled=false,bool bankSurplus=false) {
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
     state.fixtureNext=NowMs()+500;auto& f=state.guildDepositFixture;
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     auto emit=[&](bool passed,const std::string& why,Player* actor) {
         if(forward && f.setup.template get_optional<uint32_t>("forward_mail_delay_original"))
             sWorld.setConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY,f.setup.template get<uint32_t>("forward_mail_delay_original"));
-        auto report=f.setup;report.put("suite",cancelled?"activity-guild-mail-cancel-v1":partial?"activity-guild-mail-partial-v1":forward?"activity-guild-mail-forward-v1":fullBags?"activity-guild-mail-capacity-v1":"activity-guild-mail-v1");report.put("boot",state.boot);
+        auto report=f.setup;report.put("suite",bankSurplus?"activity-guild-mail-bank-surplus-v1":cancelled?"activity-guild-mail-cancel-v1":partial?"activity-guild-mail-partial-v1":forward?"activity-guild-mail-forward-v1":fullBags?"activity-guild-mail-capacity-v1":"activity-guild-mail-v1");report.put("boot",state.boot);
         report.put("task",f.task);report.put("actor",f.actor);report.put("test_only",true);
         report.put("original_boot",f.originalBoot);report.put("resumed_same_task",f.resuming);
         report.put("outcome",passed?"passed":"failed");report.put("failure",why);report.put("blocker",f.blocker);
@@ -96,6 +96,8 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
                     f.setup.template get<bool>("full_bag_requested",false)==fullBags &&
                     f.setup.template get<bool>("forward_requested",false)==forward &&
                     f.setup.template get<bool>("cancelled_requested",false)==cancelled &&
+                    f.setup.template get<bool>("bank_capacity_requested",false)==bankSurplus &&
+                    f.setup.template get<bool>("fulfilled_requested",false)==bankSurplus &&
                     f.setup.template get<bool>("partial_requested",false)==partial,"original_guild_mail_identity_changed");
                 if(forward)f.setup.put("recipient_login_requested",false);
                 state.enforceEffects.store(true,std::memory_order_release);f.started=f.admitted=true;return;
@@ -106,7 +108,9 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
             require(guild && guild->GetPurchasedTabs(),"existing_native_guild_bank_required");
             bool allowed=false;for(uint8_t tab=0;tab<guild->GetPurchasedTabs();++tab)
                 allowed|=guild->IsMemberHaveRights(f.actor,tab,GUILD_BANK_RIGHT_DEPOSIT_ITEM);
-            require(allowed,"existing_native_deposit_permission_required");
+            // Surplus collection/closure does not require guild deposit rights.
+            // The executor must discover that from the real goal/bank state.
+            require(allowed || bankSurplus,"existing_native_deposit_permission_required");
             require(!actor->GetItemCount(2772,true),"mail_fixture_entry_must_not_mix_with_existing_commitments");
             if(forward) {
                 require(!fullBags,"separate_native_forward_and_capacity_scenarios");
@@ -151,6 +155,15 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
             f.setup.put("money_grants",0);f.setup.put("permission_grants",0);f.setup.put("fixture_relocations",0);
             f.setup.put("donor_sending_proven",false);f.setup.put("capacity_preparation_proven",false);
             f.setup.put("full_bag_requested",fullBags);
+            if(bankSurplus) {
+                require(!fullBags && !forward && !partial && !cancelled && bank>0,"existing_fulfilled_bank_stock_required");
+                ItemPosCountVec positions;
+                require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,2772,4)==EQUIP_ERR_INVENTORY_FULL,
+                    "existing_full_bags_required_without_capacity_grants");
+                f.setup.put("bank_capacity_requested",true);f.setup.put("fulfilled_requested",true);
+                f.setup.put("capacity_initially_full",true);f.setup.put("capacity_input_grants",0);
+                f.setup.add_child("inventory_before",GuildMailFixtureInventory(*actor));
+            }
             if(cancelled) {
                 require(!fullBags && !forward && !partial,"separate_cancellation_fixture_required");
                 f.setup.put("cancelled_requested",true);
@@ -246,7 +259,7 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
             f.setup.put("task",f.task);f.setup.put("job",EncodeGuildDeliveryJob(f.job));f.setup.put("item_guid",itemGuid);
             actor->SaveToDB();
             CharacterDatabase.PExecute("INSERT INTO guild_society_supply_goal(goal_id,guild_id,goal_type,item_entry,required_quantity,state,created_at,updated_at,provenance,request_kind,purpose) VALUES('%s',%u,'supply',2772,%u,'%s',%u,%u,'isolated_fixture','item','Isolated native mail collection and bank deposit test')",
-                f.job.goal.c_str(),f.job.guild,bank+4,cancelled?"cancelled":"active",uint32_t(time(nullptr)),uint32_t(time(nullptr)));
+                f.job.goal.c_str(),f.job.guild,bank+(bankSurplus?0:4),cancelled?"cancelled":"active",uint32_t(time(nullptr)),uint32_t(time(nullptr)));
             CharacterDatabase.PExecute("INSERT INTO guild_society_supply_delivery(delivery_id,guild_id,goal_id,donor_guid,carrier_guid,item_guid,item_entry,quantity,mail_id,phase,created_at,updated_at) VALUES(%llu,%u,'%s',%u,%u,%u,2772,4,%u,'mailed',%u,%u)",
                 (unsigned long long)f.job.delivery,f.job.guild,f.job.goal.c_str(),donor,f.actor,itemGuid,mailId,uint32_t(time(nullptr)),uint32_t(time(nullptr)));
             std::ofstream setup("/isolated/evidence/guild-mail-setup-"+f.task+".json");setup<<Json(f.setup);setup.close();
@@ -280,10 +293,11 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
         if(key!=f.lastDiagnostic && f.diagnostics<128){f.lastDiagnostic=key;++f.diagnostics;
             sLog.outString("Living guild mail progress: actor=%u task=%s revision=%llu phase=%s step=%s blocker=%s",f.actor,f.task.c_str(),
                 (unsigned long long)saved->revision,Name(saved->phase),saved->checkpoint.step.c_str(),f.blocker.c_str());}
-        if(cancelled) {
+        if(cancelled || bankSurplus) {
             require(!Terminal(saved->phase) || saved->phase==Phase::Cancelled,"cancelled_request_must_not_complete_delivery");
             if(saved->phase!=Phase::Cancelled)return;
-            require(saved->checkpoint.step=="guild_delivery_closed" && saved->checkpoint.blocker=="guild_delivery_cancelled_items_preserved",
+            require(saved->checkpoint.step=="guild_delivery_closed" && saved->checkpoint.blocker==
+                (bankSurplus?"guild_delivery_surplus_items_preserved":"guild_delivery_cancelled_items_preserved"),
                 "exact_native_cancellation_required");
             auto* guild=sGuildMgr.GetGuildById(f.job.guild);require(guild,"original_guild_required");
             const auto counts=guild->GetBankItemCounts();const auto stock=counts.find(2772);
