@@ -27,6 +27,37 @@ void RunIsolatedServicesObservation(FixtureState& state) {
             item.put("step",task.checkpoint.step);item.put("created_at_ms",task.createdAtMs);
             const auto blocked=state.executionBlockers.find(task.id);
             item.put("blocker",blocked==state.executionBlockers.end()?task.checkpoint.blocker:blocked->second);
+            // Private, value-only diagnostic for this marked copied realm.
+            // A generic travel blocker must not hide the exact failing native
+            // destination/leg. Reading this never installs or advances a route.
+            ServiceDestination service;
+            auto* bot=sRandomPlayerbotMgr.GetPlayerBot(task.actor);
+            if(bot && bot->GetPlayerbotAI() && ParseServiceStep(task.checkpoint.step,service)) {
+                boost::property_tree::ptree route;
+                route.put("actor_map",bot->GetMapId());route.put("actor_x",bot->GetPositionX());
+                route.put("actor_y",bot->GetPositionY());route.put("actor_z",bot->GetPositionZ());
+                route.put("alive",bot->IsAlive());route.put("combat",bot->IsInCombat());
+                route.put("transport",bool(bot->GetTransport()));route.put("taxi",bot->IsTaxiFlying());
+                auto* context=bot->GetPlayerbotAI()->GetAiObjectContext();
+                auto* target=context->GetValue<ai::TravelTarget*>("travel target")->Get();
+                if(target && target->GetDestination() && target->GetPosition()) {
+                    const auto* position=target->GetPosition();
+                    route.put("entry",target->GetEntry());route.put("purpose",uint32(target->GetDestination()->GetPurpose()));
+                    route.put("revision",target->GetRouteRevision());route.put("status",uint32(target->GetStatus()));
+                    route.put("map",position->getMapId());route.put("x",position->getX());
+                    route.put("y",position->getY());route.put("z",position->getZ());
+                    route.put("distance",target->Distance(bot));
+                    route.put("owned",sPlayerbotOrganicEconomy.HasOwnedServiceRoute(task.actor,uint32(target->GetDestination()->GetPurpose())));
+                }
+                const auto& path=context->GetValue<ai::LastMovement&>("last movement")->Get().lastPath.getPath();
+                route.put("path_nodes",path.size());
+                if(!path.empty()) {
+                    route.put("next_leg_type",uint32(path.front().type));route.put("next_leg_entry",path.front().entry);
+                    route.put("next_leg_map",path.front().point.getMapId());route.put("next_leg_x",path.front().point.getX());
+                    route.put("next_leg_y",path.front().point.getY());route.put("next_leg_z",path.front().point.getZ());
+                }
+                item.add_child("native_route",route);
+            }
             tasks.push_back({"",item});
         }
         result.put("task_snapshot_truncated",count>128);result.add_child("tasks",tasks);
