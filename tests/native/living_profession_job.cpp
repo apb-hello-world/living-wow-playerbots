@@ -3,9 +3,29 @@
 #include "LivingProfessionEconomy.h"
 #include "LivingPreparationWait.h"
 #include "LivingProfessionTools.h"
+#include "LivingProfessionCandidates.h"
 #include <cassert>
 using namespace LivingActivity;
 int main() {
+    {
+        using Ready=ProfessionCandidateReadiness;
+        std::string why;
+        assert(RankProfessionCandidate({},why)==Ready::Unavailable);
+        assert(RankProfessionCandidate({{1,1}},why)==Ready::Carried && why.empty());
+        assert(RankProfessionCandidate({{2,1,1}},why)==Ready::Banked);
+        assert(RankProfessionCandidate({{2,1,0,false,false,true}},why)==Ready::Obtainable);
+        assert(RankProfessionCandidate({{1,0,0,false,false,true},{2,0,2}},why)==Ready::Obtainable);
+        assert(RankProfessionCandidate({{2,1,0,false,false,true},{1,0}},why)==Ready::Unavailable);
+        assert(why=="profession_candidate_material_source_unavailable"); // One reagent is not a complete plan.
+        assert(RankProfessionCandidate({{1,1,0,true,false,true}},why)==Ready::Unavailable);
+        assert(why=="profession_material_has_existing_commitment");
+        assert(RankProfessionCandidate({{1,1,0,false,true,true}},why)==Ready::Unavailable);
+        assert(why=="profession_incoming_material_requires_reconciliation"); // Mail does not identify a recipe.
+        assert(RankProfessionCandidate({{0,1}},why)==Ready::Unavailable);
+        assert(RankProfessionCandidate({{10001,10001}},why)==Ready::Unavailable);
+        assert(RankProfessionCandidate(std::vector<ProfessionCandidateMaterial>(9,{1,1}),why)==Ready::Unavailable);
+        assert(RankProfessionCandidate({{2,1,UINT32_MAX}},why)==Ready::Banked); // Widen before addition.
+    }
     {
         assert(ChooseProfessionTool({})==0);
         assert(ChooseProfessionTool({{5956}})==0); // Catalog existence is not availability.

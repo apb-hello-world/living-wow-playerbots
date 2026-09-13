@@ -8,6 +8,9 @@
 #include "LivingActivityNativeContext.h"
 #include "LivingProfessionEconomy.h"
 #include "LivingProfessionVendor.h"
+#include "LivingProfessionNative.h"
+#include "LivingProfessionCandidates.h"
+#include "LivingNativeAuctionPurchase.h"
 #include "LivingRecipeLearning.h"
 #include "PlayerbotInventoryPressure.h"
 #include "PlayerbotActionBroker.h"
@@ -256,6 +259,75 @@ namespace
                     return known.first;
         }
         return 0;
+    }
+
+    uint32 ManagedCraftSpell(Player* bot, bool buying, std::string& blocker)
+    {
+        using namespace LivingActivity;
+        // The existing ten-minute producer, not another scheduler. Candidate
+        // selection must use the same recipe validator as actual admission:
+        // local CheckCast excludes usable remote stations and enchanting.
+        const auto protection=sLivingActivityCoordinator.ResourceReservations().Inspect();
+        if (!sLivingActivityCoordinator.OnWorldThread() || !protection || !protection->ready) {
+            blocker="profession_candidate_reservations_pending";return 0;
+        }
+        struct Stock {uint32_t bags=0,bank=0;bool protectedStock=false;};
+        std::map<uint32_t,Stock> stock;
+        unsigned inspected=0;
+        for (const bool bank:{false,true}) {
+            for (auto* item:bot->GetPlayerbotAI()->InventoryParseItems("all",bank?
+                IterateItemsMask::ITERATE_ITEMS_IN_BANK:IterateItemsMask::ITERATE_ITEMS_IN_BAGS)) {
+                if (++inspected>256) {blocker="profession_candidate_inventory_snapshot_bound";return 0;}
+                if (!item) continue;
+                auto& found=stock[item->GetEntry()];
+                if (item->GetOwnerGuid()!=bot->GetObjectGuid() ||
+                    sPlayerbotActionBroker.IsItemReserved(item->GetGUIDLow()) ||
+                    protection->UnreservedItem(bot->GetGUIDLow(),item->GetGUIDLow(),item->GetEntry(),item->GetCount())!=item->GetCount())
+                    found.protectedStock=true;
+                auto& quantity=bank?found.bank:found.bags;
+                if (uint64_t(quantity)+item->GetCount()>UINT32_MAX) {blocker="profession_candidate_stock_overflow";return 0;}
+                quantity+=item->GetCount();
+            }
+        }
+        uint32_t selected=0;
+        auto best=ProfessionCandidateReadiness::Unavailable;
+        blocker="profession_candidate_no_supported_skill_gain_recipe";inspected=0;
+        for (const auto& known:bot->GetSpellMap()) {
+            if (++inspected>1024) {blocker="profession_candidate_spellbook_snapshot_bound";return 0;}
+            if (known.second.state==PLAYERSPELL_REMOVED || known.second.disabled) continue;
+            ProfessionJob job;std::string why;
+            if (!BuildNativeSkillGainJob(*bot,known.first,job,why) || !LivingProfessions::Primary(job.skill)) continue;
+            std::vector<ProfessionCandidateMaterial> materials;
+            for (const auto& reagent:job.reagents) {
+                const auto have=stock.find(reagent.entry);
+                const Stock counts=have==stock.end()?Stock{}:have->second;
+                ProfessionCandidateMaterial material{reagent.perAttempt,counts.bags,counts.bank};
+                material.protectedStock=counts.protectedStock || protection->HasUncertainItem(bot->GetGUIDLow(),reagent.entry) ||
+                    sGuildSupplies.ReservedEntry(bot->GetGUIDLow(),reagent.entry) ||
+                    ai::ItemUsageValue::IsNeededForQuest(bot,reagent.entry,true);
+                material.unlinkedMail=ai::AhBidAction::HasPendingMaterial(bot,reagent.entry);
+                if (buying && !material.protectedStock && !material.unlinkedMail &&
+                    uint64_t(counts.bags)+counts.bank<reagent.perAttempt) {
+                    const auto* item=sObjectMgr.GetItemPrototype(reagent.entry);
+                    uint32_t quantity=0;std::vector<int32_t> vendors;
+                    // Estimate the remainder AFTER a future bank withdrawal.
+                    // This is planning only; native execution still requires
+                    // physically collecting banked material before purchasing.
+                    ProfessionStock actual;actual.entry=reagent.entry;actual.bag=counts.bags+counts.bank;
+                    material.sourceAvailable=item && RequiredProfessionVendorQuantity(reagent,actual,item->BuyCount,quantity,why) &&
+                        NativeProfessionVendorSources(*bot,reagent.entry,quantity,vendors,why);
+                    if (!material.sourceAvailable)
+                        material.sourceAvailable=NativeAuctionSourceAvailable(*bot,reagent.entry,
+                            reagent.perAttempt-counts.bags-counts.bank,why);
+                }
+                materials.push_back(material);
+            }
+            const auto rank=RankProfessionCandidate(materials,why);
+            if (rank==ProfessionCandidateReadiness::Unavailable) {if (!selected) blocker=why;continue;}
+            if (!selected || rank<best || (rank==best && job.recipe<selected)) {selected=job.recipe;best=rank;}
+        }
+        if (selected) blocker.clear();
+        return selected; // Admission revalidates; tools, stations and safety are preparation steps.
     }
 }
 
@@ -947,10 +1019,18 @@ bool PlayerbotOrganicEconomy::Submit(const Policy& currentPolicy)
             else if (!professionTwo) { professionTwo = skillId; skillTwo = value; break; }
         }
         std::vector<uint32> outputs = KnownCraftOutputs(bot);
-        uint32 readyRecipe = profile.career && currentPolicy.careers ? PendingRecipeSpell(bot) : 0;
-        if (!readyRecipe && profile.career && currentPolicy.careers) readyRecipe = ReadyCraftSpell(bot);
-        if (!readyRecipe && profile.career && currentPolicy.careers) readyRecipe = BankCraftSpell(bot);
-        if (!readyRecipe && profile.career && currentPolicy.careers && currentPolicy.buying) readyRecipe = MarketCraftSpell(bot);
+        uint32 readyRecipe=0;std::string professionCandidateBlocker;
+        if (profile.career && currentPolicy.careers) {
+            if (sLivingActivityCoordinator.ProfessionAdmissionsEnabled())
+                readyRecipe=ManagedCraftSpell(bot,currentPolicy.buying,professionCandidateBlocker);
+            else {
+                // Baseline/observe retains its old executor and planning rules.
+                readyRecipe=PendingRecipeSpell(bot);
+                if (!readyRecipe) readyRecipe=ReadyCraftSpell(bot);
+                if (!readyRecipe) readyRecipe=BankCraftSpell(bot);
+                if (!readyRecipe && currentPolicy.buying) readyRecipe=MarketCraftSpell(bot);
+            }
+        }
         bool surplus = HasAuctionSurplus(bot);
         if (!firstEvent) events << ',';
         firstEvent = false;
@@ -963,6 +1043,7 @@ bool PlayerbotOrganicEconomy::Submit(const Policy& currentPolicy)
             << ",\"intended_profession_two\":" << profile.intendedTwo
             << ",\"profession_one\":" << professionOne << ",\"profession_two\":" << professionTwo
             << ",\"profession_one_skill\":" << skillOne << ",\"profession_two_skill\":" << skillTwo
+            << ",\"profession_candidate_blocker\":\"" << professionCandidateBlocker << "\""
             << ",\"current_goal_id\":\"" << PlayerbotLLMInterface::SanitizeForJson(profile.currentGoalId)
             << "\",\"current_goal_type\":\"" << PlayerbotLLMInterface::SanitizeForJson(profile.currentGoalType)
             << "\",\"current_goal_state\":\"" << PlayerbotLLMInterface::SanitizeForJson(profile.currentGoalState)
