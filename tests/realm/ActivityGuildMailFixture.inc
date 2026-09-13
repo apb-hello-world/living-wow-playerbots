@@ -96,11 +96,13 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false) {
                     capture(actor->GetItemByPos(INVENTORY_SLOT_BAG_0,slot));
                 for(uint8_t slot=KEYRING_SLOT_START;slot<KEYRING_SLOT_END;++slot)
                     capture(actor->GetItemByPos(INVENTORY_SLOT_BAG_0,slot));
-                for(const auto range:{std::make_pair(INVENTORY_SLOT_BAG_START,INVENTORY_SLOT_BAG_END),
-                    std::make_pair(BANK_SLOT_BAG_START,BANK_SLOT_BAG_END)})
-                    for(uint8_t bag=range.first;bag<range.second;++bag)
+                auto captureBags=[&](uint8_t first,uint8_t last) {
+                    for(uint8_t bag=first;bag<last;++bag)
                         if(auto* container=static_cast<Bag*>(actor->GetItemByPos(INVENTORY_SLOT_BAG_0,bag)))
                             for(uint8_t slot=0;slot<container->GetBagSize();++slot)capture(container->GetItemByPos(slot));
+                };
+                captureBags(INVENTORY_SLOT_BAG_START,INVENTORY_SLOT_BAG_END);
+                captureBags(BANK_SLOT_BAG_START,BANK_SLOT_BAG_END);
                 const auto* proto=sObjectMgr.GetItemPrototype(7074);
                 require(proto && proto->Quality==ITEM_QUALITY_POOR && proto->SellPrice,"native_capacity_junk_template_required");
                 f.setup.put("capacity_unit_copper",proto->SellPrice);
