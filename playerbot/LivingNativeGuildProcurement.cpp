@@ -30,7 +30,7 @@ bool ReadNativeGuildProcurementSource(Player& actor,uint32_t entry,uint32_t maxi
     if(!proto)return reject("guild_procurement_item_unavailable");
     const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
     if(!view || !view->ready)return reject("guild_procurement_reservations_unavailable");
-    const uint32_t batch=std::min(maximum,std::min(64u,uint32_t(std::max(1,proto->Stackable))));
+    const uint32_t batch=std::min(maximum,std::min(64u,std::max<uint32_t>(1u,proto->Stackable)));
     unsigned scanned=0;
     for(bool bank:{false,true}) {
         for(auto* item:actor.GetPlayerbotAI()->InventoryParseItems("all",bank?IterateItemsMask::ITERATE_ITEMS_IN_BANK:IterateItemsMask::ITERATE_ITEMS_IN_BAGS)) {
