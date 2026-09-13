@@ -596,6 +596,7 @@ struct LivingActivityCoordinator::State {
             std::string(mode)!="activity-profession-auction-partial-v1" &&
             std::string(mode)!="activity-profession-cohort-v1" &&
             std::string(mode)!="activity-guild-admission-v1" &&
+            std::string(mode)!="activity-services-observe-v1" &&
             std::string(mode)!="activity-enchant-v1" && std::string(mode)!="activity-tool-v1")return false;
 #endif
         return true;

@@ -40,10 +40,14 @@ namespace {
 #include "ActivityGuildDepositFixture.inc"
 #include "ActivityGuildMailFixture.inc"
 #include "ActivityGuildAdmissionFixture.inc"
+#include "ActivityServicesObservation.inc"
 
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(requested && std::string(requested)=="activity-services-observe-v1") {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedServicesObservation(*state);return;
+    }
     if(requested && std::string(requested)=="activity-guild-admission-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedGuildAdmissionFixture(*state);return;
     }
