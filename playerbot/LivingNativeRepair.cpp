@@ -62,10 +62,10 @@ bool PlanNativeCriticalRepair(Player& actor,const Task& task,NativeRepairQuote& 
     uint32_t copper=0;
     if(!NativeRepairPrice(maximum,costs->multiplier[ItemSubClassToDurabilityMultiplierId(proto->Class,proto->SubClass)],
         double(quality->quality_mod),actor.GetReputationPriceDiscount(vendor),copper))return reject("critical_repair_native_price_invalid");
-    const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
-    if(!view || !view->ready)return reject("critical_repair_reservations_unavailable");
-    const uint64_t protectedCopper=view->ProtectedMoney(task.actor);
-    if(protectedCopper<held.copper || uint64_t(copper)+protectedCopper-held.copper>actor.GetMoney())
+    uint32_t available=0;
+    if(!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,
+        {task.actor,0,0,0,actor.GetMoney(),"money"},available,blocker))return false;
+    if(available<copper)
         return reject("critical_repair_unreserved_money_shortfall");
     q={task.actor,item->GetGUIDLow(),item->GetEntry(),maximum,0,actor.GetMoney(),copper,
         vendor->GetEntry(),vendor->GetObjectGuid().GetRawValue(),item->GetPos()};
