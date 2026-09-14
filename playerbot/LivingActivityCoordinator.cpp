@@ -3639,8 +3639,12 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
     state->operations.emplace(request.transition.receipt, State::PendingOperation{request});
     if (request.kind=="vendor_purchase" || request.kind=="auction_purchase") NativePurchaseEpoch().Changed(request.transition.task.actor);
     state->pending.push_back({next, std::move(plan), "", request.transition.receipt, false});
-    const auto held = state->authority.Read(next.actor).lease;
-    ReleaseTaskLease(held); // Intent is durable work, not a retained execution grant.
+    // Retain predecessor ownership while the intent is being saved. Releasing
+    // it here admits ordinary movement between ValidateNative and dispatch
+    // (for example, walking away from a mailbox). This is not an atomic/native
+    // execution grant: dispatch still requires the durable next revision,
+    // a fresh lease and native safety/resource validation. Safety and higher
+    // priority human commitments can still interrupt the predecessor normally.
     state->nextWork = 0;
     return reject(AdmissionCode::Pending);
 }

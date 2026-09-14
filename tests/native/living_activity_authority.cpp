@@ -25,6 +25,44 @@ ActionContext Action(Task& task, const ActivityLease& lease) {
 }
 int main() {
     {
+        // Intent persistence must retain exclusion without granting its effect.
+        ExecutionAuthority intent;
+        auto preparing=Root();preparing.phase=Phase::Preparing;
+        const auto context=preparing.context;
+        const uint32_t mail=Mask(Effect::Inventory)|Mask(Effect::Money)|Mask(Effect::Guild);
+        const Effects wander{Movement,Lane::Managed,true};
+        intent.Observe(context,0);
+        const auto predecessor=intent.Acquire(preparing,mail,1000,60000);
+        assert(predecessor.Granted());
+        auto oldAction=Action(preparing,predecessor.lease);oldAction.permittedEffects=mail;
+        assert(intent.Authorize(wander,context,1100)==AuthorityCode::StaleLease);
+        assert(intent.Authorize({mail,Lane::Managed,true},context,1100,&preparing,&oldAction)==AuthorityCode::ReconciliationRequired);
+        // A slow/failed write does not give an expired scope or background AI
+        // permission to act. No early atomic hold prevents safety or takeover.
+        assert(intent.Authorize(wander,context,62000)==AuthorityCode::StaleLease);
+        intent.Observe(context,uint32_t(Safety::Combat));
+        NativePermit combat{context,Lane::Combat,Mask(Effect::Spell),uint32_t(Safety::Combat),true};
+        assert(intent.Authorize({combat.effects,Lane::Combat,true},context,62001,nullptr,nullptr,&combat)==AuthorityCode::Allowed);
+        intent.Observe(context,0);
+        auto saved=preparing;++saved.revision;saved.phase=Phase::Executing;
+        const auto dispatch=intent.Acquire(saved,mail,62002,60000);
+        assert(dispatch.Granted());
+        assert(intent.Authorize({0,Lane::Managed,true},context,62003,&preparing,&oldAction)==AuthorityCode::StaleLease);
+        auto action=Action(saved,dispatch.lease);action.permittedEffects=mail;action.operation=C;
+        assert(intent.BeginAtomic(dispatch.lease,C,62003).code==AuthorityCode::Allowed);
+        assert(intent.Authorize({mail,Lane::Managed,true},context,62003,&saved,&action)==AuthorityCode::AtomicPending);
+        assert(intent.BeginDispatch(dispatch.lease,C,62003).code==AuthorityCode::Allowed);
+        assert(intent.Authorize({mail,Lane::Managed,true},context,62003,&saved,&action)==AuthorityCode::Allowed);
+        intent.EndDispatch(dispatch.lease,C);
+        assert(intent.FinishAtomic(dispatch.lease,C).code==AuthorityCode::Allowed);
+        assert(intent.Release(dispatch.lease).code==AuthorityCode::Released);
+        const auto again=intent.Acquire(preparing,mail,63000,60000);
+        assert(again.Granted());
+        auto human=Root(B,Priority::Human);
+        assert(intent.Acquire(human,Movement,63001,60000).Granted());
+        assert(intent.Release(again.lease).code==AuthorityCode::StaleLease);
+    }
+    {
         // Reproduce the service-learning arrival deadlock: one saved revision
         // must not acquire broad preparation effects and then different effects
         // inside a nested mail adapter. Preserve the guard; dispatch inspection
