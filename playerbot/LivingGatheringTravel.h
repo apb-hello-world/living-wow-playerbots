@@ -9,3 +9,7 @@ ai::PartitionedTravelList LivingRequestedGatheringPartitions(const ai::TravelMgr
     const ai::PlayerTravelInfo& info, uint32 purpose, const std::vector<int32>& entries,
     const std::set<uint64>& unavailable, bool onlyPossible=true, float maxDistance=10000.0f);
 bool LivingGatheringSpawnMissing(Player& actor,const ai::WorldPosition& destination,uint64& identity);
+// World-thread selection check. Reuse the established outdoor death memory;
+// workers receive only excluded spawn IDs, never a live bot or map pointer.
+bool LivingGatheringSpawnUnavailable(Player& actor,const ai::WorldPosition& destination,
+    uint64& identity,std::string& reason);

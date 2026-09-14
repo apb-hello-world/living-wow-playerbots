@@ -202,6 +202,7 @@ GameObject* NativeGatherNode(Player& actor,uint32_t entry,const std::vector<int3
         if(++scanned>256)break;
         auto* node=ai->GetGameObject(guid);if(!node || !sServerFacade.isSpawned(node) || node->IsInUse() || node->m_loot ||
             !std::binary_search(sources.begin(),sources.end(),-int32_t(node->GetEntry())) || !DirectDrop(node->GetEntry(),entry))continue;
+        if(ai->ShouldAvoidDeathArea(ai::WorldPosition(node)))continue;
         ai::LootObject loot(&actor,guid);if(loot.IsEmpty() || !loot.IsLootPossible(&actor))continue;
         const auto d=actor.GetDistance(node);
         if(d<distance || (d==distance && best && node->GetObjectGuid()<best->GetObjectGuid())){best=node;distance=d;}

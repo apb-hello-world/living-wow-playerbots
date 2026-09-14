@@ -986,21 +986,25 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             uint32(target->GetDestination()->GetPurpose())==purpose && target->IsActive() &&
             (!purchaseItem || std::binary_search(purchaseVendors.begin(),purchaseVendors.end(),target->GetDestination()->GetEntry())) &&
             (!gatherItem || std::binary_search(gatherSources.begin(),gatherSources.end(),target->GetDestination()->GetEntry()));
-        uint64 missingSpawn=0;
+        uint64 missingSpawn=0;std::string gatherExclusion;
         if(saved && gatherItem && same && target->GetPosition() &&
-            LivingGatheringSpawnMissing(*bot,*target->GetPosition(),missingSpawn)) {
+            LivingGatheringSpawnUnavailable(*bot,*target->GetPosition(),missingSpawn,gatherExclusion)) {
             if(trip.unavailableGathering.insert(missingSpawn).second)
-                sLog.outString("Living saved gathering event=inactive_spawn actor=%u task=%s spawn=%llu excluded=%u",
-                    guid,saved->id.c_str(),static_cast<unsigned long long>(missingSpawn),uint32(trip.unavailableGathering.size()));
+                sLog.outString("Living saved gathering event=excluded_spawn actor=%u task=%s spawn=%llu excluded=%u reason=%s",
+                    guid,saved->id.c_str(),static_cast<unsigned long long>(missingSpawn),uint32(trip.unavailableGathering.size()),gatherExclusion.c_str());
             if(trip.unavailableGathering.size()>=32) {
-                ReleaseRecipeService(guid,"gather_inactive_spawn_search_exhausted");serviceRetry[guid]=now+1800;
-                result.retryAtMs=uint64(serviceRetry[guid])*1000;return stop("gather_inactive_spawn_search_exhausted");
+                const std::string why=gatherExclusion=="gather_recent_death_area"?
+                    "gather_recent_death_search_exhausted":"gather_inactive_spawn_search_exhausted";
+                ReleaseRecipeService(guid,why);serviceRetry[guid]=now+1800;
+                result.retryAtMs=uint64(serviceRetry[guid])*1000;return stop(why);
             }
-            // Missing stock is not movement progress. Keep the root, work clock,
-            // reservations and failed-point set; search another real location.
+            // Missing stock or an established dangerous area is not movement
+            // progress. Keep the root, work clock, reservations and this bounded
+            // trip-local candidate set; search another real location. The set is
+            // discarded with the existing service trip, never a permanent ban.
             target->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
             trip.routeOwned=false;same=false;trip.nextMove=now;
-            result.blocker="gather_spawn_inactive_trying_alternative";
+            result.blocker=gatherExclusion+"_trying_alternative";
         }
         if(same && target->GetPosition() && target->GetPosition()->getMapId()==bot->GetMapId()) {
             const float remaining=target->Distance(bot);
@@ -1033,7 +1037,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             } else requested=ai->DoSpecificAction("request travel target::"+std::to_string(purpose),Event("can move around","",bot),true);
             trip.requesting=false;
             if(saved && requested) {trip.searchLease=trip.lease;trip.searchRevision=saved->revision;}
-            result.blocker=requested?(missingSpawn?"gather_spawn_inactive_trying_alternative":"recipe_service_route_requested"):
+            result.blocker=requested?(missingSpawn?gatherExclusion+"_trying_alternative":"recipe_service_route_requested"):
                 "recipe_service_route_pending";
         } else {
             result.blocker="recipe_traveling_to_service";

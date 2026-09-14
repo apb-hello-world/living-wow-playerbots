@@ -68,3 +68,18 @@ bool LivingGatheringSpawnMissing(Player& actor,const WorldPosition& destination,
     if(node && sServerFacade.isSpawned(node))return false;
     identity=spawn->GetRawValue();return identity!=0;
 }
+
+bool LivingGatheringSpawnUnavailable(Player& actor,const WorldPosition& destination,
+    uint64& identity,std::string& reason) {
+    identity=0;reason.clear();
+    const auto* spawn=dynamic_cast<const GuidPosition*>(&destination);
+    auto* ai=actor.GetPlayerbotAI();
+    if(actor.IsInWorld() && actor.IsAlive() && ai && spawn && spawn->IsGameObject() &&
+        spawn->GetRawValue() && ai->ShouldAvoidDeathArea(destination)) {
+        identity=spawn->GetRawValue();reason="gather_recent_death_area";return true;
+    }
+    if(LivingGatheringSpawnMissing(actor,destination,identity)) {
+        reason="gather_spawn_inactive";return true;
+    }
+    return false;
+}
