@@ -399,7 +399,7 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,Sto
 std::string ProfessionHistoryQuery(const Task& task) {
     ProfessionJob job;std::string blocker;
     if (task.mode!=Mode::Active || !task.accepted || !task.actor || !IsUuid(task.id) || task.root!=task.id ||
-        !task.revision || !IsProfessionJob(task) || !ValidateProfessionTask(task,blocker) ||
+        !task.revision || (task.source!="profession_job" && !IsGuildCraftTask(task)) || !ValidateProfessionTask(task,blocker) ||
         !DecodeProfessionJob(task.checkpoint.data,job,blocker)) throw std::invalid_argument("profession_history_task_invalid");
     // A single DB statement observes the revision, all unresolved work for this
     // actor (including dependent mail/purchases), and at most limit+1 attempts.

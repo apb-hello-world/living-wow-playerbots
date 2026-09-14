@@ -9,11 +9,13 @@ namespace LivingActivity {
     // a new planner. Shared service adapters never invent their own item need.
     inline bool ReadTaskItemRequirements(const Task& task,std::vector<ProfessionReagent>& items,std::string& blocker) {
         items.clear();
-        if (IsGuildProcurementTask(task) && !IsGuildCraftTask(task)) {
+        if (IsGuildProcurementTask(task)) {
             GuildProcurementJob job;
             if (!ValidateGuildProcurementTask(task,blocker) || !DecodeGuildProcurementJob(task.checkpoint.data,job,blocker))
                 return false;
-            items.push_back({job.entry,job.quantity});blocker.clear();return true;
+            if(job.craft.empty() || job.craftFinishedRevision) {
+                items.push_back({job.entry,job.quantity});blocker.clear();return true;
+            }
         }
         if (IsManagedGuildDelivery(task)) {
             GuildDeliveryJob job;

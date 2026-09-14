@@ -141,7 +141,7 @@ bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& sn
     result={};auto reject=[&](const char* why){blocker=why;return false;};
     ProfessionJob job;std::string reason;
     if (!Validate(before,reason) || before.mode!=Mode::Active || before.phase!=Phase::Verifying ||
-        !IsProfessionJob(before) || before.root!=before.id || !before.parent.empty() ||
+        (before.source!="profession_job" && !IsGuildCraftTask(before)) || before.root!=before.id || !before.parent.empty() ||
         !DecodeProfessionJob(before.checkpoint.data,job,reason) || !IsUuid(receipt) || nowMs<before.updatedAtMs ||
         before.revision>=std::numeric_limits<uint64_t>::max()-1)
         return reject("profession_settlement_context_invalid");

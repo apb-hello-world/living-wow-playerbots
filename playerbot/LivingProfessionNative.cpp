@@ -297,7 +297,12 @@ namespace LivingActivity {
         if (actor.GetGUIDLow() != task.actor) { blocker = "profession_native_actor_mismatch"; return false; }
         ProfessionJob job;
         if (!ValidateProfessionTask(task, blocker) || !DecodeProfessionJob(task.checkpoint.data, job, blocker)) return false;
-        if(IsGuildCraftTask(task) && !sLivingActivityCoordinator.ValidateGuildProcurementDemand(task,blocker))return false;
+        if(IsGuildCraftTask(task)) {
+            GuildProcurementJob guild;
+            if(!DecodeGuildProcurementJob(task.checkpoint.data,guild,blocker))return false;
+            if(guild.craftFinishedRevision){blocker="guild_craft_already_verified";return false;}
+            if(!sLivingActivityCoordinator.ValidateGuildProcurementDemand(task,blocker))return false;
+        }
         ProfessionWorkflow flow;if(!DecodeProfessionWorkflow(task.checkpoint.data,flow,blocker))return false;
         for(const auto& tool:flow.tools)
             if(!IsNativeRequiredTool(flow.intent,tool.job.outputEntry)) {blocker="profession_tool_not_required_by_parent";return false;}

@@ -23,6 +23,18 @@ inline void TestGuildCraftWorkflow() {
     assert(EncodeTaskProfessionWorkflow(task,flow)==task.checkpoint.data);
     GuildProcurementJob decoded;assert(DecodeGuildProcurementJob(task.checkpoint.data,decoded,why));
     assert(decoded.craft==guild.craft && decoded.quantity==1 && !decoded.craftFinishedRevision);
+    auto badIdentity=task;badIdentity.actor=704;assert(!ValidateProfessionTask(badIdentity,why));
+    badIdentity=task;badIdentity.kind=Kind::Profession;assert(!ValidateProfessionTask(badIdentity,why));
+    // Finite preparation still belongs to the guild root and cannot replace
+    // its exact requested recipe or introduce a second independently-owned job.
+    auto withTool=flow;auto tool=recipe;tool.recipe=999;tool.purpose=ProfessionPurpose::Intermediate;
+    tool.outputEntry=6218;tool.attemptLimit=3;withTool.tools.push_back({tool,6,0});
+    auto preparing=task;++preparing.revision;preparing.phase=Phase::Preparing;preparing.checkpoint.step="profession_tool_prepare";
+    preparing.checkpoint.data=EncodeTaskProfessionWorkflow(task,withTool);
+    assert(PreserveGuildProcurementIntent(task,preparing,why));
+    assert(ValidateProfessionTask(preparing,why) && preparing.id==task.id && preparing.source==task.source);
+    auto lostIntent=preparing;lostIntent.checkpoint.data=EncodeProfessionWorkflow(withTool);
+    assert(!ValidateProfessionTask(lostIntent,why));
     for(int i=0;i!=6;++i) {
         auto changed=task;auto link=guild;
         if(i==0)link.goal="different_request";
@@ -63,6 +75,7 @@ inline void TestGuildCraftWorkflow() {
     assert(result.task.checkpoint.step=="guild_procurement_craft_ready" && result.claims.size()==1);
     assert(result.claims[0].after.id==spare.id && result.claims[0].after.state=="released");
     assert(DecodeGuildProcurementJob(result.task.checkpoint.data,decoded,why) && decoded.craftFinishedRevision==6);
+    assert(ReadTaskItemRequirements(result.task,need,why) && need==std::vector<ProfessionReagent>({{2454,1}}));
     assert(result.plan.statements[1].find("SHA2(CONCAT(o.before_state")!=std::string::npos);
     assert(result.plan.statements[1].find("i.count=1")!=std::string::npos);
     for(const auto& sql:result.plan.statements)assert(sql.find("INSERT INTO guild_society_supply_delivery")==std::string::npos);

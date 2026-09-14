@@ -133,6 +133,7 @@ namespace LivingActivity {
             if (!ValidateNativeRecipeLearningTask(actor,*saved,blocker)) return false;
         } else if (IsGuildProcurementTask(*saved)) {
             if (!sLivingActivityCoordinator.ValidateGuildProcurementDemand(*saved,blocker)) return false;
+            if(IsGuildCraftTask(*saved) && !ValidateNativeProfessionTask(actor,*saved,blocker))return false;
         } else {
             ProfessionJob job;
             if (!DecodeProfessionJob(saved->checkpoint.data,job,blocker)) return false;

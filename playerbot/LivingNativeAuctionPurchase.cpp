@@ -30,6 +30,7 @@ bool Demand(Player& actor,const Task& saved,uint32_t entry,uint32_t& remaining,s
         if(!ValidateNativeRecipeLearningTask(actor,saved,why))return false;
     } else if(IsGuildProcurementTask(saved)) {
         if(!sLivingActivityCoordinator.ValidateGuildProcurementDemand(saved,why))return false;
+        if(IsGuildCraftTask(saved) && !ValidateNativeProfessionTask(actor,saved,why))return false;
     } else {
         ProfessionJob job;if(!DecodeProfessionJob(saved.checkpoint.data,job,why))return false;
         const auto native=InspectNativeProfessionRecipe(actor,job);job.initialSkill=native.skillValue;

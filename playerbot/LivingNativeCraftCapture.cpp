@@ -397,7 +397,7 @@ namespace LivingActivity {
         if (!ValidateProfessionTask(request.transition.task,blocker) ||
             !DecodeProfessionJob(request.transition.task.checkpoint.data,job,blocker)) return false;
         if(IsGuildProcurementTask(request.transition.task) &&
-            !sLivingActivityCoordinator.ValidateGuildProcurementDemand(request.transition.task,blocker))return false;
+            !ValidateNativeProfessionTask(actor,request.transition.task,blocker))return false;
         if (request.transition.task.actor!=actor.GetGUIDLow() || request.kind!=OperationKind() ||
             request.effects!=OperationEffects() || request.persistence!=PersistencePolicy() ||
             (job.operation==ProfessionOperation::EnchantItem ? !request.itemGain.Empty() :

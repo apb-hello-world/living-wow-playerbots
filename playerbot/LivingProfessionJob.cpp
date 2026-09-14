@@ -274,6 +274,7 @@ namespace LivingActivity {
         blocker.clear(); return true;
     }
     bool ValidateProfessionTask(const Task& task, std::string& blocker) {
+        if(!ValidateGuildProcurementTask(task,blocker))return false;
         if (!ValidateRecipeLearningTask(task,blocker)) return false;
         if (!IsProfessionJob(task)) { blocker.clear(); return true; }
         ProfessionWorkflow flow;
