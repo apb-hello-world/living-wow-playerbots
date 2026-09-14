@@ -1,6 +1,7 @@
 #pragma once
 #include "LivingGuildProcurement.h"
 #include "LivingPersonalResourceSettlement.h"
+#include "LivingServiceTravel.h"
 
 namespace LivingActivity {
 struct GuildProcurementRecovery {Task task;WritePlan plan;std::vector<ClaimReceiptChange> claims;};
@@ -92,9 +93,14 @@ inline bool PrepareGuildProcurementResumption(const Task& saved,const WorldConte
     if(!GuildProcurementBacking(saved,batch,balances,backing,why))return false;
     out.task=saved;auto& next=out.task;++next.revision;next.context=current;next.phase=Phase::Preparing;
     next.updatedAtMs=now;next.checkpoint.step="guild_procurement_prepare";next.checkpoint.blocker.clear();
+    const bool continuingGather = job.craft.empty() && saved.phase==Phase::Traveling &&
+        saved.checkpoint.step==ServiceStep(ServiceDestination::Gathering) &&
+        SameServiceJourneyContext(saved.context,current);
+    if(continuingGather) {next.phase=Phase::Traveling;next.checkpoint.step=saved.checkpoint.step;}
     // Rebinding safety/world context is not progress and does not reset active
     // time, due time, original task identity, paid receipts or retry deadlines.
-    out.plan=Detail::TaskTransitionWrite(next,saved.revision,receipt,"guild_procurement_preparation_reconciled",saved.checkpoint.data+backing);
+    out.plan=Detail::TaskTransitionWrite(next,saved.revision,receipt,continuingGather?
+        "guild_procurement_travel_rebound":"guild_procurement_preparation_reconciled",saved.checkpoint.data+backing);
     out.plan.statements.front()+=" AND mode='active' AND accepted=1 AND checkpoint="+SqlValue(saved.checkpoint.data)+
         GuildProcurementOperationGuard(saved)+backing+
         // A committed acquisition must still have its claimed goods. Never

@@ -823,7 +823,8 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
         // unchanged native destination. Rebind only after fresh acquisition.
         const bool sameRoute=trip.routeOwned && target && target->IsActive() &&
             trip.routeRevision && trip.routeRevision!=UINT64_MAX && target->GetRouteRevision()==trip.routeRevision &&
-            SameServiceIntent(trip.managedTask,grant.task);
+            (SameServiceIntent(trip.managedTask,grant.task) ||
+             (gatherItem && SameServiceJourney(trip.managedTask,grant.task)));
         if(!retained && !sameRoute) {trip.routeInitialized=false;trip.routeOwned=false;}
         trip.lease=grant.authority.lease;trip.managedTask=grant.task;trip.action=grant.action;
         scope=std::make_unique<ExecutionScope>(grant.task,grant.action);

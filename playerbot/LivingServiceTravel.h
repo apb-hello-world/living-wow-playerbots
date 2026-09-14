@@ -134,15 +134,33 @@ namespace LivingActivity {
         std::string task;
         std::vector<Failure> failures;
     };
-    // Progress-only saved revisions retain route identity, not an old grant.
-    inline bool SameServiceIntent(const Task& before,const Task& after) {
+    inline bool SameServiceDefinition(const Task& before,const Task& after) {
         ServiceDestination service;
         return IsUuid(before.id) && before.id==after.id && before.root==before.id && after.root==after.id &&
-            before.actor==after.actor && before.context==after.context && before.mode==Mode::Active &&
+            before.actor==after.actor && before.kind==after.kind && before.source==after.source && before.sourceKey==after.sourceKey && before.mode==Mode::Active &&
             after.mode==Mode::Active && before.accepted && after.accepted &&
             before.phase==Phase::Traveling && after.phase==Phase::Traveling && before.revision<=after.revision &&
             before.checkpoint.step==after.checkpoint.step && ParseServiceStep(after.checkpoint.step,service) &&
             before.checkpoint.data==after.checkpoint.data;
+    }
+    // Progress-only saved revisions retain route identity, not an old grant.
+    inline bool SameServiceIntent(const Task& before,const Task& after) {
+        return before.context==after.context && SameServiceDefinition(before,after);
+    }
+    // A native flight/transfer advances the map epoch. It does not change the
+    // actor, party, request, policy or boot identity. This is route provenance
+    // only: asynchronous results and every native effect still require the
+    // exact new context/revision/lease, never this looser comparison.
+    inline bool SameServiceJourneyContext(const WorldContext& before,const WorldContext& after) {
+        return before.actor && before.actor==after.actor && IsUuid(before.boot) && before.boot==after.boot &&
+            before.actorGeneration && before.actorGeneration==after.actorGeneration &&
+            before.policyRevision && before.policyRevision==after.policyRevision &&
+            before.session==after.session && before.sessionRevision==after.sessionRevision &&
+            before.mapGeneration && after.mapGeneration>=before.mapGeneration &&
+            ((before.map==after.map && before.instance==after.instance) || after.mapGeneration>before.mapGeneration);
+    }
+    inline bool SameServiceJourney(const Task& before,const Task& after) {
+        return SameServiceJourneyContext(before.context,after.context) && SameServiceDefinition(before,after);
     }
     struct ServicePathPoint { uint32_t map=0; double x=0,y=0,z=0; };
     // A failed graph connection may still leave a genuine local navmesh path.

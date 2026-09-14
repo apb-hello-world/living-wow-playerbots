@@ -83,6 +83,37 @@ int main(int argc,char**) {
         if(n==7)s.push_back(s[0]);
         assert(!PrepareGuildProcurementResumption(t,context,c,s,2000,receipt,recovery,why));
     }
+    // Same-boot flight/transfer completion preserves an accepted gathering
+    // journey, not its expired action context. Restarts, new actors/policies or
+    // party changes must still return through full preparation.
+    auto traveling=task;traveling.accepted=true;traveling.phase=Phase::Traveling;
+    traveling.context.policyRevision=1;traveling.checkpoint.step=ServiceStep(ServiceDestination::Gathering);
+    traveling.checkpoint.activeElapsedMs=71;traveling.dueAtMs=1500;
+    auto landed=traveling.context;++landed.mapGeneration;
+    assert(PrepareGuildProcurementResumption(traveling,landed,empty,{},2000,receipt,recovery,why));
+    assert(recovery.task.phase==Phase::Traveling && recovery.task.checkpoint.step==traveling.checkpoint.step);
+    assert(recovery.task.checkpoint.activeElapsedMs==71 && recovery.task.dueAtMs==1500);
+    assert(SameServiceJourney(traveling,recovery.task) && !SameServiceIntent(traveling,recovery.task));
+    ActionContext stale;stale.task=stale.rootTask=traveling.id;stale.world=traveling.context;
+    stale.revision=traveling.revision;stale.ownerGeneration=traveling.ownerGeneration;
+    assert(!Fresh(recovery.task,stale,landed));
+    for(unsigned n=0;n<6;++n) {
+        auto changed=landed;
+        if(n==0)changed.boot=current.boot;
+        if(n==1)++changed.actorGeneration;
+        if(n==2)++changed.policyRevision;
+        if(n==3){changed.session="human_party";changed.sessionRevision=1;}
+        if(n==4)changed.mapGeneration=0;
+        if(n==5){changed.map=1;changed.mapGeneration=traveling.context.mapGeneration;}
+        assert(!SameServiceJourneyContext(traveling.context,changed));
+        if(changed.mapGeneration) {
+            assert(PrepareGuildProcurementResumption(traveling,changed,empty,{},2000,receipt,recovery,why));
+            assert(recovery.task.phase==Phase::Preparing);
+        }
+    }
+    ++landed.map;assert(SameServiceJourneyContext(traveling.context,landed));
+    auto edited=traveling;++edited.revision;edited.context=landed;edited.checkpoint.data+=" ";
+    assert(!SameServiceJourney(traveling,edited));
     GuildProcurementClosure goal{"cancelled","item",2770,5,0,1,0};
     assert(PrepareGuildProcurementCancellation(task,task.context,goal,batch,stock,2000,receipt,recovery,why));
     assert(recovery.task.phase==Phase::Cancelled && recovery.claims.size()==2 && recovery.claims[0].after.state=="released");

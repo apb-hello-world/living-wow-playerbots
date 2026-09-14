@@ -823,6 +823,13 @@ bool GatherTravelDestination::IsActive(Player* bot, const PlayerTravelInfo& info
     if (!IsPossible(info))
         return false;   
 
+    // An accepted request's executor owns arrival, native node eligibility and
+    // no-progress recovery. The optional gathering heuristic below checks the
+    // entire template's neighbourhood, not the selected safe spawn, and must
+    // not cool down that route merely because no local node is visible yet.
+    if (info.RequestedGathering() &&
+        (GetPurpose() == TravelDestinationPurpose::GatherMining || GetPurpose() == TravelDestinationPurpose::GatherHerbalism))
+        return true;
 
     if (GetPurpose() != TravelDestinationPurpose::GatherFishing)
     {
@@ -1071,6 +1078,11 @@ void TravelTarget::CheckStatus()
 
         if (destinationInactive || conditionsInactive)
         {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+            if (verifiedErrand)
+                sLog.outString("Living isolated service route cooldown: actor=%u purpose=%u entry=%d destination_inactive=%u conditions_inactive=%u",
+                    bot->GetGUIDLow(),uint32(tDestination->GetPurpose()),tDestination->GetEntry(),uint32(destinationInactive),uint32(conditionsInactive));
+#endif
             ai->TellDebug(ai->GetMaster(), "The target is cooling down because the destination was no longer active or the conditions are no longer true.", "debug travel");
             forced = false;
             SetStatus(TravelStatus::TRAVEL_STATUS_COOLDOWN);
