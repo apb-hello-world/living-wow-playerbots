@@ -286,6 +286,7 @@ struct LivingActivityCoordinator::State {
         uint64_t professionRevision = 0, professionDecisionAt = 0;
         boost::property_tree::ptree purchaseSource;
         boost::property_tree::ptree procurementCandidate;
+        std::map<std::string,boost::property_tree::ptree> procurementCandidates;
         std::string purchaseSourceKey;
     };
     std::map<uint32_t, Binding> bindings;
@@ -1540,6 +1541,9 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
             // labelled as a past observation, not current execution proof.
             if(!decision.purchaseSource.empty())p.add_child("last_purchase_source",decision.purchaseSource);
             if(!decision.procurementCandidate.empty())p.add_child("last_guild_procurement_admission",decision.procurementCandidate);
+            boost::property_tree::ptree candidates;
+            for(const auto& candidate:decision.procurementCandidates)candidates.push_back({"",candidate.second});
+            if(!candidates.empty())p.add_child("guild_procurement_admissions",candidates);
             const auto task=state->cache.find(decision.professionTask);
             if (task!=state->cache.end() && task->second.actor==guid &&
                 task->second.revision==decision.professionRevision && decision.professionDecisionAt) {
@@ -3046,6 +3050,17 @@ AdmissionResult LivingActivityCoordinator::AdmitGuildProcurement(uint32_t actor,
                 p.put("source_kind",source.kind);p.put("source_reference",source.reference);p.put("estimated_copper",source.estimatedCopper);
                 p.put("task_id",outcome.task);p.put("outcome",Name(outcome.code));p.put("blocker",outcome.blocker);
                 p.put("native_acquisition_verified",false);
+                // The producer checks several requests in one pass. Retaining
+                // only its last rejection hides why an earlier request failed.
+                // Latest value per request, bounded to that producer's 16 rows.
+                auto& candidates=binding->second.procurementCandidates;
+                if(!candidates.count(goal) && candidates.size()>=16) {
+                    auto oldest=std::min_element(candidates.begin(),candidates.end(),[](const auto& a,const auto& b) {
+                        return a.second.template get<uint64_t>("observed_at_ms",0)<b.second.template get<uint64_t>("observed_at_ms",0);
+                    });
+                    candidates.erase(oldest);
+                }
+                candidates[goal]=p;
             }
         }
         return outcome;

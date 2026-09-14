@@ -17,6 +17,20 @@ void RunIsolatedServicesObservation(FixtureState& state) {
         result.put("native_dispatches",state.nativeDispatches);result.put("native_result_receipts",state.nativeOutcomes);
         result.put("verified_native_results",state.nativeVerifiedResults);result.put("task_admissions",state.taskAdmissions);
         result.put("pending_writes",state.pending.size());result.put("pending_operations",state.operations.size());
+        boost::property_tree::ptree actors;unsigned actorCount=0;
+        for(const auto& binding:state.bindings) {
+            auto* bot=sRandomPlayerbotMgr.GetPlayerBot(binding.first);
+            if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || ++actorCount>50)continue;
+            boost::property_tree::ptree actor;actor.put("actor",binding.first);
+            actor.put("alive",bot->IsAlive());actor.put("combat",bot->IsInCombat());
+            actor.put("transport",bool(bot->GetTransport()));actor.put("taxi",bot->IsTaxiFlying());
+            actor.put("execution_owner",PlayerbotRendezvousManager::PartyActivityOwnerName(
+                sPlayerbotRendezvousManager.GetPartyActivityOwner(binding.first)));
+            boost::property_tree::ptree admissions;
+            for(const auto& candidate:binding.second.procurementCandidates)admissions.push_back({"",candidate.second});
+            actor.add_child("guild_procurement_admissions",admissions);actors.push_back({"",actor});
+        }
+        result.put("actor_snapshot_truncated",actorCount>50);result.add_child("actors",actors);
         const uint64_t leaseNow=std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
         boost::property_tree::ptree tasks;unsigned count=0;

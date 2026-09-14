@@ -33,15 +33,23 @@ bool ReadNativeGuildCraftSource(Player& actor,uint32_t entry,uint32_t maximum,
     }
     const uint32_t money=std::min(actor.GetMoney(),actor.GetPlayerbotAI()->GetAiObjectContext()
         ->GetValue<uint32_t>("free money for",uint32_t(ai::NeedMoneyFor::tradeskill))->Get());
+    std::string failure="guild_craft_recipe_not_known";
+    bool knownCandidate=false;
     for(const auto recipe:recipes) {
         ProfessionJob job;std::string blocker;
-        if(!BuildNativeRequestedItemJob(actor,recipe,entry,maximum,job,blocker))continue;
+        if(!BuildNativeRequestedItemJob(actor,recipe,entry,maximum,job,blocker)) {
+            if(!knownCandidate && blocker!="profession_recipe_not_known")failure=blocker;
+            continue;
+        }
+        knownCandidate=true;
         uint64_t cost=0;bool ready=true;
         for(const auto& r:job.reagents) {
             const auto have=stock[r.entry];
             if(have.protectedStock || view->HasUncertainItem(actor.GetGUIDLow(),r.entry) ||
                 sGuildSupplies.ReservedEntry(actor.GetGUIDLow(),r.entry) || ai::ItemUsageValue::IsNeededForQuest(&actor,r.entry,true) ||
-                ai::AhBidAction::HasPendingMaterial(&actor,r.entry)) {ready=false;break;}
+                ai::AhBidAction::HasPendingMaterial(&actor,r.entry)) {
+                failure="guild_craft_material_protected_or_incoming:"+std::to_string(r.entry);ready=false;break;
+            }
             if(have.quantity>=r.perAttempt)continue;
             const uint32_t missing=r.perAttempt-uint32_t(have.quantity);
             const auto* proto=sObjectMgr.GetItemPrototype(r.entry);
@@ -58,13 +66,16 @@ bool ReadNativeGuildCraftSource(Player& actor,uint32_t entry,uint32_t maximum,
                 NativePurchaseServiceAvailable(actor,uint32_t(ai::TravelDestinationPurpose::AH),{}) &&
                 ExactAuctionMaterialBasket(offers,r.entry,missing,money,basket))
                 price=std::min(price,uint64_t(basket.copper));
-            if(price>money || cost>money-price){ready=false;break;}cost+=price;
+            if(price>money || cost>money-price){
+                failure=(price==UINT64_MAX?"guild_craft_material_no_feasible_source:":"guild_craft_material_budget_protected:")+
+                    std::to_string(r.entry);ready=false;break;
+            }cost+=price;
         }
         if(!ready || (!out.craft.empty() && (out.estimatedCopper<cost ||
             (out.estimatedCopper==cost && out.reference<recipe))))continue;
         out={job.outputQuantity,recipe,uint32_t(cost),"craft",EncodeProfessionJob(job)};
     }
-    if(out.craft.empty()){why="guild_craft_no_obtainable_known_recipe";return false;}
+    if(out.craft.empty()){why=failure;return false;}
     why.clear();return true;
 }
 bool NativeGuildProcurementItemUsable(Player& actor,uint32_t entry,Item* item,bool alreadyClaimed) {
@@ -120,6 +131,7 @@ bool ReadNativeGuildProcurementSource(Player& actor,uint32_t entry,uint32_t maxi
     }
     if(!crafted.craft.empty()){out=crafted;why.clear();return true;}
     if(why=="profession_purchase_market_snapshot_busy" || vendorBlocker=="profession_vendor_catalog_not_ready")return false;
+    if(!craftBlocker.empty() && craftBlocker!="guild_craft_no_item_recipe") {why=craftBlocker;return false;}
     return reject("guild_procurement_no_obtainable_source_within_budget");
 }
 bool ReadNativeGuildProcurementMaterials(Player& actor,const Task& task,const UnsettledClaimBatch& claims,
