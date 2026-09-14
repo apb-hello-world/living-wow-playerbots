@@ -13,6 +13,7 @@
 #include "strategy/actions/InviteToGroupAction.h"
 #include "AiFactory.h"
 #include "Guilds/GuildMgr.h"
+#include "playerbot/LivingBotDiagnostics.h"
 
 #ifdef GenerateBotTests
 #include "strategy/tests/TestAction.h"
@@ -1346,6 +1347,12 @@ std::string PlayerbotHolder::HandleBotDebug(Player* bot, Player* master, const s
     PlayerbotAI* ai = bot->GetPlayerbotAI();
     if (!ai)
         return "Bot has no AI";
+
+    // Console/RA dispatch is on the world thread. A read-only query must remain
+    // usable while a task or combat owns execution. Do not classify the whole
+    // debug action as read-only: it also exposes native mutation commands.
+    if (!master && LivingActivity::IsReadOnlyBotDiagnostic(param))
+        return ai->HandleRemoteCommand(param);
 
     ai->RecordMessages(true, true);
 

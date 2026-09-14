@@ -23,6 +23,34 @@ void RunIsolatedServicesObservation(FixtureState& state) {
             if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || ++actorCount>50)continue;
             boost::property_tree::ptree actor;actor.put("actor",binding.first);
             actor.put("alive",bot->IsAlive());actor.put("combat",bot->IsInCombat());
+            actor.put("health",bot->GetHealth());actor.put("max_health",bot->GetMaxHealth());
+            actor.put("map",bot->GetMapId());actor.put("x",bot->GetPositionX());
+            actor.put("y",bot->GetPositionY());actor.put("z",bot->GetPositionZ());
+            actor.put("moving",sServerFacade.isMoving(bot));
+            actor.put("ai_state",bot->GetPlayerbotAI()->HandleRemoteCommand("state"));
+            actor.put("last_action",bot->GetPlayerbotAI()->HandleRemoteCommand("action"));
+            actor.put("strategies",bot->GetPlayerbotAI()->HandleRemoteCommand("strategy"));
+            actor.put("attackers",bot->getAttackers().size());
+            auto unitSnapshot=[&](Unit* unit) {
+                boost::property_tree::ptree native;
+                native.put("present",unit!=nullptr);
+                if(!unit)return native;
+                native.put("guid",unit->GetObjectGuid().GetRawValue());native.put("entry",unit->GetEntry());
+                native.put("alive",unit->IsAlive());native.put("in_world",unit->IsInWorld());
+                native.put("health",unit->GetHealth());native.put("max_health",unit->GetMaxHealth());
+                native.put("map",unit->GetMapId());native.put("x",unit->GetPositionX());
+                native.put("y",unit->GetPositionY());native.put("z",unit->GetPositionZ());
+                native.put("combat",unit->IsInCombat());
+                native.put("victim",unit->GetVictim()?unit->GetVictim()->GetObjectGuid().GetRawValue():0);
+                if(unit->IsInWorld() && unit->GetMap()==bot->GetMap()) {
+                    native.put("distance",bot->GetDistance(unit));
+                    native.put("line_of_sight",bot->IsWithinLOSInMap(unit));
+                }
+                return native;
+            };
+            actor.add_child("victim",unitSnapshot(bot->GetVictim()));
+            actor.add_child("ai_target",unitSnapshot(bot->GetPlayerbotAI()->GetAiObjectContext()->template GetValue<Unit*>("current target")->Get()));
+            actor.add_child("pet",unitSnapshot(bot->GetPet()));
             actor.put("transport",bool(bot->GetTransport()));actor.put("taxi",bot->IsTaxiFlying());
             actor.put("execution_owner",PlayerbotRendezvousManager::PartyActivityOwnerName(
                 sPlayerbotRendezvousManager.GetPartyActivityOwner(binding.first)));
