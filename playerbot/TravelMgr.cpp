@@ -2731,8 +2731,9 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
 
     PartitionedTravelList pointMap;
     DestinationList destinations = GetDestinations(info, purposeFlag, entries, onlyPossible, maxDistance);
-
-
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    uint32 noPartition=0,checkedPoints=0,unsafePoints=0,distantPoints=0;
+#endif
 
     unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
     std::shuffle(destinations.begin(), destinations.end(), std::default_random_engine(seed));
@@ -2744,7 +2745,12 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
         std::pair<uint32, std::vector<WorldPosition*>> pointRange = dest->GetClosestPartition(center, distancePartitions);
 
         if (!pointRange.first)
+        {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+            ++noPartition;
+#endif
             continue;
+        }
 
         MANGOS_ASSERT(pointRange.second.size());
         std::vector<WorldPosition*> points = pointRange.second;
@@ -2752,13 +2758,26 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
 
         for (auto& position : points)
         {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+            ++checkedPoints;
+#endif
             if (!IsLocationLevelValid(*position, info))
+            {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+                ++unsafePoints;
+#endif
                 continue;
+            }
 
             float distance = position->distance(center);
 
             if (distance > maxDistance)
+            {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+                ++distantPoints;
+#endif
                 continue;
+            }
             
             point = TravelPoint(dest, position, distance);
         }
@@ -2768,7 +2787,13 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     }
 
     sTravelMgr.GetPartitionsLock(false);
-
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    if(purposeFlag==uint32(TravelDestinationPurpose::GatherMining) || purposeFlag==uint32(TravelDestinationPurpose::GatherHerbalism))
+        sLog.outString("Living isolated gather search: purpose=%u requested=%u sources=%u eligible=%u partition_missing=%u points=%u unsafe=%u distant=%u level=%u mining=%u/%u herb=%u/%u map=%u",
+            purposeFlag,uint32(info.RequestedGathering()),uint32(entries.size()),uint32(destinations.size()),noPartition,
+            checkedPoints,unsafePoints,distantPoints,info.GetLevel(),info.GetCurrentSkill(SKILL_MINING),info.GetSkillMax(SKILL_MINING),
+            info.GetCurrentSkill(SKILL_HERBALISM),info.GetSkillMax(SKILL_HERBALISM),center.getMapId());
+#endif
     return pointMap;
 }
 
