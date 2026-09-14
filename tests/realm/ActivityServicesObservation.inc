@@ -30,6 +30,7 @@ void RunIsolatedServicesObservation(FixtureState& state) {
                 if(corpse->GetMapId()==bot->GetMapId())actor.put("corpse_distance",bot->GetDistance(corpse));
             }
             actor.put("health",bot->GetHealth());actor.put("max_health",bot->GetMaxHealth());
+            actor.put("mana",bot->GetPower(POWER_MANA));actor.put("max_mana",bot->GetMaxPower(POWER_MANA));
             actor.put("map",bot->GetMapId());actor.put("x",bot->GetPositionX());
             actor.put("y",bot->GetPositionY());actor.put("z",bot->GetPositionZ());
             actor.put("moving",sServerFacade.isMoving(bot));
@@ -57,6 +58,29 @@ void RunIsolatedServicesObservation(FixtureState& state) {
             actor.add_child("victim",unitSnapshot(bot->GetVictim()));
             actor.add_child("ai_target",unitSnapshot(bot->GetPlayerbotAI()->GetAiObjectContext()->template GetValue<Unit*>("current target")->Get()));
             actor.add_child("pet",unitSnapshot(bot->GetPet()));
+            if(bot->getClass()==CLASS_HUNTER) {
+                // Two original, non-scripted native checks at the existing30s
+                // copied observation cadence. No spell, item, target or movement
+                // is changed. Capture the real rejection instead of interpreting
+                // an IMPOSSIBLE action as an ownership failure.
+                boost::property_tree::ptree hunter;
+                const uint32 ammo=bot->GetUInt32Value(PLAYER_AMMO_ID);
+                hunter.put("ammo_entry",ammo);hunter.put("ammo_count",ammo?bot->GetItemCount(ammo,false):0);
+                auto readiness=[&](const char* name,Unit* target) {
+                    boost::property_tree::ptree cast;
+                    auto* ai=bot->GetPlayerbotAI();
+                    const uint32 spell=ai->GetAiObjectContext()->template GetValue<uint32>("spell id",name)->Get();
+                    cast.put("spell",spell);cast.put("known",spell && bot->HasSpell(spell));
+                    cast.put("target_present",target!=nullptr);
+                    SpellCastResult reason=SPELL_FAILED_BAD_TARGETS;
+                    const bool ready=target && ai->CanCastSpell(spell,target,0,true,nullptr,false,false,false,&reason);
+                    cast.put("native_ready",ready);cast.put("native_result",uint32(reason));
+                    return cast;
+                };
+                hunter.add_child("auto_shot",readiness("auto shot",bot->GetPlayerbotAI()->GetAiObjectContext()->template GetValue<Unit*>("current target")->Get()));
+                hunter.add_child("mend_pet",readiness("mend pet",bot->GetPet()));
+                actor.add_child("hunter_readiness",hunter);
+            }
             actor.put("transport",bool(bot->GetTransport()));actor.put("taxi",bot->IsTaxiFlying());
             actor.put("execution_owner",PlayerbotRendezvousManager::PartyActivityOwnerName(
                 sPlayerbotRendezvousManager.GetPartyActivityOwner(binding.first)));
