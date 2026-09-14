@@ -1,6 +1,8 @@
 #include "botpch.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
+#include "LivingCommissionContract.h"
+#include "LivingProfessionNative.h"
 
 #include "PlayerbotAI.h"
 #include "PlayerbotChatDirector.h"
@@ -411,6 +413,24 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
     }
 
     std::string transactionId = "wow-tx-" + event.eventId + "-" + proposal.proposalId;
+    std::string commissionId,commissionPayload;
+    if(crafting)
+    {
+        // Persist the accepted native recipe, fee and delivery target instead
+        // of '{}'. This alone does not certify the legacy cast/mail outcome;
+        // the managed executor must still acquire claims and native receipts.
+        LivingActivity::ProfessionJob nativeRecipe;std::string why;
+        if(!LivingActivity::BuildNativeRequestedItemJob(*bot,spellId,itemEntry,proposal.quantity,nativeRecipe,why))
+            return reject(why,"I can't validate that exact recipe right now.");
+        commissionId="lwc-"+std::to_string(std::hash<std::string>{}(transactionId));
+        LivingActivity::CommissionContract contract{commissionId,transactionId,proposal.delivery,
+            LivingActivity::EncodeProfessionJob(nativeRecipe),bot->GetGUIDLow(),player->GetGUIDLow(),price,
+            uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count())};
+        if(!LivingActivity::ValidCommissionContract(contract,why))
+            return reject(why,"That crafting request needs a valid recipient and delivery agreement.");
+        commissionPayload=LivingActivity::EncodeCommissionContract(contract);
+        CharacterDatabase.escape_string(commissionPayload);
+    }
     if (proposal.delivery == "meeting" && !conjure)
     {
         PlayerbotRendezvousManager::RequestResult meeting =
@@ -433,7 +453,7 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
 
     Transaction transaction;
     transaction.transactionId = transactionId;
-    transaction.commissionId = crafting ? "lwc-" + std::to_string(std::hash<std::string>{}(transactionId)) : "";
+    transaction.commissionId = commissionId;
     transaction.eventId = event.eventId;
     transaction.proposalId = proposal.proposalId;
     transaction.botGuid = proposal.botGuid;
@@ -455,9 +475,9 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
     if (crafting)
         CharacterDatabase.PExecute(
             "INSERT INTO organic_economy_commission (commission_id,bot_guid,player_guid,recipe_spell_id,output_item_entry,quantity,materials_source,service_fee_copper,state,authoritative_payload,expires_at) "
-            "VALUES ('%s','%u','%u','%u','%u','1','bot','%u','crafting','{}',DATE_ADD(NOW(),INTERVAL 30 MINUTE))",
+            "VALUES ('%s','%u','%u','%u','%u','1','bot','%u','crafting','%s',DATE_ADD(NOW(),INTERVAL 30 MINUTE))",
             transaction.commissionId.c_str(), transaction.botGuid, transaction.playerGuid, transaction.spellId,
-            transaction.itemEntry, transaction.priceCopper);
+            transaction.itemEntry, transaction.priceCopper,commissionPayload.c_str());
     Report(transactions[transaction.transactionId]);
 
     if (conjure)
