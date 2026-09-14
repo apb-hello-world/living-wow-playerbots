@@ -350,6 +350,17 @@ private:
         }
     };
 
+    class HunterPetCallable : public Trigger
+    {
+    public:
+        HunterPetCallable(PlayerbotAI* ai) : Trigger(ai, "hunters pet callable", 1) {}
+        bool IsActive() override
+        {
+            return !AI_VALUE2(bool, "mounted", "self target") && !bot->GetPetGuid() &&
+                ai->CanCastSpell("call pet", bot, 0);
+        }
+    };
+
     class HunterNoPet : public Trigger 
     {
     public:

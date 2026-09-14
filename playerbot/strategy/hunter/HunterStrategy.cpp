@@ -1480,6 +1480,12 @@ void HunterManualAspectStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& 
 
 void HunterPetStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
 {
+    // Calling a real saved pet is distinct from the no-pet/taming trigger,
+    // which deliberately returns false when Call Pet is already possible.
+    triggers.push_back(new TriggerNode(
+        "hunters pet callable",
+        NextAction::array(0, new NextAction("call pet", ACTION_NORMAL + 2), NULL)));
+
     triggers.push_back(new TriggerNode(
         "hunters pet low health",
         NextAction::array(0, new NextAction("mend pet", ACTION_HIGH), NULL)));
@@ -1488,7 +1494,7 @@ void HunterPetStrategy::InitCombatTriggers(std::list<TriggerNode*>& triggers)
 void HunterPetStrategy::InitNonCombatTriggers(std::list<TriggerNode*>& triggers)
 {
     triggers.push_back(new TriggerNode(
-        "no pet",
+        "hunters pet callable",
         NextAction::array(0, new NextAction("call pet", ACTION_NORMAL + 2), NULL)));
 
     triggers.push_back(new TriggerNode(

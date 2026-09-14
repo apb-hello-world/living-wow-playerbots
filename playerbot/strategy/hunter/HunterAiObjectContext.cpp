@@ -243,6 +243,7 @@ namespace ai
                 creators["silencing shot interrupt"] = [](PlayerbotAI* ai) { return new SilencingShotInterruptTrigger(ai); };
                 creators["silencing shot on enemy healer"] = [](PlayerbotAI* ai) { return new SilencingShotInterruptHealerTrigger(ai); };
                 creators["no pet"] = [](PlayerbotAI* ai) { return new HunterNoPet(ai); };
+                creators["hunters pet callable"] = [](PlayerbotAI* ai) { return new HunterPetCallable(ai); };
                 creators["stealthed nearby"] = [](PlayerbotAI* ai) { return new StealthedNearbyTrigger(ai); };
             }
         };
