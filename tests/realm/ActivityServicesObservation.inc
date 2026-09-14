@@ -208,7 +208,7 @@ void RunIsolatedServicesObservation(FixtureState& state) {
         state.effective=Mode::Observe;report("observation_finished","");state.fixtureFinished=true;return;
     }
     state.effective=Mode::Active;state.enforceEffects.store(true,std::memory_order_release);
-    try {PrepareIsolatedSkinningSource(state);}
+    try {PrepareIsolatedSkinningSource(state);TraceIsolatedSkinningSource(state);}
     catch(const std::exception& error) {
         state.effective=Mode::Observe;report("stopped",error.what());state.fixtureFinished=true;return;
     }

@@ -60,3 +60,59 @@ void PrepareIsolatedSkinningSource(FixtureState& state) {
     if(!admission || (admitted.code!=AdmissionCode::Pending && admitted.code!=AdmissionCode::Saved))
         throw std::runtime_error("skinning_source_admission:"+admitted.blocker);
 }
+
+// Retain the first source-selection boundary, not merely the 30-second route
+// snapshot after an executor has already fallen back to a different source.
+// Read-only and bounded to 64 half-second samples in this marked fixture.
+template<class FixtureState>
+void TraceIsolatedSkinningSource(FixtureState& state) {
+    auto& setup=state.guildDepositFixture.setup;
+    if(!setup.template get<bool>("skinning_source_attempted",false))return;
+    auto count=setup.template get<uint32_t>("source_trace_samples",0);
+    if(count>=64)return;
+    RequireIsolatedNativeFixtureEnvironment();
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(377);
+    if(!bot || !bot->IsInWorld() || !bot->GetPlayerbotAI())return;
+    auto* ai=bot->GetPlayerbotAI();
+    const ObjectGuid guid(setup.template get<uint64_t>("source_fixture_guid"));
+    auto* corpse=ai->GetCreature(guid);
+    boost::property_tree::ptree sample;
+    sample.put("at_ms",NowMs());sample.put("source_present",corpse!=nullptr);
+    sample.put("actor_map",bot->GetMapId());sample.put("actor_grouped",bot->GetGroup()!=nullptr);
+    sample.put("actor_skill",bot->GetSkillValue(SKILL_SKINNING));
+    sample.put("actor_has_spell",bot->HasSpell(8613));sample.put("actor_has_knife",bot->HasItemCount(7005,1));
+    sample.put("actor_x",bot->GetPositionX());sample.put("actor_y",bot->GetPositionY());
+    if(corpse) {
+        sample.put("in_world",corpse->IsInWorld());sample.put("alive",corpse->IsAlive());
+        sample.put("death_state",uint32_t(sServerFacade.GetDeathState(corpse)));
+        sample.put("loot_status",uint32_t(corpse->GetLootStatus()));
+        sample.put("skinnable",corpse->HasFlag(UNIT_FIELD_FLAGS,UNIT_FLAG_SKINNABLE));
+        sample.put("group_recipient",corpse->IsGroupLootRecipient());
+        sample.put("recipient",corpse->GetLootRecipientGuid().GetRawValue());
+        sample.put("has_loot",corpse->m_loot!=nullptr);
+        if(corpse->m_loot)sample.put("loot_type",uint32_t(corpse->m_loot->GetLootType()));
+        sample.put("distance",bot->GetDistance(corpse));sample.put("los",bot->IsWithinLOSInMap(corpse));
+        sample.put("safe",ai->IsSafe(corpse));sample.put("avoid_death_area",ai->ShouldAvoidDeathArea(ai::WorldPosition(corpse)));
+        ai::LootObject loot(bot,guid);
+        sample.put("loot_object_empty",loot.IsEmpty());sample.put("loot_skill",loot.skillId);
+        sample.put("loot_required_skill",loot.reqSkillValue);sample.put("loot_possible",loot.IsLootPossible(bot));
+        const auto nearby=ai->GetAiObjectContext()->template GetValue<std::list<ObjectGuid>>("nearest corpses")->Get();
+        sample.put("in_nearby_cache",std::find(nearby.begin(),nearby.end(),guid)!=nearby.end());
+    }
+    std::vector<int32_t> sources;uint32_t purpose=0;std::string why;
+    sample.put("source_eligible",NativeGatherSources(*bot,2318,sources,purpose,why));sample.put("source_blocker",why);
+    NativeGatherQuote quote;
+    sample.put("quote_eligible",InspectNativeGatherQuote(*bot,guid.GetRawValue(),2318,quote,why));sample.put("quote_blocker",why);
+    const auto id=setup.template get<std::string>("source_fixture_task");
+    const auto saved=state.cache.find(id);
+    if(saved!=state.cache.end()) {
+        sample.put("task_revision",saved->second.revision);sample.put("task_step",saved->second.checkpoint.step);
+        sample.put("task_phase",Name(saved->second.phase));
+    }
+    auto samples=setup.get_child("source_trace",boost::property_tree::ptree{});
+    samples.push_back({"",sample});setup.put_child("source_trace",samples);setup.put("source_trace_samples",count+1);
+    boost::property_tree::ptree record;record.put("boot",state.boot);record.put("task",id);record.put("read_only",true);
+    record.add_child("samples",samples);
+    std::ofstream out("/isolated/evidence/skinning-source-trace-"+state.boot+".json");out<<Json(record);out.close();
+    if(!out)throw std::runtime_error("skinning_source_trace_save_failed");
+}
