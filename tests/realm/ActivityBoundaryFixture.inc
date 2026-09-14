@@ -40,6 +40,7 @@ namespace {
 #include "ActivityGuildDepositFixture.inc"
 #include "ActivityGuildMailFixture.inc"
 #include "ActivityGuildAdmissionFixture.inc"
+#include "ActivitySkinningSourceFixture.inc"
 #include "ActivityServicesObservation.inc"
 
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {

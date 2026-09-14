@@ -10,8 +10,10 @@ void RunIsolatedServicesObservation(FixtureState& state) {
         auto result=f.setup;result.put("suite","activity-services-observe-v1");result.put("boot",state.boot);
         result.put("phase",phase);result.put("blocker",blocker);result.put("observed_at_ms",NowMs());
         result.put("test_only",true);result.put("isolated_active_policy_override",true);
-        result.put("ordinary_ai_unpaused",true);result.put("fixture_grants",0);
-        result.put("fixture_relocations",0);result.put("manual_admission_calls",0);
+        result.put("ordinary_ai_unpaused",true);
+        result.put("fixture_grants",f.setup.template get<uint32_t>("source_fixture_corpse_grants",0));
+        result.put("fixture_relocations",0);
+        result.put("manual_admission_calls",f.setup.template get<uint32_t>("source_fixture_admission_calls",0));
         result.put("native_effect_proof_required",true);result.put("production_proof",false);
         result.put("online_bots",sRandomPlayerbotMgr.GetAllBots().size());
         result.put("native_dispatches",state.nativeDispatches);result.put("native_result_receipts",state.nativeOutcomes);
@@ -206,6 +208,10 @@ void RunIsolatedServicesObservation(FixtureState& state) {
         state.effective=Mode::Observe;report("observation_finished","");state.fixtureFinished=true;return;
     }
     state.effective=Mode::Active;state.enforceEffects.store(true,std::memory_order_release);
+    try {PrepareIsolatedSkinningSource(state);}
+    catch(const std::exception& error) {
+        state.effective=Mode::Observe;report("stopped",error.what());state.fixtureFinished=true;return;
+    }
     if(!f.diagnostics || NowMs()>=f.setup.template get<uint64_t>("next_sample_at_ms",0)) {
         ++f.diagnostics;f.setup.put("next_sample_at_ms",NowMs()+30000);report("observing","");
     }
