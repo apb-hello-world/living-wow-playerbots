@@ -9,6 +9,7 @@
 #include <chrono>
 #include <future>
 #include <map>
+#include <set>
 #include <string>
 
 class Player;
@@ -78,6 +79,7 @@ private:
         uint64 localServiceGuid=0,localServiceStartedMs=0;
         LivingActivity::ServicePathProgress pathProgress;
         std::string goal,lastCatchupBlocker;
+        std::set<uint64> unavailableGathering;
         uint32 localServiceEntry=0;
         uint32 purpose=0, purchaseItem=0, gatherItem=0, started=0, progress=0, nextMove=0, attempts=0,nextCatchup=0;
         float distance=1e30f;

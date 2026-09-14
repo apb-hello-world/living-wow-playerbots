@@ -14,6 +14,7 @@
 #include "LivingRecipeLearning.h"
 #include "LivingGuildProcurement.h"
 #include "LivingNativeGathering.h"
+#include "LivingGatheringTravel.h"
 #include "PlayerbotInventoryPressure.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
@@ -985,6 +986,22 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             uint32(target->GetDestination()->GetPurpose())==purpose && target->IsActive() &&
             (!purchaseItem || std::binary_search(purchaseVendors.begin(),purchaseVendors.end(),target->GetDestination()->GetEntry())) &&
             (!gatherItem || std::binary_search(gatherSources.begin(),gatherSources.end(),target->GetDestination()->GetEntry()));
+        uint64 missingSpawn=0;
+        if(saved && gatherItem && same && target->GetPosition() &&
+            LivingGatheringSpawnMissing(*bot,*target->GetPosition(),missingSpawn)) {
+            if(trip.unavailableGathering.insert(missingSpawn).second)
+                sLog.outString("Living saved gathering event=inactive_spawn actor=%u task=%s spawn=%llu excluded=%u",
+                    guid,saved->id.c_str(),static_cast<unsigned long long>(missingSpawn),uint32(trip.unavailableGathering.size()));
+            if(trip.unavailableGathering.size()>=32) {
+                ReleaseRecipeService(guid,"gather_inactive_spawn_search_exhausted");serviceRetry[guid]=now+1800;
+                result.retryAtMs=uint64(serviceRetry[guid])*1000;return stop("gather_inactive_spawn_search_exhausted");
+            }
+            // Missing stock is not movement progress. Keep the root, work clock,
+            // reservations and failed-point set; search another real location.
+            target->SetStatus(ai::TravelStatus::TRAVEL_STATUS_EXPIRED);
+            trip.routeOwned=false;same=false;trip.nextMove=now;
+            result.blocker="gather_spawn_inactive_trying_alternative";
+        }
         if(same && target->GetPosition() && target->GetPosition()->getMapId()==bot->GetMapId()) {
             const float remaining=target->Distance(bot);
             if(remaining+2<trip.distance) {trip.distance=remaining;trip.progress=now;trip.work.Progress();}
@@ -1012,11 +1029,12 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
                 ai::RequestTravelTargetAction request(ai);Event event("","",bot);
                 const auto entries=gatherItem?gatherSources:(purchaseItem || purpose==uint32(ai::TravelDestinationPurpose::AH)) ?
                     NearestNativePurchaseEntries(*bot,purpose,purchaseVendors) : purchaseVendors;
-                requested=request.RequestForEntries(event,ai::TravelDestinationPurpose(purpose),entries);
+                requested=request.RequestForEntries(event,ai::TravelDestinationPurpose(purpose),entries,trip.unavailableGathering);
             } else requested=ai->DoSpecificAction("request travel target::"+std::to_string(purpose),Event("can move around","",bot),true);
             trip.requesting=false;
             if(saved && requested) {trip.searchLease=trip.lease;trip.searchRevision=saved->revision;}
-            result.blocker=requested?"recipe_service_route_requested":"recipe_service_route_pending";
+            result.blocker=requested?(missingSpawn?"gather_spawn_inactive_trying_alternative":"recipe_service_route_requested"):
+                "recipe_service_route_pending";
         } else {
             result.blocker="recipe_traveling_to_service";
             if(saved && !gatherItem && same && !trip.catchupUsed && now>=trip.nextCatchup && trip.work.NoProgressMs()>=60000) {

@@ -4,6 +4,7 @@
 #include "LivingActivityCoordinator.h"
 #include "LivingProfessionVendor.h"
 #include "LivingGathering.h"
+#include "LivingGatheringTravel.h"
 #include "LivingGuildProcurement.h"
 #include "PlayerbotOrganicEconomy.h"
 #include <numeric>
@@ -2741,80 +2742,21 @@ bool TravelMgr::IsLocationLevelValid(const WorldPosition& position, const Player
 
 PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, const std::vector<uint32>& distancePartitions, const PlayerTravelInfo& info, uint32 purposeFlag, const std::vector<int32>& entries, bool onlyPossible, float maxDistance) const
 {
-    sTravelMgr.GetPartitionsLock();
+    if(info.RequestedGathering() &&
+        (purposeFlag==uint32(TravelDestinationPurpose::GatherMining) ||
+         purposeFlag==uint32(TravelDestinationPurpose::GatherHerbalism)))
+        return LivingRequestedGatheringPartitions(*this,center,distancePartitions,info,purposeFlag,entries,{},onlyPossible,maxDistance);
 
+    sTravelMgr.GetPartitionsLock();
     PartitionedTravelList pointMap;
     DestinationList destinations = GetDestinations(info, purposeFlag, entries, onlyPossible, maxDistance);
-    const bool requestedGathering = info.RequestedGathering() &&
-        (purposeFlag == uint32(TravelDestinationPurpose::GatherMining) ||
-         purposeFlag == uint32(TravelDestinationPurpose::GatherHerbalism));
-    // This search runs in the existing limited travel-worker pool. An accepted
-    // material request needs a safe native spawn, not just the closest spatial
-    // bucket (which can contain only unsafe/foreign-map points).
-    constexpr size_t requestedPointBudget = 8192;
-    size_t requestedPoints = 0;
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     uint32 noPartition=0,checkedPoints=0,unsafePoints=0,distantPoints=0;
 #endif
-
     unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-    if (requestedGathering)
-        std::stable_sort(destinations.begin(), destinations.end(), [](const TravelDestination* a, const TravelDestination* b)
-        { return a->GetEntry() < b->GetEntry(); });
-    else
-        std::shuffle(destinations.begin(), destinations.end(), std::default_random_engine(seed));
-
+    std::shuffle(destinations.begin(), destinations.end(), std::default_random_engine(seed));
     for (auto& dest : destinations)
     {
-        if (requestedGathering)
-        {
-            if (requestedPoints >= requestedPointBudget) break;
-            WorldPosition* nearest = nullptr;
-            float nearestDistance = std::numeric_limits<float>::max();
-            // These are the already loaded native spawn references. No world
-            // mutation, database scan, new planner, or safety bypass is involved.
-            for (WorldPosition* position : dest->GetPoints())
-            {
-                if (requestedPoints >= requestedPointBudget) break;
-                ++requestedPoints;
-#ifdef LIVING_ISOLATED_NATIVE_TESTS
-                ++checkedPoints;
-#endif
-                if (!position || !IsLocationLevelValid(*position, info))
-                {
-#ifdef LIVING_ISOLATED_NATIVE_TESTS
-                    ++unsafePoints;
-#endif
-                    continue;
-                }
-                const float distance = position->distance(center);
-                if (!std::isfinite(distance) || distance < 0 || distance > maxDistance)
-                {
-#ifdef LIVING_ISOLATED_NATIVE_TESTS
-                    ++distantPoints;
-#endif
-                    continue;
-                }
-                const auto locationKey = [](const WorldPosition* p)
-                { return std::make_tuple(p->getMapId(), p->getX(), p->getY(), p->getZ()); };
-                if (!nearest || distance < nearestDistance ||
-                    (distance == nearestDistance && locationKey(position) < locationKey(nearest)))
-                {
-                    nearest = position;
-                    nearestDistance = distance;
-                }
-            }
-            if (nearest)
-                for (uint32 radius : distancePartitions)
-                {
-                    if (!radius || nearestDistance >= radius) continue;
-                    const double squared = double(radius) * radius;
-                    const uint32 partition = uint32(std::min(squared, double(std::numeric_limits<uint32>::max())));
-                    pointMap[partition].emplace_back(dest, nearest, nearestDistance);
-                    break;
-                }
-            continue;
-        }
         TravelPoint point(dest, sTravelMgr.nullWorldPosition, 0.0f);
 
         std::pair<uint32, std::vector<WorldPosition*>> pointRange = dest->GetClosestPartition(center, distancePartitions);
@@ -2864,10 +2806,8 @@ PartitionedTravelList TravelMgr::GetPartitions(const WorldPosition& center, cons
     sTravelMgr.GetPartitionsLock(false);
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     if(purposeFlag==uint32(TravelDestinationPurpose::GatherMining) || purposeFlag==uint32(TravelDestinationPurpose::GatherHerbalism))
-        sLog.outString("Living isolated gather search: purpose=%u requested=%u sources=%u eligible=%u partition_missing=%u points=%u unsafe=%u distant=%u level=%u mining=%u/%u herb=%u/%u map=%u scan_limit=%u",
-            purposeFlag,uint32(info.RequestedGathering()),uint32(entries.size()),uint32(destinations.size()),noPartition,
-            checkedPoints,unsafePoints,distantPoints,info.GetLevel(),info.GetCurrentSkill(SKILL_MINING),info.GetSkillMax(SKILL_MINING),
-            info.GetCurrentSkill(SKILL_HERBALISM),info.GetSkillMax(SKILL_HERBALISM),center.getMapId(),uint32(requestedPoints>=requestedPointBudget));
+        sLog.outString("Living isolated gather search: purpose=%u requested=0 sources=%u eligible=%u partition_missing=%u points=%u unsafe=%u distant=%u",
+            purposeFlag,uint32(entries.size()),uint32(destinations.size()),noPartition,checkedPoints,unsafePoints,distantPoints);
 #endif
     return pointMap;
 }

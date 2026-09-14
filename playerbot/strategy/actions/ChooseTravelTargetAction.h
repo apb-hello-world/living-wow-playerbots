@@ -4,6 +4,7 @@
 #include "MovementActions.h"
 #include "GenericActions.h"
 #include "playerbot/TravelMgr.h"
+#include <set>
 
 namespace ai
 {
@@ -76,7 +77,8 @@ namespace ai
         RequestTravelTargetAction(PlayerbotAI* ai, std::string name = "request travel target") : Action(ai, name), Qualified() {}
         // Compiled service callers may narrow the existing search to validated
         // native entries. This is not an execution grant or a new worker pool.
-        bool RequestForEntries(Event& event,TravelDestinationPurpose purpose,const std::vector<int32>& entries);
+        bool RequestForEntries(Event& event,TravelDestinationPurpose purpose,const std::vector<int32>& entries,
+            const std::set<uint64>& unavailableGathering={});
         LivingActivity::Effects GetActivityEffects() const override {
             return {LivingActivity::Mask(LivingActivity::Effect::TravelTarget), LivingActivity::Lane::Managed, true};
         }

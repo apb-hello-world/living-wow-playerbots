@@ -13,6 +13,7 @@
 #include "playerbot/LivingActivityCoordinator.h"
 #include "playerbot/LivingActivityScope.h"
 #include "playerbot/LivingServiceSelection.h"
+#include "playerbot/LivingGatheringTravel.h"
 #include <iomanip>
 
 using namespace ai;
@@ -895,10 +896,12 @@ bool RequestTravelTargetAction::Execute(Event& event)
     return RequestForEntries(event,actionPurpose,{});
 }
 
-bool RequestTravelTargetAction::RequestForEntries(Event& event,TravelDestinationPurpose actionPurpose,const std::vector<int32>& entries)
+bool RequestTravelTargetAction::RequestForEntries(Event& event,TravelDestinationPurpose actionPurpose,const std::vector<int32>& entries,
+    const std::set<uint64>& unavailableGathering)
 {
     if(!sLivingActivityCoordinator.PermitEffects(*ai,GetActivityEffects(),"native service destination search") ||
-        entries.size()>4096 || TravelDestinationPurposeName.find(actionPurpose)==TravelDestinationPurposeName.end()) return false;
+        entries.size()>4096 || unavailableGathering.size()>32 ||
+        TravelDestinationPurposeName.find(actionPurpose)==TravelDestinationPurposeName.end()) return false;
     auto* pending=AI_VALUE(FutureDestinations*,"future travel destinations");
     // Never overwrite a running std::async future: its destructor can block.
     if(pending->valid()) {
@@ -910,7 +913,11 @@ bool RequestTravelTargetAction::RequestForEntries(Event& event,TravelDestination
 
     ai->TellDebug(ai->GetMaster(), "Getting new destination ranges for " + TravelDestinationPurposeName.at(actionPurpose), "debug travel");
 
-    *pending = std::async(std::launch::async, [partitions = travelPartitions, travelInfo = PlayerTravelInfo(bot), center, purpose = actionPurpose, entries]() { return sTravelMgr.GetPartitions(center, partitions, travelInfo, (uint32)purpose,entries); });
+    *pending = std::async(std::launch::async, [partitions = travelPartitions, travelInfo = PlayerTravelInfo(bot), center, purpose = actionPurpose, entries, unavailableGathering]() {
+        if(!unavailableGathering.empty())return LivingRequestedGatheringPartitions(sTravelMgr,center,partitions,travelInfo,
+            uint32(purpose),entries,unavailableGathering);
+        return sTravelMgr.GetPartitions(center,partitions,travelInfo,uint32(purpose),entries);
+    });
 
     AI_VALUE(TravelTarget*, "travel target")->SetStatus(TravelStatus::TRAVEL_STATUS_PREPARE);
     SET_AI_VALUE2(std::string, "manual string", "future travel purpose", std::to_string(uint32(actionPurpose)));
