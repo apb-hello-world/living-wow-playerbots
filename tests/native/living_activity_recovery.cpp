@@ -73,7 +73,8 @@ int main() {
         assert(ExecutionScope::Check(reader, {RecoveryEffects(), Lane::Safety, true}, task.context, 200,
             uint32_t(Safety::Death)) == AuthorityCode::AtomicPending);
     }
-    assert(authority.EndDispatch(lease.lease, operation).code == AuthorityCode::Allowed);
+    // Dispatch ended, but the durable native result is still awaiting receipt.
+    assert(authority.EndDispatch(lease.lease, operation).code == AuthorityCode::AtomicPending);
     publisher.Publish(authority.Read(444));
     {
         ExecutionScope scope(statePermit);
