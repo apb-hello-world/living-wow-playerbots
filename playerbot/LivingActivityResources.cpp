@@ -137,6 +137,7 @@ namespace LivingActivity {
     void ResourceClaimBook::Index(const ResourceClaim& claim, bool add) {
         if (!ProtectsResources(claim)) return;
         publisher.Changed(claim);
+        Add(protection.actorClaims, claim.actor, uint64_t(1), add);
         if (claim.copper) {
             // Native mail/auction escrow is not also spendable wallet money.
             if (claim.location == "money") Add(protection.money, claim.actor, claim.copper, add);
@@ -246,6 +247,12 @@ namespace LivingActivity {
         if(source->itemGuid!=receiver->itemGuid) {
             if(protection.ProtectedItem(receiver->actor,receiver->itemGuid,receiver->itemEntry))return ClaimInstall::Invalid;
             hold.additional.push_back(*receiver);Index(*receiver,true);
+        } else {
+            // Preserve the new actor's conflict fence before receipt without
+            // counting the same physical attachment quantity twice.
+            hold.actorProtection=*receiver;
+            Add(protection.actorClaims,receiver->actor,uint64_t(1),true);
+            publisher.Changed(*receiver);
         }
         // The old exact GUID remains protected, for ANY actor. This pending
         // receipt locks all three claim identities; CommitReservation replaces
@@ -349,6 +356,11 @@ namespace LivingActivity {
         committing.clear();
         if (result != ClaimInstall::Installed && result != ClaimInstall::Duplicate) return result;
         for (const auto& extra : found->second.additional) Index(extra,false);
+        if (found->second.actorProtection.actor) {
+            const auto& receiver=found->second.actorProtection;
+            Add(protection.actorClaims,receiver.actor,uint64_t(1),false);
+            publisher.Changed(receiver);
+        }
         pending.erase(found);
         publisher.Publish(protection);
         return result;

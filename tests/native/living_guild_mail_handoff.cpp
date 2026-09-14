@@ -78,9 +78,13 @@ int main() {
     assert(book.ReservePending(receipt,{{result.recipientClaim,0}},{parcel})==ClaimInstall::Invalid);
     assert(book.ReserveMailedHandoff(receipt,result.changes,parcel)==ClaimInstall::Installed);
     assert(book.ReserveMailedHandoff(receipt,result.changes,parcel)==ClaimInstall::Duplicate);
+    assert(book.Reader().Inspect()->NativeBlockedEffects(q.sender));
+    assert(book.Reader().Inspect()->NativeBlockedEffects(q.receiver));
     assert(book.Protection().ProtectedItem(q.sender,q.item,q.job.entry)==4);
     assert(book.Protection().ProtectedItem(q.receiver,q.item,q.job.entry)==4);
     assert(book.CommitReservation(receipt)==ClaimInstall::Installed);
+    assert(!book.Reader().Inspect()->NativeBlockedEffects(q.sender));
+    assert(book.Reader().Inspect()->NativeBlockedEffects(q.receiver));
     assert(book.InstallReceipt({result.changes[0],result.changes[1]})==ClaimInstall::Duplicate);
     assert(book.Inspect(uses[0].before.id)->state=="consumed");
     assert(book.Protection().ProtectedItem(q.receiver,q.item,q.job.entry)==4);

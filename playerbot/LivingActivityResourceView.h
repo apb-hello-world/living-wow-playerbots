@@ -16,7 +16,7 @@ namespace LivingActivity {
     // Immutable, partitioned index: a transition copies only its affected
     // buckets, not every bot's claims. No native pointers or execution grants.
     struct ResourceBucket {
-        std::map<uint32_t,uint64_t> items, money;
+        std::map<uint32_t,uint64_t> items, money, actorClaims;
         std::map<std::pair<uint32_t,uint32_t>,uint64_t> uncertain;
         std::map<HeldBagItemKey,uint64_t> heldBagItems;
     };
@@ -33,6 +33,9 @@ namespace LivingActivity {
         uint64_t HeldBagItem(const std::string& root,uint32_t actor,uint32_t guid,uint32_t entry) const;
         bool HasUncertainItem(uint32_t actor,uint32_t entry) const;
         uint32_t UnreservedMoney(uint32_t actor,uint32_t nativeCopper) const;
+        // Conservative family-level restriction for unscoped native work.
+        // Exact native consumer checks still protect individual shared GUIDs.
+        uint32_t NativeBlockedEffects(uint32_t actor) const;
     };
     class ResourcePublisher;
     class ResourceReader {
@@ -56,7 +59,7 @@ namespace LivingActivity {
         void Publish(const ResourceProtection& source);
     private:
         std::shared_ptr<ResourceReader::Cell> cell;
-        std::set<uint32_t> items, money;
+        std::set<uint32_t> items, money, actors;
         std::set<std::pair<uint32_t,uint32_t>> uncertain;
         std::set<HeldBagItemKey> heldBagItems;
     };

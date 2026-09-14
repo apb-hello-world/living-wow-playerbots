@@ -6,9 +6,11 @@ namespace LivingActivity {
         return cell ? std::atomic_load_explicit(&cell->value, std::memory_order_acquire) : nullptr;
     }
     AuthorityCode PermissionReader::Check(const Effects& effects, const WorldContext& current, uint64_t now,
-        const Task* task, const ActionContext* action, const NativePermit* permit, uint32_t nativeSafety) const {
+        const Task* task, const ActionContext* action, const NativePermit* permit, uint32_t nativeSafety,
+        uint32_t nativeBlockedEffects) const {
         const auto view = Inspect(); // Reload at every effect boundary, not once per journey.
-        return view ? ExecutionAuthority::Check(*view, effects, current, now, task, action, permit, nativeSafety) : AuthorityCode::NoOwner;
+        return view ? ExecutionAuthority::Check(*view, effects, current, now, task, action, permit, nativeSafety,
+            nativeBlockedEffects) : AuthorityCode::NoOwner;
     }
     void PermissionPublisher::Publish(const AuthoritySnapshot& value) {
         std::shared_ptr<const AuthoritySnapshot> immutable = std::make_shared<const AuthoritySnapshot>(value);

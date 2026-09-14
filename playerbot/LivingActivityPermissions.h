@@ -13,7 +13,8 @@ namespace LivingActivity {
         PermissionReader() = default;
         AuthorityCode Check(const Effects& effects, const WorldContext& current, uint64_t now,
             const Task* task = nullptr, const ActionContext* action = nullptr,
-            const NativePermit* permit = nullptr, uint32_t nativeSafety = 0) const;
+            const NativePermit* permit = nullptr, uint32_t nativeSafety = 0,
+            uint32_t nativeBlockedEffects = AllEffects) const;
         std::shared_ptr<const AuthoritySnapshot> Inspect() const;
     private:
         friend class PermissionPublisher;

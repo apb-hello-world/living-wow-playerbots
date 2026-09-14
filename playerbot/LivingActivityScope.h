@@ -33,7 +33,8 @@ namespace LivingActivity {
         ExecutionScope(const ExecutionScope&) = delete;
         ExecutionScope& operator=(const ExecutionScope&) = delete;
         static AuthorityCode Check(const PermissionReader& reader, const Effects& effects,
-            const WorldContext& current, uint64_t now, uint32_t nativeSafety = 0);
+            const WorldContext& current, uint64_t now, uint32_t nativeSafety = 0,
+            uint32_t nativeBlockedEffects = AllEffects);
         static std::string Origin(uint32_t actor);
         // Attribution only; the caller still checks current permissions.
         static bool Matches(const Task& task, const ActionContext& action);

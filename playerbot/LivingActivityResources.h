@@ -55,6 +55,7 @@ namespace LivingActivity {
         std::map<uint32_t, uint64_t> items;
         std::map<std::pair<uint32_t, uint32_t>, uint64_t> uncertainEntries;
         std::map<uint32_t, uint64_t> money;
+        std::map<uint32_t, uint64_t> actorClaims; // Includes pending and escrow protection, not just movement owners.
         std::map<HeldBagItemKey,uint64_t> heldBagItems; // Derived from acknowledged claims, never pending proposals.
         uint64_t ProtectedItem(uint32_t actor, uint32_t guid, uint32_t entry) const;
         uint64_t ProtectedMoney(uint32_t actor) const;
@@ -120,6 +121,7 @@ namespace LivingActivity {
             std::vector<ClaimReceiptChange> changes;
             std::vector<NativeResourceBalance> balances;
             std::vector<ResourceClaim> additional;
+            ResourceClaim actorProtection; // Whole-GUID mail already has item protection, but a new recipient.
         };
         std::map<std::string,PendingReservation> pending;
         std::string committing;

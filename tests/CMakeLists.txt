@@ -78,6 +78,21 @@ target_link_libraries(living_activity_permissions PRIVATE Threads::Threads)
 target_sources(living_activity_scope PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityAuthority.cpp ../playerbot/LivingActivityPermissions.cpp ../playerbot/LivingActivityScope.cpp)
 target_link_libraries(living_activity_scope PRIVATE Threads::Threads)
 
+add_executable(living_activity_native_compatibility native/living_activity_native_compatibility.cpp
+    ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityAuthority.cpp
+    ../playerbot/LivingActivityPermissions.cpp ../playerbot/LivingActivityScope.cpp
+    ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityResourceView.cpp)
+target_include_directories(living_activity_native_compatibility PRIVATE ../playerbot)
+target_compile_features(living_activity_native_compatibility PRIVATE cxx_std_17)
+target_compile_options(living_activity_native_compatibility PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+target_link_libraries(living_activity_native_compatibility PRIVATE Threads::Threads)
+if(LIVING_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(living_activity_native_compatibility PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(living_activity_native_compatibility PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME living_activity_native_compatibility COMMAND living_activity_native_compatibility)
+set_tests_properties(living_activity_native_compatibility PROPERTIES TIMEOUT 30)
+
 target_sources(living_activity_native_context PRIVATE ../playerbot/LivingActivity.cpp)
 target_sources(living_activity_requests PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityRequests.cpp)
 target_sources(living_activity_operations PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityRequests.cpp ../playerbot/LivingActivityOperations.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityResourceView.cpp ../playerbot/LivingActivityClaimConsumption.cpp)

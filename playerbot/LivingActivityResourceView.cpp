@@ -1,5 +1,6 @@
 #include "LivingActivityResourceView.h"
 #include "LivingActivityResources.h"
+#include "LivingActivityEffects.h"
 #include <atomic>
 #include <limits>
 
@@ -26,6 +27,16 @@ namespace LivingActivity {
         const auto& owner=buckets[actor%256];
         return Available(nativeCopper,owner ? Get(owner->money,actor) : 0);
     }
+    uint32_t ResourceView::NativeBlockedEffects(uint32_t actor) const {
+        if (!ready || !actor) return AllEffects;
+        const auto& owner=buckets[actor%256];
+        if (!owner || !Get(owner->actorClaims,actor)) return 0;
+        // Travel and factual social output do not consume reserved goods.
+        // Spell/equipment/guild operations can consume or transfer them, even
+        // if a coarse action declaration omitted Inventory or Money.
+        return Mask(Effect::Inventory) | Mask(Effect::Money) | Mask(Effect::Spell) |
+            Mask(Effect::Equipment) | Mask(Effect::Guild);
+    }
     uint64_t ResourceView::ProtectedItem(uint32_t guid) const {
         if (!ready || !guid) return std::numeric_limits<uint64_t>::max();
         const auto& bucket=buckets[guid%256];return bucket ? Get(bucket->items,guid) : 0;
@@ -44,6 +55,7 @@ namespace LivingActivity {
         return std::atomic_load_explicit(&cell->value,std::memory_order_acquire);
     }
     void ResourcePublisher::Changed(const ResourceClaim& claim) {
+        actors.insert(claim.actor);
         if (claim.copper) { if (claim.location == "money") money.insert(claim.actor); }
         else if (claim.itemGuid) {
             items.insert(claim.itemGuid);
@@ -64,12 +76,13 @@ namespace LivingActivity {
         };
         for (const auto guid : items) Set(bucket(guid).items,guid,Get(source.items,guid));
         for (const auto actor : money) Set(bucket(actor).money,actor,Get(source.money,actor));
+        for (const auto actor : actors) Set(bucket(actor).actorClaims,actor,Get(source.actorClaims,actor));
         for (const auto& key : uncertain) Set(bucket(key.first).uncertain,key,Get(source.uncertainEntries,key));
         for (const auto& key : heldBagItems) Set(bucket(std::get<2>(key)).heldBagItems,key,Get(source.heldBagItems,key));
         for (const auto& row : changed) next->buckets[row.first]=row.second;
         next->ready=source.ready; next->revision=source.revision;
         std::shared_ptr<const ResourceView> immutable=next;
         std::atomic_store_explicit(&cell->value,std::move(immutable),std::memory_order_release);
-        items.clear(); money.clear(); uncertain.clear(); heldBagItems.clear();
+        items.clear(); money.clear(); actors.clear(); uncertain.clear(); heldBagItems.clear();
     }
 }

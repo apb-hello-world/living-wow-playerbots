@@ -269,12 +269,27 @@ namespace LivingActivity {
     }
     AuthorityCode ExecutionAuthority::Check(const AuthoritySnapshot& a, const Effects& effects,
         const WorldContext& current, uint64_t now, const Task* task,
-        const ActionContext* action, const NativePermit* permit, uint32_t nativeSafety) {
+        const ActionContext* action, const NativePermit* permit, uint32_t nativeSafety, uint32_t nativeBlockedEffects) {
         if (!ContextValid(current) || !(a.current == current)) return AuthorityCode::StaleContext;
-        if (nativeSafety & ~uint32_t(127)) return AuthorityCode::InvalidRequest;
+        if ((nativeSafety & ~uint32_t(127)) || (nativeBlockedEffects & ~AllEffects)) return AuthorityCode::InvalidRequest;
+        if (effects.mask & ~AllEffects) return AuthorityCode::EffectsDenied;
+        // Native AI does not need a synthetic task when nothing owns its work.
+        // This is an absence-of-conflict check, NOT a managed execution grant.
+        // An unknown action potentially has EVERY effect. It is allowed only
+        // when the fresh resource projection says none of them is protected.
+        // Stale/explicit scopes, expired-but-held leases and uncertain atomic
+        // operations never fall back to this native path. Native eligibility
+        // and safety still run in the original engine/operation implementation.
+        if (!task && !action && !permit && !a.lease.actor && !a.invalidated &&
+            !a.compatibility && a.operation.empty() && !a.operationExecuting && !a.operationDispatched) {
+            const uint32_t possible = effects.classified ? effects.mask : AllEffects;
+            if (!(possible & nativeBlockedEffects) &&
+                (!effects.classified || effects.lane == Lane::Managed ||
+                    (effects.lane == Lane::Inspection && !effects.mask)))
+                return AuthorityCode::Allowed;
+        }
         const uint32_t safety = a.safety | nativeSafety; // A newly entered combat/transport pause cannot wait for publication.
         if (!effects.classified) return AuthorityCode::UnknownAction;
-        if (effects.mask & ~AllEffects) return AuthorityCode::EffectsDenied;
         if (effects.lane == Lane::Inspection)
             return effects.mask ? AuthorityCode::EffectsDenied : AuthorityCode::Allowed;
         if (effects.lane != Lane::Managed) {

@@ -19,15 +19,17 @@ namespace LivingActivity {
           permit(std::move(supplied)) { head = this; }
     ExecutionScope::~ExecutionScope() { assert(head == this); head = previous; }
     AuthorityCode ExecutionScope::Check(const PermissionReader& reader, const Effects& effects,
-        const WorldContext& current, uint64_t now, uint32_t nativeSafety) {
+        const WorldContext& current, uint64_t now, uint32_t nativeSafety, uint32_t nativeBlockedEffects) {
         if (EvaluationScope::RejectMutation(effects)) return AuthorityCode::EffectsDenied;
         // A nested other-actor or over-depth call must not fall through to an
         // outer actor's authority. Absence of scope is never managed permission.
         const auto* scope = head && head->actor == current.actor && head->depth <= 16 ? head : nullptr;
+        // An invalid nested attribution is not an unscoped native action.
+        if (head && !scope) return AuthorityCode::StaleLease;
         return reader.Check(effects, current, now,
             scope && scope->task ? &*scope->task : nullptr,
             scope && scope->action ? &*scope->action : nullptr,
-            scope && scope->permit ? &*scope->permit : nullptr, nativeSafety);
+            scope && scope->permit ? &*scope->permit : nullptr, nativeSafety, nativeBlockedEffects);
     }
     std::string ExecutionScope::Origin(uint32_t actor) {
         if (EvaluationScope::Active()) return "eligibility_evaluation";

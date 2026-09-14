@@ -1616,7 +1616,9 @@ bool LivingActivityCoordinator::PermitEffects(PlayerbotAI& ai, const Effects& ef
             state->publishedPolicyRevision.load(std::memory_order_acquire), state->boot);
         const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
-        check = ExecutionScope::Check(ai.activityPermissions, effects, current, monotonic, NativeSafety(bot));
+        const auto resources = ResourceReservations().Inspect();
+        check = ExecutionScope::Check(ai.activityPermissions, effects, current, monotonic, NativeSafety(bot),
+            resources ? resources->NativeBlockedEffects(guid) : AllEffects);
     }
     state->actionInbox.TryPush({guid, actorEpoch, mapEpoch, effects, std::move(bounded),
         state->worldThreadReady.load(std::memory_order_acquire) && state->worldThread == std::this_thread::get_id(),

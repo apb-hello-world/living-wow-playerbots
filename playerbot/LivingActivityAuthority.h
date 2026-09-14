@@ -61,7 +61,8 @@ namespace LivingActivity {
         AuthoritySnapshot Read(uint32_t actor) const;
         static AuthorityCode Check(const AuthoritySnapshot& snapshot, const Effects& effects,
             const WorldContext& current, uint64_t now, const Task* task = nullptr,
-            const ActionContext* action = nullptr, const NativePermit* permit = nullptr, uint32_t nativeSafety = 0);
+            const ActionContext* action = nullptr, const NativePermit* permit = nullptr, uint32_t nativeSafety = 0,
+            uint32_t nativeBlockedEffects = AllEffects);
         AuthorityCode Authorize(const Effects& effects, const WorldContext& current, uint64_t now,
             const Task* task = nullptr, const ActionContext* action = nullptr,
             const NativePermit* permit = nullptr) const;
