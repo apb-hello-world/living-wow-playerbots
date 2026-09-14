@@ -61,15 +61,18 @@ bool LocalGatherQuote(Player& actor,uint64_t source,uint32_t entry,NativeGatherQ
     if(target.IsEmpty() || target.skillId!=skill || !target.IsLootPossible(&actor) ||
         ai::ItemUsageValue::IsNeededForQuest(&actor,entry,true))return reject("gather_native_permission_or_tools_missing");
     const auto* info=sSpellTemplate.LookupEntry<SpellEntry>(spell);
-    if(!info || SpellScriptMgr::GetSpellScript(spell) || IsChanneledSpell(info))return reject("gather_spell_unsupported");
-    unsigned effects=0;
-    for(unsigned i=0;i<MAX_EFFECT_INDEX;++i)if(info->Effect[i]) {
-        if(info->Effect[i]!=SPELL_EFFECT_OPEN_LOCK)return reject("gather_spell_effect_unsupported");
-        ++effects;
-    }
+    if(!info || info->Id!=spell || IsChanneledSpell(info))return reject("gather_spell_unsupported");
+    // These two fixed native base spells are not generic scripted recipes.
+    // Pinned TBC mining/herbalism both use OPEN_LOCK + SKILL (the latter is a
+    // native no-op) and GameobjectCallForHelpOnUsage. Preserve that ordinary
+    // aggro script: if it starts combat, the effect callback's safety check
+    // pauses this attempt. Do not suppress the script or invent a skill gain.
+    if(info->Effect[0]!=SPELL_EFFECT_OPEN_LOCK || info->Effect[1]!=SPELL_EFFECT_SKILL || info->Effect[2] ||
+        SkillByLockType(LockType(info->EffectMiscValue[0]))!=skill || uint32_t(info->EffectMiscValue[1])!=skill)
+        return reject("gather_spell_effect_unsupported");
     for(unsigned i=0;i<MAX_SPELL_REAGENTS;++i)if(info->Reagent[i]>0 && info->ReagentCount[i]>0)
         return reject("gather_consumable_tool_adapter_required");
-    if(effects!=1 || (!effect && actor.IsNonMeleeSpellCasted(false,true,true)))return reject("gather_native_cast_unavailable");
+    if(!effect && actor.IsNonMeleeSpellCasted(false,true,true))return reject("gather_native_cast_unavailable");
     q={actor.GetGUIDLow(),entry,skill,spell,required,actor.GetSkillValuePure(skill),actor.GetSkillMaxPure(skill),
         actor.GetSkillValue(skill),actor.GetMoney(),actor.GetItemCount(entry,false),source};
     if(!ValidNativeGatherQuote(q))return reject("gather_native_quote_invalid");
