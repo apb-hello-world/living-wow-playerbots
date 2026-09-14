@@ -32,7 +32,7 @@ bool GatherLock(uint32_t entry,uint32_t& skill,uint32_t& required) {
     return skill!=0;
 }
 bool DirectDrop(uint32_t node,uint32_t entry) {
-    const auto* loot=ai::DropMapValue::GetLootTemplate(ObjectGuid(HIGHGUID_GAMEOBJECT,node,1),LOOT_CORPSE);
+    const auto* loot=ai::DropMapValue::GetLootTemplate(ObjectGuid(HIGHGUID_GAMEOBJECT,node,uint32_t(1)),LOOT_CORPSE);
     if(!loot)return false;
     // Do not mistake an item inside a container or a reference-only/scripted
     // table for a directly supported node yield.
