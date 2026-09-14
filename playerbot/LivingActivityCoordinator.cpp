@@ -3295,8 +3295,12 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     std::vector<int32_t> sources;uint32_t purpose=0;
     if(NativeGatherSources(*bot,job.entry,sources,purpose,why)) {
         auto* node=NativeGatherNode(*bot,job.entry,sources);NativeGatherQuote quote;
-        if(node && bot->IsWithinDistInMap(node,INTERACTION_DISTANCE) &&
-            InspectNativeGatherQuote(*bot,node->GetObjectGuid().GetRawValue(),job.entry,quote,why)) {
+        if(node && bot->IsWithinDistInMap(node,INTERACTION_DISTANCE)) {
+            // Arrival and cast eligibility are different steps. A local native
+            // rejection must stay visible, not create a travel/arrival write
+            // loop which discards the reason on every coordinator update.
+            if(!InspectNativeGatherQuote(*bot,node->GetObjectGuid().GetRawValue(),job.entry,quote,why))
+                return stop(why.empty()?"gather_native_quote_rejected":why);
             ItemPosCountVec capacity;const auto* proto=sObjectMgr.GetItemPrototype(job.entry);
             if(!proto || bot->CanStoreNewItem(NULL_BAG,NULL_SLOT,capacity,job.entry,std::max<uint32_t>(1,proto->Stackable))!=EQUIP_ERR_OK)
                 return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,{job.entry,job.quantity}).blocker);
