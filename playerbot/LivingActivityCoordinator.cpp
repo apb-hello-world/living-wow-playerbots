@@ -3543,21 +3543,10 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
         return reject(AdmissionCode::Disabled);
     if (state->operationDispatching) return reject(AdmissionCode::Backpressure, "native_result_capacity_reserved");
     if (!state->schemaReady || !state->loaded || !state->incoming.empty()) return reject(AdmissionCode::NotReady);
-    if (next.id != SourceId(next.source, next.sourceKey) || request.kind != adapter.OperationKind() ||
-        request.effects != adapter.OperationEffects() || request.persistence != adapter.PersistencePolicy())
+    if (next.id != SourceId(next.source, next.sourceKey))
         return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
-    const bool itemTransfer=adapter.SupportsItemTransfer() && ValidItemTransfer(request.itemTransfer) &&
-        request.kind==ItemTransferKind(request.itemTransfer) && request.effects==Mask(Effect::Inventory) &&
-        request.persistence==NativePersistence::Inventory && request.consumption.empty() && request.itemGain.Empty();
-    if (!itemTransfer && (request.effects & (Mask(Effect::Money)|Mask(Effect::Inventory))) &&
-        (!adapter.SupportsClaimedConsumption() || request.consumption.empty() || request.persistence == NativePersistence::JournalOnly))
-        return reject(AdmissionCode::InvalidRequest,"resource_effect_adapter_not_supported");
-    if (!request.itemGain.Empty() && (!adapter.SupportsItemGain() || !ValidItemGainSpec(request.itemGain)))
-        return reject(AdmissionCode::InvalidRequest,"native_item_gain_adapter_not_supported");
-    if(!request.mailGain.Empty() && (!adapter.SupportsMailGain() || !ValidMailGainSpec(request.mailGain)))
-        return reject(AdmissionCode::InvalidRequest,"native_mail_gain_adapter_not_supported");
-    if(request.kind=="guild_mail_send" && !adapter.SupportsGuildMailHandoff())
-        return reject(AdmissionCode::InvalidRequest,"native_guild_mail_adapter_required");
+    std::string adapterBlocker;
+    if(!ValidateOperationAdapter(request,adapter,adapterBlocker))return reject(AdmissionCode::InvalidRequest,adapterBlocker);
     WritePlan plan;
     try { plan = OperationRequestWrite(request); }
     catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest, "invalid_native_operation_intent"); }
@@ -3626,14 +3615,8 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         return reject(AdmissionCode::Backpressure, "native_result_capacity_unavailable");
     for (const auto& write : state->pending) if (write.task.actor == intended.actor)
         return reject(AdmissionCode::ReconciliationRequired,"actor_journal_write_pending");
-    if (request.kind != adapter.OperationKind() || request.effects != adapter.OperationEffects() ||
-        request.persistence != adapter.PersistencePolicy() ||
-        (!request.itemGain.Empty() && !adapter.SupportsItemGain()) ||
-        (!request.mailGain.Empty() && !adapter.SupportsMailGain()) ||
-        (request.kind=="guild_mail_send" && !adapter.SupportsGuildMailHandoff()) ||
-        (!request.consumption.empty() && !adapter.SupportsClaimedConsumption()) ||
-        (!request.itemTransfer.id.empty() && !adapter.SupportsItemTransfer()))
-        return reject(AdmissionCode::InvalidRequest, "native_adapter_mismatch");
+    std::string adapterBlocker;
+    if(!ValidateOperationAdapter(request,adapter,adapterBlocker))return reject(AdmissionCode::InvalidRequest,adapterBlocker);
     const auto saved = state->cache.find(intended.id);
     Player* bot = sRandomPlayerbotMgr.GetPlayerBot(intended.actor);
     if (!bot || !bot->GetPlayerbotAI() || saved == state->cache.end())

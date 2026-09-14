@@ -6,6 +6,22 @@
 #include <sstream>
 #include <cassert>
 using namespace LivingActivity;
+struct TestAdapter final : NativeOperationAdapter {
+    std::string kind;uint32_t effects=0;NativePersistence persistence=NativePersistence::Inventory;
+    bool consumes=false,gains=false,transfers=false,mail=false,guildMail=false,cast=false;
+    explicit TestAdapter(const OperationRequest& r):kind(r.kind),effects(r.effects),persistence(r.persistence) {}
+    const char* OperationKind()const override{return kind.c_str();}
+    uint32_t OperationEffects()const override{return effects;}
+    NativePersistence PersistencePolicy()const override{return persistence;}
+    bool SupportsClaimedConsumption()const override{return consumes;}
+    bool SupportsItemGain()const override{return gains;}
+    bool SupportsItemTransfer()const override{return transfers;}
+    bool SupportsMailGain()const override{return mail;}
+    bool SupportsGuildMailHandoff()const override{return guildMail;}
+    bool DeferredNativeCast()const override{return cast;}
+    bool ValidateNative(Player&,const OperationRequest&,std::string&)override{assert(false);return false;}
+    NativeObservation ExecuteNative(Player&,const OperationRequest&)override{assert(false);return {};}
+};
 int main() {
     Task saved; saved.id = saved.root = "637bd562-36d2-5b01-bc01-e2d831c49f38";
     saved.actor = saved.context.actor = 497; saved.source = "service_job"; saved.sourceKey = "497:2881:41";
@@ -32,8 +48,11 @@ int main() {
         gather.authorization.permittedEffects=gather.effects;gather.persistence=NativePersistence::Profession;
         const NativeGatherQuote quote{497,2770,186,2575,1,75,75,80,100,0,12345};
         gather.beforeState=EncodeNativeGatherQuote(quote);assert(valid(gather,saved));
+        TestAdapter adapter(gather);adapter.cast=true;
+        assert(ValidateOperationAdapter(gather,adapter,reason));
+        adapter.cast=false;assert(!ValidateOperationAdapter(gather,adapter,reason));adapter.cast=true;
         assert(OperationRequestWrite(gather).receiptQuery.find(SqlValue("gather_open"))!=std::string::npos);
-        for(unsigned field=0;field<6;++field) {
+        for(unsigned field=0;field<9;++field) {
             auto bad=gather;
             switch(field) {
             case 0:bad.itemGain={2770,1};break;
@@ -41,9 +60,14 @@ int main() {
             case 2:bad.effects=Mask(Effect::Spell);break;
             case 3:bad.beforeState="{}";break;
             case 4:++bad.transition.task.actor;break;
-            default:bad.effects|=Mask(Effect::Money);break;
+            case 5:bad.effects|=Mask(Effect::Money);break;
+            case 6:bad.consumption.push_back({});break;
+            case 7:bad.itemTransfer.id=saved.id;break;
+            default:bad.mailGain.entry=2770;break;
             }
             assert(!valid(bad,saved));
+            TestAdapter badAdapter(bad);badAdapter.cast=true;
+            assert(!ValidateOperationAdapter(bad,badAdapter,reason));
         }
     }
     {
@@ -52,6 +76,10 @@ int main() {
         const NativeLootQuote quote{497,2770,3,0,6,100,0,12345,7};
         loot.beforeState=EncodeNativeLootQuote(quote);
         assert(valid(loot,saved));
+        TestAdapter adapter(loot);adapter.gains=true;
+        assert(ValidateOperationAdapter(loot,adapter,reason));
+        adapter.gains=false;assert(!ValidateOperationAdapter(loot,adapter,reason));adapter.gains=true;
+        adapter.cast=true;assert(!ValidateOperationAdapter(loot,adapter,reason));adapter.cast=false;
         assert(OperationRequestWrite(loot).receiptQuery.find(SqlValue("loot_collect"))!=std::string::npos);
         for(unsigned field=0;field!=7;++field) {
             auto bad=loot;
@@ -65,7 +93,12 @@ int main() {
             default:bad.persistence=NativePersistence::Profession;break;
             }
             assert(!valid(bad,saved));
+            TestAdapter badAdapter(bad);badAdapter.gains=true;
+            assert(!ValidateOperationAdapter(bad,badAdapter,reason));
         }
+        auto unrelated=loot;unrelated.kind="arbitrary_gain";
+        TestAdapter unknown(unrelated);unknown.gains=true;
+        assert(!ValidateOperationAdapter(unrelated,unknown,reason) && reason=="resource_effect_adapter_not_supported");
     }
     const auto plan = OperationRequestWrite(request);
     assert(SameRequest(plan, OperationRequestWrite(request)));
@@ -119,6 +152,15 @@ int main() {
     ResourceClaimBook book; assert(book.RestoreBatch({claim}) == ClaimInstall::Installed); assert(book.FinishRestore());
     request.consumption={{claim,10}};
     assert(valid(request,saved));
+    {
+        auto purchase=request;purchase.persistence=NativePersistence::Inventory;
+        TestAdapter adapter(purchase);adapter.consumes=true;
+        assert(ValidateOperationAdapter(purchase,adapter,reason));
+        adapter.consumes=false;assert(!ValidateOperationAdapter(purchase,adapter,reason));adapter.consumes=true;
+        purchase.consumption.clear();assert(!ValidateOperationAdapter(purchase,adapter,reason));
+        purchase=request;adapter.persistence=NativePersistence::JournalOnly;
+        assert(!ValidateOperationAdapter(purchase,adapter,reason));
+    }
     const auto claimed=OperationRequestWrite(request);
     assert(SameRequest(claimed,OperationIntentWrite(request.transition.task,request.transition.expectedRevision,
         request.transition.receipt,request.kind,"{\"effects\":"+std::to_string(request.effects)+",\"persistence\":0,\"native\":"+

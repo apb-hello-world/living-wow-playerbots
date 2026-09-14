@@ -69,6 +69,10 @@ namespace LivingActivity {
     };
     bool ValidateOperationRequest(const OperationRequest& request, const Task& saved,
         const WorldContext& current, const Task* root, uint64_t wallNow, std::string& blocker);
+    // The same compiled adapter contract gates intent and dispatch. Inventory
+    // effects may consume claims, transfer a stack, acquire native loot, or open
+    // a gathering node without acquiring anything; these are distinct proofs.
+    bool ValidateOperationAdapter(const OperationRequest&, const NativeOperationAdapter&, std::string& blocker);
     // Effects are fingerprinted with native before-state, not transient hints.
     WritePlan OperationRequestWrite(const OperationRequest& request);
     bool ValidateNativeObservation(const NativeObservation& result);
