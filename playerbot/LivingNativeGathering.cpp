@@ -1,5 +1,6 @@
 #include "botpch.h"
 #include "LivingNativeGathering.h"
+#include "LivingNativeSkinning.h"
 #include "LivingNativeLootCollection.h"
 #include "LivingGathering.h"
 #include "LivingGuildProcurement.h"
@@ -50,6 +51,18 @@ bool LocalGatherQuote(Player& actor,uint64_t source,uint32_t entry,NativeGatherQ
     if(!ai || !actor.GetMap() || !actor.IsInWorld() || actor.GetGroup() || actor.GetMap()->IsDungeon() ||
         actor.GetTradeData() || !actor.IsStopped() ||
         ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)))return reject("gather_safety_pause");
+    const bool skinning=guid.IsCreature();
+    if(skinning) {
+        if(!LocalNativeSkinningQuote(actor,source,entry,q,why))return false;
+        if(ai::ItemUsageValue::IsNeededForQuest(&actor,entry,true))return reject("gather_native_permission_or_tools_missing");
+        const auto* info=sSpellTemplate.LookupEntry<SpellEntry>(8613);
+        if(!info || info->Id!=8613 || IsChanneledSpell(info) || info->Effect[0]!=SPELL_EFFECT_SKINNING ||
+            info->Effect[1] || info->Effect[2])return reject("skinning_spell_effect_unsupported");
+        for(unsigned i=0;i<MAX_SPELL_REAGENTS;++i)if(info->Reagent[i]>0 && info->ReagentCount[i]>0)
+            return reject("gather_consumable_tool_adapter_required");
+        if(!effect && actor.IsNonMeleeSpellCasted(false,true,true))return reject("gather_native_cast_unavailable");
+        why.clear();return true;
+    }
     auto* node=guid.IsGameObject()?ai->GetGameObject(guid):nullptr;uint32_t skill=0,required=0;
     if(!node || !sServerFacade.isSpawned(node) || node->IsInUse() || node->m_loot ||
         !actor.IsWithinDistInMap(node,INTERACTION_DISTANCE) || !GatherLock(node->GetEntry(),skill,required) ||
@@ -86,11 +99,13 @@ bool ReadGatherAfter(Player& actor,NativeGatherResult& r) {
     if(actor.GetGUIDLow()!=r.before.actor || !actor.IsInWorld() || actor.IsBeingTeleported())return false;
     r.value=actor.GetSkillValuePure(r.before.skill);r.maximum=actor.GetSkillMaxPure(r.before.skill);
     r.money=actor.GetMoney();r.bagCount=actor.GetItemCount(r.before.entry,false);r.generation=0;r.owned=false;
-    auto* node=actor.GetPlayerbotAI()->GetGameObject(ObjectGuid(r.before.source));
-    if(node && node->m_loot) {
-        auto* loot=node->m_loot;r.generation=LootGeneration(*loot);
+    auto* ai=actor.GetPlayerbotAI();const ObjectGuid guid(r.before.source);Loot* loot=nullptr;
+    if(r.before.skill==393) {auto* corpse=ai->GetCreature(guid);if(corpse)loot=corpse->m_loot;}
+    else {auto* node=ai->GetGameObject(guid);if(node)loot=node->m_loot;}
+    if(loot) {
+        r.generation=LootGeneration(*loot);
         r.owned=loot->GetLootGuid().GetRawValue()==r.before.source &&
-            (loot->GetLootType()==LOOT_CORPSE || loot->GetLootType()==LOOT_SKINNING) &&
+            loot->GetLootType()==(r.before.skill==393?LOOT_SKINNING:LOOT_CORPSE) &&
             loot->GetOwnerSet().count(actor.GetObjectGuid())!=0;
     }
     return true;
@@ -109,13 +124,17 @@ public:
         if(!sLivingActivityCoordinator.OnWorldThread() || !Authority(actor) ||
             !LocalGatherQuote(actor,result.before.source,result.before.entry,current,why) ||
             EncodeNativeGatherQuote(current)!=EncodeNativeGatherQuote(result.before))return false;
-        auto* node=actor.GetPlayerbotAI()->GetGameObject(ObjectGuid(current.source));
+        const ObjectGuid guid(current.source);
+        auto* node=current.skill==393?nullptr:actor.GetPlayerbotAI()->GetGameObject(guid);
+        auto* corpse=current.skill==393?actor.GetPlayerbotAI()->GetCreature(guid):nullptr;
         const auto* info=sSpellTemplate.LookupEntry<SpellEntry>(current.spell);
-        if(!node || !info){why="gather_source_disappeared";return false;}
+        if((!node && !corpse) || !info){why="gather_source_disappeared";return false;}
         std::unique_ptr<Spell> spell(new Spell(&actor,info,false));spell->m_clientCast=true;
         if(!spell->SetLivingCraftCast(shared_from_this())){why="gather_cast_binding_failed";return false;}
         {std::lock_guard<std::mutex> lock(mutex);if(result.started)return false;result.started=true;}
-        SpellCastTargets targets;targets.setGOTarget(node);spell.release()->SpellStart(&targets);why.clear();return true;
+        SpellCastTargets targets;
+        if(corpse)targets.setUnitTarget(corpse);else targets.setGOTarget(node);
+        spell.release()->SpellStart(&targets);why.clear();return true;
     }
     bool Ready() const override {const auto r=Snapshot();return r.finished || r.uncertain;}
     NativeObservation Observe(Player& actor,std::vector<VerifiedItemGain>& gains) const override {
@@ -193,10 +212,15 @@ bool NativeGatherSources(Player& actor,uint32_t entry,std::vector<int32_t>& out,
         if(purpose==next)out.push_back(candidate);
     }
     std::sort(out.begin(),out.end());out.erase(std::unique(out.begin(),out.end()),out.end());
+    if(out.empty()) {
+        NativeSkinningSources(actor,entry,out);
+        if(!out.empty())purpose=uint32_t(ai::TravelDestinationPurpose::GatherSkinning);
+    }
     if(out.empty())return reject("gather_no_supported_native_source");
     why.clear();return true;
 }
-GameObject* NativeGatherNode(Player& actor,uint32_t entry,const std::vector<int32_t>& sources) {
+WorldObject* NativeGatherNode(Player& actor,uint32_t entry,const std::vector<int32_t>& sources) {
+    if(!sources.empty() && sources.front()>0)return NativeSkinningNode(actor,entry,sources);
     auto* ai=actor.GetPlayerbotAI();if(!ai)return nullptr;GameObject* best=nullptr;float distance=FLT_MAX;unsigned scanned=0;
     for(const auto guid:ai->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("nearest game objects no los")->Get()) {
         if(++scanned>256)break;
@@ -227,8 +251,9 @@ bool HoldsManagedGatherLoot(PlayerbotAI& ai,uint64_t source) {
     const auto view=ai.ActivityPermissions().Inspect();if(!view || view->compatibility || !view->lease.generation)return false;
     const auto& task=view->root;GuildProcurementJob job;std::string why;const ObjectGuid guid(source);uint32_t skill=0,required=0;
     return task.mode==Mode::Active && task.accepted && !Terminal(task.phase) && IsGuildProcurementTask(task) &&
-        DecodeGuildProcurementJob(task.checkpoint.data,job,why) && job.craft.empty() && guid.IsGameObject() &&
-        GatherLock(guid.GetEntry(),skill,required) && DirectDrop(guid.GetEntry(),job.entry);
+        DecodeGuildProcurementJob(task.checkpoint.data,job,why) && job.craft.empty() &&
+        ((guid.IsGameObject() && GatherLock(guid.GetEntry(),skill,required) && DirectDrop(guid.GetEntry(),job.entry)) ||
+         HoldsNativeSkinningLoot(ai,source,job.entry));
 }
 uint32_t NativeGatherOperation::OperationEffects() const {return SpellEffectMask(false);}
 bool NativeGatherOperation::ValidateNative(Player& actor,const OperationRequest& request,std::string& why) {

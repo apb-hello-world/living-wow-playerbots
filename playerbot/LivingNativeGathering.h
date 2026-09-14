@@ -3,12 +3,13 @@
 #include "LivingGatherQuote.h"
 #include "LivingLootQuote.h"
 class GameObject;
+class WorldObject;
 class PlayerbotAI;
 namespace LivingActivity {
     // Cached native loot-table sources, filtered by known skill and supported
     // mechanics. No database scan, generated item or inferred loot quantity.
     bool NativeGatherSources(Player&,uint32_t entry,std::vector<int32_t>& sources,uint32_t& purpose,std::string&);
-    GameObject* NativeGatherNode(Player&,uint32_t entry,const std::vector<int32_t>& sources);
+    WorldObject* NativeGatherNode(Player&,uint32_t entry,const std::vector<int32_t>& sources);
     bool InspectNativeGatherQuote(Player&,uint64_t source,uint32_t entry,NativeGatherQuote&,std::string&);
     bool FindNativeRequestedLoot(Player&,uint32_t entry,NativeLootQuote&,std::string&);
     bool HoldsManagedGatherLoot(PlayerbotAI&,uint64_t source);

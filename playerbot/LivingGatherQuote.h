@@ -14,7 +14,7 @@ struct NativeGatherQuote {
 inline bool ValidNativeGatherQuote(const NativeGatherQuote& q) {
     return q.actor && q.entry && q.source && q.required && q.value && q.value<=q.maximum &&
         q.maximum<=65535 && q.effective>=q.required && q.effective<=65535 &&
-        ((q.skill==186 && q.spell==2575) || (q.skill==182 && q.spell==2366));
+        ((q.skill==186 && q.spell==2575) || (q.skill==182 && q.spell==2366) || (q.skill==393 && q.spell==8613));
 }
 inline std::string EncodeNativeGatherQuote(const NativeGatherQuote& q) {
     if(!ValidNativeGatherQuote(q))throw std::invalid_argument("invalid_native_gather_quote");

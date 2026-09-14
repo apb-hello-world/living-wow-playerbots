@@ -114,10 +114,11 @@ bool ReadNativeGuildProcurementSource(Player& actor,uint32_t entry,uint32_t maxi
     if(!crafted.craft.empty() && !crafted.estimatedCopper){out=crafted;why.clear();return true;}
     std::vector<int32_t> nodes;uint32_t purpose=0;std::string gatherBlocker;
     if(NativeGatherSources(actor,entry,nodes,purpose,gatherBlocker) &&
-        !sTravelMgr.GetDestinations(ai::PlayerTravelInfo(&actor),purpose,nodes,false,0,true).empty()) {
+        (purpose==uint32_t(ai::TravelDestinationPurpose::GatherSkinning) ||
+         !sTravelMgr.GetDestinations(ai::PlayerTravelInfo(&actor),purpose,nodes,false,0,true).empty())) {
         // A loot table proves a possible source, not its rolled quantity. Only
         // assign one needed unit; the real indivisible slot may yield surplus.
-        out={1,uint32_t(-nodes.front()),0,"gather"};why.clear();return true;
+        out={1,uint32_t(nodes.front()>0?nodes.front():-nodes.front()),0,"gather"};why.clear();return true;
     }
     if(!money)return reject("guild_procurement_personal_budget_protected");
     std::string vendorBlocker;std::vector<int32_t> vendors;
