@@ -2,6 +2,7 @@
 #include "LivingActivityGameplay.h"
 #include "LivingActivityRecovery.h"
 #include "LivingActivityTargeting.h"
+#include "LivingActivityHunterSupport.h"
 #include "LivingActivityScope.h"
 #include "LivingActivityCoordinator.h"
 #include "ServerFacade.h"
@@ -112,6 +113,11 @@ namespace LivingActivity {
             return NativeResourceFreeAura(aura) ||
                 (aura == SPELL_AURA_PERIODIC_TRIGGER_SPELL && AuditedTbcCatFormPeriodicNoop(spell));
         }
+        bool NativeAuditedHunterSupport(Player& actor, const SpellEntry& spell) {
+            if (actor.getClass() != CLASS_HUNTER || !actor.HasSpell(spell.Id)) return false;
+            return AuditedTbcHunterPetRecovery(spell, actor.getClass()) ||
+                AuditedTbcHunterHawk(spell, sServerFacade.LookupSpellInfo(6150), actor.getClass());
+        }
         bool NativeMemberEngaged(Player& actor, Unit& member) {
             auto validEnemy = [&](Unit* enemy) {
                 return enemy && enemy->IsInWorld() && enemy->IsAlive() &&
@@ -127,14 +133,19 @@ namespace LivingActivity {
         }
         bool NativeNearbyPartyEngaged(Player& actor) {
             bool engaged = NativeMemberEngaged(actor, actor);
+            if (!engaged) if (auto* pet = actor.GetPet())
+                engaged = NativeMemberEngaged(actor, *pet);
             if (!engaged) if (auto* group = actor.GetGroup()) {
                 unsigned inspected = 0;
                 for (auto* ref = group->GetFirstMember(); ref && !engaged && inspected++ < 40; ref = ref->next())
                     if (auto* member = ref->getSource())
                         if (member->IsInWorld() && member->GetMapId() == actor.GetMapId() &&
                             member->GetInstanceId() == actor.GetInstanceId() &&
-                            sServerFacade.GetDistance2d(&actor, member) <= sPlayerbotAIConfig.sightDistance)
+                            sServerFacade.GetDistance2d(&actor, member) <= sPlayerbotAIConfig.sightDistance) {
                             engaged = NativeMemberEngaged(actor, *member);
+                            if (!engaged) if (auto* pet = member->GetPet())
+                                engaged = NativeMemberEngaged(actor, *pet);
+                        }
             }
             return engaged;
         }
@@ -213,10 +224,11 @@ namespace LivingActivity {
         const auto* info = spell ? sServerFacade.LookupSpellInfo(spell) : nullptr;
         auto* actor = ai.GetBot();
         const bool known = actor && (actor->HasSpell(spell) || (actor->GetPet() && actor->GetPet()->HasSpell(spell)));
-        const bool inventoryFree = info && actor && InventoryFreeNativeSpell(*info, known,
-            itemCast || (info->Targets & (TARGET_FLAG_ITEM | TARGET_FLAG_TRADE_ITEM)),
-            info->EquippedItemClass >= 0 || info->DmgClass == SPELL_DAMAGE_CLASS_RANGED,
-            NativeResourceFreeEffect, [&](uint32_t aura) { return NativeResourceFreeSpellAura(*info, aura); });
+        const bool itemTarget = info && (itemCast || (info->Targets & (TARGET_FLAG_ITEM | TARGET_FLAG_TRADE_ITEM)));
+        const bool equipment = info && (info->EquippedItemClass >= 0 || info->DmgClass == SPELL_DAMAGE_CLASS_RANGED);
+        const bool inventoryFree = info && actor && (InventoryFreeNativeSpell(*info, known, itemTarget, equipment,
+            NativeResourceFreeEffect, [&](uint32_t aura) { return NativeResourceFreeSpellAura(*info, aura); }) ||
+            (!itemTarget && !equipment && NativeAuditedHunterSupport(*actor, *info)));
         return {SpellEffectMask(inventoryFree), Lane::Managed, true};
     }
     NativePermit NativeEngagedAttackPermit(PlayerbotAI& ai, Unit* target) {
@@ -246,8 +258,9 @@ namespace LivingActivity {
         const bool healing = ReadyForNativeHealing(*actor, *target, known,
             PlayerbotAI::IsHealSpell(info), sServerFacade.IsFriendlyTo(actor, target));
         const bool support = ReadyForNativeHealing(*actor, *target, known,
-            IsPositiveSpell(info) && HasOnlyNativeEffects(*info, NativeSupportEffect) &&
-                HasOnlyNativeAuras(*info, [&](uint32_t aura) { return NativeResourceFreeSpellAura(*info, aura); }),
+            (IsPositiveSpell(info) && HasOnlyNativeEffects(*info, NativeSupportEffect) &&
+                HasOnlyNativeAuras(*info, [&](uint32_t aura) { return NativeResourceFreeSpellAura(*info, aura); })) ||
+                (target == actor && !item && NativeAuditedHunterSupport(*actor, *info)),
             sServerFacade.IsFriendlyTo(actor, target));
         if (!healing && !support && !ReadyForNativeOffense(*actor, *target, known, IsPositiveSpell(info),
             sServerFacade.IsHostileTo(actor, target), NativePartyEngaged(*actor, *target))) return {};
