@@ -11,6 +11,7 @@ namespace LivingActivity {
     bool NativeGatherSources(Player&,uint32_t entry,std::vector<int32_t>& sources,uint32_t& purpose,std::string&);
     WorldObject* NativeGatherNode(Player&,uint32_t entry,const std::vector<int32_t>& sources);
     bool InspectNativeGatherQuote(Player&,uint64_t source,uint32_t entry,NativeGatherQuote&,std::string&);
+    bool ReadRestoredGatherState(Player&,const NativeGatherQuote&,NativeGatherResult&,std::string&);
     bool FindNativeRequestedLoot(Player&,uint32_t entry,NativeLootQuote&,std::string&);
     bool HoldsManagedGatherLoot(PlayerbotAI&,uint64_t source);
     class NativeGatherOperation final : public NativeOperationAdapter {

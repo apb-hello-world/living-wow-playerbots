@@ -191,6 +191,15 @@ private:
     const Task task;const ActionContext action;const NativeGatherQuote quote;mutable std::mutex mutex;NativeGatherResult result;
 };
 }
+bool ReadRestoredGatherState(Player& actor,const NativeGatherQuote& quote,NativeGatherResult& out,std::string& why) {
+    out={};out.before=quote;
+    if(!sLivingActivityCoordinator.OnWorldThread() || !ValidNativeGatherQuote(quote) || !actor.GetPlayerbotAI() ||
+        actor.GetGUIDLow()!=quote.actor || !actor.IsInWorld() || !actor.GetMap() || actor.GetGroup() ||
+        actor.GetMap()->IsDungeon() || ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) ||
+        actor.GetTradeData() || actor.IsNonMeleeSpellCasted(false,true,true) || actor.GetItemCount(quote.entry,true) ||
+        !ReadGatherAfter(actor,out)) {why="gather_recovery_native_snapshot_unavailable";return false;}
+    why.clear();return true;
+}
 bool NativeGatherSources(Player& actor,uint32_t entry,std::vector<int32_t>& out,uint32_t& purpose,std::string& why) {
     out.clear();purpose=0;auto reject=[&](const char* code){why=code;return false;};
     if(!sLivingActivityCoordinator.OnWorldThread() || !actor.GetPlayerbotAI() || !actor.IsInWorld() || !actor.GetMap() ||

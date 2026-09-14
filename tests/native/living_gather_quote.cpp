@@ -23,7 +23,7 @@ int main() {
     auto extra=json;extra.insert(extra.size()-1,",\"quantity\":4");assert(!DecodeNativeGatherQuote(extra,decoded));
     auto duplicate=json;duplicate.insert(duplicate.size()-1,",\"entry\":2770");assert(!DecodeNativeGatherQuote(duplicate,decoded));
     std::string why;
-    NativeGatherResult r{q,75,75,100,0,456,true,true,true,true,true,false};
+    NativeGatherResult r{q,75,75,100,0,456,true,true,true,true,true,false,6};
     assert(VerifyNativeGatherResult(r,why)==OperationState::Verified && why=="native_gather_opened_loot_not_collected");
     // Gray/capped nodes are valid material work but never claim skill gains.
     auto skillup=r;skillup.before.maximum=skillup.maximum=150;++skillup.value;
@@ -42,4 +42,6 @@ int main() {
     assert(VerifyNativeGatherResult(rejected,why)==OperationState::Rejected);
     rejected.effect=true;assert(VerifyNativeGatherResult(rejected,why)==OperationState::Rejected); // Native resisted lock, no change.
     assert(EncodeNativeGatherResult(r).find("\"bag_count\":0")!=std::string::npos);
+    for(uint32_t skill:{182u,186u,393u})for(uint32_t type=0;type<8;++type)
+        assert(NativeGatherLootType(skill,type)==(type==6 || (type==1 && skill!=393)));
 }

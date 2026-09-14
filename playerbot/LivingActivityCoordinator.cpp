@@ -56,6 +56,7 @@
 #include "LivingGuildProcurementHandoff.h"
 #include "LivingNativeGuildProcurement.h"
 #include "LivingGuildProcurementRecovery.h"
+#include "LivingGatherRecovery.h"
 #include "LivingGuildProcurementProjection.h"
 #include "PlayerbotOrganicEconomy.h"
 #include <boost/property_tree/json_parser.hpp>
@@ -1758,7 +1759,8 @@ bool LivingActivityCoordinator::ReadProfessionHistory(uint32_t actor,const std::
         return reject("profession_history_coordinator_unavailable");
     const auto saved=state->cache.find(id);
     if (!actor || saved==state->cache.end() || saved->second.actor!=actor || saved->second.revision!=revision ||
-        saved->second.mode!=Mode::Active || !IsProfessionJob(saved->second)) return reject("profession_history_task_changed");
+        saved->second.mode!=Mode::Active || (!IsProfessionJob(saved->second) && !IsGatheringRecoveryTask(saved->second)))
+        return reject("profession_history_task_changed");
     for (const auto& write : state->pending) if (write.task.actor==actor && write.task.mode==Mode::Active)
         return reject("profession_history_transition_pending");
     const auto now=NowMs();auto found=state->professionHistory.find(id);
@@ -3224,6 +3226,16 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         state->HoldNativeSave(actor,true);state->pending.push_back(std::move(write));state->nextWork=0;
         return stop("guild_procurement_reconciliation_receipt_pending");
     };
+    if(IsGatheringRecoveryTask(*saved) && saved->context.boot.empty()) {
+        ProfessionHistory history;NativeGatherResult prior,native;GuildProcurementRecovery recovery;
+        if(!ReadProfessionHistory(actor,id,saved->revision,history,why))return stop(why);
+        if(!history.interruptedGather)return stop("gather_recovery_exact_journal_required");
+        const auto receipt=SourceId("gather_restart_no_acquisition",id+":"+std::to_string(saved->revision)+":"+current.boot);
+        if(!DecodeInterruptedGather(*saved,*history.interruptedGather,prior,why) ||
+            !ReadRestoredGatherState(*bot,prior.before,native,why) ||
+            !PrepareInterruptedGather(*saved,current,history,claims,native,NowMs(),receipt,recovery,why))return stop(why);
+        return queueRecovery(recovery,receipt);
+    }
     const bool resuming=!(saved->context==current) || saved->phase==Phase::Verifying ||
         saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal;
     if(resuming) {

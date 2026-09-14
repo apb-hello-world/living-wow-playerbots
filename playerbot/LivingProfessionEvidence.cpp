@@ -397,11 +397,20 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,Sto
     if(!DecodeStoredCraftProofBody(task,row,result,blocker))return false;
     result.attempt.journalDigest=row.journalDigest;return true;
 }
+bool IsGatheringRecoveryTask(const Task& task) {
+    GuildProcurementJob job;std::string why;
+    return IsGuildProcurementTask(task) && task.phase==Phase::Reconciling &&
+        task.checkpoint.step=="guild_requested_gather" &&
+        task.checkpoint.blocker=="native_gather_outcome_uncertain" &&
+        DecodeGuildProcurementJob(task.checkpoint.data,job,why) && job.craft.empty();
+}
 std::string ProfessionHistoryQuery(const Task& task) {
     ProfessionJob job;std::string blocker;
+    const bool gathering=IsGatheringRecoveryTask(task);
     if (task.mode!=Mode::Active || !task.accepted || !task.actor || !IsUuid(task.id) || task.root!=task.id ||
-        !task.revision || (task.source!="profession_job" && !IsGuildCraftTask(task)) || !ValidateProfessionTask(task,blocker) ||
-        !DecodeProfessionJob(task.checkpoint.data,job,blocker)) throw std::invalid_argument("profession_history_task_invalid");
+        !task.revision || (gathering ? !ValidateGuildProcurementTask(task,blocker) :
+        ((task.source!="profession_job" && !IsGuildCraftTask(task)) || !ValidateProfessionTask(task,blocker) ||
+        !DecodeProfessionJob(task.checkpoint.data,job,blocker)))) throw std::invalid_argument("profession_history_task_invalid");
     // A single DB statement observes the revision, all unresolved work for this
     // actor (including dependent mail/purchases), and at most limit+1 attempts.
     // The extra row detects overflow; never silently truncate accepted work.
@@ -411,9 +420,10 @@ std::string ProfessionHistoryQuery(const Task& task) {
         "AND u.state IN ('intent','reconciling')),o.operation_id,o.task_id,o.task_revision,o.kind,o.state,"
         "o.native_reference,o.before_state,o.after_state,o.evidence_code,SHA2(CONCAT(o.before_state,'|',o.after_state),256) FROM living_activity_task t "
         "LEFT JOIN (SELECT operation_id,task_id,task_revision,kind,state,native_reference,before_state,after_state,evidence_code "
-        "FROM living_activity_operation WHERE task_id="+id+" AND (kind='profession_craft' OR "
-        "(kind='mail_collect' AND state IN ('intent','reconciling'))) "
-        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(ProfessionWorkflowAttemptLimit(task.checkpoint.data)+2)+") o ON o.task_id=t.task_id "
+        "FROM living_activity_operation WHERE task_id="+id+" AND "+
+        (gathering ? "kind='gather_open' AND state IN ('intent','reconciling') " :
+            "(kind='profession_craft' OR (kind='mail_collect' AND state IN ('intent','reconciling'))) ")+
+        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(gathering?2:ProfessionWorkflowAttemptLimit(task.checkpoint.data)+2)+") o ON o.task_id=t.task_id "
         "WHERE t.task_id="+id+" AND t.actor_guid="+std::to_string(task.actor)+" AND t.revision="+
         std::to_string(task.revision)+" AND t.root_task_id=t.task_id AND t.mode='active' "
         "AND t.accepted=1 AND t.source="+SqlValue(task.source)+" AND t.kind="+SqlValue(Name(task.kind))+" ORDER BY o.task_revision,o.operation_id";
@@ -424,9 +434,10 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
         // Reuse exactly the query's eligibility check even for test/restore data.
         (void)ProfessionHistoryQuery(owner);
         ProfessionJob job;std::string why;
-        Require(DecodeProfessionJob(owner.checkpoint.data,job,why),"profession_history_task_invalid");
+        const bool gathering=IsGatheringRecoveryTask(owner);
+        Require(gathering || DecodeProfessionJob(owner.checkpoint.data,job,why),"profession_history_task_invalid");
         Require(!rows.empty(),"profession_history_task_changed_or_missing");
-        const auto limit=ProfessionWorkflowAttemptLimit(owner.checkpoint.data);
+        const auto limit=gathering?0u:ProfessionWorkflowAttemptLimit(owner.checkpoint.data);
         Require(rows.size()<=limit+1,"profession_history_attempt_limit_exceeded");
         bool first=true,unresolved=false;uint64_t previous=0;std::set<std::string> ids;
         unsigned crafts=0,mails=0;
@@ -445,9 +456,11 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
             receipt.id=fields[3];receipt.task=fields[4];receipt.taskRevision=number(5);receipt.kind=fields[6];
             Require(IsUuid(receipt.id) && ids.insert(receipt.id).second && receipt.task==owner.id &&
                 receipt.taskRevision>previous && receipt.taskRevision<=owner.revision &&
-                (receipt.kind=="profession_craft" || receipt.kind=="mail_collect"),
+                (gathering ? receipt.kind=="gather_open" : (receipt.kind=="profession_craft" || receipt.kind=="mail_collect")),
                 "profession_history_operation_identity_invalid");
-            if(receipt.kind=="profession_craft") Require(++crafts<=limit,"profession_history_attempt_limit_exceeded");
+            if(gathering) Require(++crafts==1 && owner.revision>1 && receipt.taskRevision==owner.revision-1 &&
+                fields[7]=="reconciling","gather_history_operation_identity_invalid");
+            else if(receipt.kind=="profession_craft") Require(++crafts<=limit,"profession_history_attempt_limit_exceeded");
             else Require(++mails==1 && receipt.taskRevision==owner.revision &&
                 (fields[7]=="intent" || fields[7]=="reconciling"),"profession_history_mail_identity_invalid");
             previous=receipt.taskRevision;
@@ -482,7 +495,8 @@ bool ProfessionHistoryCursor::Advance(std::string& blocker) {
         history.attempts.push_back(std::move(proof.attempt));
     } else {
         history.unresolvedOperation=true;
-        if(row.receipt.state==OperationState::Intent && row.receipt.taskRevision==task.revision &&
+        if(row.receipt.kind=="gather_open" && IsGatheringRecoveryTask(task)) history.interruptedGather=row;
+        else if(row.receipt.state==OperationState::Intent && row.receipt.taskRevision==task.revision &&
             task.phase==Phase::Executing) {
             if(row.receipt.kind=="mail_collect") history.interruptedMail=row;
             else history.interruptedCraft=row;

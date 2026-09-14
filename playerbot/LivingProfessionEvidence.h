@@ -52,7 +52,9 @@ namespace LivingActivity {
         std::vector<ProfessionCraftProof> attempts;
         std::optional<StoredCraftOperation> interruptedCraft;
         std::optional<StoredCraftOperation> interruptedMail;
+        std::optional<StoredCraftOperation> interruptedGather;
     };
+    bool IsGatheringRecoveryTask(const Task&);
     std::string ProfessionHistoryQuery(const Task& task);
     // Value-only, finite decoder. Begin validates the read's identity/envelope;
     // Advance validates at most one saved craft per world update. No DB calls,
