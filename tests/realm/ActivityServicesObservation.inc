@@ -75,6 +75,35 @@ void RunIsolatedServicesObservation(FixtureState& state) {
                     route.put("map",position->getMapId());route.put("x",position->getX());
                     route.put("y",position->getY());route.put("z",position->getZ());
                     route.put("distance",target->Distance(bot));
+                    if(service==ServiceDestination::Gathering) {
+                        // Inspect the selected native spawn as well as the
+                        // cached nearby list. A point in the travel catalogue
+                        // is not proof of a live, eligible resource node.
+                        boost::property_tree::ptree gather;
+                        GuildProcurementJob job;std::string why;
+                        const auto* spawn=dynamic_cast<const ai::GuidPosition*>(position);
+                        auto* node=spawn && spawn->IsGameObject()?bot->GetPlayerbotAI()->GetGameObject(*spawn):nullptr;
+                        gather.put("spawn_identity",spawn?spawn->GetRawValue():0);
+                        gather.put("live_node",node!=nullptr);
+                        const auto nearby=context->template GetValue<std::list<ObjectGuid>>("nearest game objects no los")->Get();
+                        gather.put("nearby_count",nearby.size());
+                        gather.put("spawn_in_nearby",spawn && std::find(nearby.begin(),nearby.end(),static_cast<const ObjectGuid&>(*spawn))!=nearby.end());
+                        if(node) {
+                            gather.put("spawned",sServerFacade.isSpawned(node));gather.put("in_use",node->IsInUse());
+                            gather.put("has_loot",node->m_loot!=nullptr);gather.put("go_state",uint32(node->GetGoState()));
+                            gather.put("distance",bot->GetDistance(node));gather.put("stopped",bot->IsStopped());
+                            ai::LootObject loot(bot,node->GetObjectGuid());
+                            gather.put("legacy_loot_empty",loot.IsEmpty());gather.put("legacy_loot_possible",loot.IsLootPossible(bot));
+                            gather.put("skill",loot.skillId);gather.put("required_skill",loot.reqSkillValue);
+                            gather.put("mining_pick_carried",bot->HasItemCount(2901,1));
+                            if(DecodeGuildProcurementJob(task.checkpoint.data,job,why)) {
+                                NativeGatherQuote quote;
+                                gather.put("quote_eligible",InspectNativeGatherQuote(*bot,node->GetObjectGuid().GetRawValue(),job.entry,quote,why));
+                                gather.put("quote_blocker",why);
+                            }
+                        }
+                        route.add_child("gather_node",gather);
+                    }
                 }
                 const auto& path=context->template GetValue<ai::LastMovement&>("last movement")->Get().lastPath.getPath();
                 route.put("path_nodes",path.size());
