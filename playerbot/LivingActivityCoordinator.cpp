@@ -42,6 +42,7 @@
 #include "LivingActivityTransfer.h"
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
 #include "LootObjectStack.h"
+#include "ServerFacade.h"
 #include "PlayerbotInventoryPressure.h"
 #include "Guilds/GuildMgr.h"
 #include "strategy/actions/MailAction.h"
