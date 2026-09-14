@@ -41,7 +41,7 @@ inline void TestCommissionCraftWorkflow() {
     auto evidence=SavedCraft(task,recipe,before,after,false,true);evidence.journalDigest=std::string(64,'a');
     StoredCraftProof proof;assert(DecodeStoredCraftProof(task,evidence,proof,why));
     ProfessionSnapshot snapshot;snapshot.task=task.id;snapshot.revision=task.revision;snapshot.context=task.context;
-    snapshot.complete=true;snapshot.attempts={proof.attempt};snapshot.stock={{765},{2449},{3371}};
+    snapshot.complete=true;snapshot.unresolvedOperation=false;snapshot.attempts={proof.attempt};snapshot.stock={{765},{2449},{3371}};
     ResourceClaim output;output.id=ItemGainClaimId(proof.attempt.receipt.id,103);output.task=task.id;output.actor=703;
     output.itemGuid=103;output.itemEntry=2454;output.quantity=1;output.state="held";output.location="bags";
     auto spare=output;spare.id="f90f9bb6-58c8-4d82-a3be-a25d3fec47b7";spare.itemGuid=102;spare.itemEntry=3371;spare.quantity=4;
@@ -49,7 +49,7 @@ inline void TestCommissionCraftWorkflow() {
     std::vector<NativeResourceBalance> balances={{703,103,2454,1,0,"bags"},{703,102,3371,4,0,"bags"}};
     const std::string receipt="d1879146-6e96-4e71-827d-6d12d965edb7";ProfessionSettlement settled;
     auto prepare=[&]{return PrepareProfessionSettlement(task,snapshot,batch,balances,1001,receipt,settled,why);};
-    assert(prepare());
+    if(!prepare())throw std::runtime_error("commission craft handoff: "+why);
     assert(settled.task.phase==Phase::Preparing && settled.task.checkpoint.step=="commission_craft_ready");
     assert(settled.claims.size()==1 && settled.claims[0].after.id==spare.id && settled.claims[0].after.state=="released");
     assert(DecodeCommissionJob(settled.task.checkpoint.data,decoded,why) && decoded.craftFinishedRevision==6);
