@@ -98,14 +98,15 @@ uint64_t LootGeneration(const Loot& loot) {
 bool ReadGatherAfter(Player& actor,NativeGatherResult& r) {
     if(actor.GetGUIDLow()!=r.before.actor || !actor.IsInWorld() || actor.IsBeingTeleported())return false;
     r.value=actor.GetSkillValuePure(r.before.skill);r.maximum=actor.GetSkillMaxPure(r.before.skill);
-    r.money=actor.GetMoney();r.bagCount=actor.GetItemCount(r.before.entry,false);r.generation=0;r.owned=false;
+    r.money=actor.GetMoney();r.bagCount=actor.GetItemCount(r.before.entry,false);r.generation=0;r.owned=false;r.lootType=0;
     auto* ai=actor.GetPlayerbotAI();const ObjectGuid guid(r.before.source);Loot* loot=nullptr;
     if(r.before.skill==393) {auto* corpse=ai->GetCreature(guid);if(corpse)loot=corpse->m_loot;}
     else {auto* node=ai->GetGameObject(guid);if(node)loot=node->m_loot;}
     if(loot) {
         r.generation=LootGeneration(*loot);
+        r.lootType=uint32_t(loot->GetLootType());
         r.owned=loot->GetLootGuid().GetRawValue()==r.before.source &&
-            loot->GetLootType()==(r.before.skill==393?LOOT_SKINNING:LOOT_CORPSE) &&
+            NativeGatherLootType(r.before.skill,r.lootType) &&
             loot->GetOwnerSet().count(actor.GetObjectGuid())!=0;
     }
     return true;

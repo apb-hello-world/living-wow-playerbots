@@ -51,13 +51,22 @@ struct NativeGatherResult {
     uint32_t value=0,maximum=0,money=0,bagCount=0;
     uint64_t generation=0;
     bool started=false,effect=false,finished=false,succeeded=false,owned=false,uncertain=false;
+    uint32_t lootType=0;
 };
+inline bool NativeGatherLootType(uint32_t skill,uint32_t type) {
+    // The pinned core's OPEN_LOCK uses internal LOOT_SKINNING (6) for
+    // gameobjects too. A native Use path may already have opened LOOT_CORPSE
+    // (1); neither type alone proves ownership or an acquired item.
+    return ((skill==186 || skill==182) && (type==1 || type==6)) || (skill==393 && type==6);
+}
 inline OperationState VerifyNativeGatherResult(const NativeGatherResult& r,std::string& why) {
     why="native_gather_outcome_uncertain";
     if(!ValidNativeGatherQuote(r.before) || r.uncertain || !r.started || !r.finished)return OperationState::Reconciling;
     if(r.money!=r.before.money || r.bagCount!=r.before.bagCount || r.maximum!=r.before.maximum ||
         r.value<r.before.value || r.value>r.maximum)return OperationState::Reconciling;
-    if(r.effect && r.succeeded && r.generation && r.owned) {why="native_gather_opened_loot_not_collected";return OperationState::Verified;}
+    if(r.effect && r.succeeded && r.generation && r.owned && NativeGatherLootType(r.before.skill,r.lootType)) {
+        why="native_gather_opened_loot_not_collected";return OperationState::Verified;
+    }
     if(!r.succeeded && !r.generation && r.value==r.before.value) {why="native_gather_cast_rejected";return OperationState::Rejected;}
     return OperationState::Reconciling;
 }
@@ -67,6 +76,7 @@ inline std::string EncodeNativeGatherResult(const NativeGatherResult& r) {
         ",\"bag_count\":"+std::to_string(r.bagCount)+",\"generation\":"+std::to_string(r.generation)+
         ",\"started\":"+(r.started?"true":"false")+",\"effect\":"+(r.effect?"true":"false")+
         ",\"finished\":"+(r.finished?"true":"false")+",\"succeeded\":"+(r.succeeded?"true":"false")+
-        ",\"owned\":"+(r.owned?"true":"false")+",\"uncertain\":"+(r.uncertain?"true":"false")+'}';
+        ",\"owned\":"+(r.owned?"true":"false")+",\"uncertain\":"+(r.uncertain?"true":"false")+
+        ",\"loot_type\":"+std::to_string(r.lootType)+'}';
 }
 }
