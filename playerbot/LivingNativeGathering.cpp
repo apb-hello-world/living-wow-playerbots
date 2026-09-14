@@ -58,8 +58,12 @@ bool LocalGatherQuote(Player& actor,uint64_t source,uint32_t entry,NativeGatherQ
         if(!LocalNativeSkinningQuote(actor,source,entry,q,why))return false;
         if(ai::ItemUsageValue::IsNeededForQuest(&actor,entry,true))return reject("gather_native_permission_or_tools_missing");
         const auto* info=sSpellTemplate.LookupEntry<SpellEntry>(8613);
+        // Pinned TBC Skinning is SKINNING + SKILL(393), not a single-effect
+        // spell. As for Mining/Herbalism below, native EffectSkill is a no-op;
+        // actual loot and skill changes still come only from EffectSkinning.
         if(!info || info->Id!=8613 || IsChanneledSpell(info) || info->Effect[0]!=SPELL_EFFECT_SKINNING ||
-            info->Effect[1] || info->Effect[2])return reject("skinning_spell_effect_unsupported");
+            info->Effect[1]!=SPELL_EFFECT_SKILL || info->Effect[2] ||
+            uint32_t(info->EffectMiscValue[1])!=SKILL_SKINNING)return reject("skinning_spell_effect_unsupported");
         for(unsigned i=0;i<MAX_SPELL_REAGENTS;++i)if(info->Reagent[i]>0 && info->ReagentCount[i]>0)
             return reject("gather_consumable_tool_adapter_required");
         if(!effect && actor.IsNonMeleeSpellCasted(false,true,true))return reject("gather_native_cast_unavailable");
