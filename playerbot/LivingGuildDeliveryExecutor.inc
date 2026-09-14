@@ -335,7 +335,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(!PlanNativeGuildMail(*bot,*saved,parcel,uses,blocker)) {
             if(blocker=="guild_mail_split_capacity_required")
                 return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,{job.entry,job.quantity}).blocker);
-            if(blocker=="guild_mailbox_send_travel_required" || (blocker=="guild_mail_safety_or_arrival_wait" && !bot->IsStopped()))
+            if(blocker=="guild_mailbox_send_travel_required" || blocker=="guild_mail_sender_moving" ||
+                (blocker=="guild_mail_safety_or_arrival_wait" && !bot->IsStopped()))
                 return advance(Phase::Traveling,ServiceStep(ServiceDestination::GuildMailbox));
             // The common due queue persists exact external prerequisites and
             // releases movement. Missing parcel/uncertain ownership is NOT an

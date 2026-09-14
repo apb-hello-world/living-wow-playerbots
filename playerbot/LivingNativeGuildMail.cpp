@@ -12,10 +12,17 @@
 #include "strategy/values/ItemUsageValue.h"
 namespace LivingActivity {
 namespace {
-bool SafeSender(Player& p) {
-    return p.GetPlayerbotAI() && p.GetSession() && p.IsInWorld() && p.GetMap() && p.IsAlive() &&
-        !p.IsBeingTeleported() && !ReadNativeSafety(p,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) &&
-        p.IsStopped() && !p.GetMap()->IsDungeon() && !LivingServiceExecution::Busy(&p) && !p.GetTradeData();
+bool SafeSender(Player& p,std::string& why) {
+    auto reject=[&](const char* reason){why=reason;return false;};
+    if(!p.GetPlayerbotAI() || !p.GetSession() || !p.IsInWorld() || !p.GetMap())
+        return reject("guild_mail_sender_unavailable");
+    const auto safety=ReadNativeSafety(p,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR));
+    if(safety)return reject(NativeSafetyReason(safety));
+    if(!p.IsStopped())return reject("guild_mail_sender_moving");
+    if(p.GetMap()->IsDungeon())return reject("guild_mail_sender_in_dungeon");
+    if(LivingServiceExecution::Busy(&p))return reject(LivingServiceExecution::Blocker(&p));
+    if(p.GetTradeData())return reject("trade_in_progress");
+    why.clear();return true;
 }
 bool MayDeposit(Guild& guild,uint32_t actor) {
     for(uint8_t tab=0;tab<guild.GetPurchasedTabs();++tab)
@@ -74,8 +81,9 @@ bool FreshDelivery(const GuildMailQuote& q) {
 bool PlanNativeGuildMail(Player& actor,const Task& task,GuildMailQuote& q,std::vector<ClaimConsumption>& uses,
     std::string& why,uint32_t selectedReceiver) {
     q={};uses.clear();auto reject=[&](const char* s){why=s;return false;};
-    if(!sLivingActivityCoordinator.OnWorldThread() || task.actor!=actor.GetGUIDLow() || !SafeSender(actor))
-        return reject("guild_mail_safety_or_arrival_wait");
+    if(!sLivingActivityCoordinator.OnWorldThread())return reject("guild_mail_world_thread_required");
+    if(task.actor!=actor.GetGUIDLow())return reject("guild_mail_actor_mismatch");
+    if(!SafeSender(actor,why))return false;
     GuildDepositQuote carry;if(!sGuildSupplies.ReadManagedCarry(task,carry,why))return false;
     auto* guild=sGuildMgr.GetGuildById(carry.job.guild);
     if(!guild || actor.GetGuildId()!=carry.job.guild)return reject("guild_delivery_membership_changed");
