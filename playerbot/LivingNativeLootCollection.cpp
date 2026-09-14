@@ -82,12 +82,14 @@ bool NativeLootCollection::ValidateNative(Player& actor,const OperationRequest& 
     if(!InspectNativeProfessionDemand(actor,task,demand)) {why=demand.blocker;return false;}
     for(const auto& row:demand.stock)if(row.entry==quote.entry) {
         // Never add an incidental drop to an obligation already covered by a
-        // carried, banked or paid-incoming quantity. Native slots are indivisible.
+        // carried, banked or paid-incoming quantity. Native slots are indivisible:
+        // collect one bounded real slot, then the existing procurement material
+        // planner releases surplus claims for personal ownership before handoff.
         uint64_t required=0;
         for(const auto& r:demand.requirements)if(r.entry==quote.entry)required=r.perAttempt;
         const uint64_t covered=uint64_t(row.bag)+row.bank+row.delivered+row.paidInTransit;
-        if(required>covered && quote.quantity<=required-covered) {why.clear();return true;}
-        return reject("native_loot_demand_already_covered_or_slot_exceeds_need");
+        if(required>covered) {why.clear();return true;}
+        return reject("native_loot_demand_already_covered");
     }
     return reject("native_loot_not_a_requested_material");
 }

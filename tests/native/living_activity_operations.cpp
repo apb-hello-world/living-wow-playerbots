@@ -31,7 +31,7 @@ int main() {
         const NativeLootQuote quote{497,2770,3,0,6,100,0,12345,7};
         loot.beforeState=EncodeNativeLootQuote(quote);
         assert(valid(loot,saved));
-        assert(OperationRequestWrite(loot).receiptQuery.find("loot_collect")!=std::string::npos);
+        assert(OperationRequestWrite(loot).receiptQuery.find(SqlValue("loot_collect"))!=std::string::npos);
         for(unsigned field=0;field!=7;++field) {
             auto bad=loot;
             switch(field) {
