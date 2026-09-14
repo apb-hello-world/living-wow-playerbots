@@ -6,6 +6,15 @@
 #include <sstream>
 
 namespace LivingActivity {
+// Shared terminal-service classification for every parent workflow. Repair is
+// not acquisition, crafting, learning or delivery, but a validated receipt must
+// not prevent that parent from rebinding after travel/restart or handing off.
+inline std::string SettledNativeRepairSql() {
+    return "(o.kind='critical_equipment_repair' AND (o.state='rejected' OR (o.state='verified'"
+        " AND o.evidence_code='native_repair_durability_and_payment_observed'"
+        " AND COALESCE(JSON_EXTRACT(o.before_state,'$.effects'),0)=44"
+        " AND COALESCE(JSON_EXTRACT(o.before_state,'$.persistence'),0)=1)))";
+}
 // One equipped, actually broken item. No repair-all, bank spending, gear
 // replacement, or cheat-money path belongs to this prerequisite.
 struct NativeRepairQuote {

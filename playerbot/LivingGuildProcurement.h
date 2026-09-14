@@ -1,6 +1,7 @@
 #pragma once
 #include "LivingActivity.h"
 #include "LivingProfessionJob.h"
+#include "LivingRepairQuote.h"
 #include "GuildGovernancePolicy.h"
 #include "GuildSupplyPolicy.h"
 #include <boost/property_tree/json_parser.hpp>
@@ -22,6 +23,11 @@ struct GuildProcurementJob {
     std::string craft={};
     uint64_t craftFinishedRevision=0;
 };
+inline std::string GuildProcurementSettledOperationSql(const GuildProcurementJob& job) {
+    return "(o.state IN ('verified','rejected') AND (o.kind IN ('vendor_purchase','auction_purchase',"
+        "'mail_collect','bank_withdraw','bank_deposit','capacity_vendor_sale','loot_collect','gather_open'"+
+        std::string(job.craft.empty()?"":",'profession_craft'")+") OR "+SettledNativeRepairSql()+"))";
+}
 inline bool ValidGuildProcurementJob(const GuildProcurementJob& job) {
     if(!job.guild || !job.donor || !job.entry || !job.quantity || !livingguild::Id(job.goal) || !IsUuid(job.batch))return false;
     if(job.craft.empty())return !job.craftFinishedRevision;

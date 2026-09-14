@@ -1,4 +1,5 @@
 #pragma once
+#include "LivingRepairQuote.h"
 #include "LivingGuildDelivery.h"
 #include "LivingActivityJournal.h"
 #include "LivingActivityResources.h"
@@ -110,7 +111,7 @@ inline bool PrepareGuildDeliverySettlement(const Task& saved,const WorldContext&
         " WHERE owner.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))"
         " AND NOT EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
         " AND (o.state NOT IN ('verified','rejected') OR "+number("actor")+"<>living_activity_task.actor_guid"
-        " OR NOT("+deposit+" OR "+mail+" OR "+capacity+")))"
+        " OR NOT("+deposit+" OR "+mail+" OR "+capacity+" OR "+SettledNativeRepairSql()+")))"
         " AND (SELECT COUNT(*) FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
         " AND o.kind='mail_collect' AND o.state='verified')="+std::to_string(job.incomingMail?1:0)+
         " AND (SELECT SUM(CAST(JSON_UNQUOTE(JSON_EXTRACT(o.before_state,'$.native.native.amount')) AS UNSIGNED))"

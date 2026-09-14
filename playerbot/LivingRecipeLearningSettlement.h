@@ -1,4 +1,5 @@
 #pragma once
+#include "LivingRepairQuote.h"
 #include "LivingRecipeLearning.h"
 #include "LivingActivityJournal.h"
 #include "LivingActivityResources.h"
@@ -116,7 +117,8 @@ namespace LivingActivity {
             // Verified service work is not a learning attempt. Preserve its
             // receipts and claims; never replay a learning cast or uncertain step.
             " AND NOT EXISTS (SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
-            " AND (o.kind NOT IN ('vendor_purchase','auction_purchase','mail_collect','bank_withdraw','bank_deposit','capacity_vendor_sale')"
+            " AND ((o.kind NOT IN ('vendor_purchase','auction_purchase','mail_collect','bank_withdraw','bank_deposit','capacity_vendor_sale')"
+            " AND NOT "+SettledNativeRepairSql()+")"
             " OR o.state NOT IN ('verified','rejected')))"
             " AND NOT EXISTS (SELECT 1 FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
             " WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))"
