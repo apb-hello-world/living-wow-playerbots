@@ -13,7 +13,14 @@ void PrepareIsolatedSkinningSource(FixtureState& state) {
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(377);
     if(!bot || !bot->IsInWorld() || !bot->GetMap() || !bot->GetPlayerbotAI())return;
     if(NativeSafety(bot) || LivingServiceExecution::Busy(bot) || bot->GetGroup() || bot->GetTradeData() ||
-        bot->GetMap()->IsDungeon() || !state.bindings.count(377))return;
+        bot->GetMap()->IsDungeon() || !state.bindings.count(377) || !bot->IsStopped())return;
+    // Creature creation resolves ground height. A newly logged-in moving bot
+    // may stand above that surface; do not create an unreachable lower-floor
+    // corpse and misdiagnose it as a failure of Skinning. Wait for real native
+    // availability, without relocating the actor or resetting its work.
+    float sourceX=bot->GetPositionX(),sourceY=bot->GetPositionY(),sourceZ=bot->GetPositionZ();
+    if(!bot->GetMap()->GetReachableRandomPointOnGround(sourceX,sourceY,sourceZ,0.5f,false) ||
+        std::fabs(sourceZ-bot->GetPositionZ())>1.5f)return;
     if(!bot->GetSession() || bot->isRealPlayer() || !sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId()) ||
         bot->GetGuildId()!=4 || !bot->HasSpell(8613) || !bot->HasItemCount(7005,1) || bot->GetItemCount(2318,true) ||
         bot->GetSkillValue(SKILL_SKINNING)<10 || bot->GetSkillMax(SKILL_SKINNING)<bot->GetSkillValue(SKILL_SKINNING))
@@ -36,14 +43,19 @@ void PrepareIsolatedSkinningSource(FixtureState& state) {
     std::ofstream intent("/isolated/evidence/skinning-source-intent-v1.json");intent<<Json(setup);intent.close();
     if(!intent)throw std::runtime_error("skinning_source_intent_save_failed");
     bot->StopMoving();
-    auto* corpse=bot->SummonCreature(119,bot->GetPositionX(),bot->GetPositionY(),bot->GetPositionZ(),
+    auto* corpse=bot->SummonCreature(119,sourceX,sourceY,sourceZ,
         bot->GetOrientation(),TEMPSPAWN_TIMED_DESPAWN,600000);
     if(!corpse)throw std::runtime_error("skinning_source_spawn_failed");
     corpse->SetDeathState(JUST_DIED);corpse->SetLootRecipient(bot);
     corpse->SetLootStatus(CREATURE_LOOT_STATUS_LOOTED);
     setup.put("source_fixture_guid",corpse->GetObjectGuid().GetRawValue());
     setup.put("source_fixture_level",corpse->GetLevel());setup.put("source_fixture_has_loot",corpse->m_loot!=nullptr);
+    setup.put("source_fixture_distance",bot->GetDistance(corpse));
+    NativeGatherQuote quote;std::string quoteBlocker;
+    const bool quoteReady=InspectNativeGatherQuote(*bot,corpse->GetObjectGuid().GetRawValue(),2318,quote,quoteBlocker);
+    setup.put("source_fixture_quote_ready",quoteReady);setup.put("source_fixture_quote_blocker",quoteBlocker);
     if(corpse->IsAlive() || corpse->m_loot || !corpse->HasFlag(UNIT_FIELD_FLAGS,UNIT_FLAG_SKINNABLE) ||
+        !quoteReady || !bot->IsWithinDistInMap(corpse,INTERACTION_DISTANCE) ||
         bot->GetMoney()!=setup.template get<uint32_t>("source_fixture_money_before") ||
         bot->GetUInt32Value(PLAYER_XP)!=setup.template get<uint32_t>("source_fixture_xp_before"))
         throw std::runtime_error("skinning_fixture_native_source_invalid");
@@ -92,6 +104,8 @@ void TraceIsolatedSkinningSource(FixtureState& state) {
         sample.put("has_loot",corpse->m_loot!=nullptr);
         if(corpse->m_loot)sample.put("loot_type",uint32_t(corpse->m_loot->GetLootType()));
         sample.put("distance",bot->GetDistance(corpse));sample.put("los",bot->IsWithinLOSInMap(corpse));
+        sample.put("source_x",corpse->GetPositionX());sample.put("source_y",corpse->GetPositionY());
+        sample.put("source_z",corpse->GetPositionZ());sample.put("actor_z",bot->GetPositionZ());
         sample.put("safe",ai->IsSafe(corpse));sample.put("avoid_death_area",ai->ShouldAvoidDeathArea(ai::WorldPosition(corpse)));
         ai::LootObject loot(bot,guid);
         sample.put("loot_object_empty",loot.IsEmpty());sample.put("loot_skill",loot.skillId);
