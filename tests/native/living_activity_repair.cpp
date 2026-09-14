@@ -48,4 +48,19 @@ int main() {
     ServiceTravelResult interrupted;interrupted.blocker="recipe_service_safety_pause";interrupted.safetyDetail="native_combat";
     assert(CheckpointServiceTravel(t,interrupted,11,"maintenance_repair_prepare",next));
     assert(next.phase==Phase::Paused && next.checkpoint.step==t.checkpoint.step && next.checkpoint.data==t.checkpoint.data);
+    // Reproduce copied actor444 rev95: combat ended with a saved repair route.
+    // A direct Paused -> Preparing request is invalid, even in the same context.
+    for(const auto paused:{Phase::Paused,Phase::Deferred,Phase::WaitingExternal}) {
+        Task interrupted=t;interrupted.phase=paused;
+        assert(!CanTransition(interrupted,Phase::Preparing));
+        const auto reconcile=RepairResumePhase(interrupted.phase);
+        assert(reconcile && *reconcile==Phase::Reconciling && CanTransition(interrupted,*reconcile));
+        interrupted.phase=*reconcile;
+        const auto prepare=RepairResumePhase(interrupted.phase);
+        assert(prepare && *prepare==Phase::Preparing && CanTransition(interrupted,*prepare));
+        assert(interrupted.id==t.id && interrupted.checkpoint.data==t.checkpoint.data);
+    }
+    for(const auto phase:{Phase::Queued,Phase::Preparing,Phase::Traveling,Phase::Executing,
+        Phase::Verifying,Phase::Completed,Phase::Failed,Phase::Cancelled})
+        assert(!RepairResumePhase(phase)); // Atomic outcomes retain their own proof path.
 }

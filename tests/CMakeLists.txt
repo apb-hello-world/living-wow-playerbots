@@ -47,6 +47,17 @@ foreach(test_name party_catchup_math party_positioning living_activity living_ac
     set_tests_properties(${test_name} PROPERTIES TIMEOUT 30)
 endforeach()
 target_sources(living_activity PRIVATE ../playerbot/LivingActivity.cpp)
+
+add_executable(living_activity_repair native/living_activity_repair.cpp ../playerbot/LivingActivity.cpp)
+target_include_directories(living_activity_repair PRIVATE ../playerbot)
+target_compile_features(living_activity_repair PRIVATE cxx_std_17)
+target_compile_options(living_activity_repair PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+if(LIVING_SANITIZERS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(living_activity_repair PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(living_activity_repair PRIVATE -fsanitize=address,undefined)
+endif()
+add_test(NAME living_activity_repair COMMAND living_activity_repair)
+set_tests_properties(living_activity_repair PROPERTIES TIMEOUT 30)
 target_sources(living_guild_deposit PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityResourceView.cpp ../playerbot/LivingGuildDeposit.cpp)
 target_link_libraries(living_guild_deposit PRIVATE Threads::Threads)
 

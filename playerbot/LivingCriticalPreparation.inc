@@ -86,9 +86,8 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
     }
     if(repairing && !(current==saved->context))return advance(Phase::Reconciling,saved->checkpoint.step);
     if(saved->retryAtMs>NowMs())return stop(saved->checkpoint.blocker.empty()?"critical_repair_retry_wait":saved->checkpoint.blocker);
-    if(repairing && (saved->phase==Phase::Paused || saved->phase==Phase::Deferred ||
-        saved->phase==Phase::WaitingExternal || saved->phase==Phase::Reconciling))
-        return advance(Phase::Preparing,saved->checkpoint.step);
+    if(repairing)if(const auto phase=RepairResumePhase(saved->phase))
+        return advance(*phase,saved->checkpoint.step);
     UnsettledClaimBatch claims;std::string blocker;ResourceClaim money;
     if(!ReadTaskClaims(actor,id,saved->revision,claims,blocker))return stop(blocker);
     for(const auto& c:claims.claims)if(c.location=="money") {

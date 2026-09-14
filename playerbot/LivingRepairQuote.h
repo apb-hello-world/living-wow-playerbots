@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <sstream>
+#include <optional>
 
 namespace LivingActivity {
 // Shared terminal-service classification for every parent workflow. Repair is
@@ -65,5 +66,13 @@ inline bool VerifyNativeRepair(const NativeRepairQuote& q,uint32_t item,uint32_t
 }
 inline bool RepairPrerequisiteStep(const std::string& step) {
     return step=="maintenance_service_repair" || step=="maintenance_repair_prepare" || step=="maintenance_repair";
+}
+// A safety/external pause must reconcile before preparation. Keep the normal
+// task transition validator strict; never resume by skipping this checkpoint.
+inline std::optional<Phase> RepairResumePhase(Phase phase) {
+    if(phase==Phase::Paused || phase==Phase::Deferred || phase==Phase::WaitingExternal)
+        return Phase::Reconciling;
+    if(phase==Phase::Reconciling)return Phase::Preparing;
+    return {};
 }
 }
