@@ -6,6 +6,7 @@
 #include "playerbot/playerbot.h"
 #include "playerbot/LootObjectStack.h"
 #include "ChooseRpgTargetAction.h"
+#include "playerbot/LivingActivityTargeting.h"
 
 namespace ai
 {
@@ -71,5 +72,11 @@ namespace ai
     public:
         SelectNewTargetAction(PlayerbotAI* ai) : Action(ai, "select new target") {}
         bool Execute(Event& event) override;
+        LivingActivity::Effects GetActivityEffects() const override {
+            return {LivingActivity::AttackEffectMask(), LivingActivity::Lane::Managed, true};
+        }
+        LivingActivity::NativePermit GetNativeActivityPermit(Event&) override {
+            return LivingActivity::NativeTargetSelectionPermit(*ai);
+        }
     };
 }

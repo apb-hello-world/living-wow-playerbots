@@ -5,6 +5,8 @@
 #include "playerbot/TravelMgr.h"
 #include "playerbot/strategy/generic/PullStrategy.h"
 #include "playerbot/strategy/values/FreeMoveValues.h"
+#include "playerbot/LivingActivityCoordinator.h"
+#include "playerbot/LivingActivityScope.h"
 
 bool DpsAssistAction::isUseful()
 {
@@ -98,6 +100,15 @@ bool AttackEnemyFlagCarrierAction::isUseful()
 
 bool SelectNewTargetAction::Execute(Event& event)
 {
+    // Direct callers receive the same fresh validation as engine dispatch.
+    // This grants no inventory, travel-target or group authority, and never
+    // clears native combat. Child assist/attack actions validate their target.
+    const auto permit = LivingActivity::NativeTargetSelectionPermit(*ai);
+    std::unique_ptr<LivingActivity::ExecutionScope> nativeScope;
+    if (permit.validated) nativeScope.reset(new LivingActivity::ExecutionScope(permit));
+    const LivingActivity::Effects effects{LivingActivity::AttackEffectMask(),
+        permit.validated ? permit.lane : LivingActivity::Lane::Managed, true};
+    if (!sLivingActivityCoordinator.PermitEffects(*ai, effects, "native target selection")) return false;
     Unit* target = AI_VALUE(Unit*, "current target");
     if (target && sServerFacade.UnitIsDead(target))
     {

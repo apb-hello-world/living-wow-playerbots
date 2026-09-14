@@ -1,6 +1,7 @@
 #include "playerbot/playerbot.h"
 #include "LivingActivityGameplay.h"
 #include "LivingActivityRecovery.h"
+#include "LivingActivityTargeting.h"
 #include "LivingActivityScope.h"
 #include "LivingActivityCoordinator.h"
 #include "ServerFacade.h"
@@ -124,6 +125,19 @@ namespace LivingActivity {
             }
             return false;
         }
+        bool NativeNearbyPartyEngaged(Player& actor) {
+            bool engaged = NativeMemberEngaged(actor, actor);
+            if (!engaged) if (auto* group = actor.GetGroup()) {
+                unsigned inspected = 0;
+                for (auto* ref = group->GetFirstMember(); ref && !engaged && inspected++ < 40; ref = ref->next())
+                    if (auto* member = ref->getSource())
+                        if (member->IsInWorld() && member->GetMapId() == actor.GetMapId() &&
+                            member->GetInstanceId() == actor.GetInstanceId() &&
+                            sServerFacade.GetDistance2d(&actor, member) <= sPlayerbotAIConfig.sightDistance)
+                            engaged = NativeMemberEngaged(actor, *member);
+            }
+            return engaged;
+        }
     }
     NativePermit NativeLifeStatePermit(PlayerbotAI& ai, LifeTransition transition) {
         auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Safety,
@@ -140,17 +154,20 @@ namespace LivingActivity {
         if (!permit.world.actor || !actor || !actor->IsAlive()) return {};
         // Revalidate actual native relations instead of trusting the trigger's
         // cached has-attackers flag. Nearby party combat still counts.
-        bool attackers = NativeMemberEngaged(*actor, *actor);
-        if (!attackers) if (auto* group = actor->GetGroup()) {
-            unsigned inspected = 0;
-            for (auto* ref = group->GetFirstMember(); ref && !attackers && inspected++ < 40; ref = ref->next())
-                if (auto* member = ref->getSource())
-                    if (member->IsInWorld() && member->GetMapId() == actor->GetMapId() &&
-                        member->GetInstanceId() == actor->GetInstanceId() &&
-                        sServerFacade.GetDistance2d(actor, member) <= sPlayerbotAIConfig.sightDistance)
-                        attackers = NativeMemberEngaged(*actor, *member);
-        }
+        const bool attackers = NativeNearbyPartyEngaged(*actor);
         permit.validated = enterCombat ? attackers : (!actor->IsInCombat() && !attackers);
+        return permit.validated ? permit : NativePermit{};
+    }
+    NativePermit NativeTargetSelectionPermit(PlayerbotAI& ai) {
+        auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Combat,
+            AttackEffectMask(), uint32_t(Safety::Combat));
+        auto* actor = ai.GetBot();
+        if (!permit.world.actor || !actor) return {};
+        auto* target = ai.GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+        const bool valid = target && target->IsInWorld() && target->IsAlive() &&
+            target->GetMapId() == actor->GetMapId() && target->GetInstanceId() == actor->GetInstanceId() &&
+            sServerFacade.IsHostileTo(actor, target);
+        permit.validated = ReadyForNativeTargetSelection(*actor, NativeNearbyPartyEngaged(*actor), target != nullptr, valid);
         return permit.validated ? permit : NativePermit{};
     }
     NativePermit NativeCorpseRecoveryPermit(PlayerbotAI& ai, CorpseRecovery step) {

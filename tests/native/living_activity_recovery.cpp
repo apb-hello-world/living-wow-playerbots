@@ -1,4 +1,5 @@
 #include "LivingActivityRecovery.h"
+#include "LivingActivityTargeting.h"
 #include "LivingActivityScope.h"
 #include <cassert>
 using namespace LivingActivity;
@@ -33,6 +34,21 @@ int main() {
     assert(RequiredLifeTransition(actor, true) == LifeTransition::Resurrected);
     assert(!ReadyForCorpseRecovery(actor, CorpseRecovery::Reclaim, true, true, false));
 
+    // The observed hunter had an actual attacker but no selected target.
+    // Neither a stale combat flag nor an arbitrary living target is enough.
+    assert(ReadyForNativeTargetSelection(actor, true, false, false));
+    assert(ReadyForNativeTargetSelection(actor, true, true, true));
+    assert(ReadyForNativeTargetSelection(actor, false, true, false));
+    assert(!ReadyForNativeTargetSelection(actor, false, false, false));
+    assert(!ReadyForNativeTargetSelection(actor, false, true, true));
+    actor.alive = false;
+    assert(!ReadyForNativeTargetSelection(actor, true, true, false));
+    actor.alive = true; actor.transfer = true;
+    assert(!ReadyForNativeTargetSelection(actor, true, false, false));
+    actor.transfer = false; actor.inWorld = false;
+    assert(!ReadyForNativeTargetSelection(actor, true, false, false));
+    actor.inWorld = true;
+
     Task task; task.id = task.root = "dd2c720d-1821-5a37-91d3-21b0ee3c99cf";
     task.source = "guild_procurement"; task.sourceKey = "test"; task.actor = task.context.actor = 444;
     task.context.boot = "ff2efbdf-f0ec-4539-b840-299847970c00";
@@ -42,6 +58,18 @@ int main() {
     const auto lease = authority.Acquire(task, Mask(Effect::Movement), 100, 1000); assert(lease.Granted());
     PermissionPublisher publisher; const auto reader = publisher.Reader();
     publisher.Publish(authority.Read(444));
+    const NativePermit selection{task.context, Lane::Combat, AttackEffectMask(), uint32_t(Safety::Combat), true};
+    {
+        ExecutionScope scope(selection);
+        const Effects selecting{AttackEffectMask(), Lane::Combat, true};
+        assert(ExecutionScope::Check(reader, selecting, task.context, 200, uint32_t(Safety::Combat)) == AuthorityCode::Allowed);
+        auto stale = task.context; ++stale.actorGeneration;
+        assert(ExecutionScope::Check(reader, selecting, stale, 200) == AuthorityCode::StaleContext);
+        for (auto effect : {Effect::TravelTarget, Effect::Inventory, Effect::Money, Effect::Group})
+            assert(ExecutionScope::Check(reader, {Mask(effect), Lane::Combat, true}, task.context, 200) == AuthorityCode::EffectsDenied);
+        for (auto block : {Safety::Death, Safety::Transfer, Safety::Taxi, Safety::Transport, Safety::Falling, Safety::UnsafeOperation})
+            assert(ExecutionScope::Check(reader, selecting, task.context, 200, uint32_t(block)) == AuthorityCode::SafetyPaused);
+    }
     const Effects state{0, Lane::State, true};
     NativePermit statePermit{task.context, Lane::State, 0, 127, true};
     assert(ExecutionScope::Check(reader, state, task.context, 200) == AuthorityCode::EffectsDenied);
