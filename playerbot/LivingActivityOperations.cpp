@@ -1,6 +1,7 @@
 #include "LivingActivityOperations.h"
 #include "LivingActivityTransfer.h"
 #include "LivingGuildMailHandoff.h"
+#include "LivingLootQuote.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <tuple>
@@ -16,6 +17,14 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(request.kind=="loot_collect") {
+                NativeLootQuote quote;
+                if(!DecodeNativeLootQuote(request.beforeState,quote) || quote.actor!=request.transition.task.actor ||
+                    request.itemGain.entry!=quote.entry || request.itemGain.quantity!=quote.quantity ||
+                    request.effects!=Mask(Effect::Inventory) || request.persistence!=NativePersistence::Inventory ||
+                    !request.consumption.empty() || !request.mailGain.Empty() || !request.itemTransfer.id.empty())
+                    throw std::invalid_argument("Exact native loot acquisition contract required");
+            }
             if(request.kind=="guild_mail_send") {
                 GuildMailQuote quote;
                 if(!DecodeGuildMailQuote(request.beforeState,quote) ||

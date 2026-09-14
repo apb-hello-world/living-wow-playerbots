@@ -1,5 +1,6 @@
 #include "LivingActivityOperations.h"
 #include "LivingActivityTransfer.h"
+#include "LivingLootQuote.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <cassert>
@@ -24,6 +25,27 @@ int main() {
         return ValidateOperationRequest(r, task, saved.context, nullptr, 1000, reason);
     };
     assert(valid(request, saved));
+    {
+        auto loot=request;loot.kind="loot_collect";loot.effects=Mask(Effect::Inventory);
+        loot.persistence=NativePersistence::Inventory;loot.itemGain={2770,3};
+        const NativeLootQuote quote{497,2770,3,0,6,100,0,12345,7};
+        loot.beforeState=EncodeNativeLootQuote(quote);
+        assert(valid(loot,saved));
+        assert(OperationRequestWrite(loot).receiptQuery.find("loot_collect")!=std::string::npos);
+        for(unsigned field=0;field!=7;++field) {
+            auto bad=loot;
+            switch(field) {
+            case 0:bad.itemGain.quantity=4;break;
+            case 1:bad.itemGain={};break;
+            case 2:bad.effects|=Mask(Effect::Money);break;
+            case 3:bad.persistence=NativePersistence::JournalOnly;break;
+            case 4:bad.beforeState="{}";break;
+            case 5:++bad.transition.task.actor;break;
+            default:bad.persistence=NativePersistence::Profession;break;
+            }
+            assert(!valid(bad,saved));
+        }
+    }
     const auto plan = OperationRequestWrite(request);
     assert(SameRequest(plan, OperationRequestWrite(request)));
     auto changed = request; changed.beforeState = "{\"money\":1000}";

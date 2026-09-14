@@ -1,4 +1,5 @@
 #include "LivingActivityItemGain.h"
+#include "LivingLootQuote.h"
 #include <algorithm>
 #include <boost/uuid/name_generator.hpp>
 #include <boost/uuid/string_generator.hpp>
@@ -103,7 +104,18 @@ namespace LivingActivity {
         const ItemGainSpec& spec,const std::vector<VerifiedItemGain>& gains) {
         const auto sorted=Canonical(spec,task.actor,gains);
         const auto outputClaims=ItemGainClaims(task,result.id,spec,sorted);
-        if (consumption.empty() || consumption.size()+outputClaims.size() > 16)
+        // Gathering/ordinary world loot consumes a native loot slot, not fake
+        // money or a fabricated inventory claim. It needs its own exact proof.
+        const bool loot=consumption.empty() && result.kind=="loot_collect";
+        NativeLootResult looted;std::string lootBlocker;
+        if(loot && (result.state!=OperationState::Verified || task.phase!=Phase::Verifying ||
+            !DecodeNativeLootResult(nativeAfter,looted) ||
+            VerifyNativeLootResult(looted,lootBlocker)!=OperationState::Verified ||
+            looted.before.actor!=task.actor || looted.before.entry!=spec.entry || looted.before.quantity!=spec.quantity ||
+            result.evidence!=lootBlocker || result.nativeReference!="loot:"+std::to_string(looted.before.source)+
+                ":generation:"+std::to_string(looted.before.generation)+":slot:"+std::to_string(looted.before.slot)))
+            throw std::invalid_argument("Verified exact native loot slot required");
+        if ((!loot && consumption.empty()) || consumption.size()+outputClaims.size() > 16)
             throw std::invalid_argument("Bounded consumed and acquired claim batch required");
         std::string proof="{\"result\":"+nativeAfter+",\"item_gain\":"+ItemGainSpecJson(spec)+",\"stacks\":[";
         for (const auto& gain : sorted) {
@@ -113,7 +125,13 @@ namespace LivingActivity {
                 ",\"after\":"+std::to_string(gain.after.count)+",\"added\":"+std::to_string(gain.added)+'}';
         }
         proof+="]}";
-        auto out=ConsumedOperationWrite(task,expected,result,receipt,proof,consumption);
+        ClaimedOutcome out;
+        if(loot) {
+            out.journal=OperationOutcomeWrite(task,expected,result,receipt,proof);
+            out.journal.statements.front()+=" AND EXISTS (SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+
+                SqlValue(result.id)+" AND o.kind='loot_collect' AND JSON_COMPACT(JSON_EXTRACT(o.before_state,'$.native'))="+
+                SqlValue(EncodeNativeLootQuote(looted.before))+')';
+        } else out=ConsumedOperationWrite(task,expected,result,receipt,proof,consumption);
         out.journal.statements.front()+=" AND EXISTS (SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+
             SqlValue(result.id)+" AND JSON_COMPACT(JSON_EXTRACT(o.before_state,'$.item_gain'))="+SqlValue(ItemGainSpecJson(spec))+')';
         const auto accepted=out.journal.receiptQuery;
