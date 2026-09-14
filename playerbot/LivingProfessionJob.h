@@ -36,6 +36,8 @@ namespace LivingActivity {
     std::string EncodeProfessionJob(const ProfessionJob& job);
     bool DecodeProfessionWorkflow(const std::string&,ProfessionWorkflow&,std::string&);
     std::string EncodeProfessionWorkflow(const ProfessionWorkflow&);
+    // Preserve a typed guild root when updating its finite tool preparation.
+    std::string EncodeTaskProfessionWorkflow(const Task&,const ProfessionWorkflow&);
     bool DecodeProfessionIntent(const std::string&,ProfessionJob&,std::string&);
     // Returns the current finite step's recipe, not the long-term accepted intent.
     bool DecodeProfessionJob(const std::string& data, ProfessionJob& job, std::string& blocker);

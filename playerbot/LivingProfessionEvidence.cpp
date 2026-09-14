@@ -114,6 +114,9 @@ namespace {
             const bool priorCapture=recovered.count("prior_observation")!=0;
             auto predecessor=task;predecessor.revision=receipt.taskRevision;predecessor.phase=Phase::Executing;
             predecessor.checkpoint.data=EncodeProfessionJob(job); // Read-only historical step projection.
+            // The original typed root/history was validated above. This local
+            // decoder view is never persisted or passed to an executor.
+            predecessor.source="profession_job";predecessor.kind=Kind::Profession;
             predecessor.checkpoint.step="profession_craft";auto original=row;original.receipt.state=OperationState::Intent;
             original.receipt.evidence.clear();original.receipt.nativeReference.clear();original.afterState="{}";
             if(priorCapture) {
@@ -202,6 +205,7 @@ static bool DecodeStoredCraftProofBody(const Task& task,const StoredCraftOperati
             auto predecessor=task;predecessor.revision=receipt.taskRevision;
             predecessor.phase=Phase::Executing;predecessor.checkpoint.step="profession_craft";
             predecessor.checkpoint.data=EncodeProfessionJob(job); // Read-only historical step projection.
+            predecessor.source="profession_job";predecessor.kind=Kind::Profession; // Decoder-only, never written.
             auto intent=row;intent.receipt.state=OperationState::Intent;
             intent.receipt.nativeReference.clear();intent.receipt.evidence.clear();intent.afterState="{}";
             InterruptedCraftIntent decoded;
@@ -395,7 +399,7 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,Sto
 std::string ProfessionHistoryQuery(const Task& task) {
     ProfessionJob job;std::string blocker;
     if (task.mode!=Mode::Active || !task.accepted || !task.actor || !IsUuid(task.id) || task.root!=task.id ||
-        !task.revision || task.source!="profession_job" || !ValidateProfessionTask(task,blocker) ||
+        !task.revision || !IsProfessionJob(task) || !ValidateProfessionTask(task,blocker) ||
         !DecodeProfessionJob(task.checkpoint.data,job,blocker)) throw std::invalid_argument("profession_history_task_invalid");
     // A single DB statement observes the revision, all unresolved work for this
     // actor (including dependent mail/purchases), and at most limit+1 attempts.
@@ -411,7 +415,7 @@ std::string ProfessionHistoryQuery(const Task& task) {
         "ORDER BY task_revision,operation_id LIMIT "+std::to_string(ProfessionWorkflowAttemptLimit(task.checkpoint.data)+2)+") o ON o.task_id=t.task_id "
         "WHERE t.task_id="+id+" AND t.actor_guid="+std::to_string(task.actor)+" AND t.revision="+
         std::to_string(task.revision)+" AND t.root_task_id=t.task_id AND t.mode='active' "
-        "AND t.accepted=1 AND t.source='profession_job' AND t.kind='profession' ORDER BY o.task_revision,o.operation_id";
+        "AND t.accepted=1 AND t.source="+SqlValue(task.source)+" AND t.kind="+SqlValue(Name(task.kind))+" ORDER BY o.task_revision,o.operation_id";
 }
 bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<ProfessionHistoryRow>& rows,std::string& blocker) {
     task={};history={};records.clear();position=0;blocker.clear();

@@ -10,7 +10,9 @@ namespace LivingActivity {
     struct NativeGuildProcurementSource {
         uint32_t quantity=0,reference=0,estimatedCopper=0;
         std::string kind;
+        std::string craft={};
     };
+    bool ReadNativeGuildCraftSource(Player&,uint32_t,uint32_t,NativeGuildProcurementSource&,std::string&);
     // Read-only, bounded candidate. Actual price, stock, route, claims and daily
     // spending limits are rechecked by shared adapters before any transaction.
     bool ReadNativeGuildProcurementSource(Player&,uint32_t,uint32_t,NativeGuildProcurementSource&,std::string&);

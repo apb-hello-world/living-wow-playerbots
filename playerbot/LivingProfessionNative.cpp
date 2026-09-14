@@ -147,7 +147,7 @@ namespace LivingActivity {
         std::vector<ProfessionReagent>& items,std::string& blocker,std::string* unavailable) {
         if (unavailable) unavailable->clear();
         if (!ReadTaskItemRequirements(task,items,blocker)) return false;
-        if (IsRecipeLearningTask(task) || IsManagedGuildDelivery(task) || IsGuildProcurementTask(task)) return true;
+        if (!IsProfessionJob(task)) return true;
         std::vector<ProfessionReagent> tools;std::string missing;
         if (!ReadNativeProfessionTools(actor,task,tools,missing,blocker)) return false;
         if (unavailable) *unavailable=missing;
@@ -191,6 +191,40 @@ namespace LivingActivity {
             if (!job.subjectItem) return reject("native_enchant_safe_owned_subject_unavailable");
         }
         return MatchNativeProfessionRecipe(job,InspectNativeProfessionRecipe(actor,job),blocker);
+    }
+    bool NativeRequestedItemRecipes(uint32_t entry,std::vector<uint32_t>& recipes,std::string& blocker) {
+        recipes.clear();
+        if(!sLivingActivityCoordinator.OnWorldThread() || !toolCatalogReady) {blocker="guild_craft_catalog_not_ready";return false;}
+        const auto found=toolRecipes.find(entry);
+        if(found==toolRecipes.end()){blocker="guild_craft_no_item_recipe";return false;}
+        if(found->second.size()>64){blocker="guild_craft_recipe_snapshot_bound";return false;}
+        recipes=found->second;blocker.clear();return true;
+    }
+    bool BuildNativeRequestedItemJob(Player& actor,uint32_t recipe,uint32_t entry,uint32_t maximum,
+        ProfessionJob& job,std::string& blocker) {
+        job={};job.recipe=recipe;job.purpose=ProfessionPurpose::RequestedItem;
+        auto reject=[&](const char* why){blocker=why;return false;};
+        if(!sLivingActivityCoordinator.OnWorldThread() || !maximum)return reject("guild_craft_candidate_context_invalid");
+        const auto bounds=sSpellMgr.GetSkillLineAbilityMapBoundsBySpellId(recipe);
+        for(auto it=bounds.first;it!=bounds.second;++it) {
+            const auto* line=it->second;
+            if(!line || !actor.GetSkillValuePure(line->skillId) ||
+                (!LivingProfessions::Primary(line->skillId) && line->skillId!=SKILL_COOKING && line->skillId!=SKILL_FIRST_AID))continue;
+            if(job.skill && job.skill!=line->skillId)return reject("profession_skill_identity_ambiguous");
+            job.skill=line->skillId;
+        }
+        const auto native=InspectNativeProfessionRecipe(actor,job);
+        if(!native.blocker.empty()){blocker=native.blocker;return false;}
+        if(native.operation!=ProfessionOperation::CreateItem || native.outputEntry!=entry || native.reagents.empty())
+            return reject("guild_craft_requested_output_unsupported");
+        job.initialSkill=native.skillValue;job.outputEntry=entry;job.outputQuantity=1;job.reagents=native.reagents;
+        job.targetSkill=0;job.attemptLimit=3;
+        ItemGainSpec output;
+        if(!MatchNativeProfessionRecipe(job,native,blocker) || !ReadNativeCraftOutput(actor,job,output,blocker))return false;
+        // One native batch per accepted request. Native surplus remains owned;
+        // it is not silently added to demand, destroyed, or donated twice.
+        job.outputQuantity=std::min(maximum,output.quantity);
+        return ValidateProfessionJob(job,blocker);
     }
     NativeProfessionRecipe InspectNativeProfessionRecipe(Player& actor, const ProfessionJob& job) {
         NativeProfessionRecipe result;
@@ -263,6 +297,7 @@ namespace LivingActivity {
         if (actor.GetGUIDLow() != task.actor) { blocker = "profession_native_actor_mismatch"; return false; }
         ProfessionJob job;
         if (!ValidateProfessionTask(task, blocker) || !DecodeProfessionJob(task.checkpoint.data, job, blocker)) return false;
+        if(IsGuildCraftTask(task) && !sLivingActivityCoordinator.ValidateGuildProcurementDemand(task,blocker))return false;
         ProfessionWorkflow flow;if(!DecodeProfessionWorkflow(task.checkpoint.data,flow,blocker))return false;
         for(const auto& tool:flow.tools)
             if(!IsNativeRequiredTool(flow.intent,tool.job.outputEntry)) {blocker="profession_tool_not_required_by_parent";return false;}

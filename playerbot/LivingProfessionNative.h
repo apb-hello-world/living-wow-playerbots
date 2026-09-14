@@ -8,6 +8,8 @@ namespace LivingActivity {
     // No native mutation, database query, material attribution or cast occurs.
     NativeProfessionRecipe InspectNativeProfessionRecipe(Player& actor, const ProfessionJob& job);
     bool BuildNativeSkillGainJob(Player& actor,uint32_t recipe,ProfessionJob& job,std::string& blocker);
+    bool NativeRequestedItemRecipes(uint32_t entry,std::vector<uint32_t>& recipes,std::string& blocker);
+    bool BuildNativeRequestedItemJob(Player&,uint32_t recipe,uint32_t entry,uint32_t maximum,ProfessionJob&,std::string&);
     bool ValidateNativeProfessionTask(Player& actor, const Task& task, std::string& blocker);
     // Once per native catalog load. Runtime work inspects this compact index,
     // never scans all item templates for each bot or tick.

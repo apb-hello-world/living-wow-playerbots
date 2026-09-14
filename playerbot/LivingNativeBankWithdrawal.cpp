@@ -155,10 +155,10 @@ bool PlanNativeBankWithdrawal(Player& actor,const Task& task,const ProfessionRea
     if (reagent==requirements.end() || !need.perAttempt || need.perAttempt>reagent->perAttempt)
         return reject("profession_bank_exact_demand_required");
     UnsettledClaimBatch procurementClaims;
-    if(IsGuildProcurementTask(task) && !sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,procurementClaims,blocker))return false;
+    if(IsGuildProcurementTask(task) && !IsGuildCraftTask(task) && !sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,procurementClaims,blocker))return false;
     for (auto* item : actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BANK)) {
         if (!item || item->GetEntry()!=need.entry || ProtectedLegacy(actor,*item)) continue;
-        if(IsGuildProcurementTask(task)) {
+        if(IsGuildProcurementTask(task) && !IsGuildCraftTask(task)) {
             const bool own=std::any_of(procurementClaims.claims.begin(),procurementClaims.claims.end(),[&](const auto& c){
                 return c.itemGuid==item->GetGUIDLow() && c.itemEntry==need.entry && c.state=="held";
             });

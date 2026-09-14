@@ -42,7 +42,7 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
     }
     ItemGainSpec output;
     if (IsRecipeLearningTask(task)) output={requirements.front().entry,1};
-    else if (!IsManagedGuildDelivery(task) && !IsGuildProcurementTask(task)) {
+    else if (IsProfessionJob(task)) {
         ProfessionJob job;
         if (!DecodeProfessionJob(task.checkpoint.data,job,blocker)) return false;
         if (job.operation!=ProfessionOperation::EnchantItem && !ReadNativeCraftOutput(actor,job,output,blocker)) return false;
@@ -70,8 +70,9 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
 bool JobProtected(Player& actor,const Task& task,Item& item) {
     if (IsGuildProcurementTask(task)) {
         GuildProcurementJob job;std::string blocker;
-        return !ValidateGuildProcurementTask(task,blocker) ||
-            !DecodeGuildProcurementJob(task.checkpoint.data,job,blocker) || item.GetEntry()==job.entry;
+        if(!ValidateGuildProcurementTask(task,blocker) ||
+            !DecodeGuildProcurementJob(task.checkpoint.data,job,blocker) || item.GetEntry()==job.entry)return true;
+        if(!IsGuildCraftTask(task))return false;
     }
     if (IsManagedGuildDelivery(task)) {
         GuildDeliveryJob delivery;std::string blocker;

@@ -9,6 +9,7 @@ using namespace LivingActivityTest;
 #include "fixtures/MailRecovery.inc"
 #include "fixtures/EnchantWorkflow.inc"
 #include "fixtures/ProfessionToolPreparation.h"
+#include "fixtures/GuildCraftWorkflow.h"
 int main() {
     TestProfessionAttemptPlan();
     TestProfessionResumption();
@@ -16,6 +17,7 @@ int main() {
     TestMailRecovery();
     TestEnchantWorkflow();
     TestProfessionToolHandoff();
+    TestGuildCraftWorkflow();
     Task task;task.id=task.root="637bd562-36d2-5b01-bc01-e2d831c49f92";
     task.actor=task.context.actor=703;task.source="profession_job";task.sourceKey="settlement_fixture";
     task.mode=Mode::Active;task.phase=Phase::Verifying;task.kind=Kind::Profession;task.revision=5;

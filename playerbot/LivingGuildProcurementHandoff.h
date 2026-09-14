@@ -29,6 +29,7 @@ inline bool PrepareGuildProcurementHandoff(const Task& saved,const WorldContext&
         !current.mapGeneration || !IsUuid(current.boot) || !IsUuid(receipt) || now<saved.updatedAtMs ||
         saved.revision>=UINT64_MAX-1 || !batch.complete || !batch.bookRevision)
         return reject("guild_procurement_handoff_context_invalid");
+    if(!job.craft.empty() && !job.craftFinishedRevision) return reject("guild_procurement_craft_native_handoff_required");
     PersonalResourceSettlement resources;
     if(!PreparePersonalResourceSettlement(saved,batch,balances,resources,why,"guild_procurement_handoff_"))return false;
     uint64_t quantity=0;std::set<uint32_t> items;std::map<uint32_t,ResourceClaim> carried;
@@ -75,11 +76,11 @@ inline bool PrepareGuildProcurementHandoff(const Task& saved,const WorldContext&
         " WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))"
         " AND NOT EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
         " AND (o.state NOT IN ('verified','rejected') OR o.kind NOT IN ('vendor_purchase','auction_purchase',"
-        "'mail_collect','bank_withdraw','bank_deposit','capacity_vendor_sale')))"
+        "'mail_collect','bank_withdraw','bank_deposit','capacity_vendor_sale'"+std::string(job.craft.empty()?"":",'profession_craft'")+")))"
         " AND NOT EXISTS(SELECT 1 FROM living_activity_task child WHERE child.root_task_id=living_activity_task.task_id"
         " AND child.task_id<>living_activity_task.task_id AND child.phase NOT IN ('completed','cancelled','failed'))"
         " AND NOT EXISTS(SELECT 1 FROM guild_society_supply_delivery d WHERE d.source_task_id=living_activity_task.task_id)"+
-        resources.guards;
+        resources.guards+GuildProcurementCraftReceiptGuard(job);
     // Capacity-preparation leftovers stay personally owned. Do not release a
     // bank claim from some unknown transfer or a still-uncollected purchase.
     for(const auto& c:batch.claims)if(c.location=="bank")

@@ -2190,7 +2190,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             if (IsRecipeLearningTask(*saved)) {
                 NativeRecipeBookReservation adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
             }
-            if (IsGuildProcurementTask(*saved)) {
+            if (IsGuildProcurementTask(*saved) && !IsGuildCraftTask(*saved)) {
                 NativeGuildProcurementReservation adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
             }
             ProfessionMaterialReservationAdapter adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
@@ -2284,7 +2284,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             if(!grant.Permitted())return stop(grant.blocker);
             TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;request.receipt=NewId();
             ++request.task.revision;request.task.updatedAtMs=NowMs();request.task.phase=Phase::Preparing;
-            request.task.checkpoint.data=EncodeProfessionWorkflow(flow);request.task.checkpoint.step="profession_tool_prepare";
+            request.task.checkpoint.data=EncodeTaskProfessionWorkflow(*saved,flow);request.task.checkpoint.step="profession_tool_prepare";
             request.task.checkpoint.blocker.clear();request.task.retryAtMs=0;
             return stop(SubmitTask(request).blocker);
         }
@@ -2758,7 +2758,7 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJobImpl(uint32_t acto
         if (pending.admissionReceipt==receipt) {
             if (pending.task.id==id && pending.task.revision==expectedRevision+1 &&
                 (pending.task.checkpoint.step=="profession_settling" || pending.task.checkpoint.step=="profession_completed" ||
-                 pending.task.checkpoint.step=="profession_tool_ready"))
+                 pending.task.checkpoint.step=="profession_tool_ready" || pending.task.checkpoint.step=="guild_procurement_craft_ready"))
                 return reject(AdmissionCode::Pending);
             return reject(AdmissionCode::InvalidRequest,"receipt_identity_reused");
         }
@@ -2767,7 +2767,8 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJobImpl(uint32_t acto
     const auto acknowledged=state->admissionReceipts.find(id);
     if (saved->second.revision==expectedRevision+1 && acknowledged!=state->admissionReceipts.end() &&
         acknowledged->second==receipt && (saved->second.checkpoint.step=="profession_settling" ||
-        saved->second.checkpoint.step=="profession_completed" || saved->second.checkpoint.step=="profession_tool_ready")) return reject(AdmissionCode::Saved);
+        saved->second.checkpoint.step=="profession_completed" || saved->second.checkpoint.step=="profession_tool_ready" ||
+        saved->second.checkpoint.step=="guild_procurement_craft_ready")) return reject(AdmissionCode::Saved);
     if (saved->second.revision!=expectedRevision) return reject(AdmissionCode::StaleRevision);
     if (restartRecovery && saved->second.context==current)
         return reject(AdmissionCode::StaleContext,"profession_restart_already_rebound");
@@ -3070,7 +3071,7 @@ AdmissionResult LivingActivityCoordinator::AdmitGuildProcurement(uint32_t actor,
     if(!available)return reject(AdmissionCode::NotReady,"guild_procurement_demand_already_covered");
     if(!ReadNativeGuildProcurementSource(*bot,entry,available,source,why))return reject(AdmissionCode::NotReady,why);
     if(!source.quantity || source.quantity>available)return reject(AdmissionCode::InvalidRequest,"guild_procurement_source_quantity_changed");
-    job.quantity=source.quantity;task.checkpoint.data=EncodeGuildProcurementJob(job);
+    job.quantity=source.quantity;job.craft=source.craft;task.checkpoint.data=EncodeGuildProcurementJob(job);
     task.checkpoint.step="guild_procurement_"+source.kind;
     request.receipt=SourceId("guild_procurement_admission",task.id);
     // No native purchase, parcel, reservation or route is created here. A
@@ -3123,6 +3124,25 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || !bot->GetMap())return stop("guild_procurement_actor_unavailable");
     if(DefersNativeSave(actor))return stop("guild_procurement_native_save_pending");
     const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    if(!job.craft.empty() && !job.craftFinishedRevision) {
+        // One due turn, one root, one profession executor. Reconcile already
+        // committed effects before handling request cancellation. Every new
+        // purchase/cast revalidates current guild demand at its native boundary.
+        if(!(saved->context==current) || saved->phase==Phase::Executing || saved->phase==Phase::Reconciling)
+            return AdvanceProfessionJob(actor,id);
+        for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)
+            return AdvanceProfessionJob(actor,id);
+        if(ValidateGuildProcurementDemand(*saved,why))return AdvanceProfessionJob(actor,id);
+        if(saved->phase==Phase::Verifying) {
+            ProfessionSnapshot snapshot;
+            if(!ReadProfessionSnapshot(actor,id,saved->revision,snapshot,why))return stop(why);
+            const auto decision=NextProfessionStep(*saved,snapshot);
+            if(decision.step==ProfessionStep::Reconcile)return stop(decision.blocker);
+            if(decision.step==ProfessionStep::Finalize)return AdvanceProfessionJob(actor,id);
+        }
+        // A definitively cancelled/reduced request follows the existing safe
+        // collection/claim-release path below; it does not finish the recipe.
+    }
     if(saved->context==current) {
         // Dispatch/reject an already journalled service before interpreting an
         // edited request. Its native validator still rechecks spending authority.
@@ -3177,7 +3197,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         // A cancellation cannot orphan a paid attachment. Collection/capacity
         // are personal prerequisites and do not require fresh purchasing rights.
         for(const auto& c:claims.claims)if(c.location=="mail")
-            return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.entry,job.quantity}).blocker);
+            return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{c.itemEntry,c.quantity}).blocker);
         if(saved->phase==Phase::Traveling) {
             TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
             request.task.phase=Phase::Preparing;request.task.checkpoint.step="guild_procurement_prepare";
@@ -3307,6 +3327,12 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
     // must remain possible if a recipe becomes obsolete or a subject changes.
     // Repeated requests share the saved receipt above, not a second job.
     const bool preparationChanged=saved!=state->cache.end() && saved->second.checkpoint.data!=task.checkpoint.data;
+    if(IsGuildCraftTask(task)) {
+        GuildProcurementJob craft;
+        if(!DecodeGuildProcurementJob(task.checkpoint.data,craft,reason))return reject(AdmissionCode::InvalidRequest,reason);
+        if(craft.craftFinishedRevision && (saved==state->cache.end() || preparationChanged))
+            return reject(AdmissionCode::InvalidRequest,"guild_procurement_craft_handoff_requires_native_receipt");
+    }
     if(preparationChanged && HasActiveProfessionTool(saved->second.checkpoint.data) && !HasActiveProfessionTool(task.checkpoint.data))
         return reject(AdmissionCode::InvalidRequest,"profession_tool_handoff_requires_native_receipt");
     if ((saved == state->cache.end() || (!saved->second.accepted && task.accepted) ||

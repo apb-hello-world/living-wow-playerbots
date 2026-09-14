@@ -170,6 +170,11 @@ namespace LivingActivity {
         if(data.empty() || data.size()>8192)return false;
         try {
             Tree root;std::istringstream input(data);boost::property_tree::read_json(input,root);
+            if(root.get<std::string>("workflow","")=="guild_procurement_v2") {
+                GuildProcurementJob guild;
+                if(!DecodeGuildProcurementJob(data,guild,blocker) || guild.craft.empty())return false;
+                return DecodeProfessionWorkflow(guild.craft,flow,blocker);
+            }
             ProfessionWorkflow parsed;
             if(root.count("tool_preparations")) {
                 if(root.count("tool_preparations")!=1)return false;
@@ -206,6 +211,13 @@ namespace LivingActivity {
         ProfessionWorkflow flow;if(!DecodeProfessionWorkflow(data,flow,blocker))return false;
         job=std::move(flow.intent);return true;
     }
+    std::string EncodeTaskProfessionWorkflow(const Task& task,const ProfessionWorkflow& flow) {
+        if(!IsGuildProcurementTask(task))return EncodeProfessionWorkflow(flow);
+        GuildProcurementJob guild;std::string why;
+        if(!DecodeGuildProcurementJob(task.checkpoint.data,guild,why) || guild.craft.empty())
+            throw std::invalid_argument("guild_craft_workflow_required");
+        guild.craft=EncodeProfessionWorkflow(flow);return EncodeGuildProcurementJob(guild);
+    }
     bool DecodeProfessionJob(const std::string& data,ProfessionJob& job,std::string& blocker) {
         ProfessionWorkflow flow;if(!DecodeProfessionWorkflow(data,flow,blocker))return false;
         job=!flow.tools.empty() && !flow.tools.back().finishedRevision ? std::move(flow.tools.back().job) : std::move(flow.intent);
@@ -234,7 +246,8 @@ namespace LivingActivity {
         // Service step names are backward compatible and shared by learning
         // and guild deliveries; a route label never replaces the typed owner.
         // The typed root retains its identity while using the same adapter.
-        return !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task) && !IsGuildProcurementTask(task) &&
+        if(IsGuildProcurementTask(task))return IsGuildCraftTask(task);
+        return !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task) &&
             (task.source == "profession_job" || task.checkpoint.step.compare(0, 11, "profession_") == 0);
     }
     bool MatchNativeProfessionRecipe(const ProfessionJob& job, const NativeProfessionRecipe& native,
@@ -264,7 +277,7 @@ namespace LivingActivity {
         if (!ValidateRecipeLearningTask(task,blocker)) return false;
         if (!IsProfessionJob(task)) { blocker.clear(); return true; }
         ProfessionWorkflow flow;
-        if (task.kind != Kind::Profession || !task.parent.empty() || !DecodeProfessionWorkflow(task.checkpoint.data, flow, blocker) ||
+        if ((task.kind != Kind::Profession && !IsGuildCraftTask(task)) || !task.parent.empty() || !DecodeProfessionWorkflow(task.checkpoint.data, flow, blocker) ||
             (!flow.tools.empty() && (!task.accepted || task.mode!=Mode::Active)) ||
             std::any_of(flow.tools.begin(),flow.tools.end(),[&](const auto& tool){
                 return tool.startedRevision>task.revision || tool.finishedRevision>task.revision;})) {

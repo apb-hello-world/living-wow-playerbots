@@ -33,7 +33,7 @@ namespace LivingActivity {
         for (const auto& reagent : requirements) stock.emplace(reagent.entry,ProfessionStock{reagent.entry});
         UnsettledClaimBatch claims;
         if (!sLivingActivityCoordinator.ReadTaskClaims(saved.actor,saved.id,saved.revision,claims,demand.blocker)) return false;
-        const bool procurement=IsGuildProcurementTask(saved);
+        const bool procurement=IsGuildProcurementTask(saved) && !IsGuildCraftTask(saved);
         unsigned scanned=0; std::set<uint32_t> seen;
         for (unsigned location=0;location!=3;++location) {
             const bool bank=location==1,equipment=location==2;
