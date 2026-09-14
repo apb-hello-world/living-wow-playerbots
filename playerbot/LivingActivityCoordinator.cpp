@@ -58,6 +58,7 @@
 #include "LivingGuildProcurementRecovery.h"
 #include "LivingGatherRecovery.h"
 #include "LivingGuildProcurementProjection.h"
+#include "LivingCommissionContract.h"
 #include "PlayerbotOrganicEconomy.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -257,7 +258,9 @@ namespace {
         } else if (family == 2) {
             select = "SELECT 'commission' source,g.commission_id source_key,g.bot_guid actor,"
                 "JSON_OBJECT('commission_id',g.commission_id,'recipe_spell_id',g.recipe_spell_id,"
-                "'output_item_entry',g.output_item_entry,'quantity',g.quantity,'legacy_phase',g.state) checkpoint "
+                "'output_item_entry',g.output_item_entry,'quantity',g.quantity,'legacy_phase',g.state,"
+                "'player_guid',g.player_guid,'service_fee_copper',g.service_fee_copper,"
+                "'materials_source',g.materials_source,'authoritative_payload',g.authoritative_payload) checkpoint "
                 "FROM organic_economy_commission g JOIN characters c ON c.guid=g.bot_guid "
                 "JOIN tbcrealmd.account a ON a.id=c.account ";
             where = "g.state IN ('awaiting_materials','materials_received','traveling','crafting','ready')"; order = "g.commission_id";
@@ -1255,6 +1258,20 @@ struct LivingActivityCoordinator::State {
                 task.createdAtMs = task.updatedAtMs = NowMs();
                 task.checkpoint.data = row.payload;
                 task.checkpoint.blocker = "legacy_work_requires_native_reconciliation";
+                if(row.family==2) {
+                    CommissionContract agreement;std::string reason;
+                    task.checkpoint.blocker=DecodeImportedCommission(row.payload,row.actor,row.key,agreement,reason)?
+                        "commission_native_operations_require_reconciliation":reason;
+                    if(row.payload.size()>8192) {
+                        // Keep the accepted obligation and original DB record;
+                        // never truncate JSON or silently drop an oversized import.
+                        boost::property_tree::ptree reference;reference.put("commission_id",row.key);
+                        reference.put("native_record_required",true);
+                        std::ostringstream encoded;boost::property_tree::write_json(encoded,reference,false);
+                        task.checkpoint.data=encoded.str();
+                        task.checkpoint.blocker="commission_contract_exceeds_checkpoint_bound";
+                    }
+                }
                 Queue(std::move(task), 0, "legacy_observed");
             }
             incoming.pop_front();

@@ -70,4 +70,36 @@ inline bool DecodeCommissionContract(const std::string& data,CommissionContract&
         c=parsed;why.clear();return true;
     } catch(const std::exception&) {return false;}
 }
+// Import the exact accepted agreement, never infer the recipient/recipe/fee
+// from inventory or an expired legacy timer. This validates intent only; the
+// native operation journal must separately reconcile crafting and settlement.
+inline bool DecodeImportedCommission(const std::string& data,uint32_t actor,const std::string& id,
+    CommissionContract& result,std::string& why) {
+    result={};why="commission_contract_missing_or_invalid";
+    if(data.empty() || data.size()>8192)return false;
+    try {
+        boost::property_tree::ptree p;std::istringstream in(data);boost::property_tree::read_json(in,p);
+        std::set<std::string> seen;
+        for(const auto& field:p)if(!seen.insert(field.first).second || !field.second.empty())return false;
+        const auto raw=p.get<std::string>("authoritative_payload","");
+        CommissionContract c;
+        if(!DecodeCommissionContract(raw,c,why))return false;
+        auto number=[&](const char* key) {
+            const auto s=p.get<std::string>(key);
+            if(s.empty() || s.size()>10 || s.find_first_not_of("0123456789")!=std::string::npos ||
+                (s.size()>1 && s[0]=='0'))throw std::invalid_argument("commission_import_number_invalid");
+            const auto n=std::stoull(s);if(n>UINT32_MAX)throw std::invalid_argument("commission_import_number_overflow");
+            return uint32_t(n);
+        };
+        ProfessionWorkflow recipe;
+        if(!DecodeProfessionWorkflow(c.recipe,recipe,why))return false;
+        if(c.actor!=actor || c.id!=id || p.get<std::string>("commission_id")!=id ||
+            number("player_guid")!=c.recipient || number("service_fee_copper")!=c.feeCopper ||
+            number("recipe_spell_id")!=recipe.intent.recipe || number("output_item_entry")!=recipe.intent.outputEntry ||
+            number("quantity")!=recipe.intent.outputQuantity || p.get<std::string>("materials_source")!="bot") {
+            why="commission_contract_native_record_mismatch";return false;
+        }
+        result=std::move(c);why.clear();return true;
+    } catch(const std::exception&) {why="commission_contract_missing_or_invalid";return false;}
+}
 }
