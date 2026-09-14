@@ -13,6 +13,7 @@
 #include "LivingNativeAuctionPurchase.h"
 #include "LivingRecipeLearning.h"
 #include "LivingGuildProcurement.h"
+#include "LivingNativeGathering.h"
 #include "PlayerbotInventoryPressure.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
@@ -694,6 +695,18 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
     if(service==ServiceDestination::Vendor)purpose=uint32(ai::TravelDestinationPurpose::Vendor);
     if(service==ServiceDestination::AuctionHouse)purpose=uint32(ai::TravelDestinationPurpose::AH);
     if(service==ServiceDestination::GuildBank)purpose=uint32(ai::TravelDestinationPurpose::GuildBank);
+    if(service==ServiceDestination::Gathering) {
+        GuildProcurementJob job;std::string why;std::vector<int32_t> sources;
+        if(!IsGuildProcurementTask(*saved) || !DecodeGuildProcurementJob(saved->checkpoint.data,job,why) ||
+            !job.craft.empty())return {false,"gather_saved_guild_request_required",saved->checkpoint.activeElapsedMs};
+        if(!NativeGatherSources(*bot,job.entry,sources,purpose,why)) {
+            PauseRecipeService(actor,why);
+            ServiceTravelResult result;result.blocker=why;result.activeElapsedMs=saved->checkpoint.activeElapsedMs;
+            result.disposition=ServiceTravelDisposition::Waiting;
+            result.retryAtMs=uint64_t(time(nullptr))*1000+300000;return result;
+        }
+        return DriveRecipeService(bot,purpose,id,&*saved,0,0,job.entry);
+    }
     if(service==ServiceDestination::PurchaseVendor) {
         ProfessionReagent need;std::vector<int32_t> vendors;std::string blocker;
         const auto demand=NextNativeProfessionVendorItem(*bot,*saved,need,vendors,blocker);
@@ -729,7 +742,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
 }
 
 LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(Player* bot,uint32 purpose,
-    const std::string& goal,const LivingActivity::Task* saved,uint32 purchaseItem,uint32 purchaseQuantity)
+    const std::string& goal,const LivingActivity::Task* saved,uint32 purchaseItem,uint32 purchaseQuantity,uint32 gatherItem)
 {
     using namespace LivingActivity;
     using Owner=PlayerbotRendezvousManager::PartyActivityOwner;
@@ -737,6 +750,9 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     ServiceTravelResult result;result.activeElapsedMs=saved?saved->checkpoint.activeElapsedMs:0;
     auto stop=[&](const std::string& blocker){result.blocker=blocker;return result;};
     std::vector<int32_t> purchaseVendors;std::string sourceBlocker;
+    std::vector<int32_t> gatherSources;uint32 gatherPurpose=0;
+    if(gatherItem && (!saved || !NativeGatherSources(*bot,gatherItem,gatherSources,gatherPurpose,sourceBlocker) || purpose!=gatherPurpose))
+        return stop(sourceBlocker.empty()?"gather_saved_source_changed":sourceBlocker);
     if(purchaseItem && (!saved || !NativeProfessionVendorSources(*bot,purchaseItem,purchaseQuantity,purchaseVendors,sourceBlocker)))
         return stop(sourceBlocker.empty()?"profession_vendor_saved_source_required":sourceBlocker);
     const uint32 guid=bot->GetGUIDLow(), now=uint32(time(nullptr));
@@ -771,14 +787,14 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     if(serviceRetry[guid]>now) {result.retryAtMs=uint64(serviceRetry[guid])*1000;return stop("recipe_service_retry_wait");}
     auto* ai=bot->GetPlayerbotAI();auto* context=ai->GetAiObjectContext();
     auto* target=context->GetValue<ai::TravelTarget*>("travel target")->Get();
-    if(old!=serviceTrips.end() && (old->second.goal!=goal || old->second.purpose!=purpose || old->second.purchaseItem!=purchaseItem)) {
+    if(old!=serviceTrips.end() && (old->second.goal!=goal || old->second.purpose!=purpose || old->second.purchaseItem!=purchaseItem || old->second.gatherItem!=gatherItem)) {
         if(saved) return stop("saved_service_other_step_pending");
         ReleaseRecipeService(guid,"recipe_service_step_changed");
     }
     if(!serviceTrips.count(guid)) {
         if(!saved && target && (target->IsForced() || target->IsGroupCopy())) return stop("recipe_waiting_for_committed_route");
         if(serviceSequence==UINT64_MAX) return stop("recipe_service_queue_sequence_exhausted");
-        ServiceTrip trip;trip.goal=goal;trip.purpose=purpose;trip.purchaseItem=purchaseItem;trip.started=trip.progress=now;
+        ServiceTrip trip;trip.goal=goal;trip.purpose=purpose;trip.purchaseItem=purchaseItem;trip.gatherItem=gatherItem;trip.started=trip.progress=now;
         trip.ticket=++serviceSequence;
         if(saved) {trip.managedTask=*saved;trip.initialActiveMs=saved->checkpoint.activeElapsedMs;trip.work=WorkClock(trip.initialActiveMs);}
         serviceTrips.emplace(guid,trip);
@@ -874,7 +890,11 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     const bool guildBank=purpose==uint32(ai::TravelDestinationPurpose::GuildBank);
     const uint32 flag=purpose==uint32(ai::TravelDestinationPurpose::Bank)?UNIT_NPC_FLAG_BANKER:
         purpose==uint32(ai::TravelDestinationPurpose::Vendor)?UNIT_NPC_FLAG_VENDOR:UNIT_NPC_FLAG_AUCTIONEER;
-    for(auto id:context->GetValue<std::list<ObjectGuid>>((mail||focus||guildBank)?"nearest game objects no los":"nearest npcs no los")->Get()) {
+    if(gatherItem) {
+        service=NativeGatherNode(*bot,gatherItem,gatherSources);
+        if(service)distance=bot->GetDistance(service);
+    }
+    for(auto id:gatherItem?std::list<ObjectGuid>{}:context->GetValue<std::list<ObjectGuid>>((mail||focus||guildBank)?"nearest game objects no los":"nearest npcs no los")->Get()) {
         WorldObject* candidate=nullptr;
         if(mail||focus||guildBank) {auto* go=ai->GetGameObject(id);if(go && (guildBank?go->GetGoType()==GAMEOBJECT_TYPE_GUILD_BANK:mail?go->GetGoType()==GAMEOBJECT_TYPE_MAILBOX:
             go->GetGoType()==GAMEOBJECT_TYPE_SPELL_FOCUS && go->GetGOInfo()->spellFocus.focusId==(purpose&~FocusService))) candidate=go;}
@@ -892,7 +912,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
         // Selection is not physical progress and does not reset route retries.
     }
     if(service) {
-        const bool interact=guildBank ? bot->GetGameObjectIfCanInteractWith(service->GetObjectGuid(),GAMEOBJECT_TYPE_GUILD_BANK)!=nullptr :
+        const bool interact=gatherItem ? distance<=INTERACTION_DISTANCE : guildBank ? bot->GetGameObjectIfCanInteractWith(service->GetObjectGuid(),GAMEOBJECT_TYPE_GUILD_BANK)!=nullptr :
             mail ? bot->GetGameObjectIfCanInteractWith(service->GetObjectGuid(),GAMEOBJECT_TYPE_MAILBOX)!=nullptr :
             focus ? distance<=INTERACTION_DISTANCE : bot->GetNPCIfCanInteractWith(service->GetObjectGuid(),flag)!=nullptr;
         if(saved && interact) {
@@ -902,7 +922,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
         }
         if(distance+1<trip.distance) {trip.distance=distance;trip.progress=now;trip.work.Progress();trip.lastCatchupBlocker.clear();}
         result.blocker=trip.lastCatchupBlocker.empty()?"recipe_approaching_service":trip.lastCatchupBlocker;
-        if(saved && !trip.catchupUsed && now>=trip.nextCatchup && trip.work.NoProgressMs()>=60000 &&
+        if(saved && !gatherItem && !trip.catchupUsed && now>=trip.nextCatchup && trip.work.NoProgressMs()>=60000 &&
             trip.work.ActiveMs()-trip.localServiceStartedMs>=60000) {
             trip.nextCatchup=now+30;
             if(sPlayerbotRendezvousManager.TrySavedLocalServiceCatchup(bot,service,purpose,result.blocker)) {
@@ -962,7 +982,8 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     } else {
         bool same=(!saved || trip.routeOwned) && target && target->GetDestination() &&
             uint32(target->GetDestination()->GetPurpose())==purpose && target->IsActive() &&
-            (!purchaseItem || std::binary_search(purchaseVendors.begin(),purchaseVendors.end(),target->GetDestination()->GetEntry()));
+            (!purchaseItem || std::binary_search(purchaseVendors.begin(),purchaseVendors.end(),target->GetDestination()->GetEntry())) &&
+            (!gatherItem || std::binary_search(gatherSources.begin(),gatherSources.end(),target->GetDestination()->GetEntry()));
         if(same && target->GetPosition() && target->GetPosition()->getMapId()==bot->GetMapId()) {
             const float remaining=target->Distance(bot);
             if(remaining+2<trip.distance) {trip.distance=remaining;trip.progress=now;trip.work.Progress();}
@@ -988,7 +1009,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
                 // Accepted work does not inherit volatile RPG desire checks.
                 // Native source eligibility and action authority remain required.
                 ai::RequestTravelTargetAction request(ai);Event event("","",bot);
-                const auto entries=(purchaseItem || purpose==uint32(ai::TravelDestinationPurpose::AH)) ?
+                const auto entries=gatherItem?gatherSources:(purchaseItem || purpose==uint32(ai::TravelDestinationPurpose::AH)) ?
                     NearestNativePurchaseEntries(*bot,purpose,purchaseVendors) : purchaseVendors;
                 requested=request.RequestForEntries(event,ai::TravelDestinationPurpose(purpose),entries);
             } else requested=ai->DoSpecificAction("request travel target::"+std::to_string(purpose),Event("can move around","",bot),true);
@@ -997,7 +1018,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             result.blocker=requested?"recipe_service_route_requested":"recipe_service_route_pending";
         } else {
             result.blocker="recipe_traveling_to_service";
-            if(saved && same && !trip.catchupUsed && now>=trip.nextCatchup && trip.work.NoProgressMs()>=60000) {
+            if(saved && !gatherItem && same && !trip.catchupUsed && now>=trip.nextCatchup && trip.work.NoProgressMs()>=60000) {
                 trip.nextCatchup=now+30;
                 if(sPlayerbotRendezvousManager.TrySavedServiceCatchup(bot,target,result.blocker)) {
                     trip.catchupUsed=true;trip.progress=now;trip.work.Progress();trip.nextMove=now+1;

@@ -51,6 +51,7 @@ namespace ai
 		bool IsInRaid() const { return groupSize > 5; }
 		bool IsInGroup() const { return groupSize > 1 && groupSize <= 5; }
 		uint32 GetMoney() const { return money; }
+        bool RequestedGathering() const {return requestedGathering;}
 
 		bool HasFocusQuest() const {return !focusList.empty();}
 		bool IsFocusQuest(uint32 questId) const { return focusList.find(questId) != focusList.end(); }
@@ -68,6 +69,7 @@ namespace ai
 		uint16 skillMax[MAX_SKILL_TYPE] = { 0 };
 		uint8 groupSize = 0;
 		uint32 money = 0;
+        bool requestedGathering = false;
 
 		focusQuestTravelList focusList = {};
 

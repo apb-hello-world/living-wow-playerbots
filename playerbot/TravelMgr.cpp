@@ -4,6 +4,7 @@
 #include "LivingActivityCoordinator.h"
 #include "LivingProfessionVendor.h"
 #include "LivingGathering.h"
+#include "LivingGuildProcurement.h"
 #include "PlayerbotOrganicEconomy.h"
 #include <numeric>
 #include <iomanip>
@@ -39,6 +40,14 @@ PlayerTravelInfo::PlayerTravelInfo(Player* player)
     skillMax[SKILL_SKINNING] = player->GetSkillMax(SKILL_SKINNING);
 
     money = player->GetMoney();
+    // Immutable eligibility data for the route worker, not execution authority.
+    // The service executor separately checks the task/revision/lease on every leg.
+    if(const auto view=ai->ActivityPermissions().Inspect();view && !view->compatibility && view->lease.generation) {
+        const auto& root=view->root;
+        requestedGathering=root.accepted && root.mode==LivingActivity::Mode::Active &&
+            root.phase==LivingActivity::Phase::Traveling && root.checkpoint.step=="guild_service_gather" &&
+            LivingActivity::IsGuildProcurementTask(root);
+    }
 
     if (player->GetGroup())
         groupSize = player->GetGroup()->GetMembersCount();
@@ -800,7 +809,8 @@ bool GatherTravelDestination::IsPossible(const PlayerTravelInfo& info) const
 
     return LivingActivity::CheckGatheringSkill(uint32(info.GetCurrentSkill((SkillType)skillId)),
         info.GetSkillMax((SkillType)skillId),reqSkillValue,GetPurpose()==TravelDestinationPurpose::GatherFishing,
-        LivingActivity::GatheringIntent::SkillGain)==LivingActivity::GatheringSkillResult::Eligible;
+        info.RequestedGathering()?LivingActivity::GatheringIntent::RequestedMaterials:
+            LivingActivity::GatheringIntent::SkillGain)==LivingActivity::GatheringSkillResult::Eligible;
 }
 
 bool GatherTravelDestination::IsActive(Player* bot, const PlayerTravelInfo& info) const

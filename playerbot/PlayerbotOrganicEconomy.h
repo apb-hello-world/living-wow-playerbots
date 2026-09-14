@@ -79,7 +79,7 @@ private:
         LivingActivity::ServicePathProgress pathProgress;
         std::string goal,lastCatchupBlocker;
         uint32 localServiceEntry=0;
-        uint32 purpose=0, purchaseItem=0, started=0, progress=0, nextMove=0, attempts=0,nextCatchup=0;
+        uint32 purpose=0, purchaseItem=0, gatherItem=0, started=0, progress=0, nextMove=0, attempts=0,nextCatchup=0;
         float distance=1e30f;
         bool requesting=false, local=false,ready=false,routeOwned=false,routeInitialized=false,catchupUsed=false;
         // Keep the class layout identical in all translation units. Only the
@@ -94,7 +94,7 @@ private:
     bool PrepareRecipeMail(Player* bot, uint32 entry, const std::string& goal, std::string& blocker);
     void ReachRecipeService(Player* bot, uint32 purpose, const std::string& goal, std::string& blocker);
     LivingActivity::ServiceTravelResult DriveRecipeService(Player* bot,uint32 purpose,
-        const std::string& goal,const LivingActivity::Task* saved,uint32 purchaseItem=0,uint32 purchaseQuantity=0);
+        const std::string& goal,const LivingActivity::Task* saved,uint32 purchaseItem=0,uint32 purchaseQuantity=0,uint32 gatherItem=0);
     void ReleaseRecipeService(uint32 guid, const std::string& reason);
     void PauseRecipeService(uint32 guid, const std::string& reason);
     std::map<uint32, std::string> lastBlockers;

@@ -11,14 +11,14 @@ inline std::string GuildProcurementOperationGuard(const Task& saved) {
         " WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))"
         " AND NOT EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
         " AND (o.state NOT IN ('verified','rejected') OR o.kind NOT IN ('vendor_purchase','auction_purchase',"
-        "'mail_collect','bank_withdraw','bank_deposit','capacity_vendor_sale'"+std::string(job.craft.empty()?"":",'profession_craft'")+")))"
+        "'mail_collect','bank_withdraw','bank_deposit','capacity_vendor_sale','loot_collect','gather_open'"+std::string(job.craft.empty()?"":",'profession_craft'")+")))"
         " AND NOT EXISTS(SELECT 1 FROM living_activity_task child WHERE child.root_task_id=living_activity_task.task_id"
         " AND child.task_id<>living_activity_task.task_id AND child.phase NOT IN ('completed','cancelled','failed'))"
         " AND NOT EXISTS(SELECT 1 FROM guild_society_supply_delivery WHERE source_task_id="+SqlValue(saved.id)+')';
 }
 inline std::string GuildProcurementAcquisitionGuard(uint32_t entry) {
     return " AND (NOT EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
-        " AND o.state='verified' AND o.kind IN ('vendor_purchase','auction_purchase','mail_collect','bank_withdraw'))"
+        " AND o.state='verified' AND o.kind IN ('vendor_purchase','auction_purchase','mail_collect','bank_withdraw','loot_collect'))"
         " OR EXISTS(SELECT 1 FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id"
         " AND c.state='held' AND c.item_entry="+std::to_string(entry)+" AND c.quantity>0))";
 }

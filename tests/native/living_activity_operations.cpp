@@ -1,6 +1,7 @@
 #include "LivingActivityOperations.h"
 #include "LivingActivityTransfer.h"
 #include "LivingLootQuote.h"
+#include "LivingGatherQuote.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <cassert>
@@ -25,6 +26,26 @@ int main() {
         return ValidateOperationRequest(r, task, saved.context, nullptr, 1000, reason);
     };
     assert(valid(request, saved));
+    {
+        auto gather=request;gather.kind="gather_open";
+        gather.effects=Mask(Effect::Inventory)|Mask(Effect::Spell)|Mask(Effect::Movement);
+        gather.authorization.permittedEffects=gather.effects;gather.persistence=NativePersistence::Profession;
+        const NativeGatherQuote quote{497,2770,186,2575,1,75,75,80,100,0,12345};
+        gather.beforeState=EncodeNativeGatherQuote(quote);assert(valid(gather,saved));
+        assert(OperationRequestWrite(gather).receiptQuery.find(SqlValue("gather_open"))!=std::string::npos);
+        for(unsigned field=0;field<6;++field) {
+            auto bad=gather;
+            switch(field) {
+            case 0:bad.itemGain={2770,1};break;
+            case 1:bad.persistence=NativePersistence::Inventory;break;
+            case 2:bad.effects=Mask(Effect::Spell);break;
+            case 3:bad.beforeState="{}";break;
+            case 4:++bad.transition.task.actor;break;
+            default:bad.effects|=Mask(Effect::Money);break;
+            }
+            assert(!valid(bad,saved));
+        }
+    }
     {
         auto loot=request;loot.kind="loot_collect";loot.effects=Mask(Effect::Inventory);
         loot.persistence=NativePersistence::Inventory;loot.itemGain={2770,3};

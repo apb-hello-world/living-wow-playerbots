@@ -22,6 +22,8 @@
 #include "LivingPreparationWait.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingNativeRecipeLearning.h"
+#include "LivingNativeGathering.h"
+#include "LivingNativeLootCollection.h"
 #include "LivingRecipeLearningSettlement.h"
 #include "LivingNativeBankWithdrawal.h"
 #include "LivingNativeMailCollection.h"
@@ -1896,6 +1898,19 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
             if(!grant.Permitted())return stop(grant.blocker);
             NativeAuctionPurchase adapter(quote);return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
         }
+        if(row.second.request.kind=="loot_collect") {
+            NativeLootQuote quote;
+            if(!DecodeNativeLootQuote(row.second.request.beforeState,quote))return stop("gather_loot_intent_invalid");
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"guild_requested_loot");
+            if(!grant.Permitted())return stop(grant.blocker);
+            NativeLootCollection adapter(quote);return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
+        if(row.second.request.kind=="gather_open") {
+            NativeGatherOperation adapter;
+            const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"guild_requested_gather");
+            if(!grant.Permitted())return stop(grant.blocker);
+            return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
         return {}; // Craft/learning casts are dispatched by their typed executor.
     }
     return {};
@@ -3250,6 +3265,56 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.entry,job.quantity}).blocker);
     if(stock.bank)return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Withdraw,{job.entry,job.quantity}).blocker);
     if(stock.bag>=job.quantity)return stop("guild_procurement_owned_stock_requires_reconciliation");
+    NativeLootQuote loot;std::string lootBlocker;
+    if(FindNativeRequestedLoot(*bot,job.entry,loot,lootBlocker)) {
+        NativeLootCollection adapter(loot);
+        const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"guild_requested_loot");
+        if(!grant.Permitted())return stop(grant.blocker);
+        OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+        ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+        request.transition.task.checkpoint.step="guild_requested_loot";request.transition.task.updatedAtMs=NowMs();
+        request.transition.receipt=NewId();request.authorization=grant.action;request.kind=adapter.OperationKind();
+        request.effects=adapter.OperationEffects();request.persistence=adapter.PersistencePolicy();
+        request.beforeState=EncodeNativeLootQuote(loot);request.itemGain={loot.entry,loot.quantity};
+        return stop(SubmitOperationIntent(request,adapter).blocker);
+    }
+    if(lootBlocker=="native_loot_capacity_required")
+        return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,{job.entry,job.quantity}).blocker);
+    if(auto* opened=sLootMgr.GetLoot(bot);opened && HoldsManagedGatherLoot(*bot->GetPlayerbotAI(),opened->GetLootGuid().GetRawValue())) {
+        // Native loot rolled no requested item, or needs a currently unsupported
+        // slot/claim transition. Release access, preserve the root, and expose
+        // the exact blocker. Neither a node nor a cast counts as acquisition.
+        const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"guild_gather_release");
+        if(!grant.Permitted())return stop(grant.blocker);
+        {ExecutionScope scope(grant.task,grant.action);WorldPacket packet(CMSG_LOOT_RELEASE,8);packet<<opened->GetLootGuid();
+            bot->GetSession()->HandleLootReleaseOpcode(packet);}
+        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
+        request.task.phase=Phase::Deferred;request.task.updatedAtMs=NowMs();request.task.retryAtMs=request.task.updatedAtMs+300000;
+        request.task.checkpoint.blocker=lootBlocker;request.receipt=NewId();return stop(SubmitTask(request).blocker);
+    }
+    std::vector<int32_t> sources;uint32_t purpose=0;
+    if(NativeGatherSources(*bot,job.entry,sources,purpose,why)) {
+        auto* node=NativeGatherNode(*bot,job.entry,sources);NativeGatherQuote quote;
+        if(node && bot->IsWithinDistInMap(node,INTERACTION_DISTANCE) &&
+            InspectNativeGatherQuote(*bot,node->GetObjectGuid().GetRawValue(),job.entry,quote,why)) {
+            ItemPosCountVec capacity;const auto* proto=sObjectMgr.GetItemPrototype(job.entry);
+            if(!proto || bot->CanStoreNewItem(NULL_BAG,NULL_SLOT,capacity,job.entry,std::max<uint32_t>(1,proto->Stackable))!=EQUIP_ERR_OK)
+                return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,{job.entry,job.quantity}).blocker);
+            NativeGatherOperation adapter;
+            const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"guild_requested_gather");
+            if(!grant.Permitted())return stop(grant.blocker);
+            OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+            ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+            request.transition.task.checkpoint.step="guild_requested_gather";request.transition.task.updatedAtMs=NowMs();
+            request.transition.receipt=NewId();request.authorization=grant.action;request.kind=adapter.OperationKind();
+            request.effects=adapter.OperationEffects();request.persistence=adapter.PersistencePolicy();
+            request.beforeState=EncodeNativeGatherQuote(quote);return stop(SubmitOperationIntent(request,adapter).blocker);
+        }
+        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
+        request.task.phase=Phase::Traveling;request.task.updatedAtMs=NowMs();request.receipt=NewId();
+        request.task.checkpoint.step=ServiceStep(ServiceDestination::Gathering);
+        return stop(SubmitTask(request).blocker);
+    }
     return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Purchase,{job.entry,job.quantity}).blocker);
 }
 LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::HandoffGuildProcurement(uint32_t actor,const std::string& id) {
@@ -3627,7 +3692,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                 ExecutionScope scope(executing, action);
                 if (adapter.DeferredNativeCast()) {
                     if (request.persistence!=NativePersistence::Profession ||
-                        (request.kind!="profession_craft" && request.kind!="recipe_learning") ||
+                        (request.kind!="profession_craft" && request.kind!="recipe_learning" && request.kind!="gather_open") ||
                         CharacterDatabase.HasOpenTransaction()) {
                         observation.state=OperationState::Rejected;
                         observation.evidence="native_craft_dispatch_contract_unavailable";
@@ -3777,7 +3842,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     pending.outcome = observation.state;
     after.phase = pending.uncertain ? Phase::Reconciling : Phase::Verifying;
     after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
-    if((request.kind=="capacity_vendor_sale" || request.kind=="guild_bank_deposit") && observation.state==OperationState::Rejected) {
+    if((request.kind=="capacity_vendor_sale" || request.kind=="guild_bank_deposit" || request.kind=="gather_open" || request.kind=="loot_collect") && observation.state==OperationState::Rejected) {
         after.retryAtMs=after.updatedAtMs+300000;
         after.checkpoint.blocker=observation.evidence; // Retain claim, do not hammer a rejecting native service.
     }

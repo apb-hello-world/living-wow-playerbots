@@ -2,6 +2,7 @@
 #include "LivingActivityTransfer.h"
 #include "LivingGuildMailHandoff.h"
 #include "LivingLootQuote.h"
+#include "LivingGatherQuote.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <tuple>
@@ -17,6 +18,14 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(request.kind=="gather_open") {
+                NativeGatherQuote quote;
+                if(!DecodeNativeGatherQuote(request.beforeState,quote) || quote.actor!=request.transition.task.actor ||
+                    request.effects!=(Mask(Effect::Inventory)|Mask(Effect::Spell)|Mask(Effect::Movement)) ||
+                    request.persistence!=NativePersistence::Profession || !request.itemGain.Empty() ||
+                    !request.mailGain.Empty() || !request.itemTransfer.id.empty() || !request.consumption.empty())
+                    throw std::invalid_argument("Exact native gathering cast contract required");
+            }
             if(request.kind=="loot_collect") {
                 NativeLootQuote quote;
                 if(!DecodeNativeLootQuote(request.beforeState,quote) || quote.actor!=request.transition.task.actor ||

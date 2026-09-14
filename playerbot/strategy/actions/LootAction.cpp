@@ -10,6 +10,7 @@
 #include "playerbot/strategy/values/ItemUsageValue.h"
 #include "playerbot/ServerFacade.h"
 #include "playerbot/strategy/values/SharedValueContext.h"
+#include "playerbot/LivingNativeGathering.h"
 
 
 using namespace ai;
@@ -67,6 +68,7 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
 {
     if (lootObject.IsEmpty())
         return false;
+    if(LivingActivity::HoldsManagedGatherLoot(*ai,lootObject.guid.GetRawValue()))return false;
 
     Creature* creature = ai->GetCreature(lootObject.guid);
     if (creature && sServerFacade.GetDistance2d(bot, creature) > INTERACTION_DISTANCE)
@@ -264,6 +266,11 @@ bool StoreLootAction::Execute(Event& event)
     p.rpos(0);
     p >> guid;      // 8 corpse guid
     p >> loot_type; // 1 loot type
+
+    // Gathering opened by an accepted request is collected by that root's
+    // exact native-slot journal. Do not consume its loot from the packet queue
+    // before the world owner can claim and persist the resulting items.
+    if(LivingActivity::HoldsManagedGatherLoot(*ai,guid.GetRawValue()))return false;
 
     if (p.size() > 10)
     {
