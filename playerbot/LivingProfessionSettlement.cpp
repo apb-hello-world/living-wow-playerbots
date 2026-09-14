@@ -3,6 +3,7 @@
 #include "LivingPersonalResourceSettlement.h"
 #include "LivingActivityItemGain.h"
 #include "LivingGuildProcurement.h"
+#include "LivingCommissionJob.h"
 #include <algorithm>
 #include <limits>
 #include <map>
@@ -69,14 +70,21 @@ namespace {
         // materials remain held, with unchanged identities and revisions.
         result=std::move(prepared);blocker.clear();return true;
     }
-    bool PrepareGuildCraftHandoff(const Task& before,const ProfessionSnapshot& snapshot,const UnsettledClaimBatch& batch,
+    bool PrepareRequestedCraftHandoff(const Task& before,const ProfessionSnapshot& snapshot,const UnsettledClaimBatch& batch,
         const std::vector<NativeResourceBalance>& balances,uint64_t now,const std::string& receipt,
         ProfessionSettlement& result,std::string& blocker) {
         auto reject=[&](const char* why){blocker=why;return false;};
-        GuildProcurementJob guild;ProfessionJob job;
-        if(!ValidateGuildProcurementTask(before,blocker) || !DecodeGuildProcurementJob(before.checkpoint.data,guild,blocker) ||
+        GuildProcurementJob guild;CommissionJob commission;ProfessionJob job;
+        const bool commissioned=IsCommissionJob(before);
+        if(commissioned) {
+            if(!ValidateCommissionTask(before,blocker) || !DecodeCommissionJob(before.checkpoint.data,commission,blocker) ||
+                commission.craftFinishedRevision || !batch.complete || !DecodeProfessionIntent(commission.craft,job,blocker))
+                return reject("commission_craft_handoff_context_invalid");
+        } else if(!ValidateGuildProcurementTask(before,blocker) || !DecodeGuildProcurementJob(before.checkpoint.data,guild,blocker) ||
             guild.craft.empty() || guild.craftFinishedRevision || !batch.complete ||
             !DecodeProfessionIntent(guild.craft,job,blocker))return reject("guild_craft_handoff_context_invalid");
+        const auto entry=commissioned?job.outputEntry:guild.entry;
+        const auto quantity=commissioned?job.outputQuantity:guild.quantity;
         PersonalResourceSettlement backing;
         if(!PreparePersonalResourceSettlement(before,batch,balances,backing,blocker,"guild_craft_handoff_"))return false;
         std::map<std::string,const ProfessionCraftProof*> proofs;
@@ -94,7 +102,7 @@ namespace {
         std::set<uint32_t> outputItems;
         for(size_t i=0;i<batch.claims.size();++i) {
             const auto& c=batch.claims[i];
-            if(c.itemEntry!=guild.entry) {
+            if(c.itemEntry!=entry) {
                 personalBatch.claims.push_back(c);personal.claims.push_back(backing.claims[i]);continue;
             }
             if(c.state!="held" || c.location!="bags" || c.nativeReference || c.copper)
@@ -102,15 +110,15 @@ namespace {
             const ProfessionCraftProof* proof=nullptr;
             for(const auto& row:proofs)if(c.id==ItemGainClaimId(row.first,c.itemGuid)){proof=row.second;break;}
             if(!proof)return reject("guild_craft_handoff_native_output_claim_required");
-            uint64_t produced=0;for(const auto& output:proof->produced)if(output.entry==guild.entry)produced+=output.perAttempt;
+            uint64_t produced=0;for(const auto& output:proof->produced)if(output.entry==entry)produced+=output.perAttempt;
             auto& credited=perOperation[proof->receipt.id];credited+=c.quantity;
             if(credited>produced)return reject("guild_craft_handoff_output_exceeds_receipt");
             carried+=c.quantity;outputItems.insert(c.itemGuid);
         }
-        if(carried<guild.quantity)return reject("guild_craft_handoff_verified_goods_incomplete");
+        if(carried<quantity)return reject("guild_craft_handoff_verified_goods_incomplete");
         for(const auto& native:balances)if(outputItems.count(native.itemGuid)) {
             guards+=" AND EXISTS(SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+N(before.actor)+
-                " AND i.owner_guid=v.guid AND i.guid="+N(native.itemGuid)+" AND i.itemEntry="+N(guild.entry)+" AND i.count="+N(native.quantity)+
+                " AND i.owner_guid=v.guid AND i.guid="+N(native.itemGuid)+" AND i.itemEntry="+N(entry)+" AND i.count="+N(native.quantity)+
                 " AND ((v.bag=0 AND v.slot BETWEEN 23 AND 38) OR EXISTS(SELECT 1 FROM character_inventory b WHERE b.guid=v.guid"
                 " AND b.item=v.bag AND b.bag=0 AND b.slot BETWEEN 19 AND 22)))"
                 " AND NOT EXISTS(SELECT 1 FROM mail_items WHERE item_guid="+N(native.itemGuid)+')'+
@@ -118,10 +126,18 @@ namespace {
         }
         ProfessionSettlement prepared;prepared.task=before;auto& next=prepared.task;
         ++next.revision;next.updatedAtMs=now;next.phase=Phase::Preparing;next.retryAtMs=0;
-        guild.craftFinishedRevision=next.revision;next.checkpoint.data=EncodeGuildProcurementJob(guild);
-        next.checkpoint.step="guild_procurement_craft_ready";next.checkpoint.blocker.clear();next.checkpoint.lastProgressAtMs=now;
-        if(!PreserveGuildProcurementIntent(before,next,blocker))return false;
-        prepared.plan=Detail::TaskTransitionWrite(next,before.revision,receipt,"guild_procurement_craft_verified",backing.fingerprint+guards);
+        if(commissioned) {
+            commission.craftFinishedRevision=next.revision;next.checkpoint.data=EncodeCommissionJob(commission);
+            next.checkpoint.step="commission_craft_ready";
+            if(!PreserveCommissionIntent(before,next,blocker))return false;
+        } else {
+            guild.craftFinishedRevision=next.revision;next.checkpoint.data=EncodeGuildProcurementJob(guild);
+            next.checkpoint.step="guild_procurement_craft_ready";
+            if(!PreserveGuildProcurementIntent(before,next,blocker))return false;
+        }
+        next.checkpoint.blocker.clear();next.checkpoint.lastProgressAtMs=now;
+        prepared.plan=Detail::TaskTransitionWrite(next,before.revision,receipt,
+            commissioned?"commission_craft_verified":"guild_procurement_craft_verified",backing.fingerprint+guards);
         prepared.plan.statements.front()+=" AND mode='active' AND accepted=1 AND phase='verifying' AND checkpoint="+SqlValue(before.checkpoint.data)+
             guards+backing.guards+
             " AND (SELECT COUNT(*) FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id AND o.kind='profession_craft')="+N(snapshot.attempts.size())+
@@ -141,7 +157,7 @@ bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& sn
     result={};auto reject=[&](const char* why){blocker=why;return false;};
     ProfessionJob job;std::string reason;
     if (!Validate(before,reason) || before.mode!=Mode::Active || before.phase!=Phase::Verifying ||
-        (before.source!="profession_job" && !IsGuildCraftTask(before)) || before.root!=before.id || !before.parent.empty() ||
+        (before.source!="profession_job" && !IsGuildCraftTask(before) && !IsCommissionJob(before)) || before.root!=before.id || !before.parent.empty() ||
         !DecodeProfessionJob(before.checkpoint.data,job,reason) || !IsUuid(receipt) || nowMs<before.updatedAtMs ||
         before.revision>=std::numeric_limits<uint64_t>::max()-1)
         return reject("profession_settlement_context_invalid");
@@ -149,7 +165,7 @@ bool PrepareProfessionSettlement(const Task& before,const ProfessionSnapshot& sn
         return reject("profession_settlement_goal_not_verified");
     if(HasActiveProfessionTool(before.checkpoint.data))
         return PrepareToolHandoff(before,snapshot,batch,balances,nowMs,receipt,result,blocker);
-    if(IsGuildCraftTask(before))return PrepareGuildCraftHandoff(before,snapshot,batch,balances,nowMs,receipt,result,blocker);
+    if(IsGuildCraftTask(before) || IsCommissionJob(before))return PrepareRequestedCraftHandoff(before,snapshot,batch,balances,nowMs,receipt,result,blocker);
     // Do not quietly release an item promised to a requester or another job.
     const bool enchant=job.operation==ProfessionOperation::EnchantItem;
     if (job.purpose!=ProfessionPurpose::SkillGain ||

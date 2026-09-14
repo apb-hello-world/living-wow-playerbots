@@ -1,5 +1,6 @@
 #pragma once
 #include "LivingProfessionJob.h"
+#include "LivingCommissionJob.h"
 #include "LivingRecipeLearning.h"
 #include "LivingGuildDelivery.h"
 #include "LivingGuildProcurement.h"
@@ -9,6 +10,14 @@ namespace LivingActivity {
     // a new planner. Shared service adapters never invent their own item need.
     inline bool ReadTaskItemRequirements(const Task& task,std::vector<ProfessionReagent>& items,std::string& blocker) {
         items.clear();
+        if(IsCommissionJob(task)) {
+            CommissionJob commission;ProfessionJob recipe;
+            if(!ValidateCommissionTask(task,blocker) || !DecodeCommissionJob(task.checkpoint.data,commission,blocker) ||
+                !DecodeProfessionIntent(commission.craft,recipe,blocker))return false;
+            if(commission.craftFinishedRevision) {
+                items.push_back({recipe.outputEntry,recipe.outputQuantity});blocker.clear();return true;
+            }
+        }
         if (IsGuildProcurementTask(task)) {
             GuildProcurementJob job;
             if (!ValidateGuildProcurementTask(task,blocker) || !DecodeGuildProcurementJob(task.checkpoint.data,job,blocker))

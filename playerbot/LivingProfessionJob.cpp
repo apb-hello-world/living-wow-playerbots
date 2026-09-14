@@ -1,4 +1,5 @@
 #include "LivingProfessionJob.h"
+#include "LivingCommissionJob.h"
 #include "LivingGuildProcurement.h"
 #include "LivingGuildDelivery.h"
 #include "LivingRecipeLearning.h"
@@ -170,6 +171,11 @@ namespace LivingActivity {
         if(data.empty() || data.size()>8192)return false;
         try {
             Tree root;std::istringstream input(data);boost::property_tree::read_json(input,root);
+            if(root.get<std::string>("workflow","")=="commission_job_v1") {
+                CommissionJob commission;
+                if(!DecodeCommissionJob(data,commission,blocker))return false;
+                return DecodeProfessionWorkflow(commission.craft,flow,blocker);
+            }
             if(root.get<std::string>("workflow","")=="guild_procurement_v2") {
                 GuildProcurementJob guild;
                 if(!DecodeGuildProcurementJob(data,guild,blocker) || guild.craft.empty())return false;
@@ -212,6 +218,11 @@ namespace LivingActivity {
         job=std::move(flow.intent);return true;
     }
     std::string EncodeTaskProfessionWorkflow(const Task& task,const ProfessionWorkflow& flow) {
+        if(IsCommissionJob(task)) {
+            CommissionJob commission;std::string why;
+            if(!DecodeCommissionJob(task.checkpoint.data,commission,why))throw std::invalid_argument(why);
+            commission.craft=EncodeProfessionWorkflow(flow);return EncodeCommissionJob(commission);
+        }
         if(!IsGuildProcurementTask(task))return EncodeProfessionWorkflow(flow);
         GuildProcurementJob guild;std::string why;
         if(!DecodeGuildProcurementJob(task.checkpoint.data,guild,why) || guild.craft.empty())
@@ -247,6 +258,7 @@ namespace LivingActivity {
         // and guild deliveries; a route label never replaces the typed owner.
         // The typed root retains its identity while using the same adapter.
         if(IsGuildProcurementTask(task))return IsGuildCraftTask(task);
+        if(IsCommissionJob(task))return true;
         return !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task) &&
             (task.source == "profession_job" || task.checkpoint.step.compare(0, 11, "profession_") == 0);
     }
@@ -276,9 +288,10 @@ namespace LivingActivity {
     bool ValidateProfessionTask(const Task& task, std::string& blocker) {
         if(!ValidateGuildProcurementTask(task,blocker))return false;
         if (!ValidateRecipeLearningTask(task,blocker)) return false;
+        if (!ValidateCommissionTask(task,blocker)) return false;
         if (!IsProfessionJob(task)) { blocker.clear(); return true; }
         ProfessionWorkflow flow;
-        if ((task.kind != Kind::Profession && !IsGuildCraftTask(task)) || !task.parent.empty() || !DecodeProfessionWorkflow(task.checkpoint.data, flow, blocker) ||
+        if ((task.kind != Kind::Profession && !IsGuildCraftTask(task) && !IsCommissionJob(task)) || !task.parent.empty() || !DecodeProfessionWorkflow(task.checkpoint.data, flow, blocker) ||
             (!flow.tools.empty() && (!task.accepted || task.mode!=Mode::Active)) ||
             std::any_of(flow.tools.begin(),flow.tools.end(),[&](const auto& tool){
                 return tool.startedRevision>task.revision || tool.finishedRevision>task.revision;})) {
@@ -297,6 +310,7 @@ namespace LivingActivity {
         blocker.clear();return true;
     }
     bool PreserveProfessionIntent(const Task& before, const Task& after, std::string& blocker) {
+        if (!PreserveCommissionIntent(before,after,blocker)) return false;
         if (!PreserveRecipeLearningIntent(before,after,blocker)) return false;
         if (!ValidateProfessionTask(after, blocker)) return false;
         if (!before.accepted || !IsProfessionJob(before)) {

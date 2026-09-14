@@ -59,6 +59,7 @@
 #include "LivingGatherRecovery.h"
 #include "LivingGuildProcurementProjection.h"
 #include "LivingCommissionContract.h"
+#include "LivingCommissionJob.h"
 #include "PlayerbotOrganicEconomy.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -2292,6 +2293,11 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return stop("profession_saved_job_unavailable");
     if (saved->phase==Phase::Completed) {progress.completed=true;return stop("");}
     if (Terminal(saved->phase)) return stop("profession_job_terminal_requires_projection");
+    if(IsCommissionJob(*saved)) {
+        CommissionJob commission;std::string why;
+        if(!DecodeCommissionJob(saved->checkpoint.data,commission,why))return stop(why);
+        if(commission.craftFinishedRevision)return stop("commission_delivery_adapter_required");
+    }
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     if(!state->professionCohortId.empty() &&
         saved->sourceKey.compare(0,30,"isolated_profession_cohort_v1:")==0 &&
@@ -2826,7 +2832,8 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJobImpl(uint32_t acto
         if (pending.admissionReceipt==receipt) {
             if (pending.task.id==id && pending.task.revision==expectedRevision+1 &&
                 (pending.task.checkpoint.step=="profession_settling" || pending.task.checkpoint.step=="profession_completed" ||
-                 pending.task.checkpoint.step=="profession_tool_ready" || pending.task.checkpoint.step=="guild_procurement_craft_ready"))
+                 pending.task.checkpoint.step=="profession_tool_ready" || pending.task.checkpoint.step=="guild_procurement_craft_ready" ||
+                 pending.task.checkpoint.step=="commission_craft_ready"))
                 return reject(AdmissionCode::Pending);
             return reject(AdmissionCode::InvalidRequest,"receipt_identity_reused");
         }
@@ -2836,7 +2843,8 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJobImpl(uint32_t acto
     if (saved->second.revision==expectedRevision+1 && acknowledged!=state->admissionReceipts.end() &&
         acknowledged->second==receipt && (saved->second.checkpoint.step=="profession_settling" ||
         saved->second.checkpoint.step=="profession_completed" || saved->second.checkpoint.step=="profession_tool_ready" ||
-        saved->second.checkpoint.step=="guild_procurement_craft_ready")) return reject(AdmissionCode::Saved);
+        saved->second.checkpoint.step=="guild_procurement_craft_ready" ||
+        saved->second.checkpoint.step=="commission_craft_ready")) return reject(AdmissionCode::Saved);
     if (saved->second.revision!=expectedRevision) return reject(AdmissionCode::StaleRevision);
     if (restartRecovery && saved->second.context==current)
         return reject(AdmissionCode::StaleContext,"profession_restart_already_rebound");

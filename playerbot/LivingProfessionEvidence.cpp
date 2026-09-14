@@ -1,4 +1,5 @@
 #include "LivingProfessionEvidence.h"
+#include "LivingCommissionJob.h"
 #include "LivingGuildProcurement.h"
 #include "LivingActivityGameplay.h"
 #include "LivingActivityOperations.h"
@@ -409,7 +410,7 @@ std::string ProfessionHistoryQuery(const Task& task) {
     const bool gathering=IsGatheringRecoveryTask(task);
     if (task.mode!=Mode::Active || !task.accepted || !task.actor || !IsUuid(task.id) || task.root!=task.id ||
         !task.revision || (gathering ? !ValidateGuildProcurementTask(task,blocker) :
-        ((task.source!="profession_job" && !IsGuildCraftTask(task)) || !ValidateProfessionTask(task,blocker) ||
+        ((task.source!="profession_job" && !IsGuildCraftTask(task) && !IsCommissionJob(task)) || !ValidateProfessionTask(task,blocker) ||
         !DecodeProfessionJob(task.checkpoint.data,job,blocker)))) throw std::invalid_argument("profession_history_task_invalid");
     // A single DB statement observes the revision, all unresolved work for this
     // actor (including dependent mail/purchases), and at most limit+1 attempts.

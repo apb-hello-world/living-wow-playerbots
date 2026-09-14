@@ -1,5 +1,6 @@
 #include "playerbot/playerbot.h"
 #include "LivingProfessionNative.h"
+#include "LivingCommissionJob.h"
 #include "LivingProfessionPlan.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingActivityCoordinator.h"
@@ -297,6 +298,11 @@ namespace LivingActivity {
         if (actor.GetGUIDLow() != task.actor) { blocker = "profession_native_actor_mismatch"; return false; }
         ProfessionJob job;
         if (!ValidateProfessionTask(task, blocker) || !DecodeProfessionJob(task.checkpoint.data, job, blocker)) return false;
+        if(IsCommissionJob(task)) {
+            CommissionJob commission;
+            if(!DecodeCommissionJob(task.checkpoint.data,commission,blocker))return false;
+            if(commission.craftFinishedRevision){blocker="commission_craft_already_verified";return false;}
+        }
         if(IsGuildCraftTask(task)) {
             GuildProcurementJob guild;
             if(!DecodeGuildProcurementJob(task.checkpoint.data,guild,blocker))return false;
