@@ -3,6 +3,7 @@
 #include "PlayerbotRendezvousManager.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingProfessionVendor.h"
+#include "LivingGathering.h"
 #include "PlayerbotOrganicEconomy.h"
 #include <numeric>
 #include <iomanip>
@@ -797,20 +798,9 @@ bool GatherTravelDestination::IsPossible(const PlayerTravelInfo& info) const
         }
     }
 
-    if (!info.GetCurrentSkill((SkillType)skillId))
-        return false;
-
-    uint32 skillValue = uint32(info.GetCurrentSkill((SkillType)skillId));
-    if (reqSkillValue > skillValue)
-        return false;
-
-    if (info.GetSkillMax((SkillType)skillId) <= skillValue) //Not able to increase skill.
-        return false;
-
-    if (GetPurpose() != TravelDestinationPurpose::GatherFishing && reqSkillValue + 100 < skillValue) //Gray level = no skillup
-        return false;
-
-    return true;
+    return LivingActivity::CheckGatheringSkill(uint32(info.GetCurrentSkill((SkillType)skillId)),
+        info.GetSkillMax((SkillType)skillId),reqSkillValue,GetPurpose()==TravelDestinationPurpose::GatherFishing,
+        LivingActivity::GatheringIntent::SkillGain)==LivingActivity::GatheringSkillResult::Eligible;
 }
 
 bool GatherTravelDestination::IsActive(Player* bot, const PlayerTravelInfo& info) const

@@ -3,10 +3,28 @@
 #include "LivingProfessionJob.h"
 #include "LivingActivityRequests.h"
 #include "LivingTaskItemRequirements.h"
+#include "LivingGathering.h"
 #include <cassert>
 #include <limits>
 using namespace LivingActivity;
 int main() {
+    using GI=GatheringIntent;using GR=GatheringSkillResult;
+    assert(CheckGatheringSkill(0,75,1,false,GI::RequestedMaterials)==GR::UnknownSkill);
+    assert(CheckGatheringSkill(74,75,75,false,GI::RequestedMaterials)==GR::InsufficientSkill);
+    assert(CheckGatheringSkill(75,75,1,false,GI::RequestedMaterials)==GR::Eligible);
+    assert(CheckGatheringSkill(375,375,1,false,GI::RequestedMaterials)==GR::Eligible);
+    assert(CheckGatheringSkill(305,300,1,false,GI::RequestedMaterials)==GR::Eligible); // Native glove bonus.
+    assert(CheckGatheringSkill(75,75,1,false,GI::SkillGain)==GR::SkillCapped);
+    assert(CheckGatheringSkill(150,225,1,false,GI::SkillGain)==GR::NoSkillGain);
+    assert(CheckGatheringSkill(375,375,1,true,GI::RequestedMaterials)==GR::UnsupportedIntent);
+    assert(CheckGatheringSkill(75,150,1,false,GI(99))==GR::UnsupportedIntent);
+    // Preserve the deployed skill-up predicate for all ordinary TBC skill
+    // bands. Material eligibility does NOT grant skill, tools, access or loot.
+    for(uint32_t current=0;current<=450;++current)for(uint32_t required=0;required<=450;++required)
+        for(uint32_t maximum:{75u,150u,225u,300u,375u})for(bool fishing:{false,true}) {
+            const bool legacy=current && required<=current && maximum>current && (fishing || required+100>=current);
+            assert((CheckGatheringSkill(current,maximum,required,fishing,GI::SkillGain)==GR::Eligible)==legacy);
+        }
     const GuildProcurementJob job{3,314,2770,20,"goal_copper","ef526383-763e-4a84-b501-12b4c2966321"};
     std::string why;GuildProcurementJob decoded;
     const auto encoded=EncodeGuildProcurementJob(job);
