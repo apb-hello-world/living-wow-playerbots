@@ -30,6 +30,7 @@
 #include "LivingMailRecovery.h"
 #include "LivingNativeAuctionPurchase.h"
 #include "LivingNativeVendorSale.h"
+#include "LivingNativeRepair.h"
 #include "LivingNativeGuildDeposit.h"
 #include "LivingNativeGuildMail.h"
 #include "LivingGuildDeliverySettlement.h"
@@ -317,6 +318,13 @@ struct LivingActivityCoordinator::State {
         GuildDeliveryClosure closure;
     };
     std::map<std::string,GuildDeliveryRead> guildDeliveryReads;
+    struct RepairRead {
+        uint64_t revision=0,retryAt=0;
+        bool pending=false,complete=false;
+        uint32_t unresolved=0;
+        std::string outcome,evidence;
+    };
+    std::map<std::string,RepairRead> repairReads;
     std::atomic<uint64_t> publishedPolicyRevision{0};
     std::atomic<uint64_t> leaseBoundaries[3][2]{};
     std::thread::id worldThread;
@@ -1357,7 +1365,8 @@ void LivingActivityCoordinator::Update() {
                     Turn(std::string& value,const std::string& task):current(value){current=task;}
                     ~Turn(){current.clear();}
                 } turn(state->executingTask,id);
-                auto progress=IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
+                const auto preparation=AdvanceCriticalPreparation(saved->second.actor,id);
+                auto progress=preparation ? *preparation : IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
                     IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
                     IsGuildProcurementTask(saved->second) ? AdvanceGuildProcurement(saved->second.actor,id) :
                     AdvanceProfessionJob(saved->second.actor,id);
@@ -1848,6 +1857,7 @@ AdmissionResult LivingActivityCoordinator::AdmitEconomyProfession(uint32_t actor
     return SubmitTask(request);
 }
 #include "LivingGuildDeliveryExecutor.inc"
+#include "LivingCriticalPreparation.inc"
 
 std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoordinator::DispatchPendingItemService(
     uint32_t actor,const std::string& id) {
@@ -1880,6 +1890,14 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
             const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_mail_collect");
             if (!grant.Permitted()) return stop(grant.blocker);
             NativeMailCollection adapter(quote);
+            return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
+        if (row.second.request.kind=="critical_equipment_repair") {
+            NativeRepairQuote quote;
+            if(!DecodeNativeRepairQuote(row.second.request.beforeState,quote))return stop("critical_repair_saved_intent_invalid");
+            NativeCriticalRepair adapter(quote);
+            const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"critical_equipment_repair");
+            if(!grant.Permitted())return stop(grant.blocker);
             return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
         }
         if (row.second.request.kind=="capacity_vendor_sale") {
@@ -3837,7 +3855,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     pending.outcome = observation.state;
     after.phase = pending.uncertain ? Phase::Reconciling : Phase::Verifying;
     after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
-    if((request.kind=="capacity_vendor_sale" || request.kind=="guild_bank_deposit" || request.kind=="gather_open" || request.kind=="loot_collect") && observation.state==OperationState::Rejected) {
+    if((request.kind=="capacity_vendor_sale" || request.kind=="guild_bank_deposit" || request.kind=="gather_open" || request.kind=="loot_collect" || request.kind=="critical_equipment_repair") && observation.state==OperationState::Rejected) {
         after.retryAtMs=after.updatedAtMs+300000;
         after.checkpoint.blocker=observation.evidence; // Retain claim, do not hammer a rejecting native service.
     }

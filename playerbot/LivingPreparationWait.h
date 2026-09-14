@@ -16,7 +16,7 @@ namespace LivingActivity {
             "profession_material_has_legacy_commitment", "profession_material_source_unavailable",
             "profession_paid_material_in_transit", "vendor_limited_stock_unavailable",
             "profession_tool_source_unavailable", "guild_bank_deposit_capacity_unavailable",
-            "guild_mail_insufficient_unreserved_postage"})
+            "guild_mail_insufficient_unreserved_postage", "critical_repair_unreserved_money_shortfall"})
             if(blocker==known)return 300000;
         return 0;
     }

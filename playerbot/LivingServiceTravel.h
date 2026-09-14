@@ -11,7 +11,7 @@ namespace LivingActivity {
     inline bool LegacyProfessionInFlight(bool casting,bool service,bool savedService,bool paidWindow) {
         return casting || (service && !savedService) || paidWindow;
     }
-    enum class ServiceDestination { Mailbox, PersonalBank, CraftingStation, Vendor, PurchaseVendor, AuctionHouse, GuildBank, GuildMailbox, Gathering };
+    enum class ServiceDestination { Mailbox, PersonalBank, CraftingStation, Vendor, PurchaseVendor, AuctionHouse, GuildBank, GuildMailbox, Gathering, Repair };
     inline const char* ServiceStep(ServiceDestination service) {
         switch (service) {
         case ServiceDestination::Mailbox: return "profession_service_mail";
@@ -23,11 +23,12 @@ namespace LivingActivity {
         case ServiceDestination::GuildBank: return "guild_service_bank";
         case ServiceDestination::GuildMailbox: return "guild_service_mail";
         case ServiceDestination::Gathering: return "guild_service_gather";
+        case ServiceDestination::Repair: return "maintenance_service_repair";
         }
         return "";
     }
     inline bool ParseServiceStep(const std::string& step,ServiceDestination& service) {
-        for (const auto candidate : {ServiceDestination::Mailbox,ServiceDestination::PersonalBank,ServiceDestination::CraftingStation,ServiceDestination::Vendor,ServiceDestination::PurchaseVendor,ServiceDestination::AuctionHouse,ServiceDestination::GuildBank,ServiceDestination::GuildMailbox,ServiceDestination::Gathering})
+        for (const auto candidate : {ServiceDestination::Mailbox,ServiceDestination::PersonalBank,ServiceDestination::CraftingStation,ServiceDestination::Vendor,ServiceDestination::PurchaseVendor,ServiceDestination::AuctionHouse,ServiceDestination::GuildBank,ServiceDestination::GuildMailbox,ServiceDestination::Gathering,ServiceDestination::Repair})
             if (step==ServiceStep(candidate)) {service=candidate;return true;}
         return false;
     }

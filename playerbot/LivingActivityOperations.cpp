@@ -3,6 +3,7 @@
 #include "LivingGuildMailHandoff.h"
 #include "LivingLootQuote.h"
 #include "LivingGatherQuote.h"
+#include "LivingRepairQuote.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <tuple>
@@ -18,6 +19,17 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(request.kind=="critical_equipment_repair") {
+                NativeRepairQuote quote;
+                if(!DecodeNativeRepairQuote(request.beforeState,quote) || quote.actor!=request.transition.task.actor ||
+                    request.transition.task.checkpoint.step!="maintenance_repair" ||
+                    request.effects!=(Mask(Effect::Inventory)|Mask(Effect::Money)|Mask(Effect::Equipment)) ||
+                    request.persistence!=NativePersistence::Inventory || !request.itemGain.Empty() ||
+                    !request.mailGain.Empty() || !request.itemTransfer.id.empty() || request.consumption.size()!=1 ||
+                    request.consumption.front().before.location!="money" ||
+                    request.consumption.front().before.copper!=quote.copper || request.consumption.front().used!=quote.copper)
+                    throw std::invalid_argument("Exact paid critical repair contract required");
+            }
             if(request.kind=="gather_open") {
                 NativeGatherQuote quote;
                 if(!DecodeNativeGatherQuote(request.beforeState,quote) || quote.actor!=request.transition.task.actor ||

@@ -694,6 +694,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
     uint32 purpose=(service==ServiceDestination::Mailbox || service==ServiceDestination::GuildMailbox) ? uint32(ai::TravelDestinationPurpose::Mail) :
         uint32(ai::TravelDestinationPurpose::Bank);
     if(service==ServiceDestination::Vendor)purpose=uint32(ai::TravelDestinationPurpose::Vendor);
+    if(service==ServiceDestination::Repair)purpose=uint32(ai::TravelDestinationPurpose::Repair);
     if(service==ServiceDestination::AuctionHouse)purpose=uint32(ai::TravelDestinationPurpose::AH);
     if(service==ServiceDestination::GuildBank)purpose=uint32(ai::TravelDestinationPurpose::GuildBank);
     if(service==ServiceDestination::Gathering) {
@@ -891,7 +892,8 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     const bool mail=purpose==uint32(ai::TravelDestinationPurpose::Mail);
     const bool guildBank=purpose==uint32(ai::TravelDestinationPurpose::GuildBank);
     const uint32 flag=purpose==uint32(ai::TravelDestinationPurpose::Bank)?UNIT_NPC_FLAG_BANKER:
-        purpose==uint32(ai::TravelDestinationPurpose::Vendor)?UNIT_NPC_FLAG_VENDOR:UNIT_NPC_FLAG_AUCTIONEER;
+        purpose==uint32(ai::TravelDestinationPurpose::Vendor)?UNIT_NPC_FLAG_VENDOR:
+        purpose==uint32(ai::TravelDestinationPurpose::Repair)?UNIT_NPC_FLAG_REPAIR:UNIT_NPC_FLAG_AUCTIONEER;
     if(gatherItem) {
         service=NativeGatherNode(*bot,gatherItem,gatherSources);
         if(service)distance=bot->GetDistance(service);
