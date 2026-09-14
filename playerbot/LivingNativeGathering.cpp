@@ -3,6 +3,7 @@
 #include "LivingNativeSkinning.h"
 #include "LivingNativeLootCollection.h"
 #include "LivingGathering.h"
+#include "LivingGatherCustody.h"
 #include "LivingGuildProcurement.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
@@ -21,6 +22,7 @@
 
 namespace LivingActivity {
 namespace {
+GatherCustody gatherCustody;
 bool GatherLock(uint32_t entry,uint32_t& skill,uint32_t& required) {
     skill=required=0;const auto* info=sObjectMgr.GetGameObjectInfo(entry);
     if(!info || info->type!=GAMEOBJECT_TYPE_CHEST || sObjectMgr.IsGameObjectForQuests(entry))return false;
@@ -132,6 +134,9 @@ public:
         if((!node && !corpse) || !info){why="gather_source_disappeared";return false;}
         std::unique_ptr<Spell> spell(new Spell(&actor,info,false));spell->m_clientCast=true;
         if(!spell->SetLivingCraftCast(shared_from_this())){why="gather_cast_binding_failed";return false;}
+        if(!gatherCustody.Begin(task.actor,task.id,action.world.actorGeneration,action.world.mapGeneration,current.source)) {
+            why="gather_prior_loot_custody_pending";return false;
+        }
         {std::lock_guard<std::mutex> lock(mutex);if(result.started)return false;result.started=true;}
         SpellCastTargets targets;
         if(corpse)targets.setUnitTarget(corpse);else targets.setGOTarget(node);
@@ -170,6 +175,8 @@ public:
             auto r=Snapshot();if(r.finished)return;auto* actor=Actor(spell);
             if(!actor || !ReadGatherAfter(*actor,r))r.uncertain=true;
             r.finished=true;r.succeeded=succeeded;
+            if(r.generation)gatherCustody.Opened(task.actor,task.id,action.world.actorGeneration,action.world.mapGeneration,r.generation);
+            else if(!r.uncertain && !succeeded)gatherCustody.Release(task.actor,task.id,action.world.actorGeneration,action.world.mapGeneration);
             std::lock_guard<std::mutex> lock(mutex);r.uncertain|=result.uncertain;result=r;
         } catch(...) {std::lock_guard<std::mutex> lock(mutex);result.uncertain=true;}
     }
@@ -258,6 +265,11 @@ bool FindNativeRequestedLoot(Player& actor,uint32_t entry,NativeLootQuote& q,std
     why="requested_native_loot_absent";return false;
 }
 bool HoldsManagedGatherLoot(PlayerbotAI& ai,uint64_t source) {
+    auto* actor=ai.GetBot();const ObjectGuid heldSource(source);Loot* nativeLoot=nullptr;
+    if(heldSource.IsGameObject()) {if(auto* node=ai.GetGameObject(heldSource))nativeLoot=node->m_loot;}
+    else if(heldSource.IsCreature()) {if(auto* corpse=ai.GetCreature(heldSource))nativeLoot=corpse->m_loot;}
+    const uint64_t generation=nativeLoot?LootGeneration(*nativeLoot):0;
+    if(actor && gatherCustody.Holds(actor->GetGUIDLow(),ai.GetActivityActorEpoch(),ai.GetActivityMapEpoch(),source,generation))return true;
     const auto view=ai.ActivityPermissions().Inspect();if(!view || view->compatibility || !view->lease.generation)return false;
     const auto& task=view->root;GuildProcurementJob job;std::string why;const ObjectGuid guid(source);uint32_t skill=0,required=0;
     return task.mode==Mode::Active && task.accepted && !Terminal(task.phase) && IsGuildProcurementTask(task) &&
@@ -265,6 +277,7 @@ bool HoldsManagedGatherLoot(PlayerbotAI& ai,uint64_t source) {
         ((guid.IsGameObject() && GatherLock(guid.GetEntry(),skill,required) && DirectDrop(guid.GetEntry(),job.entry)) ||
          HoldsNativeSkinningLoot(ai,source,job.entry));
 }
+void ReleaseManagedGatherLoot(uint32_t actor,const std::string& task) {gatherCustody.Release(actor,task);}
 uint32_t NativeGatherOperation::OperationEffects() const {return SpellEffectMask(false);}
 bool NativeGatherOperation::ValidateNative(Player& actor,const OperationRequest& request,std::string& why) {
     NativeGatherQuote quote,current;GuildProcurementJob job;

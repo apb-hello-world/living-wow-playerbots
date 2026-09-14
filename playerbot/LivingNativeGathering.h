@@ -14,6 +14,7 @@ namespace LivingActivity {
     bool ReadRestoredGatherState(Player&,const NativeGatherQuote&,NativeGatherResult&,std::string&);
     bool FindNativeRequestedLoot(Player&,uint32_t entry,NativeLootQuote&,std::string&);
     bool HoldsManagedGatherLoot(PlayerbotAI&,uint64_t source);
+    void ReleaseManagedGatherLoot(uint32_t actor,const std::string& task);
     class NativeGatherOperation final : public NativeOperationAdapter {
     public:
         const char* OperationKind() const override {return "gather_open";}

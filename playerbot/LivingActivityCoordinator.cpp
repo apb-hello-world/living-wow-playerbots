@@ -897,6 +897,8 @@ struct LivingActivityCoordinator::State {
                         else operations.erase(operation);
                     }
                 }
+                if(claimProjectionValid && Terminal(acknowledgedWrite.task.phase))
+                    ReleaseManagedGatherLoot(acknowledgedWrite.task.actor,acknowledgedWrite.task.id);
                 ++acknowledged; ++transitionCount;
             });
             unsigned refreshed=0;
@@ -3328,6 +3330,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(!grant.Permitted())return stop(grant.blocker);
         {ExecutionScope scope(grant.task,grant.action);WorldPacket packet(CMSG_LOOT_RELEASE,8);packet<<opened->GetLootGuid();
             bot->GetSession()->HandleLootReleaseOpcode(packet);}
+        ReleaseManagedGatherLoot(actor,id);
         TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
         request.task.phase=Phase::Deferred;request.task.updatedAtMs=NowMs();request.task.retryAtMs=request.task.updatedAtMs+300000;
         request.task.checkpoint.blocker=lootBlocker;request.receipt=NewId();return stop(SubmitTask(request).blocker);
