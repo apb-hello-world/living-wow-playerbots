@@ -1,14 +1,16 @@
 #include "LivingGatherRecovery.h"
 #include <cassert>
+#include <iostream>
 using namespace LivingActivity;
 int main() {
     Task saved;saved.id=saved.root="ef5947a7-9ad7-586a-a5bf-68a57293c630";
-    saved.source="guild_procurement";saved.sourceKey="test_gather_recovery";
+    saved.source="guild_procurement";saved.priority=Priority::Delivery;
     saved.actor=saved.context.actor=166;saved.context.policyRevision=6;
     saved.mode=Mode::Active;saved.kind=Kind::GuildProcurement;saved.phase=Phase::Reconciling;saved.accepted=true;
     saved.revision=11;saved.createdAtMs=1;saved.updatedAtMs=2;
     saved.checkpoint.step="guild_requested_gather";saved.checkpoint.blocker="native_gather_outcome_uncertain";
-    saved.checkpoint.data=EncodeGuildProcurementJob({4,166,2447,1,"herb","3b237288-51c1-4f2a-9a21-63152cad95e2"});
+    const GuildProcurementJob job{4,166,2447,1,"herb","3b237288-51c1-4f2a-9a21-63152cad95e2"};
+    saved.checkpoint.data=EncodeGuildProcurementJob(job);saved.sourceKey=GuildProcurementSourceKey(job);
     NativeGatherResult prior;
     prior.before={166,2447,182,2366,1,70,150,70,2024,0,17370383789919398718ull};
     prior.value=70;prior.maximum=150;prior.money=2024;prior.generation=1789393052400000ull;
@@ -24,7 +26,7 @@ int main() {
     const ProfessionHistoryRow fields{"166","11","1",row.receipt.id,saved.id,"10","gather_open","reconciling",
         row.receipt.nativeReference,row.beforeState,row.afterState,row.receipt.evidence,row.journalDigest};
     std::string why;ProfessionHistoryCursor cursor;
-    assert(cursor.Begin(saved,{fields},why) && cursor.Advance(why));
+    if(!cursor.Begin(saved,{fields},why) || !cursor.Advance(why)) {std::cerr<<why<<'\n';return 1;}
     assert(cursor.Result().complete && cursor.Result().interruptedGather && cursor.Result().attempts.empty());
     assert(!cursor.Begin(saved,{fields,fields},why));
     assert(cursor.Begin(saved,{fields},why) && cursor.Advance(why));
@@ -36,7 +38,7 @@ int main() {
     current.actorGeneration=current.mapGeneration=1;
     NativeGatherResult native;native.before=prior.before;native.value=70;native.maximum=150;native.money=2024;
     GuildProcurementRecovery result;const std::string receipt="714bd310-a567-4ec2-847a-91a51d64b58f";
-    assert(PrepareInterruptedGather(saved,current,history,claims,native,3,receipt,result,why));
+    if(!PrepareInterruptedGather(saved,current,history,claims,native,3,receipt,result,why)) {std::cerr<<why<<'\n';return 1;}
     assert(result.task.id==saved.id && result.task.root==saved.root && result.task.revision==12 &&
         result.task.phase==Phase::Verifying && result.task.checkpoint.data==saved.checkpoint.data && result.claims.empty());
     std::string sql;for(const auto& s:result.plan.statements)sql+=s;
