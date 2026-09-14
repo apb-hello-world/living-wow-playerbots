@@ -1,6 +1,7 @@
 #include "playerbot/LivingActivityRotation.h"
 #include "playerbot/LivingActivityCoordinator.h"
 #include "playerbot/LivingActivityGameplay.h"
+#include "playerbot/LivingActivityRecovery.h"
 #include "playerbot/LivingActivityScope.h"
 #include "PlayerbotMgr.h"
 #include "playerbot/playerbot.h"
@@ -448,6 +449,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         if (!postNonCombatChanges.empty())
             ChangeStrategy(postNonCombatChanges, BotState::BOT_STATE_NON_COMBAT);
     }
+    LivingActivity::ReconcileNativeLifeState(*this);
     // Do not run build/role reconciliation before the later map-transfer
     // acknowledgement path has restored this player's world membership.
     if (bot->IsInWorld() && !bot->IsBeingTeleported())

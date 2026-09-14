@@ -1,5 +1,7 @@
 #include "playerbot/playerbot.h"
 #include "LivingActivityGameplay.h"
+#include "LivingActivityRecovery.h"
+#include "LivingActivityScope.h"
 #include "LivingActivityCoordinator.h"
 #include "ServerFacade.h"
 #include "Entities/Pet.h"
@@ -122,6 +124,57 @@ namespace LivingActivity {
             }
             return false;
         }
+    }
+    NativePermit NativeLifeStatePermit(PlayerbotAI& ai, LifeTransition transition) {
+        auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Safety,
+            Mask(Effect::Movement), uint32_t(Safety::Death));
+        auto* actor = ai.GetBot();
+        permit.validated = permit.world.actor && actor && transition != LifeTransition::None &&
+            RequiredLifeTransition(*actor, ai.IsStateActive(BotState::BOT_STATE_DEAD)) == transition;
+        return permit.validated ? permit : NativePermit{};
+    }
+    NativePermit NativeCombatStatePermit(PlayerbotAI& ai, bool enterCombat) {
+        auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Combat,
+            Mask(Effect::Movement), uint32_t(Safety::Combat));
+        auto* actor = ai.GetBot();
+        if (!permit.world.actor || !actor || !actor->IsAlive()) return {};
+        // Revalidate actual native relations instead of trusting the trigger's
+        // cached has-attackers flag. Nearby party combat still counts.
+        bool attackers = NativeMemberEngaged(*actor, *actor);
+        if (!attackers) if (auto* group = actor->GetGroup()) {
+            unsigned inspected = 0;
+            for (auto* ref = group->GetFirstMember(); ref && !attackers && inspected++ < 40; ref = ref->next())
+                if (auto* member = ref->getSource())
+                    if (member->IsInWorld() && member->GetMapId() == actor->GetMapId() &&
+                        member->GetInstanceId() == actor->GetInstanceId() &&
+                        sServerFacade.GetDistance2d(actor, member) <= sPlayerbotAIConfig.sightDistance)
+                        attackers = NativeMemberEngaged(*actor, *member);
+        }
+        permit.validated = enterCombat ? attackers : (!actor->IsInCombat() && !attackers);
+        return permit.validated ? permit : NativePermit{};
+    }
+    NativePermit NativeCorpseRecoveryPermit(PlayerbotAI& ai, CorpseRecovery step) {
+        const auto effects = step == CorpseRecovery::Find ? Mask(Effect::Movement) : RecoveryEffects();
+        auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Safety,
+            effects, uint32_t(Safety::Death));
+        auto* actor = ai.GetBot();
+        permit.validated = permit.world.actor && actor && ReadyForCorpseRecovery(*actor, step,
+            actor->GetCorpse() != nullptr, actor->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_GHOST), actor->InBattleGround());
+        return permit.validated ? permit : NativePermit{};
+    }
+    void ReconcileNativeLifeState(PlayerbotAI& ai) {
+        auto* actor = ai.GetBot();
+        if (!actor) return;
+        const auto transition = RequiredLifeTransition(*actor, ai.IsStateActive(BotState::BOT_STATE_DEAD));
+        if (transition == LifeTransition::None) return;
+        const auto permit = NativeLifeStatePermit(ai, transition);
+        ExecutionScope scope(permit);
+        if (!sLivingActivityCoordinator.PermitEffects(ai, {Mask(Effect::Movement), Lane::Safety, true},
+            "native life state")) return;
+        // These existing hooks clear transient combat targets and select the
+        // engine. Neither changes health, possessions, task state or claims.
+        if (transition == LifeTransition::Died) ai.OnDeath();
+        else ai.OnResurrected();
     }
     NativePermit NativeCombatMovementPermit(PlayerbotAI& ai, Unit* target) {
         auto permit = sLivingActivityCoordinator.NativeActionContext(ai, Lane::Combat,

@@ -5,7 +5,7 @@ namespace LivingActivity {
     thread_local EvaluationScope* EvaluationScope::head = nullptr;
     EvaluationScope::~EvaluationScope() { assert(head == this); head=previous; }
     bool EvaluationScope::RejectMutation(const Effects& effects) {
-        if (!head || (effects.classified && !effects.mask)) return false;
+        if (!head || (effects.classified && !effects.mask && effects.lane == Lane::Inspection)) return false;
         unsigned depth=0;
         for (auto* scope=head;scope && depth++ < 16;scope=scope->previous) scope->mutationAttempted=true;
         return true;

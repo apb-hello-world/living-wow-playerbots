@@ -2,6 +2,7 @@
 #include "playerbot/playerbot.h"
 #include "GenericActions.h"
 #include "playerbot/PlayerbotFactory.h"
+#include "playerbot/LivingActivityCoordinator.h"
 
 using namespace ai;
 
@@ -40,6 +41,15 @@ bool MeleeAction::isUseful()
     }
 
     return true;
+}
+
+LivingActivity::NativePermit UpdateStrategyDependenciesAction::GetNativeActivityPermit(Event&)
+{
+    auto permit = sLivingActivityCoordinator.NativeActionContext(*ai, LivingActivity::Lane::State, 0, 127);
+    // Class-defined dependencies only, recomputed from current strategy state.
+    // This grants no native movement, spell, inventory or group operation.
+    permit.validated = permit.world.actor && !strategiesToUpdate.empty() && isUseful();
+    return permit.validated ? permit : LivingActivity::NativePermit{};
 }
 
 bool UpdateStrategyDependenciesAction::Execute(Event& event)

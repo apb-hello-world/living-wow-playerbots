@@ -23,6 +23,12 @@ void RunIsolatedServicesObservation(FixtureState& state) {
             if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || ++actorCount>50)continue;
             boost::property_tree::ptree actor;actor.put("actor",binding.first);
             actor.put("alive",bot->IsAlive());actor.put("combat",bot->IsInCombat());
+            actor.put("ghost",bot->HasFlag(PLAYER_FLAGS,PLAYER_FLAGS_GHOST));
+            actor.put("corpse_present",bot->GetCorpse()!=nullptr);
+            if(auto* corpse=bot->GetCorpse()) {
+                actor.put("corpse_map",corpse->GetMapId());actor.put("corpse_age_seconds",time(nullptr)-corpse->GetGhostTime());
+                if(corpse->GetMapId()==bot->GetMapId())actor.put("corpse_distance",bot->GetDistance(corpse));
+            }
             actor.put("health",bot->GetHealth());actor.put("max_health",bot->GetMaxHealth());
             actor.put("map",bot->GetMapId());actor.put("x",bot->GetPositionX());
             actor.put("y",bot->GetPositionY());actor.put("z",bot->GetPositionZ());

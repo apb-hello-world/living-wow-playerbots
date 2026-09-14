@@ -12,6 +12,7 @@ namespace LivingActivity {
             case Lane::Combat: case Lane::Healing: case Lane::Loot: case Lane::Roll:
             case Lane::LocalQuest:
                 return uint32_t(Safety::Combat);
+            case Lane::State: // AI bookkeeping only; this lane can never grant a native effect.
             case Lane::Social:
                 // Safety pauses movement/native work, not a validated factual
                 // acknowledgement (including a dead or on-transport bot). This
@@ -246,7 +247,7 @@ namespace LivingActivity {
     }
     uint32_t ExecutionAuthority::LaneEffects(Lane lane) {
         switch (lane) {
-        case Lane::Inspection: return 0;
+        case Lane::Inspection: case Lane::State: return 0;
         case Lane::Combat: case Lane::Healing: return Mask(Effect::Movement) | Mask(Effect::Spell) | Mask(Effect::Inventory);
         case Lane::Loot: return Mask(Effect::Movement) | Mask(Effect::Inventory) | Mask(Effect::Money);
         case Lane::Roll: return Mask(Effect::Inventory) | Mask(Effect::Social);
@@ -284,6 +285,8 @@ namespace LivingActivity {
                 (permit->allowedSafety & ~NativeLaneSafety(effects.lane)))
                 return AuthorityCode::EffectsDenied;
             if (safety & ~permit->allowedSafety) return AuthorityCode::SafetyPaused;
+            if ((effects.lane == Lane::State || effects.lane == Lane::Safety) && a.operationExecuting)
+                return AuthorityCode::AtomicPending;
             if (!a.operation.empty() && (effects.mask & (Mask(Effect::Inventory) | Mask(Effect::Money))))
                 return AuthorityCode::AtomicPending;
             return AuthorityCode::Allowed;

@@ -53,9 +53,9 @@ bool ReviveFromCorpseAction::Execute(Event& event)
     packet << bot->GetObjectGuid();
     bot->GetSession()->HandleReclaimCorpseOpcode(packet);
 
-    sPlayerbotAIConfig.logEvent(ai, "ReviveFromCorpseAction");
-
-    return true;
+    const bool revived = sServerFacade.IsAlive(bot);
+    if (revived) sPlayerbotAIConfig.logEvent(ai, "ReviveFromCorpseAction");
+    return revived; // A queued/denied native reclaim is not a resurrection.
 }
 
 bool FindCorpseAction::Execute(Event& event)

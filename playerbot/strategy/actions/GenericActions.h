@@ -119,6 +119,8 @@ namespace ai
 
      public:
          UpdateStrategyDependenciesAction(PlayerbotAI* ai, std::string name = "update strategy dependencies") : Action(ai, name) {}
+         LivingActivity::Effects GetActivityEffects() const override { return {0, LivingActivity::Lane::State, true}; }
+         LivingActivity::NativePermit GetNativeActivityPermit(Event&) override;
          bool Execute(Event& event) override;
          bool isUseful() override;
 

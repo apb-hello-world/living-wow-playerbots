@@ -13,6 +13,8 @@ namespace ai
     {
     public:
         ReleaseSpiritAction(PlayerbotAI* ai, std::string name = "release") : ChatCommandAction(ai, name) {}
+        LivingActivity::Effects GetActivityEffects() const override { return {LivingActivity::RecoveryEffects(), LivingActivity::Lane::Safety, true}; }
+        LivingActivity::NativePermit GetNativeActivityPermit(Event&) override { return LivingActivity::NativeCorpseRecoveryPermit(*ai, LivingActivity::CorpseRecovery::Release); }
 
     public:
         virtual bool Execute(Event& event) override
@@ -54,6 +56,11 @@ namespace ai
     {
     public:
         AutoReleaseSpiritAction(PlayerbotAI* ai, std::string name = "auto release") : ReleaseSpiritAction(ai, name) {}
+        LivingActivity::NativePermit GetNativeActivityPermit(Event& event) override {
+            // Recheck the existing human-master/dungeon/arena release policy at
+            // execution, not only when this action first entered the queue.
+            return isUseful() ? ReleaseSpiritAction::GetNativeActivityPermit(event) : LivingActivity::NativePermit{};
+        }
 
         virtual bool Execute(Event& event) override
         {

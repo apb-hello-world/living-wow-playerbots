@@ -1577,7 +1577,8 @@ NativePermit LivingActivityCoordinator::NativeActionContext(PlayerbotAI& ai, Lan
     if (!state->enforceEffects.load(std::memory_order_acquire) && !state->observeEffects.load(std::memory_order_acquire)) return result;
     Player* bot = ai.GetBot();
     const auto view = ai.activityPermissions.Inspect();
-    if (!bot || !view || !effects || (effects & ~AllEffects) || lane == Lane::Managed || lane == Lane::Inspection) return result;
+    if (!bot || !view || (!effects && lane != Lane::State) || (effects & ~AllEffects) ||
+        lane == Lane::Managed || lane == Lane::Inspection) return result;
     const auto current = ReadNativeContext(*bot, state->publishedPolicyRevision.load(std::memory_order_acquire), state->boot);
     if (!(current == view->current) || !current.actorGeneration || !current.mapGeneration) return result;
     result.world = current; result.lane = lane; result.effects = effects; result.allowedSafety = allowedSafety;
