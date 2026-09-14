@@ -1,4 +1,5 @@
 #include "LivingProfessionEvidence.h"
+#include "LivingGuildProcurement.h"
 #include "LivingActivityGameplay.h"
 #include "LivingActivityOperations.h"
 #include "LivingEnchantIntent.h"
