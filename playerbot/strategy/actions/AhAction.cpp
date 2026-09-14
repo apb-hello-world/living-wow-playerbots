@@ -252,6 +252,7 @@ bool LivingActivity::NativeAuctionOffers(Player& actor,uint32_t entry,uint32_t m
         const auto left=uint64_t(a.copper)*b.quantity,right=uint64_t(b.copper)*a.quantity;
         return left!=right ? left<right : a.id<b.id;
     });
+    PreferCompleteAuctionMaterialBasket(offers,entry,maximum,actor.GetMoney());
     blocker=offers.empty()?"profession_auction_source_unavailable":"";return !offers.empty();
 }
 

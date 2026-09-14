@@ -3,9 +3,9 @@
 #include "LivingActivityReservations.h"
 #include "LivingAuctionQuote.h"
 #include "LivingProfessionJob.h"
+#include "LivingAuctionMaterialSource.h"
 
 namespace LivingActivity {
-struct NativeAuctionOffer {uint32_t id=0,entry=0,quantity=0,copper=0,seller=0;};
 // Existing AH policy/index, IDs only. Actual listings are re-read at dispatch.
 bool NativeAuctionOffers(Player& actor,uint32_t entry,uint32_t maximum,
     std::vector<NativeAuctionOffer>& offers,std::string& blocker,uint64_t auctioneer=0);

@@ -1,9 +1,11 @@
 #include "LivingAuctionQuote.h"
 #include "LivingPurchaseSourceChoice.h"
+#include "fixtures/AuctionMaterialSource.h"
 #include <cassert>
 #include <algorithm>
 using namespace LivingActivity;
 int main() {
+    TestAuctionMaterialSource();
     assert(AuctionEscrowOwnerMatches(290,290)); // newly posted native item
     assert(AuctionEscrowOwnerMatches(290,0));   // restart-loaded native escrow
     assert(!AuctionEscrowOwnerMatches(290,319));

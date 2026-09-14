@@ -53,9 +53,11 @@ bool ReadNativeGuildCraftSource(Player& actor,uint32_t entry,uint32_t maximum,
                     NativePurchaseServiceAvailable(actor,uint32_t(ai::TravelDestinationPurpose::Vendor),vendors))price=units*proto->BuyPrice;
             }
             std::vector<NativeAuctionOffer> offers;
+            AuctionMaterialBasket basket;
             if(NativeAuctionOffers(actor,r.entry,missing,offers,blocker) &&
-                NativePurchaseServiceAvailable(actor,uint32_t(ai::TravelDestinationPurpose::AH),{}))
-                for(const auto& offer:offers)if(offer.quantity>=missing)price=std::min(price,uint64_t(offer.copper));
+                NativePurchaseServiceAvailable(actor,uint32_t(ai::TravelDestinationPurpose::AH),{}) &&
+                ExactAuctionMaterialBasket(offers,r.entry,missing,money,basket))
+                price=std::min(price,uint64_t(basket.copper));
             if(price>money || cost>money-price){ready=false;break;}cost+=price;
         }
         if(!ready || (!out.craft.empty() && (out.estimatedCopper<cost ||
