@@ -60,6 +60,7 @@
 #include "LivingGuildProcurementProjection.h"
 #include "LivingCommissionContract.h"
 #include "LivingCommissionJob.h"
+#include "LivingNativeCommissionMail.h"
 #include "PlayerbotOrganicEconomy.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -2275,6 +2276,89 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     return stop("item_preparation_step_not_supported");
 }
 
+LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceCommissionDelivery(uint32_t actor,const std::string& id) {
+    auto stop=[](const std::string& why){return ProfessionProgress{false,why};};
+    if(!OnWorldThread() || !EffectEnforcementEnabled())return stop("execution_disabled");
+    const auto saved=ReadSavedTask(id);CommissionJob job;std::string why;
+    if(!saved || saved->actor!=actor || !IsCommissionJob(*saved) || !ValidateCommissionTask(*saved,why) ||
+        !DecodeCommissionJob(saved->checkpoint.data,job,why) || !job.craftFinishedRevision ||
+        !saved->accepted || saved->mode!=Mode::Active)return stop("commission_delivery_task_invalid");
+    if(job.agreement.delivery!="mail")return stop("commission_trade_adapter_required");
+    if(state->ScheduledExecution(*saved) && state->executingTask!=id)return stop("commission_delivery_queued");
+    for(const auto& write:state->pending)if(write.task.actor==actor)return stop("commission_delivery_write_pending");
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld())return stop("commission_delivery_actor_unavailable");
+    // No retry is admitted merely because the callback or old process vanished.
+    // Post-send, return, and payment recovery still require their native receipts.
+    if(!(saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot)))
+        return stop("commission_delivery_restart_reconciliation_required");
+    for(const auto& row:state->operations)if(row.second.request.transition.task.actor==actor) {
+        if(row.second.request.transition.task.id!=id || row.second.request.kind!="commission_mail_send")
+            return stop("commission_other_native_operation_pending");
+        if(!row.second.ready || row.second.dispatched)return stop("commission_mail_receipt_pending");
+        CommissionMailQuote quote;
+        if(!DecodeCommissionMailQuote(row.second.request.beforeState,quote))return stop("commission_saved_mail_quote_invalid");
+        NativeCommissionMail adapter(quote);
+        const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"commission_mail_send");
+        if(!grant.Permitted())return stop(grant.blocker);
+        return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+    }
+    if(saved->phase==Phase::Verifying && saved->checkpoint.step=="commission_mail_send")
+        return stop("commission_mail_delivery_payment_reconciliation_required");
+    if(saved->phase==Phase::Reconciling || Terminal(saved->phase))return stop("commission_delivery_reconciliation_required");
+    if(saved->retryAtMs>NowMs())return stop("commission_delivery_retry_wait");
+    if(DefersNativeSave(actor))return stop("native_save_pending");
+    if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal) {
+        if(NativeSafety(bot))return stop("commission_delivery_safety_pause");
+        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
+        request.task.phase=Phase::Preparing;request.task.updatedAtMs=NowMs();request.task.retryAtMs=0;
+        request.task.checkpoint.blocker.clear();request.receipt=NewId();
+        return stop(SubmitTask(request).blocker);
+    }
+    if(saved->phase==Phase::Traveling) {
+        ServiceDestination service;
+        if(!ParseServiceStep(saved->checkpoint.step,service) || service!=ServiceDestination::Mailbox)
+            return stop("commission_delivery_route_requires_reconciliation");
+        const auto route=sPlayerbotOrganicEconomy.ReachSavedService(actor,id,saved->revision,service);
+        Task next;
+        if(CheckpointServiceTravel(*saved,route,NowMs(),"commission_mail_prepare",next)) {
+            TaskRequest request;request.task=std::move(next);request.expectedRevision=saved->revision;request.receipt=NewId();
+            return stop(SubmitTask(request).blocker);
+        }
+        return stop(route.blocker);
+    }
+    if(saved->phase!=Phase::Preparing)return stop("commission_delivery_preparation_required");
+    CommissionMailQuote quote;std::vector<ClaimConsumption> uses;
+    if(!PlanNativeCommissionMail(*bot,*saved,quote,uses,why)) {
+        if(why=="commission_mailbox_travel_required" || why=="commission_mail_sender_moving") {
+            TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
+            request.task.phase=Phase::Traveling;request.task.updatedAtMs=NowMs();request.receipt=NewId();
+            request.task.checkpoint.step=ServiceStep(ServiceDestination::Mailbox);request.task.checkpoint.blocker.clear();
+            return stop(SubmitTask(request).blocker);
+        }
+        return stop(why);
+    }
+    const auto effects=Mask(Effect::Inventory)|Mask(Effect::Money);
+    const auto grant=AcquireSavedTask(id,saved->revision,effects,60000,"commission_mail_prepare");
+    if(!grant.Permitted())return stop(grant.blocker);
+    if(uses.size()==1) {
+        ResourceClaim postage;postage.id=NewId();postage.task=id;postage.actor=actor;postage.location="money";
+        postage.copper=30;postage.state="held";
+        ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+        ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+        request.authorization=grant.action;request.changes.push_back({postage,0});
+        NativeCommissionMailReservation adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
+    }
+    if(!ExactCommissionMailConsumption(*saved,quote,uses))return stop("commission_mail_claims_changed");
+    OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+    ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+    request.transition.task.checkpoint.step="commission_mail_send";request.transition.task.updatedAtMs=NowMs();
+    request.transition.receipt=NewId();request.authorization=grant.action;request.kind="commission_mail_send";
+    request.effects=effects;request.persistence=NativePersistence::Inventory;request.beforeState=EncodeCommissionMailQuote(quote);
+    request.consumption=std::move(uses);NativeCommissionMail adapter(quote);
+    return stop(SubmitOperationIntent(request,adapter).blocker);
+}
+
 LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceProfessionJob(uint32_t actor,const std::string& id) {
     ProfessionProgress progress;
     if (!OnWorldThread()) {progress.blocker="world_thread_required";return progress;}
@@ -2296,7 +2380,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(IsCommissionJob(*saved)) {
         CommissionJob commission;std::string why;
         if(!DecodeCommissionJob(saved->checkpoint.data,commission,why))return stop(why);
-        if(commission.craftFinishedRevision)return stop("commission_delivery_adapter_required");
+        if(commission.craftFinishedRevision)return stop(AdvanceCommissionDelivery(actor,id).blocker);
     }
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     if(!state->professionCohortId.empty() &&
@@ -3889,7 +3973,8 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     Task after = saved->second; ++after.revision; after.updatedAtMs = NowMs();
     pending.uncertain = observation.state == OperationState::Reconciling;
     if(pending.uncertain && pending.relatedGuild)pending.saveBlocked=true;
-    if (pending.uncertain && (!request.itemGain.Empty() || !request.mailGain.Empty() || request.kind=="guild_mail_send")) pending.saveBlocked=true;
+    if (pending.uncertain && (!request.itemGain.Empty() || !request.mailGain.Empty() || request.kind=="guild_mail_send" ||
+        request.kind=="commission_mail_send")) pending.saveBlocked=true;
     if (pending.uncertain && !request.itemTransfer.id.empty()) {
         // An uncertain merge may have consumed the old GUID. Protecting that
         // GUID alone is insufficient; stop consumers until native evidence is

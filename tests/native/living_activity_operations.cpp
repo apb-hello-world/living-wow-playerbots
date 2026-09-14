@@ -22,7 +22,9 @@ struct TestAdapter final : NativeOperationAdapter {
     bool ValidateNative(Player&,const OperationRequest&,std::string&)override{assert(false);return false;}
     NativeObservation ExecuteNative(Player&,const OperationRequest&)override{assert(false);return {};}
 };
+#include "fixtures/CommissionMail.h"
 int main() {
+    TestCommissionMail();
     Task saved; saved.id = saved.root = "637bd562-36d2-5b01-bc01-e2d831c49f38";
     saved.actor = saved.context.actor = 497; saved.source = "service_job"; saved.sourceKey = "497:2881:41";
     saved.context.boot = "ff2efbdf-f0ec-4539-b840-299847970c00";

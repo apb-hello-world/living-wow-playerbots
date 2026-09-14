@@ -1,6 +1,7 @@
 #include "LivingActivityOperations.h"
 #include "LivingActivityTransfer.h"
 #include "LivingGuildMailHandoff.h"
+#include "LivingCommissionMail.h"
 #include "LivingLootQuote.h"
 #include "LivingGatherQuote.h"
 #include "LivingRepairQuote.h"
@@ -19,6 +20,15 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(request.kind=="commission_mail_send") {
+                CommissionMailQuote quote;
+                if(!DecodeCommissionMailQuote(request.beforeState,quote) ||
+                    !ExactCommissionMailConsumption(request.transition.task,quote,request.consumption) ||
+                    request.effects!=(Mask(Effect::Inventory)|Mask(Effect::Money)) ||
+                    request.persistence!=NativePersistence::Inventory || !request.mailGain.Empty() ||
+                    !request.itemGain.Empty() || !request.itemTransfer.id.empty())
+                    throw std::invalid_argument("Exact commission parcel and postage contract required");
+            }
             if(request.kind=="critical_equipment_repair") {
                 NativeRepairQuote quote;
                 if(!DecodeNativeRepairQuote(request.beforeState,quote) || quote.actor!=request.transition.task.actor ||
@@ -107,6 +117,7 @@ namespace LivingActivity {
         if(!request.mailGain.Empty() && (!adapter.SupportsMailGain() || !ValidMailGainSpec(request.mailGain)))
             return reject("native_mail_gain_adapter_not_supported");
         if(request.kind=="guild_mail_send" && !adapter.SupportsGuildMailHandoff())return reject("native_guild_mail_adapter_required");
+        if(request.kind=="commission_mail_send" && !adapter.SupportsCommissionMailSend())return reject("native_commission_mail_adapter_required");
         blocker.clear();return true;
     }
     bool ValidateOperationRequest(const OperationRequest& request, const Task& saved,
