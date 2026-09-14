@@ -1202,7 +1202,7 @@ struct LivingActivityCoordinator::State {
                     Remember(task); blocker = effective==Mode::Off ? "saved_owner_execution_paused" : "active_task_requires_executor";
                 }
                 else {
-                    auto resumed = AfterRestart(task, NowMs());
+                    auto resumed = InvalidatedUnacceptedObservation(task) ? task : AfterRestart(task, NowMs());
                     std::string code = "restart_revalidation";
                     if (task.source == "economy_goal") {
                         boost::property_tree::ptree p; std::istringstream in(task.checkpoint.data);
@@ -1213,7 +1213,12 @@ struct LivingActivityCoordinator::State {
                             code = "observation_reclassified";
                         }
                     }
-                    Queue(std::move(resumed), task.revision, code);
+                    if(code=="restart_revalidation" && resumed.revision==task.revision) {
+                        Remember(task);blocker="observation_restored_without_rewrite";
+                    } else {
+                        if(resumed.revision==task.revision)resumed=AfterRestart(std::move(resumed),NowMs());
+                        Queue(std::move(resumed), task.revision, code);
+                    }
                 }
                 loadCursor = row.id;
             } else {

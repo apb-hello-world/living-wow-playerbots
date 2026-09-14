@@ -3,6 +3,15 @@
 #include <algorithm>
 
 namespace LivingActivity {
+    // A never accepted observer whose executable context was already cleared
+    // does not need another identical journal entry on every realm restart.
+    // Accepted work, live contexts and genuine metadata reclassification still
+    // use the existing persisted reconciliation path.
+    inline bool InvalidatedUnacceptedObservation(const Task& task) {
+        return task.mode==Mode::Observe && !task.accepted && task.phase==Phase::Reconciling &&
+            task.context.boot.empty() && !task.context.actorGeneration && !task.context.mapGeneration &&
+            task.checkpoint.blocker=="restart_revalidation_required";
+    }
     // An unreadable checkpoint still stays quarantined. Only a never accepted,
     // resource-free observation may be proved irrelevant to new procurement.
     // Read alongside its envelope in the SAME bounded startup query; a missing

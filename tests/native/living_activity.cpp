@@ -38,6 +38,19 @@ int main() {
         assert(!PrepareEconomyObservationRetirement(candidate,0,retired));
         const auto restored=AfterRestart(candidate,2000);
         assert(restored.ownerGeneration==1 && PrepareEconomyObservationRetirement(restored,3000,retired));
+        assert(!InvalidatedUnacceptedObservation(candidate));
+        assert(InvalidatedUnacceptedObservation(restored));
+        for(unsigned field=0;field<7;++field) {
+            auto changed=restored;
+            if(field==0)changed.accepted=true;
+            if(field==1)changed.mode=Mode::Active;
+            if(field==2)changed.phase=Phase::Preparing;
+            if(field==3)changed.context.boot="native_boot";
+            if(field==4)changed.context.actorGeneration=1;
+            if(field==5)changed.context.mapGeneration=1;
+            if(field==6)changed.checkpoint.blocker="native_receipt_uncertain";
+            assert(!InvalidatedUnacceptedObservation(changed));
+        }
         assert(retired.ownerGeneration==restored.ownerGeneration && retired.revision==restored.revision+1);
         assert(TaskWrite(retired,restored.revision,Receipt,"observation_retired").statements.front().find(
             "AND owner_generation=1")!=std::string::npos);
