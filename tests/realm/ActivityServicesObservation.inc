@@ -82,19 +82,26 @@ void RunIsolatedServicesObservation(FixtureState& state) {
                         boost::property_tree::ptree gather;
                         GuildProcurementJob job;std::string why;
                         const auto* spawn=dynamic_cast<const ai::GuidPosition*>(position);
-                        auto* node=spawn && spawn->IsGameObject()?bot->GetPlayerbotAI()->GetGameObject(*spawn):nullptr;
+                        // Spawn groups use dynamic runtime GUIDs. Resolve the
+                        // DB identity through the native map's spawn index,
+                        // just as GameObject::LoadFromDB does.
+                        auto* node=spawn && spawn->IsGameObject()?bot->GetMap()->GetGameObject(spawn->GetCounter()):nullptr;
                         gather.put("spawn_identity",spawn?spawn->GetRawValue():0);
                         gather.put("live_node",node!=nullptr);
                         const auto nearby=context->template GetValue<std::list<ObjectGuid>>("nearest game objects no los")->Get();
                         gather.put("nearby_count",nearby.size());
-                        gather.put("spawn_in_nearby",spawn && std::find(nearby.begin(),nearby.end(),static_cast<const ObjectGuid&>(*spawn))!=nearby.end());
+                        gather.put("spawn_in_nearby",node && std::find(nearby.begin(),nearby.end(),node->GetObjectGuid())!=nearby.end());
                         if(node) {
+                            gather.put("runtime_identity",node->GetObjectGuid().GetRawValue());gather.put("runtime_entry",node->GetEntry());
                             gather.put("spawned",sServerFacade.isSpawned(node));gather.put("in_use",node->IsInUse());
                             gather.put("has_loot",node->m_loot!=nullptr);gather.put("go_state",uint32(node->GetGoState()));
                             gather.put("distance",bot->GetDistance(node));gather.put("stopped",bot->IsStopped());
                             ai::LootObject loot(bot,node->GetObjectGuid());
                             gather.put("legacy_loot_empty",loot.IsEmpty());gather.put("legacy_loot_possible",loot.IsLootPossible(bot));
                             gather.put("skill",loot.skillId);gather.put("required_skill",loot.reqSkillValue);
+                            gather.put("approach_blocked",context->template GetValue<ai::LootObjectStack*>("available loot")->Get()->IsApproachBlocked(node->GetObjectGuid()));
+                            gather.put("legacy_should_loot",context->template GetValue<bool>("should loot object",std::to_string(node->GetObjectGuid().GetRawValue()))->LazyGet());
+                            gather.put("entry_excluded",context->template GetValue<std::set<uint32>&>("skip go loot list")->Get().count(node->GetEntry())!=0);
                             gather.put("mining_pick_carried",bot->HasItemCount(2901,1));
                             if(DecodeGuildProcurementJob(task.checkpoint.data,job,why)) {
                                 NativeGatherQuote quote;
