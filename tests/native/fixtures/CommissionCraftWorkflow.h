@@ -68,9 +68,12 @@ inline void TestCommissionCraftWorkflow() {
         if(i==6)snapshot.unresolvedOperation=true;
         assert(!prepare());snapshot=s;batch=b;balances=n;
     }
-    auto current=task.context;current.boot="1f6c3b70-d58f-4985-a67b-88eb30f6f943";snapshot.context=current;
-    assert(PrepareProfessionRestartSettlement(task,current,snapshot,batch,balances,1001,receipt,settled,why));
+    auto current=task.context;current.boot="1f6c3b70-d58f-4985-a67b-88eb30f6f943";current.policyRevision=2;snapshot.context=current;
+    if(!PrepareProfessionRestartSettlement(task,current,snapshot,batch,balances,1001,receipt,settled,why))
+        throw std::runtime_error("commission restart handoff: "+why);
     assert(settled.task.id==task.id && settled.task.context==current && settled.task.phase==Phase::Preparing);
+    auto unvalidated=current;unvalidated.policyRevision=0;
+    assert(!PrepareProfessionRestartSettlement(task,unvalidated,snapshot,batch,balances,1001,receipt,settled,why));
     auto forged=good.task;forged.phase=Phase::Completed;++forged.revision;
     assert(!PreserveProfessionIntent(good.task,forged,why)); // Craft is not delivery/payment.
 }
