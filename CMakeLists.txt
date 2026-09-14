@@ -172,6 +172,7 @@ if(LIVING_ISOLATED_NATIVE_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/TravelNode.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/strategy/actions/MovementActions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/strategy/actions/ChooseTravelTargetAction.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/TravelMgr.cpp
     PROPERTIES COMPILE_DEFINITIONS LIVING_ISOLATED_NATIVE_TESTS=1)
 endif()
 
