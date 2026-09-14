@@ -42,10 +42,15 @@ int main() {
     assert(result.task.id==saved.id && result.task.root==saved.root && result.task.revision==12 &&
         result.task.phase==Phase::Verifying && result.task.checkpoint.data==saved.checkpoint.data && result.claims.empty());
     std::string sql;for(const auto& s:result.plan.statements)sql+=s;
-    for(const auto* guard:{"native_gather_loot_abandoned_on_restart","prior_observation","acquired_quantity",
-        "SHA2(CONCAT(o.before_state,'|',o.after_state),256)","owner_guid=166 AND itemEntry=2447 AND count>0",
+    // SQL string values are hex-encoded independently of the server SQL mode.
+    // Check the complete preserved observation, not an unencoded JSON substring.
+    const auto recovery="{\"recovery\":{\"version\":1,\"basis\":\"volatile_loot_lost_no_acquisition\",\"boot\":\""+current.boot+
+        "\",\"acquired_quantity\":0},\"prior_observation\":"+row.afterState+'}';
+    for(const auto& value:{std::string("native_gather_loot_abandoned_on_restart"),recovery})
+        if(sql.find(SqlValue(value))==std::string::npos) {std::cerr<<"Missing encoded recovery value: "<<value<<'\n';return 1;}
+    for(const auto* guard:{"SHA2(CONCAT(o.before_state,'|',o.after_state),256)","owner_guid=166 AND itemEntry=2447 AND count>0",
         "value=70 AND max=150","money=2024","source_task_id=","state IN ('intent','reconciling'))=1"})
-        assert(sql.find(guard)!=std::string::npos);
+        if(sql.find(guard)==std::string::npos) {std::cerr<<"Missing recovery guard: "<<guard<<'\n';return 1;}
     for(const auto* forbidden:{"DELETE ","UPDATE item_instance","UPDATE characters SET money","UPDATE character_skills"})
         assert(sql.find(forbidden)==std::string::npos);
     // Already-rebound work can never relabel an operation a second time.
