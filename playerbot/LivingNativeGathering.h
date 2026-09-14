@@ -21,7 +21,8 @@ namespace LivingActivity {
         bool ValidateNative(Player&,const OperationRequest&,std::string&) override;
         std::shared_ptr<NativeCraftCast> ReserveNativeCast(const OperationRequest&,const Task&,const ActionContext&) const override;
         NativeObservation ExecuteNative(Player&,const OperationRequest&) override {
-            return {OperationState::Rejected,"","gather_requires_native_cast","{}"};
+            NativeObservation out;out.state=OperationState::Rejected;
+            out.evidence="gather_requires_native_cast";out.afterState="{}";return out;
         }
     };
 }

@@ -91,7 +91,8 @@ namespace LivingActivity {
         std::shared_ptr<NativeCraftCast> ReserveNativeCast(const OperationRequest& request,
             const Task& executing,const ActionContext& action) const override;
         NativeObservation ExecuteNative(Player&,const OperationRequest&) override {
-            return {OperationState::Rejected,"","native_craft_requires_deferred_dispatch","{}"};
+            NativeObservation out;out.state=OperationState::Rejected;
+            out.evidence="native_craft_requires_deferred_dispatch";out.afterState="{}";return out;
         }
     };
     class NativeCraftFinishGuard {

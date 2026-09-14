@@ -27,7 +27,8 @@ bool GatherLock(uint32_t entry,uint32_t& skill,uint32_t& required) {
     for(unsigned i=0;i<8;++i)if(lock->Type[i]==LOCK_KEY_SKILL) {
         const auto candidate=SkillByLockType(LockType(lock->Index[i]));
         if(candidate!=SKILL_MINING && candidate!=SKILL_HERBALISM)continue;
-        if(skill)return false;skill=candidate;required=std::max(1u,lock->Skill[i]);
+        if(skill)return false;
+        skill=candidate;required=std::max(1u,lock->Skill[i]);
     }
     return skill!=0;
 }
@@ -63,14 +64,16 @@ bool LocalGatherQuote(Player& actor,uint64_t source,uint32_t entry,NativeGatherQ
     if(!info || SpellScriptMgr::GetSpellScript(spell) || IsChanneledSpell(info))return reject("gather_spell_unsupported");
     unsigned effects=0;
     for(unsigned i=0;i<MAX_EFFECT_INDEX;++i)if(info->Effect[i]) {
-        if(info->Effect[i]!=SPELL_EFFECT_OPEN_LOCK)return reject("gather_spell_effect_unsupported");++effects;
+        if(info->Effect[i]!=SPELL_EFFECT_OPEN_LOCK)return reject("gather_spell_effect_unsupported");
+        ++effects;
     }
     for(unsigned i=0;i<MAX_SPELL_REAGENTS;++i)if(info->Reagent[i]>0 && info->ReagentCount[i]>0)
         return reject("gather_consumable_tool_adapter_required");
     if(effects!=1 || (!effect && actor.IsNonMeleeSpellCasted(false,true,true)))return reject("gather_native_cast_unavailable");
     q={actor.GetGUIDLow(),entry,skill,spell,required,actor.GetSkillValuePure(skill),actor.GetSkillMaxPure(skill),
         actor.GetSkillValue(skill),actor.GetMoney(),actor.GetItemCount(entry,false),source};
-    if(!ValidNativeGatherQuote(q))return reject("gather_native_quote_invalid");why.clear();return true;
+    if(!ValidNativeGatherQuote(q))return reject("gather_native_quote_invalid");
+    why.clear();return true;
 }
 uint64_t LootGeneration(const Loot& loot) {
     const auto value=std::chrono::duration_cast<std::chrono::microseconds>(loot.GetCreateTime().time_since_epoch()).count();
@@ -156,7 +159,8 @@ private:
     }
     bool Authority(Player& actor) const {
         auto* ai=actor.GetPlayerbotAI();if(!ai)return false;const auto reader=ai->ActivityPermissions();const auto view=reader.Inspect();
-        if(!view)return false;const auto current=ReadNativeContext(actor,view->current.policyRevision,view->current.boot);
+        if(!view)return false;
+        const auto current=ReadNativeContext(actor,view->current.policyRevision,view->current.boot);
         const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
         return reader.Check({SpellEffectMask(false),Lane::Managed,true},current,now,&task,&action,nullptr,
             ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)))==AuthorityCode::Allowed;
@@ -174,17 +178,20 @@ bool NativeGatherSources(Player& actor,uint32_t entry,std::vector<int32_t>& out,
     const auto entries=GAI_VALUE2(std::list<int32>,"item drop list",entry);
     if(entries.size()>4096)return reject("gather_source_catalog_bound");
     for(const auto candidate:entries) {
-        if(candidate>=0 || candidate==INT32_MIN)continue;uint32_t skill=0,required=0;
+        if(candidate>=0 || candidate==INT32_MIN)continue;
+        uint32_t skill=0,required=0;
         if(!GatherLock(uint32_t(-candidate),skill,required) || !DirectDrop(uint32_t(-candidate),entry) ||
             !actor.HasSpell(skill==SKILL_MINING?2575:2366) ||
             CheckGatheringSkill(actor.GetSkillValue(skill),actor.GetSkillMax(skill),required,false,
                 GatheringIntent::RequestedMaterials)!=GatheringSkillResult::Eligible)continue;
         const auto next=uint32_t(skill==SKILL_MINING?ai::TravelDestinationPurpose::GatherMining:ai::TravelDestinationPurpose::GatherHerbalism);
         // One concrete profession per trip; stable table order, no mixed mask.
-        if(!purpose)purpose=next;if(purpose==next)out.push_back(candidate);
+        if(!purpose)purpose=next;
+        if(purpose==next)out.push_back(candidate);
     }
     std::sort(out.begin(),out.end());out.erase(std::unique(out.begin(),out.end()),out.end());
-    if(out.empty())return reject("gather_no_supported_native_source");why.clear();return true;
+    if(out.empty())return reject("gather_no_supported_native_source");
+    why.clear();return true;
 }
 GameObject* NativeGatherNode(Player& actor,uint32_t entry,const std::vector<int32_t>& sources) {
     auto* ai=actor.GetPlayerbotAI();if(!ai)return nullptr;GameObject* best=nullptr;float distance=FLT_MAX;unsigned scanned=0;
