@@ -74,12 +74,16 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             const bool crafted=automaticOffer && job.craftFinishedRevision &&
                 (prior->phase==Phase::Preparing || prior->phase==Phase::Reconciling) &&
                 prior->checkpoint.step=="commission_craft_ready";
-            require(crafted || (prior->phase==Phase::Queued && !job.craftFinishedRevision),"only_queued_or_verified_craft_resume");
-            auto operations=CharacterDatabase.PQuery("SELECT COUNT(*),SUM(kind='profession_craft' AND state='verified') FROM living_activity_operation WHERE task_id='%s'",
+            const bool interruptedOffer=automaticOffer && f.input.template get<bool>("offer_restart_test",false) &&
+                job.craftFinishedRevision && (prior->phase==Phase::Executing || prior->phase==Phase::Reconciling) &&
+                prior->checkpoint.step=="commission_trade_offer";
+            require(crafted || interruptedOffer || (prior->phase==Phase::Queued && !job.craftFinishedRevision),"only_queued_or_verified_craft_resume");
+            auto operations=CharacterDatabase.PQuery("SELECT COUNT(*),SUM(kind='profession_craft' AND state='verified'),SUM(kind='commission_trade_offer' AND state='intent') FROM living_activity_operation WHERE task_id='%s'",
                 prior->id.c_str());
-            require(operations && operations->Fetch()[0].GetUInt32()==(crafted?1u:0u) &&
-                (!crafted || operations->Fetch()[1].GetUInt32()==1),"queued_fixture_cannot_replay_native_effects");
-            if(crafted) {
+            require(operations && operations->Fetch()[0].GetUInt32()==(interruptedOffer?2u:crafted?1u:0u) &&
+                (!(crafted || interruptedOffer) || operations->Fetch()[1].GetUInt32()==1) &&
+                (!interruptedOffer || operations->Fetch()[2].GetUInt32()==1),"queued_fixture_cannot_replay_native_effects");
+            if(crafted || interruptedOffer) {
                 require(actor->GetItemCount(2454,true)==1 &&
                     actor->GetMoney()==f.input.template get<uint32_t>("actor_money_before") &&
                     customer->GetMoney()==f.input.template get<uint32_t>("recipient_money_before") &&
@@ -90,6 +94,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
                 require(claims.complete && claims.claims.size()==1 && claims.claims.front().itemEntry==2454 &&
                     claims.claims.front().quantity==1 && claims.claims.front().location=="bags","crafted_resume_claim_required");
                 f.input.put("verified_craft_restart",true);
+                f.input.put("interrupted_offer_restart",interruptedOffer);
             }
             f.queuedRestart=false;
         }
@@ -120,6 +125,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             f.input.put("skill_grants",0);f.input.put("recipe_grants",0);f.input.put("fixture_consent",true);
             f.input.put("autonomous_travel_proof",false);f.input.put("broker_admission_proof",false);
             f.input.put("automatic_offer",automaticOffer);
+            f.input.put("offer_restart_test",automaticOffer && bool(std::ifstream("/isolated/evidence/commission-offer-pause-before-dispatch")));
             f.input.add_child("inventory_before",GuildMailFixtureInventory(*actor));
             boost::property_tree::ptree grants;
             for(uint32_t entry:{765u,2449u,3371u})if(!actor->GetItemCount(entry,true)) {
@@ -166,6 +172,11 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             write("activity-commission-trade-"+state.boot+".json",report);state.fixtureFinished=true;return;
         }
         require(!Terminal(saved->phase),"commission_trade_unexpected_terminal");
+        if(saved->phase==Phase::Executing && saved->checkpoint.step=="commission_trade_offer" &&
+            std::ifstream("/isolated/evidence/commission-offer-pause-before-dispatch")) {
+            report.put("outcome","awaiting_restart_before_offer_dispatch");
+            write("commission-offer-restart-checkpoint.json",report);return;
+        }
         // A customer window must not block the ordinary executor's restart
         // context validation. Recovery runs first, preserving the same order.
         if(!(saved->context==ReadNativeContext(*actor,state.policyRevision,state.boot)))return;

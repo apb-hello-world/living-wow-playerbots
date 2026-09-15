@@ -2612,6 +2612,12 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         CommissionTradeQuote quote;
         if(!DecodeCommissionTradeQuote(row.second.request.beforeState,quote))return stop("commission_saved_trade_quote_invalid");
         if(row.second.request.kind=="commission_trade_offer") {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+            const auto* fixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+            if(fixture && std::string(fixture)=="activity-commission-offer-v1" &&
+                std::ifstream("/isolated/evidence/commission-offer-pause-before-dispatch"))
+                return stop("isolated_commission_offer_pause");
+#endif
             NativeCommissionOffer adapter(quote);
             const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"commission_trade_offer");
             if(!grant.Permitted())return stop(grant.blocker);
@@ -2624,7 +2630,22 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     }
     ProfessionHistory history;
     if(!ReadProfessionHistory(actor,id,saved->revision,history,why))return stop(why);
-    if(history.unresolvedOperation)return stop("commission_trade_native_reconciliation_required");
+    if(history.unresolvedOperation) {
+        if(!history.interruptedCommissionOffer)return stop("commission_trade_native_reconciliation_required");
+        if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || bot->GetTradeData())return stop("commission_offer_restore_safety_pause");
+        const std::string party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+        if(!party.empty())return stop(party);
+        if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+            return stop("commission_settlement_backpressure");
+        UnsettledClaimBatch claims;if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
+        ProfessionPreparation restored;const auto receipt=NewId();
+        if(!PrepareInterruptedCommissionOffer(*saved,current,history,claims,NativeClaimBalances(*bot,claims.claims,false),
+            NowMs(),receipt,restored,why))return stop(why);
+        State::Pending write;write.task=std::move(restored.task);write.plan=std::move(restored.plan);
+        write.admissionReceipt=receipt;write.closureRefreshRevision=saved->revision;
+        write.closureRefreshPhase=saved->phase;
+        state->pending.push_back(std::move(write));state->nextWork=0;return stop("commission_offer_restore_pending");
+    }
     if(!history.commissionTrade.empty()) {
         UnsettledClaimBatch claims;
         if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);

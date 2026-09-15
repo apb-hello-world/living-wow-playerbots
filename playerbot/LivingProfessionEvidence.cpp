@@ -425,7 +425,7 @@ std::string ProfessionHistoryQuery(const Task& task) {
         "FROM living_activity_operation WHERE task_id="+id+" AND "+
         (gathering ? "kind='gather_open' AND state IN ('intent','reconciling') " :
             std::string("(kind='profession_craft' OR (kind='mail_collect' AND state IN ('intent','reconciling'))")+
-            (IsCommissionJob(task)?" OR (kind IN ('commission_mail_send','commission_trade') AND state<>'rejected') OR kind IN ('commission_customer_received','commission_fee_collected','commission_parcel_returned')":"")+") ")+
+            (IsCommissionJob(task)?" OR (kind IN ('commission_mail_send','commission_trade') AND state<>'rejected') OR (kind='commission_trade_offer' AND state IN ('intent','reconciling')) OR kind IN ('commission_customer_received','commission_fee_collected','commission_parcel_returned')":"")+") ")+
         "ORDER BY task_revision,operation_id LIMIT "+std::to_string(gathering?2:ProfessionWorkflowAttemptLimit(task.checkpoint.data)+(IsCommissionJob(task)?17:2))+") o ON o.task_id=t.task_id "
         "WHERE t.task_id="+id+" AND t.actor_guid="+std::to_string(task.actor)+" AND t.revision="+
         std::to_string(task.revision)+" AND t.root_task_id=t.task_id AND t.mode='active' "
@@ -457,7 +457,7 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
             }
             StoredCraftOperation row;auto& receipt=row.receipt;
             receipt.id=fields[3];receipt.task=fields[4];receipt.taskRevision=number(5);receipt.kind=fields[6];
-            const bool commission=IsCommissionJob(owner) && (receipt.kind=="commission_mail_send" || receipt.kind=="commission_trade" ||
+            const bool commission=IsCommissionJob(owner) && (receipt.kind=="commission_mail_send" || receipt.kind=="commission_trade" || receipt.kind=="commission_trade_offer" ||
                 receipt.kind=="commission_customer_received" || receipt.kind=="commission_fee_collected" || receipt.kind=="commission_parcel_returned");
             Require(IsUuid(receipt.id) && ids.insert(receipt.id).second && receipt.task==owner.id &&
                 receipt.taskRevision && (receipt.taskRevision>previous || (commission && receipt.taskRevision==previous)) && receipt.taskRevision<=owner.revision &&
@@ -466,7 +466,7 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
             if(gathering) Require(++crafts==1 && owner.revision>1 && receipt.taskRevision==owner.revision-1 &&
                 fields[7]=="reconciling","gather_history_operation_identity_invalid");
             else if(commission) Require((commissionKinds.insert(receipt.kind).second || receipt.kind=="commission_customer_received") &&
-                (receipt.kind=="commission_mail_send" || receipt.kind=="commission_trade" || fields[7]=="verified"),"commission_history_duplicate_or_unverified_receipt");
+                (receipt.kind=="commission_mail_send" || receipt.kind=="commission_trade" || receipt.kind=="commission_trade_offer" || fields[7]=="verified"),"commission_history_duplicate_or_unverified_receipt");
             else if(receipt.kind=="profession_craft") Require(++crafts<=limit,"profession_history_attempt_limit_exceeded");
             else Require(++mails==1 && receipt.taskRevision==owner.revision &&
                 (fields[7]=="intent" || fields[7]=="reconciling"),"profession_history_mail_identity_invalid");
@@ -494,7 +494,8 @@ bool ProfessionHistoryCursor::Advance(std::string& blocker) {
     if (task.id.empty() || position>=records.size()) {blocker="profession_history_read_not_started";return false;}
     const auto& row=records[position];
     if(IsCommissionJob(task) && row.receipt.kind.compare(0,11,"commission_")==0) {
-        if(row.receipt.kind=="commission_trade")history.commissionTrade.push_back(row);
+        if(row.receipt.kind=="commission_trade_offer")history.interruptedCommissionOffer=row;
+        else if(row.receipt.kind=="commission_trade")history.commissionTrade.push_back(row);
         else history.commissionMail.push_back(row); // Domain decoder validates the exact native contract before use.
     } else if (row.receipt.state==OperationState::Verified || row.receipt.state==OperationState::Rejected) {
         StoredCraftProof proof;

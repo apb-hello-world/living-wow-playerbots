@@ -13,4 +13,9 @@ bool PrepareCommissionTradeSettlement(const Task&,const WorldContext&,const Prof
 bool PrepareCommissionTradeReadyRestore(const Task&,const WorldContext&,const ProfessionHistory&,
     const UnsettledClaimBatch&,const std::vector<NativeResourceBalance>&,
     uint64_t,const std::string&,ProfessionPreparation&,std::string&);
+// Only a process-restored non-consuming offer may be rejected without a new
+// native operation. Exact output custody remains held; no delivery is inferred.
+bool PrepareInterruptedCommissionOffer(const Task&,const WorldContext&,const ProfessionHistory&,
+    const UnsettledClaimBatch&,const std::vector<NativeResourceBalance>&,
+    uint64_t,const std::string&,ProfessionPreparation&,std::string&);
 }

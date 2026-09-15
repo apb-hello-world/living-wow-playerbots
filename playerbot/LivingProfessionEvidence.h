@@ -53,6 +53,7 @@ namespace LivingActivity {
         std::optional<StoredCraftOperation> interruptedCraft;
         std::optional<StoredCraftOperation> interruptedMail;
         std::optional<StoredCraftOperation> interruptedGather;
+        std::optional<StoredCraftOperation> interruptedCommissionOffer;
         std::vector<StoredCraftOperation> commissionMail; // bounded send/receipt/fee/return evidence
         std::vector<StoredCraftOperation> commissionTrade; // one non-rejected native exchange, never a timer
     };

@@ -123,6 +123,79 @@ bool PrepareCommissionTradeReadyRestore(const Task& saved,const WorldContext& cu
         " AND v.guid=i.owner_guid AND i.itemEntry="+std::to_string(balance.itemEntry)+" AND i.count="+std::to_string(balance.quantity)+")";
     result.task=std::move(next);result.plan=std::move(plan);why.clear();return true;
 }
+bool PrepareInterruptedCommissionOffer(const Task& saved,const WorldContext& current,const ProfessionHistory& history,
+    const UnsettledClaimBatch& claims,const std::vector<NativeResourceBalance>& native,
+    uint64_t now,const std::string& receipt,ProfessionPreparation& result,std::string& why) {
+    result={};why="commission_offer_restart_proof_required";
+    try {
+        CommissionJob job;
+        Require(Validate(saved,why) && ValidateCommissionTask(saved,why) && IsCommissionJob(saved) &&
+            DecodeCommissionJob(saved.checkpoint.data,job,why) && job.craftFinishedRevision &&
+            saved.accepted && saved.mode==Mode::Active && saved.context.boot.empty() &&
+            !saved.context.actorGeneration && !saved.context.mapGeneration &&
+            (saved.phase==Phase::Executing || saved.phase==Phase::Reconciling) &&
+            saved.checkpoint.step=="commission_trade_offer" && current.actor==saved.actor && IsUuid(current.boot) &&
+            current.actorGeneration && current.mapGeneration && current.policyRevision &&
+            current.session.size()<=120 && current.session.empty()==(current.sessionRevision==0) &&
+            now>=saved.updatedAtMs && saved.revision<UINT64_MAX-1 && IsUuid(receipt),"commission_offer_restored_context_required");
+        Require(history.complete && history.task==saved.id && history.revision==saved.revision &&
+            history.unresolvedOperation && history.interruptedCommissionOffer && !history.attempts.empty() &&
+            history.commissionMail.empty() && history.commissionTrade.empty(),"commission_offer_restart_history_required");
+        const auto& row=*history.interruptedCommissionOffer;const auto& op=row.receipt;
+        Require(row.acknowledged && row.journalDigest.size()==64 &&
+            row.journalDigest.find_first_not_of("0123456789abcdef")==std::string::npos &&
+            IsUuid(op.id) && op.task==saved.id && op.kind=="commission_trade_offer" &&
+            op.taskRevision>job.craftFinishedRevision && op.taskRevision<=saved.revision &&
+            saved.revision-op.taskRevision<=1 &&
+            (op.state==OperationState::Intent || op.state==OperationState::Reconciling),"commission_offer_restart_intent_required");
+        const auto before=Parse(row.beforeState);EnchantCodec::Object(before,{"effects","persistence","native"});
+        CommissionTradeQuote quote;
+        Require(Number(before,"effects")==Mask(Effect::Inventory) &&
+            Number(before,"persistence")==unsigned(NativePersistence::JournalOnly) &&
+            DecodeCommissionTradeQuote(EnchantCodec::Json(before.get_child("native")),quote),"commission_offer_restart_contract_required");
+        Require(claims.complete && claims.bookRevision && !claims.claims.empty() && claims.claims.size()<=16 &&
+            native.size()==quote.items.size(),"commission_offer_restart_custody_required");
+        std::vector<ClaimConsumption> coverage;
+        for(const auto& c:claims.claims) {Require(c.quantity<=UINT32_MAX,"commission_offer_claim_quantity");coverage.push_back({c,uint32_t(c.quantity)});}
+        Require(ExactCommissionTradeConsumption(saved,quote,coverage),"commission_offer_restart_claims_changed");
+        std::set<uint32_t> seen;std::string guard;
+        for(const auto& b:native) {
+            Require(ValidNativeResourceBalance(b) && b.actor==saved.actor && b.itemEntry==quote.entry && b.location=="bags" &&
+                !b.copper && !b.nativeReference && seen.insert(b.itemGuid).second &&
+                std::any_of(quote.items.begin(),quote.items.end(),[&](const auto& i){return i.item==b.itemGuid && i.quantity==b.quantity;}),
+                "commission_offer_restart_native_custody_changed");
+            guard+=" AND EXISTS(SELECT 1 FROM item_instance i JOIN character_inventory v ON v.item=i.guid"
+                " WHERE i.guid="+std::to_string(b.itemGuid)+" AND i.owner_guid="+std::to_string(saved.actor)+
+                " AND v.guid=i.owner_guid AND i.itemEntry="+std::to_string(b.itemEntry)+" AND i.count="+std::to_string(b.quantity)+")";
+        }
+        for(const auto& c:claims.claims)guard+=" AND EXISTS(SELECT 1 FROM living_activity_claim c WHERE c.claim_id="+SqlValue(c.id)+
+            " AND c.task_id=living_activity_task.task_id AND c.actor_guid="+std::to_string(saved.actor)+
+            " AND c.item_guid="+std::to_string(c.itemGuid)+" AND c.item_entry="+std::to_string(c.itemEntry)+
+            " AND c.quantity="+std::to_string(c.quantity)+" AND c.revision="+std::to_string(c.revision)+
+            " AND c.copper=0 AND c.native_reference=0 AND c.state='held' AND c.location='bags')";
+        auto next=saved;next.context=current;++next.revision;next.updatedAtMs=now;next.phase=Phase::Verifying;
+        next.checkpoint.blocker.clear();next.retryAtMs=0;
+        auto outcome=op;outcome.state=OperationState::Rejected;outcome.evidence="commission_offer_cleared_on_restart";
+        // JSON uses the same exact quote as native custody evidence. No claim,
+        // inventory or money row is changed by this receipt-only reconciliation.
+        auto plan=OperationOutcomeWrite(next,saved.revision,outcome,receipt,EncodeCommissionTradeQuote(quote));
+        plan.statements.front()+=" AND phase="+SqlValue(Name(saved.phase))+" AND checkpoint="+SqlValue(saved.checkpoint.data)+
+            " AND EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+SqlValue(op.id)+
+            " AND o.task_id=living_activity_task.task_id AND o.kind='commission_trade_offer' AND o.state="+SqlValue(op.state==OperationState::Intent?"intent":"reconciling")+
+            " AND SHA2(CONCAT(o.before_state,'|',o.after_state),256)="+SqlValue(row.journalDigest)+")"
+            " AND (SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
+            " WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))=1"
+            " AND NOT EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
+            " AND o.kind IN ('commission_trade','commission_mail_send') AND o.state<>'rejected')"
+            " AND (SELECT COUNT(*) FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id"
+            " AND c.state NOT IN ('consumed','released'))="+std::to_string(claims.claims.size())+
+            " AND EXISTS(SELECT 1 FROM living_activity_transition t WHERE t.task_id=living_activity_task.task_id"
+            " AND t.task_revision="+std::to_string(job.craftFinishedRevision)+" AND t.code='commission_craft_verified')"+guard;
+        result.task=std::move(next);result.plan=std::move(plan);why.clear();return true;
+    }catch(const std::invalid_argument& error){why=error.what();}
+     catch(const std::exception&){why="commission_offer_restart_receipt_malformed";}
+    return false;
+}
 bool PrepareCommissionTradeSettlement(const Task& saved,const WorldContext& current,const ProfessionHistory& history,
     const UnsettledClaimBatch& claims,uint64_t now,const std::string& receipt,ProfessionPreparation& result,std::string& why) {
     result={};why="commission_trade_settlement_unresolved";

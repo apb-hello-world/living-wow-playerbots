@@ -60,6 +60,46 @@ inline void TestCommissionTradeOperation() {
         offered.consumption.clear();TestAdapter prepare(offered);prepare.offer=true;
         assert(ValidateOperationAdapter(offered,prepare,why));
         assert(ValidateOperationRequest(offered,task,task.context,nullptr,1000,why));
+        {
+            auto interrupted=offered.transition.task;interrupted.context={};interrupted.context.actor=task.actor;
+            StoredCraftOperation row;row.acknowledged=true;row.journalDigest=std::string(64,'a');
+            row.receipt.id=offered.transition.receipt;row.receipt.task=task.id;
+            row.receipt.taskRevision=interrupted.revision;row.receipt.kind="commission_trade_offer";
+            row.receipt.state=OperationState::Intent;
+            row.beforeState="{\"effects\":4,\"persistence\":0,\"native\":"+offered.beforeState+'}';row.afterState="{}";
+            ProfessionHistory h;h.task=task.id;h.revision=interrupted.revision;h.complete=true;h.unresolvedOperation=true;
+            h.interruptedCommissionOffer=row;h.attempts.emplace_back();
+            UnsettledClaimBatch c;c.complete=true;c.bookRevision=1;c.claims={item};
+            std::vector<NativeResourceBalance> n{{703,103,2454,1,0,"bags"}};
+            ProfessionPreparation recovered;
+            assert(PrepareInterruptedCommissionOffer(interrupted,task.context,h,c,n,2000,
+                "ff2efbdf-f0ec-4539-b840-299847970c09",recovered,why));
+            assert(recovered.task.phase==Phase::Verifying && recovered.task.checkpoint.step=="commission_trade_offer");
+            assert(recovered.task.checkpoint.data==interrupted.checkpoint.data);
+            assert(recovered.plan.receiptQuery.find(SqlValue("commission_offer_cleared_on_restart"))!=std::string::npos);
+            for(const auto& sql:recovered.plan.statements) {
+                assert(sql.find("UPDATE living_activity_claim")==std::string::npos);
+                assert(sql.find("UPDATE item_instance")==std::string::npos && sql.find("SET money")==std::string::npos);
+            }
+            for(unsigned i=0;i<13;++i) {
+                auto t=interrupted;auto history=h;auto claims=c;auto native=n;
+                if(i==0)t.context=task.context;
+                if(i==1)history.complete=false;
+                if(i==2)history.unresolvedOperation=false;
+                if(i==3)history.interruptedCommissionOffer->receipt.kind="commission_trade";
+                if(i==4)history.interruptedCommissionOffer->receipt.state=OperationState::Verified;
+                if(i==5)history.interruptedCommissionOffer->beforeState="{\"effects\":12,\"persistence\":1,\"native\":"+offered.beforeState+'}';
+                if(i==6)history.commissionTrade.emplace_back();
+                if(i==7)history.interruptedCommissionOffer->acknowledged=false;
+                if(i==8)claims.claims.clear();
+                if(i==9)native.front().quantity=2;
+                if(i==10)native.front().actor=9;
+                if(i==11)t.checkpoint.step="commission_trade";
+                if(i==12)history.attempts.clear();
+                assert(!PrepareInterruptedCommissionOffer(t,task.context,history,claims,native,2000,
+                    "ff2efbdf-f0ec-4539-b840-299847970c09",recovered,why));
+            }
+        }
         // Compose the actual operation contract and authority gate: a lease
         // alone reproduces the old rejection; acknowledged intent dispatch
         // grants only the offer's inventory effect, never a fee transfer.
