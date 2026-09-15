@@ -412,7 +412,8 @@ bool DecodeInterruptedCommission(const Task& saved,const ProfessionHistory& hist
     if(r.state!=OperationState::Reconciling || r.taskRevision!=saved.revision-1 ||
         (r.evidence!="native_save_capture_requires_reconciliation" && r.evidence!="claim_outcome_requires_reconciliation" &&
          r.evidence!="commission_mail_native_custody_uncertain" && r.evidence!="commission_mail_native_split_only" &&
-         r.evidence!="commission_mail_split_requires_reconciliation")) {why="commission_interrupted_observation_invalid";return false;}
+         r.evidence!="commission_mail_split_requires_reconciliation" &&
+         r.evidence!="native_consumption_delta_mismatch")) {why="commission_interrupted_observation_invalid";return false;}
     // Reuse the exact intent/claims decoder; this read-only normalization is
     // never persisted. Recovery SQL compares the ORIGINAL uncertain record.
     auto intentTask=saved;intentTask.phase=Phase::Executing;

@@ -384,6 +384,8 @@ inline void TestCommissionMail() {
         partial.beforeState="{\"effects\":12,\"persistence\":1,\"native\":"+ClaimedNativeState(EncodeCommissionMailQuote(split),batchUses,8192)+'}';
         partial.afterState=native.substr(0,native.size()-1)+",\"surplus_item\":104,\"surplus_count\":3}";
         assert(PrepareCapturedCommissionSend(batchInterrupted,batchTask.context,batchHistory,batchClaims,2002000,settlement,recovered,why));
+        partial.receipt.evidence="native_consumption_delta_mismatch";
+        assert(PrepareCapturedCommissionSend(batchInterrupted,batchTask.context,batchHistory,batchClaims,2002000,settlement,recovered,why));
         assert(recovered.plan.statements[1].find("s.count=3")!=std::string::npos);
         partial.afterState=native;
         assert(!PrepareCapturedCommissionSend(batchInterrupted,batchTask.context,batchHistory,batchClaims,2002000,settlement,recovered,why));
