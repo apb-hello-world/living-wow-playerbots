@@ -49,10 +49,13 @@ void FillIsolatedCommissionCapacity(Player& actor,const Task& task) {
     actor.SaveToDB();
     std::ofstream out(done);out<<Json(record);out.close();if(!out)throw std::runtime_error("capacity_fixture_evidence_failed");
 }
-uint32_t IsolatedCommissionCapacityProceeds(const Task& task) {
+uint32_t IsolatedCommissionCapacityProceeds(const Task& task,bool required=true) {
     auto rows=CharacterDatabase.PQuery("SELECT before_state,after_state,evidence_code FROM living_activity_operation "
         "WHERE task_id='%s' AND kind='capacity_vendor_sale' AND state='verified' ORDER BY task_revision LIMIT 9",task.id.c_str());
-    if(!rows)throw std::runtime_error("capacity_fixture_requires_verified_native_sale");
+    if(!rows) {
+        if(required)throw std::runtime_error("capacity_fixture_requires_verified_native_sale");
+        return 0;
+    }
     uint64_t total=0;unsigned count=0;
     do {
         boost::property_tree::ptree before,after;std::istringstream in(rows->Fetch()[0].GetCppString()),out(rows->Fetch()[1].GetCppString());

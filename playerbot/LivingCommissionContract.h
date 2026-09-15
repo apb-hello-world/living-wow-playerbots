@@ -31,6 +31,17 @@ inline bool ValidCommissionContract(const CommissionContract& c,std::string& why
         flow.intent.reagents.empty())return reject();
     why.clear();return true;
 }
+// Replayed immutable chat proposals must not depend on materials still being
+// present after the accepted order has already crafted or mailed them.
+inline bool MatchesAcceptedCommissionProposal(const CommissionContract& c,const std::string& transaction,
+    uint32_t actor,uint32_t recipient,const std::string& delivery,const std::string& capability,
+    uint32_t quantity,uint32_t explicitFee) {
+    ProfessionWorkflow flow;std::string why;
+    return ValidCommissionContract(c,why) && DecodeProfessionWorkflow(c.recipe,flow,why) &&
+        c.transaction==transaction && c.actor==actor && c.recipient==recipient && c.delivery==delivery &&
+        flow.intent.outputQuantity==quantity && (!explicitFee || c.feeCopper==explicitFee) &&
+        capability=="spell:craft:"+std::to_string(flow.intent.recipe)+':'+std::to_string(flow.intent.outputEntry);
+}
 inline std::string EncodeCommissionContract(const CommissionContract& c) {
     std::string why;if(!ValidCommissionContract(c,why))throw std::invalid_argument(why);
     boost::property_tree::ptree root,recipe;std::istringstream in(c.recipe);

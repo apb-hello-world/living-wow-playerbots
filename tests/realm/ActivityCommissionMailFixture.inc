@@ -126,6 +126,7 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,
             }
             CommissionJob job;job.agreement={"lwc-"+std::to_string(NowMs()),"isolated-commission-mail-v1","mail",
                 EncodeProfessionJob(recipe),f.actor,f.recipient,60,NowMs()};job.craft=job.agreement.recipe;
+            job.agreement.transaction="isolated-mail-"+job.agreement.id;
             auto& task=f.request.task;task.source="commission_job";task.sourceKey=job.agreement.id;
             task.id=task.root=SourceId(task.source,task.sourceKey);task.actor=f.actor;task.kind=Kind::Commission;
             task.mode=Mode::Active;task.phase=Phase::Queued;task.accepted=true;task.priority=Priority::Human;
@@ -194,8 +195,8 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,
         if(proof.send.empty())return;
         require(!sLivingActivityCoordinator.DefersNativeSave(f.actor),"commission_fixture_native_save_pending");
         require(!parcelCase || proof.quote.additional.size()==1,"two_native_attachments_required");
-        const auto proceeds=capacityCase?IsolatedCommissionCapacityProceeds(*saved):0u;
-        if(capacityCase)f.input.put("capacity_sale_proceeds",proceeds);
+        const auto proceeds=IsolatedCommissionCapacityProceeds(*saved,capacityCase);
+        if(proceeds)f.input.put("capacity_sale_proceeds",proceeds);
         require(actor->GetMoney()==uint64_t(f.money)+proceeds-proof.quote.postage && actor->GetItemCount(2454,true)==f.output,
             "commission_fixture_native_stock_or_postage_mismatch");
         f.input.put("send_operation",proof.send);f.input.put("mail",proof.mail);

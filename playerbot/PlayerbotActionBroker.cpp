@@ -190,6 +190,21 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
         return reject("unsupported_proposal", "I can't handle that kind of transaction.");
     if (proposal.botGuid == 0 || proposal.targetGuid != event.speakerGuid || proposal.quantity == 0)
         return reject("malformed_proposal", "That trade request was incomplete.");
+    const std::string transactionId = "wow-tx-" + event.eventId + "-" + proposal.proposalId;
+    if(proposal.type=="craft_commission" && proposal.delivery=="mail" &&
+        sLivingActivityCoordinator.EffectEnforcementEnabled()) {
+        const auto id="lwc-"+std::to_string(std::hash<std::string>{}(transactionId));
+        if(const auto saved=sLivingActivityCoordinator.ReadSavedTask(LivingActivity::SourceId("commission_job",id))) {
+            LivingActivity::CommissionJob job;std::string why;
+            if(!LivingActivity::ValidateCommissionTask(*saved,why) ||
+                !LivingActivity::DecodeCommissionJob(saved->checkpoint.data,job,why) ||
+                !LivingActivity::MatchesAcceptedCommissionProposal(job.agreement,transactionId,proposal.botGuid,
+                    proposal.targetGuid,proposal.delivery,proposal.capabilityRef,proposal.quantity,proposal.priceCopper))
+                return reject("commission_agreement_conflict","That request no longer matches the recorded order.");
+            ReportManagedCommission(*saved);
+            return PlayerbotActionResult(true,"commission_queued","That crafting order is already recorded.");
+        }
+    }
     if (Find(proposal.botGuid, proposal.targetGuid))
         return reject("active_transaction_conflict", "We already have another trade in progress.");
 
@@ -414,7 +429,6 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
             return reject("gift_policy_rejected", "I can't give that item away right now.");
     }
 
-    std::string transactionId = "wow-tx-" + event.eventId + "-" + proposal.proposalId;
     std::string commissionId,commissionPayload;
     LivingActivity::AdmissionResult managedAdmission;
     const bool managedCommission=crafting && proposal.delivery=="mail" && sLivingActivityCoordinator.EffectEnforcementEnabled();

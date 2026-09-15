@@ -3767,6 +3767,14 @@ AdmissionResult LivingActivityCoordinator::SubmitMailCommission(const Commission
             return reject(AdmissionCode::ConflictingWrite,"accepted_commission_agreement_is_immutable");
         return {AdmissionCode::Saved,id,"commission_already_saved",saved->revision};
     }
+    for(const auto& pending:state->pending)if(pending.task.id==id && !pending.admissionReceipt.empty()) {
+        CommissionJob existing;auto comparison=agreement;
+        if(!DecodeCommissionJob(pending.task.checkpoint.data,existing,why))return reject(AdmissionCode::ConflictingWrite,why);
+        comparison.acceptedAtMs=existing.agreement.acceptedAtMs;
+        if(EncodeCommissionContract(comparison)!=EncodeCommissionContract(existing.agreement))
+            return reject(AdmissionCode::ConflictingWrite,"accepted_commission_agreement_is_immutable");
+        return {AdmissionCode::Pending,id,"commission_admission_pending",pending.task.revision};
+    }
     auto* actor=sRandomPlayerbotMgr.GetPlayerBot(agreement.actor);
     if(!actor || !actor->GetPlayerbotAI() || !actor->IsInWorld())return reject(AdmissionCode::NotReady,"actor_not_available");
     TaskRequest request;auto& task=request.task;
