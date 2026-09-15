@@ -3,13 +3,17 @@
 // reagents, never output, spells, skills or money, to cross a native stack edge.
 // The recorded agreement is fixture consent, not a human request.
 // Ordinary preparation, timed native crafting and mail own the actual work.
+#include "playerbot/PlayerbotChatDirector.h"
 namespace {
 template<class FixtureState>
-void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,bool capacityCase=false) {
+void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,bool capacityCase=false,bool brokerCase=false) {
     struct Fixture {
         uint32_t actor=0,recipient=0,money=0,output=0,quantity=1;
         uint64_t deadline=0,nextDiagnostic=0;
         bool login=false,setup=false,admitted=false,capacityFilled=false;
+        bool customerLogin=false,brokerAccepted=false;
+        ChatDirectorEvent brokerEvent;
+        ChatDirectorActionProposal brokerProposal;
         TaskRequest request;
         std::string blocker;
         boost::property_tree::ptree input;
@@ -88,6 +92,8 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,
             }
         }
         if(!f.setup) {
+            require(!brokerCase || !std::ifstream("/isolated/evidence/commission-broker-proposal-v1.json"),
+                "broker_setup_interrupted_requires_reconciliation_not_new_grants");
             require(!std::ifstream("/isolated/evidence/commission-mail-input-v1.json"),
                 "existing_commission_fixture_must_be_reconciled_not_recreated");
             for(const auto& row:state.cache)if(row.second.actor==f.actor && row.second.mode==Mode::Active && !Terminal(row.second.phase))
@@ -127,6 +133,21 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,
             CommissionJob job;job.agreement={"lwc-"+std::to_string(NowMs()),"isolated-commission-mail-v1","mail",
                 EncodeProfessionJob(recipe),f.actor,f.recipient,60,NowMs()};job.craft=job.agreement.recipe;
             job.agreement.transaction="isolated-mail-"+job.agreement.id;
+            if(brokerCase) {
+                require(BuildNativeRequestedItemJob(*actor,2329,2454,1,recipe,f.blocker),"native_broker_recipe_required");
+                f.brokerEvent.eventId="isolated-mail-"+std::to_string(NowMs());
+                f.brokerEvent.speakerGuid=f.recipient;
+                auto& p=f.brokerProposal;p.proposalId="accepted";p.botGuid=f.actor;p.targetGuid=f.recipient;
+                p.type="craft_commission";p.capabilityRef="spell:craft:2329:2454";
+                p.delivery="mail";p.quantity=1;p.priceCopper=60;
+                auto& candidate=f.brokerEvent.candidates[f.actor];candidate.guid=f.actor;
+                ChatDirectorCapability capability;capability.capabilityRef=p.capabilityRef;capability.type=p.type;
+                capability.itemId=2454;capability.minQuantity=capability.maxQuantity=capability.quantity=1;
+                capability.priceCopper=60;capability.deliveries={"mail"};candidate.actionCapabilities.push_back(capability);
+                job.agreement.transaction="wow-tx-"+f.brokerEvent.eventId+'-'+p.proposalId;
+                job.agreement.id="lwc-"+std::to_string(std::hash<std::string>{}(job.agreement.transaction));
+                job.agreement.recipe=job.craft=EncodeProfessionJob(recipe);
+            }
             auto& task=f.request.task;task.source="commission_job";task.sourceKey=job.agreement.id;
             task.id=task.root=SourceId(task.source,task.sourceKey);task.actor=f.actor;task.kind=Kind::Commission;
             task.mode=Mode::Active;task.phase=Phase::Queued;task.accepted=true;task.priority=Priority::Human;
@@ -143,8 +164,10 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,
             f.input.put("item_grants",grants.size());f.input.add_child("material_grants",grants);
             f.input.put("earned_materials_proof",false);f.input.put("money_grants",0);f.input.put("skill_grants",0);
             f.input.put("recipe_grants",0);f.input.put("fixture_consent",true);f.input.put("ordinary_due_queue",true);
+            if(brokerCase){f.input.put("broker_case",true);f.input.put("broker_event",f.brokerEvent.eventId);}
             f.input.add_child("inventory_before",GuildMailFixtureInventory(*actor));
-            std::ofstream intent("/isolated/evidence/commission-mail-input-v1.json");intent<<Json(f.input);intent.close();
+            std::ofstream intent(brokerCase?"/isolated/evidence/commission-broker-proposal-v1.json":
+                "/isolated/evidence/commission-mail-input-v1.json");intent<<Json(f.input);intent.close();
             require(bool(intent),"commission_fixture_intent_saved");
             for(const auto& row:grants) {
                 const auto entry=row.second.template get<uint32_t>("entry"),quantity=row.second.template get<uint32_t>("quantity");
@@ -163,11 +186,43 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,
         if(!f.admitted) {
             CommissionJob accepted;std::string why;
             require(DecodeCommissionJob(f.request.task.checkpoint.data,accepted,why),"fixture_original_agreement_required");
-            const auto result=sLivingActivityCoordinator.SubmitMailCommission(accepted.agreement);f.blocker=result.blocker;
-            require(result.code==AdmissionCode::Pending,"commission_fixture_admission:"+f.blocker);f.admitted=true;return;
+            if(brokerCase) {
+                auto* customer=sRandomPlayerbotMgr.GetPlayerBot(f.recipient);
+                if(!customer) {
+                    if(!f.customerLogin){f.customerLogin=true;sRandomPlayerbotMgr.AddRandomBot(f.recipient);}
+                    f.blocker="broker_customer_login_pending";return;
+                }
+                require(customer->GetPlayerbotAI() && !customer->GetPlayerbotAI()->IsRealPlayer() && customer->GetSession() &&
+                    sPlayerbotAIConfig.IsInRandomAccountList(customer->GetSession()->GetAccountId()),"native_bot_customer_required");
+                if(!customer->IsInWorld() || NativeSafety(customer) || customer->GetGroup() || customer->GetTradeData()) {
+                    f.blocker="broker_customer_safety_wait";return;
+                }
+                auto invalid=f.brokerProposal;invalid.priceCopper=61;
+                const auto rejected=sPlayerbotActionBroker.Create(invalid,f.brokerEvent);
+                require(!rejected.created && rejected.reasonCode=="craft_fee_changed","native_broker_changed_fee_must_reject");
+                const auto result=sPlayerbotActionBroker.Create(f.brokerProposal,f.brokerEvent);
+                require(result.created && result.reasonCode=="commission_queued","native_broker_admission:"+result.reasonCode);
+                const auto duplicate=sPlayerbotActionBroker.Create(f.brokerProposal,f.brokerEvent);
+                require(duplicate.created && duplicate.reasonCode=="commission_queued","native_broker_pending_replay_required");
+            } else {
+                const auto result=sLivingActivityCoordinator.SubmitMailCommission(accepted.agreement);f.blocker=result.blocker;
+                require(result.code==AdmissionCode::Pending,"commission_fixture_admission:"+f.blocker);
+            }
+            f.admitted=true;return;
         }
         const auto saved=sLivingActivityCoordinator.ReadSavedTask(f.request.task.id);
         if(!saved){f.blocker="commission_fixture_admission_pending";return;}
+        if(brokerCase && !f.brokerAccepted && !std::ifstream("/isolated/evidence/commission-mail-input-v1.json")) {
+            CommissionJob actual,expected;std::string why;
+            require(DecodeCommissionJob(saved->checkpoint.data,actual,why) &&
+                DecodeCommissionJob(f.request.task.checkpoint.data,expected,why),"native_broker_accepted_agreement_required");
+            expected.agreement.acceptedAtMs=actual.agreement.acceptedAtMs;
+            require(EncodeCommissionContract(expected.agreement)==EncodeCommissionContract(actual.agreement),
+                "native_broker_cannot_change_fixture_consent");
+            f.input.put("agreement",EncodeCommissionContract(actual.agreement));
+            std::ofstream out("/isolated/evidence/commission-mail-input-v1.json");out<<Json(f.input);out.close();
+            require(bool(out),"native_broker_acceptance_evidence_required");f.brokerAccepted=true;
+        }
         if(capacityCase && !f.capacityFilled) {
             CommissionJob job;std::string why;
             require(DecodeCommissionJob(saved->checkpoint.data,job,why),"capacity_fixture_commission_required");
@@ -193,6 +248,15 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,
         if(!sLivingActivityCoordinator.ReadProfessionHistory(f.actor,saved->id,saved->revision,history,f.blocker) ||
             !InspectCommissionDelivery(*saved,history,proof,f.blocker))return;
         if(proof.send.empty())return;
+        if(brokerCase && f.brokerAccepted) {
+            // Replayed after actual material consumption, not merely queued.
+            const auto duplicate=sPlayerbotActionBroker.Create(f.brokerProposal,f.brokerEvent);
+            require(duplicate.created && duplicate.reasonCode=="commission_queued","native_broker_postsend_replay_required");
+            auto changed=f.brokerProposal;changed.quantity=2;
+            const auto rejected=sPlayerbotActionBroker.Create(changed,f.brokerEvent);
+            require(!rejected.created && rejected.reasonCode=="commission_agreement_conflict","native_broker_replay_conflict_required");
+            f.input.put("broker_postsend_replay_verified",true);
+        }
         require(!sLivingActivityCoordinator.DefersNativeSave(f.actor),"commission_fixture_native_save_pending");
         require(!parcelCase || proof.quote.additional.size()==1,"two_native_attachments_required");
         const auto proceeds=IsolatedCommissionCapacityProceeds(*saved,capacityCase);

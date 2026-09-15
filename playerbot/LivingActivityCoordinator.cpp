@@ -654,6 +654,7 @@ struct LivingActivityCoordinator::State {
             std::string(mode)!="activity-profession-auction-partial-v1" &&
             std::string(mode)!="activity-profession-cohort-v1" &&
             std::string(mode)!="activity-commission-mail-v1" &&
+            std::string(mode)!="activity-commission-broker-v1" &&
             std::string(mode)!="activity-commission-parcel-v2" &&
             std::string(mode)!="activity-commission-capacity-v1" &&
             std::string(mode)!="activity-commission-collect-v1" &&
@@ -3786,6 +3787,10 @@ AdmissionResult LivingActivityCoordinator::SubmitMailCommission(const Commission
     task.checkpoint.step="profession_prepare";task.checkpoint.data=EncodeCommissionJob({agreement,agreement.recipe,0});
     request.receipt=SourceId("commission_admission",agreement.id);
     return SubmitTask(request);
+}
+
+std::optional<Task> LivingActivityCoordinator::ReadSavedCommission(const std::string& commission) const {
+    return ReadSavedTask(SourceId("commission_job",commission));
 }
 
 AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request) {
