@@ -4066,8 +4066,17 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                     observation.state=OperationState::Rejected;
                     observation.evidence="native_save_transaction_unavailable";
                 }
+                auto nativeAfter=NativeConsumptionBalances(*bot,request,false);
+                if(observation.state==OperationState::Verified && observation.retainedSplit.itemGuid) {
+                    const auto& split=observation.retainedSplit;
+                    const auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,split.itemGuid));
+                    if(!adapter.SupportsCommissionMailSend() || !item || item->GetOwnerGuid()!=bot->GetObjectGuid() ||
+                        !Player::IsInventoryPos(item->GetPos())) {
+                        observation.state=OperationState::Reconciling;observation.evidence="native_retained_split_not_owned";
+                    } else nativeAfter.push_back({bot->GetGUIDLow(),item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,"bags"});
+                }
                 if (observation.state == OperationState::Verified &&
-                    !VerifyConsumedNativeResources(request,nativeBefore,NativeConsumptionBalances(*bot,request,false),blocker)) {
+                    !VerifyConsumedNativeResources(request,nativeBefore,nativeAfter,blocker,observation.retainedSplit)) {
                     observation.state=OperationState::Reconciling;
                     observation.evidence=blocker; // Preserve actual adapter after-state and native reference.
                 }

@@ -193,6 +193,7 @@ NativeObservation NativeCommissionMail::ExecuteNative(Player& actor,const Operat
         out.evidence="commission_mail_native_custody_uncertain";return out;
     }
     sent=capture.Rows().front();out.state=OperationState::Verified;out.evidence="native_commission_parcel_and_postage_observed";
+    if(surplusItem)out.retainedSplit={quote.sender,surplusItem,quote.entry,quote.count-quote.quantity,0,"bags"};
     out.nativeReference="mail:"+std::to_string(sent.id)+":item:"+std::to_string(sent.itemGuid);
     out.afterState="{\"mail\":"+std::to_string(sent.id)+",\"item\":"+std::to_string(sent.itemGuid)+
         ",\"receiver\":"+std::to_string(sent.receiver)+",\"cod\":"+std::to_string(sent.cod)+

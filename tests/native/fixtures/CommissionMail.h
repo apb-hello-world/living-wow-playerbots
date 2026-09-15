@@ -102,6 +102,29 @@ inline void TestCommissionMail() {
     request.authorization.origin="commission_mail_send";request.authorization.permittedEffects=request.effects;
     std::string why;
     assert(ValidateOperationRequest(request,task,task.context,nullptr,1000,why));
+    { // Native replay: source stack 2 -> mailed 1 + retained new GUID 1.
+        auto split=q;split.count=2;split.splitPosition=uint16_t(255u<<8|24u);
+        auto sending=request;sending.beforeState=EncodeCommissionMailQuote(split);
+        const NativeResourceBalance retained{703,104,2454,1,0,"bags"};
+        const std::vector<NativeResourceBalance> before={{703,103,2454,2,0,"bags"},{703,0,0,0,100,"money"}};
+        const std::vector<NativeResourceBalance> after={retained,{703,0,0,0,70,"money"}};
+        assert(!VerifyConsumedNativeResources(sending,before,after,why));
+        assert(VerifyConsumedNativeResources(sending,before,after,why,retained));
+        for(unsigned i=0;i<10;++i) {
+            auto r=retained;auto start=before;auto end=after;auto req=sending;
+            if(i==0)r.itemGuid=103;
+            if(i==1)r.actor=9;
+            if(i==2)r.quantity=2;
+            if(i==3)r.itemEntry=765;
+            if(i==4)r.location="bank";
+            if(i==5)end.erase(end.begin());
+            if(i==6)end.push_back({703,103,2454,1,0,"bags"});
+            if(i==7)start.push_back(retained);
+            if(i==8)end.back().copper=100;
+            if(i==9)req.beforeState=encoded;
+            assert(!VerifyConsumedNativeResources(req,start,end,why,r));
+        }
+    }
     auto plan=OperationRequestWrite(request);assert(!plan.statements.empty());
     auto bad=request;bad.effects|=Mask(Effect::Guild);bool rejected=false;
     try{OperationRequestWrite(bad);}catch(const std::invalid_argument&){rejected=true;}assert(rejected);

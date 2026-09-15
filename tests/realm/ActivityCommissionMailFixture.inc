@@ -30,9 +30,14 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
             report.put("activity_json",sLivingActivityCoordinator.ActorJson(f.actor));
             report.add_child("inventory_after",GuildMailFixtureInventory(*actor));
         }
+        report.put("verification_boot",state.boot);
         std::ofstream out("/isolated/evidence/activity-commission-mail-"+state.boot+".json");
         out<<Json(report);out.close();state.fixtureFinished=true;
         if(!out)sLog.outError("Living commission fixture evidence write failed");
+        if(sent && out) {
+            const char* path="/isolated/evidence/commission-mail-sent-v1.json";
+            if(!std::ifstream(path)) {std::ofstream checkpoint(path);checkpoint<<Json(report);}
+        }
         sLog.outString("Living isolated fixture: %s",Json(report).c_str());
     };
     Player* actor=nullptr;
@@ -65,6 +70,21 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
         if(!actor->IsInWorld() || !actor->GetMap() || NativeSafety(actor) || actor->GetGroup() ||
             actor->GetTradeData() || actor->GetMap()->IsDungeon()){f.blocker="commission_fixture_safety_wait";return;}
         state.enforceEffects.store(true,std::memory_order_release);
+        if(!f.setup) {
+            std::ifstream prior("/isolated/evidence/commission-mail-input-v1.json",std::ios::ate);
+            if(prior) {
+                require(prior.tellg()>0 && prior.tellg()<=1024*1024,"bounded_commission_input_required");
+                prior.seekg(0);boost::property_tree::ptree input;boost::property_tree::read_json(prior,input);
+                require(input.template get<std::string>("setup_boot")!=state.boot &&
+                    input.template get<uint32_t>("actor")==f.actor && input.template get<uint32_t>("recipient")==f.recipient &&
+                    IsUuid(input.template get<std::string>("task")),"original_commission_recovery_actors_required");
+                // Resume the accepted obligation, including an uncertain send.
+                // No new consent row, task, material grants or native clicks.
+                f.input=input;f.request.task.id=input.template get<std::string>("task");
+                f.money=input.template get<uint32_t>("money_before");f.output=input.template get<uint32_t>("output_before");
+                f.setup=f.admitted=true;
+            }
+        }
         if(!f.setup) {
             require(!std::ifstream("/isolated/evidence/commission-mail-input-v1.json"),
                 "existing_commission_fixture_must_be_reconciled_not_recreated");
@@ -195,9 +215,11 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
             f.input=read("/isolated/evidence/commission-mail-input-v1.json");
             f.task=f.input.template get<std::string>("task");const auto boot=f.input.template get<std::string>("setup_boot");
             require(IsUuid(f.task) && IsUuid(boot) && boot!=state.boot,"commission_sent_boot_restart_required");
-            const auto sent=read("/isolated/evidence/activity-commission-mail-"+boot+".json");
+            const auto sent=read("/isolated/evidence/commission-mail-sent-v1.json");
             require(sent.template get<std::string>("task")==f.task && sent.template get<std::string>("outcome")=="sent_checkpoint",
                 "verified_sent_checkpoint_required");
+            require(IsUuid(sent.template get<std::string>("verification_boot")) &&
+                sent.template get<std::string>("verification_boot")!=state.boot,"sent_checkpoint_restart_required");
             f.actor=f.input.template get<uint32_t>("actor");f.recipient=f.input.template get<uint32_t>("recipient");
             require(f.actor && f.recipient && f.actor!=f.recipient,"original_native_participants_required");
             state.gameplayFixtureActor.store(f.actor,std::memory_order_release);

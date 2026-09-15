@@ -208,7 +208,7 @@ namespace LivingActivity {
     }
     bool VerifyConsumedNativeResources(const OperationRequest& request,
         const std::vector<NativeResourceBalance>& before, const std::vector<NativeResourceBalance>& after,
-        std::string& blocker) {
+        std::string& blocker, const NativeResourceBalance& retainedSplit) {
         auto reject=[&](const char* code){blocker=code;return false;};
         if (request.consumption.empty()) {blocker.clear();return true;}
         try {NativeBefore(request);}
@@ -225,6 +225,23 @@ namespace LivingActivity {
         for (const auto& row : after)
             if (!final.emplace(Key{row.actor,row.itemGuid,row.itemEntry,row.location},uint64_t(row.quantity)+row.copper).second)
                 return reject("ambiguous_native_consumption_proof");
+        if(retainedSplit.itemGuid) {
+            CommissionMailQuote q;
+            if(request.kind!="commission_mail_send" || !DecodeCommissionMailQuote(request.beforeState,q) ||
+                q.count<=q.quantity || retainedSplit.actor!=q.sender || retainedSplit.itemGuid==q.item ||
+                retainedSplit.itemEntry!=q.entry || retainedSplit.quantity!=q.count-q.quantity ||
+                retainedSplit.copper || retainedSplit.location!="bags" || retainedSplit.nativeReference)
+                return reject("native_retained_split_quote_mismatch");
+            const Key source{q.sender,q.item,q.entry,"bags"},destination{q.sender,retainedSplit.itemGuid,q.entry,"bags"};
+            if(!initial.count(source) || initial.at(source)!=q.count || !used.count(source) || used.at(source)!=q.quantity ||
+                initial.count(destination) || used.count(destination) || final.count(source) ||
+                !final.count(destination) || final.at(destination)!=retainedSplit.quantity)
+                return reject("native_retained_split_custody_mismatch");
+            // Follow the quoted source's retained remainder across its GUID
+            // change. Native send proof also binds the exact new stack, slot,
+            // owner and count in the same DB transaction. No item is generated.
+            final.emplace(source,retainedSplit.quantity);
+        }
         for (const auto& resource : used) {
             const auto start=initial.find(resource.first),end=final.find(resource.first);
             // A consumed stack can disappear. A missing wallet observation is

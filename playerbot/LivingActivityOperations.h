@@ -29,6 +29,9 @@ namespace LivingActivity {
         // quantity follows it. Never supplied by a model or inferred on restart.
         NativeResourceBalance transferredItem;
         NativeResourceBalance mailedItem;
+        // Quoted surplus retained under a new GUID; independently re-read at
+        // the common boundary. This is a split, never an acquired item.
+        NativeResourceBalance retainedSplit;
     };
     // Finite, compiled native service adapters. Never a model/RPC callback,
     // script interpreter, or pointer retained across asynchronous persistence.
@@ -81,7 +84,7 @@ namespace LivingActivity {
         const std::vector<NativeResourceBalance>& balances, std::string& blocker);
     bool VerifyConsumedNativeResources(const OperationRequest& request,
         const std::vector<NativeResourceBalance>& before, const std::vector<NativeResourceBalance>& after,
-        std::string& blocker);
+        std::string& blocker, const NativeResourceBalance& retainedSplit = {});
     struct DispatchResult {
         AdmissionResult admission;
         bool executed = false, outcomeQueued = false;
