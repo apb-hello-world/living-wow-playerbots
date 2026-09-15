@@ -1,6 +1,7 @@
 #pragma once
 #include "LivingCommissionTradeContract.h"
 #include "LivingCommissionTradeSettlement.h"
+#include "LivingActivityAuthority.h"
 inline void TestCommissionTradeOperation() {
     ProfessionJob recipe;recipe.recipe=2329;recipe.skill=171;recipe.initialSkill=75;
     recipe.purpose=ProfessionPurpose::RequestedItem;recipe.outputEntry=2454;recipe.outputQuantity=1;
@@ -25,6 +26,88 @@ inline void TestCommissionTradeOperation() {
     action.task=action.rootTask=task.id;action.world=task.context;action.revision=task.revision;
     action.ownerGeneration=7;action.origin="commission_trade";action.permittedEffects=request.effects;
     std::string why;TestAdapter adapter(request);adapter.consumes=true;
+    {
+        auto ready=task;ready.checkpoint.step="commission_craft_ready";
+        auto current=task.context;current.boot="c859a150-352b-4685-93c1-a35b7728e495";
+        ProfessionHistory history;history.task=ready.id;history.revision=ready.revision;history.complete=true;
+        history.unresolvedOperation=false;history.attempts.emplace_back();
+        UnsettledClaimBatch claims;claims.complete=true;claims.bookRevision=1;claims.claims={item};
+        const std::vector<NativeResourceBalance> native{{703,103,2454,1,0,"bags"}};
+        ProfessionPreparation restored;
+        assert(PrepareCommissionTradeReadyRestore(ready,current,history,claims,native,2000,
+            request.transition.receipt,restored,why));
+        assert(restored.task.phase==Phase::Preparing && restored.task.context==current &&
+            restored.task.checkpoint.data==ready.checkpoint.data && restored.task.checkpoint.step=="commission_trade_prepare");
+        assert(restored.plan.statements.front().find("commission_craft_verified")!=std::string::npos);
+        for(const auto& sql:restored.plan.statements)
+            assert(sql.find("UPDATE living_activity_claim")==std::string::npos && sql.find("SET money")==std::string::npos);
+        for(unsigned i=0;i<8;++i) {
+            auto t=ready;auto h=history;auto c=claims;auto n=native;
+            if(i==0)h.unresolvedOperation=true;
+            if(i==1)h.commissionTrade.emplace_back();
+            if(i==2)h.attempts.clear();
+            if(i==3)c.claims.clear();
+            if(i==4)n.front().quantity=0;
+            if(i==5)t.phase=Phase::Executing;
+            if(i==6)t.checkpoint.step="commission_trade_offer";
+            if(i==7)n.front().actor=9;
+            assert(!PrepareCommissionTradeReadyRestore(t,current,h,c,n,2000,request.transition.receipt,restored,why));
+        }
+    }
+    {
+        auto offered=request;offered.kind=offered.transition.task.checkpoint.step="commission_trade_offer";
+        offered.effects=Mask(Effect::Inventory);offered.persistence=NativePersistence::JournalOnly;
+        offered.consumption.clear();TestAdapter prepare(offered);prepare.offer=true;
+        assert(ValidateOperationAdapter(offered,prepare,why));
+        assert(ValidateOperationRequest(offered,task,task.context,nullptr,1000,why));
+        // Compose the actual operation contract and authority gate: a lease
+        // alone reproduces the old rejection; acknowledged intent dispatch
+        // grants only the offer's inventory effect, never a fee transfer.
+        ExecutionAuthority authority;authority.Observe(task.context,0);
+        auto preparing=task;const auto lease=authority.Acquire(preparing,offered.effects,1000,60000);
+        assert(lease.Granted());preparing.ownerGeneration=lease.lease.generation;
+        auto a=offered.authorization;a.ownerGeneration=preparing.ownerGeneration;a.permittedEffects=offered.effects;
+        assert(authority.Authorize({offered.effects,Lane::Managed,true},task.context,1001,&preparing,&a)==AuthorityCode::ReconciliationRequired);
+        auto executing=offered.transition.task;
+        const auto active=authority.Acquire(executing,offered.effects,1002,60000);assert(active.Granted());
+        executing.ownerGeneration=active.lease.generation;a.revision=executing.revision;
+        a.ownerGeneration=active.lease.generation;a.operation=offered.transition.receipt;
+        assert(authority.BeginAtomic(active.lease,a.operation,1003).code==AuthorityCode::Allowed);
+        assert(authority.BeginDispatch(active.lease,a.operation,1003).code==AuthorityCode::Allowed);
+        assert(authority.Authorize({offered.effects,Lane::Managed,true},task.context,1003,&executing,&a)==AuthorityCode::Allowed);
+        assert(authority.Authorize({Mask(Effect::Money),Lane::Managed,true},task.context,1003,&executing,&a)==AuthorityCode::EffectsDenied);
+        auto progress=executing;
+        assert(CanTransition(progress,Phase::Verifying));progress.phase=Phase::Verifying;
+        assert(CanTransition(progress,Phase::WaitingExternal));progress.phase=Phase::WaitingExternal;
+        assert(!CanTransition(progress,Phase::Preparing));
+        assert(CanTransition(progress,Phase::Reconciling));progress.phase=Phase::Reconciling;
+        assert(CanTransition(progress,Phase::Preparing));
+        const auto plan=OperationRequestWrite(offered);
+        assert(plan.receiptQuery.find(SqlValue("commission_trade_offer"))!=std::string::npos);
+        for(const auto& sql:plan.statements) {
+            assert(sql.find("UPDATE living_activity_claim")==std::string::npos);
+            assert(sql.find("SET money")==std::string::npos);
+        }
+        prepare.offer=false;assert(!ValidateOperationAdapter(offered,prepare,why));
+        for(unsigned i=0;i<10;++i) {
+            auto bad=offered;
+            if(i==0)bad.effects|=Mask(Effect::Money);
+            if(i==1)bad.consumption=request.consumption;
+            if(i==2)bad.itemGain={2454,1};
+            if(i==3)bad.persistence=NativePersistence::Inventory;
+            if(i==4)bad.transition.task.checkpoint.step="commission_trade";
+            if(i==5)bad.beforeState="{}";
+            if(i==6)bad.itemTransfer=item;
+            if(i==7){auto changed=quote;++changed.items.front().quantity;bad.beforeState=EncodeCommissionTradeQuote(changed);}
+            if(i==8)bad.transition.task.accepted=false;
+            if(i==9){auto changed=quote;++changed.recipient;bad.beforeState=EncodeCommissionTradeQuote(changed);}
+            TestAdapter rejected(bad);rejected.offer=true;
+            assert(!ValidateOperationAdapter(bad,rejected,why));
+            assert(!ValidateOperationRequest(bad,task,task.context,nullptr,1000,why));
+        }
+        auto mismatch=offered;mismatch.kind="vendor_purchase";TestAdapter wrong(mismatch);wrong.offer=true;
+        assert(!ValidateOperationAdapter(mismatch,wrong,why));
+    }
     assert(!ValidateOperationAdapter(request,adapter,why) && why=="native_commission_trade_adapter_required");
     adapter.trade=true;assert(ValidateOperationAdapter(request,adapter,why));
     assert(ValidateOperationRequest(request,task,task.context,nullptr,1000,why));

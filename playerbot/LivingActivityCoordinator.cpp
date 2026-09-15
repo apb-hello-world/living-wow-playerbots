@@ -2604,12 +2604,19 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || DefersNativeSave(actor))return stop("commission_trade_actor_unavailable");
     const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
     for(const auto& row:state->operations)if(row.second.request.transition.task.actor==actor) {
-        if(row.second.request.transition.task.id!=id || row.second.request.kind!="commission_trade")
+        if(row.second.request.transition.task.id!=id ||
+            (row.second.request.kind!="commission_trade" && row.second.request.kind!="commission_trade_offer"))
             return stop("commission_other_native_operation_pending");
         if(!row.second.ready || row.second.dispatched)return stop("commission_trade_receipt_pending");
         if(!(saved->context==current))return stop("commission_trade_intent_reconciliation_required");
         CommissionTradeQuote quote;
         if(!DecodeCommissionTradeQuote(row.second.request.beforeState,quote))return stop("commission_saved_trade_quote_invalid");
+        if(row.second.request.kind=="commission_trade_offer") {
+            NativeCommissionOffer adapter(quote);
+            const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"commission_trade_offer");
+            if(!grant.Permitted())return stop(grant.blocker);
+            return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
         NativeCommissionTrade adapter(quote);
         const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"commission_trade");
         if(!grant.Permitted())return stop(grant.blocker);
@@ -2632,9 +2639,34 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(owned.lease.rootTask==id && owned.operation.empty())ReleaseTaskLease(owned.lease);
         return stop("commission_trade_settlement_pending");
     }
-    if(saved->phase==Phase::Executing || saved->phase==Phase::Reconciling || !(saved->context==current))
+    if(!(saved->context==current) && saved->phase!=Phase::Executing) {
+        if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || bot->GetTradeData())return stop("commission_trade_restore_safety_pause");
+        const std::string party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+        if(!party.empty())return stop(party);
+        if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+            return stop("commission_settlement_backpressure");
+        UnsettledClaimBatch claims;if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
+        ProfessionPreparation restored;const auto receipt=NewId();
+        if(!PrepareCommissionTradeReadyRestore(*saved,current,history,claims,NativeClaimBalances(*bot,claims.claims,false),
+            NowMs(),receipt,restored,why))return stop(why);
+        State::Pending write;write.task=std::move(restored.task);write.plan=std::move(restored.plan);
+        write.admissionReceipt=receipt;write.closureRefreshRevision=saved->revision;
+        state->pending.push_back(std::move(write));state->nextWork=0;return stop("commission_trade_restore_pending");
+    }
+    if(saved->phase==Phase::Executing ||
+        (saved->phase==Phase::Reconciling && saved->checkpoint.step!="commission_trade_wait") || !(saved->context==current))
         return stop("commission_trade_restart_reconciliation_required");
     if(saved->retryAtMs>NowMs())return stop("commission_trade_waiting_for_customer");
+    if(saved->phase==Phase::Verifying && saved->checkpoint.step=="commission_trade_offer") {
+        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
+        request.task.phase=Phase::WaitingExternal;request.task.checkpoint.step="commission_trade_wait";
+        request.task.checkpoint.blocker="commission_trade_waiting_for_customer";
+        request.task.updatedAtMs=NowMs();request.task.retryAtMs=NowMs()+5000;request.receipt=NewId();
+        const auto admitted=SubmitTask(request);const auto owned=state->authority.Read(actor);
+        if((admitted.code==AdmissionCode::Pending || admitted.code==AdmissionCode::Saved) &&
+            owned.lease.rootTask==id && owned.operation.empty())ReleaseTaskLease(owned.lease);
+        return stop(admitted.blocker);
+    }
     if(saved->phase==Phase::WaitingExternal) {
         if(!bot->GetTradeData() || !bot->GetTrader() ||
             bot->GetTrader()->GetGUIDLow()!=job.agreement.recipient || !bot->GetTrader()->GetTradeData())
@@ -2644,23 +2676,32 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                 if(bot->GetTradeData()->GetItem(TradeSlots(slot)))return stop("commission_trade_waiting_for_customer");
         }
     }
-    if(saved->phase==Phase::Verifying || saved->phase==Phase::WaitingExternal) {
+    if(saved->phase==Phase::Verifying || saved->phase==Phase::WaitingExternal || saved->phase==Phase::Reconciling) {
         // A rejected/cancelled exchange cannot consume output or erase the
         // order. Retry only a fresh offer, with a fresh customer acceptance.
         TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
-        request.task.phase=Phase::Preparing;request.task.checkpoint.step="commission_trade_prepare";
+        request.task.phase=saved->phase==Phase::WaitingExternal?Phase::Reconciling:Phase::Preparing;
+        request.task.checkpoint.step=saved->phase==Phase::WaitingExternal?"commission_trade_wait":"commission_trade_prepare";
         request.task.checkpoint.blocker.clear();request.task.updatedAtMs=NowMs();request.task.retryAtMs=0;
         request.receipt=NewId();return stop(SubmitTask(request).blocker);
     }
     if(saved->phase!=Phase::Preparing)return stop("commission_trade_preparation_required");
+    auto submit=[&](NativeOperationAdapter& adapter,const CommissionTradeQuote& quote,std::vector<ClaimConsumption> uses) {
+        const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"commission_trade_prepare");
+        if(!grant.Permitted())return stop(grant.blocker);
+        OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+        ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+        request.transition.task.checkpoint.step=adapter.OperationKind();request.transition.task.updatedAtMs=NowMs();
+        request.transition.receipt=NewId();request.authorization=grant.action;request.kind=adapter.OperationKind();
+        request.effects=adapter.OperationEffects();request.persistence=adapter.PersistencePolicy();
+        request.beforeState=EncodeCommissionTradeQuote(quote);request.consumption=std::move(uses);
+        return stop(SubmitOperationIntent(request,adapter).blocker);
+    };
     CommissionTradeQuote quote;std::vector<ClaimConsumption> uses;
     if(!PlanNativeCommissionTrade(*bot,*saved,quote,uses,why)) {
         if(why=="commission_trade_customer_acceptance_required") {
-            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"commission_trade_offer");
-            if(!grant.Permitted())return stop(grant.blocker);
-            ExecutionScope scope(grant.task,grant.action);
-            if(!PrepareNativeCommissionTradeOffer(*bot,*saved,grant.action,why))return stop(why);
-            why="commission_trade_customer_acceptance_required";
+            if(!PlanNativeCommissionTradeOffer(*bot,*saved,quote,why))return stop(why);
+            NativeCommissionOffer adapter(quote);return submit(adapter,quote,{});
         }
         if(why=="commission_trade_recipient_window_required" || why=="commission_trade_customer_acceptance_required") {
             TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
@@ -2675,15 +2716,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return stop(why);
     }
     NativeCommissionTrade adapter(quote);
-    const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"commission_trade_prepare");
-    if(!grant.Permitted())return stop(grant.blocker);
-    OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
-    ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
-    request.transition.task.checkpoint.step="commission_trade";request.transition.task.updatedAtMs=NowMs();
-    request.transition.receipt=NewId();request.authorization=grant.action;request.kind=adapter.OperationKind();
-    request.effects=adapter.OperationEffects();request.persistence=adapter.PersistencePolicy();
-    request.beforeState=EncodeCommissionTradeQuote(quote);request.consumption=std::move(uses);
-    return stop(SubmitOperationIntent(request,adapter).blocker);
+    return submit(adapter,quote,std::move(uses));
 }
 
 LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceProfessionJob(uint32_t actor,const std::string& id) {
@@ -4151,7 +4184,8 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
     if (state->authority.Authorize({0, Lane::Managed, true}, current, now, &predecessor, &request.authorization) != AuthorityCode::Allowed)
         return reject(AdmissionCode::StaleContext, "current_predecessor_lease_required");
     try {
-        const bool otherTrade=bot->GetTradeData() && !(request.kind=="commission_trade" && adapter.SupportsCommissionTrade());
+        const bool otherTrade=bot->GetTradeData() && !((request.kind=="commission_trade" && adapter.SupportsCommissionTrade()) ||
+            (request.kind=="commission_trade_offer" && adapter.SupportsCommissionOffer()));
         if (otherTrade || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker))
             return reject(AdmissionCode::InvalidRequest,otherTrade ? "native_trade_in_progress" : blocker);
         if (!adapter.ValidateNative(*bot, request, blocker))
@@ -4250,7 +4284,8 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     std::vector<VerifiedItemGain> nativeGains;
     bool nativeTransactionOpen = false;
     try {
-        const bool otherTrade=bot->GetTradeData() && !(request.kind=="commission_trade" && adapter.SupportsCommissionTrade());
+        const bool otherTrade=bot->GetTradeData() && !((request.kind=="commission_trade" && adapter.SupportsCommissionTrade()) ||
+            (request.kind=="commission_trade_offer" && adapter.SupportsCommissionOffer()));
         if (otherTrade || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker) ||
             !adapter.ValidateNative(*bot, request, blocker)) {
             observation.state = OperationState::Rejected;

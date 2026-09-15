@@ -21,6 +21,15 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(request.kind=="commission_trade_offer") {
+                CommissionTradeQuote quote;
+                if(!DecodeCommissionTradeQuote(request.beforeState,quote) ||
+                    !MatchesCommissionTradeOutput(request.transition.task,quote) ||
+                    request.transition.task.checkpoint.step!="commission_trade_offer" ||
+                    request.effects!=Mask(Effect::Inventory) || request.persistence!=NativePersistence::JournalOnly ||
+                    !request.consumption.empty() || !request.mailGain.Empty() || !request.itemGain.Empty() ||
+                    !request.itemTransfer.id.empty())throw std::invalid_argument("Exact non-consuming commission offer required");
+            }
             if(request.kind=="commission_trade") {
                 CommissionTradeQuote quote;
                 if(!DecodeCommissionTradeQuote(request.beforeState,quote) ||
@@ -114,11 +123,13 @@ namespace LivingActivity {
         // money or run an arbitrary resource-mutating spell.
         const bool loot=request.kind=="loot_collect" && adapter.SupportsItemGain() && !adapter.DeferredNativeCast();
         const bool gather=request.kind=="gather_open" && adapter.DeferredNativeCast();
-        if(loot || gather) {
+        const bool offer=request.kind=="commission_trade_offer" && adapter.SupportsCommissionOffer() &&
+            !adapter.DeferredNativeCast();
+        if(loot || gather || offer) {
             try {NativeBefore(request);}
             catch(const std::exception&) {return reject("invalid_native_acquisition_contract");}
         }
-        if(!transfer && !loot && !gather && (request.effects&(Mask(Effect::Money)|Mask(Effect::Inventory))) &&
+        if(!transfer && !loot && !gather && !offer && (request.effects&(Mask(Effect::Money)|Mask(Effect::Inventory))) &&
             (!adapter.SupportsClaimedConsumption() || request.consumption.empty() || request.persistence==NativePersistence::JournalOnly))
             return reject("resource_effect_adapter_not_supported");
         if(!request.consumption.empty() && !adapter.SupportsClaimedConsumption())return reject("native_adapter_mismatch");
@@ -134,6 +145,7 @@ namespace LivingActivity {
             try {NativeBefore(request);}catch(const std::exception&){return reject("invalid_commission_trade_contract");}
         }
         if(adapter.SupportsCommissionTrade() && request.kind!="commission_trade")return reject("native_commission_trade_adapter_mismatch");
+        if(adapter.SupportsCommissionOffer() && !offer)return reject("native_commission_offer_adapter_mismatch");
         blocker.clear();return true;
     }
     bool ValidateOperationRequest(const OperationRequest& request, const Task& saved,

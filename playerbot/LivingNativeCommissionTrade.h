@@ -10,7 +10,18 @@ bool PlanNativeCommissionTrade(Player&,const Task&,CommissionTradeQuote&,
     std::vector<ClaimConsumption>&,std::string&);
 // Only populate an existing, unaccepted customer window. No initiation, stack
 // mutation, fee selection, acceptance or completion is performed here.
-bool PrepareNativeCommissionTradeOffer(Player&,const Task&,const ActionContext&,std::string&);
+bool PlanNativeCommissionTradeOffer(Player&,const Task&,CommissionTradeQuote&,std::string&);
+class NativeCommissionOffer final : public NativeOperationAdapter {
+public:
+    explicit NativeCommissionOffer(CommissionTradeQuote value):quote(std::move(value)) {}
+    const char* OperationKind() const override {return "commission_trade_offer";}
+    uint32_t OperationEffects() const override {return Mask(Effect::Inventory);}
+    bool SupportsCommissionOffer() const override {return true;}
+    bool ValidateNative(Player&,const OperationRequest&,std::string&) override;
+    NativeObservation ExecuteNative(Player&,const OperationRequest&) override;
+private:
+    CommissionTradeQuote quote;
+};
 class NativeCommissionTrade final : public NativeOperationAdapter {
 public:
     explicit NativeCommissionTrade(CommissionTradeQuote quote):quote(std::move(quote)) {}

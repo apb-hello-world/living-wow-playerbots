@@ -67,13 +67,30 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             // repeat reagent grants. Other restart phases need their own proof.
             const auto prior=sLivingActivityCoordinator.ReadSavedTask(f.request.task.id);
             CommissionJob job;std::string why;
-            require(prior && prior->phase==Phase::Queued && prior->actor==f.actor &&
-                DecodeCommissionJob(prior->checkpoint.data,job,why) && !job.craftFinishedRevision &&
+            require(prior && prior->actor==f.actor &&
+                DecodeCommissionJob(prior->checkpoint.data,job,why) &&
                 EncodeCommissionContract(job.agreement)==f.input.template get<std::string>("agreement"),
                 "original_queued_trade_task_required_for_fixture_resume");
-            auto operations=CharacterDatabase.PQuery("SELECT COUNT(*) FROM living_activity_operation WHERE task_id='%s'",
+            const bool crafted=automaticOffer && job.craftFinishedRevision &&
+                (prior->phase==Phase::Preparing || prior->phase==Phase::Reconciling) &&
+                prior->checkpoint.step=="commission_craft_ready";
+            require(crafted || (prior->phase==Phase::Queued && !job.craftFinishedRevision),"only_queued_or_verified_craft_resume");
+            auto operations=CharacterDatabase.PQuery("SELECT COUNT(*),SUM(kind='profession_craft' AND state='verified') FROM living_activity_operation WHERE task_id='%s'",
                 prior->id.c_str());
-            require(operations && !operations->Fetch()[0].GetUInt32(),"queued_fixture_cannot_replay_native_effects");
+            require(operations && operations->Fetch()[0].GetUInt32()==(crafted?1u:0u) &&
+                (!crafted || operations->Fetch()[1].GetUInt32()==1),"queued_fixture_cannot_replay_native_effects");
+            if(crafted) {
+                require(actor->GetItemCount(2454,true)==1 &&
+                    actor->GetMoney()==f.input.template get<uint32_t>("actor_money_before") &&
+                    customer->GetMoney()==f.input.template get<uint32_t>("recipient_money_before") &&
+                    customer->GetItemCount(2454,true)==f.input.template get<uint32_t>("recipient_items_before"),
+                    "crafted_resume_preserves_original_item_and_money");
+                UnsettledClaimBatch claims;
+                if(!sLivingActivityCoordinator.ReadTaskClaims(f.actor,prior->id,prior->revision,claims,why))return;
+                require(claims.complete && claims.claims.size()==1 && claims.claims.front().itemEntry==2454 &&
+                    claims.claims.front().quantity==1 && claims.claims.front().location=="bags","crafted_resume_claim_required");
+                f.input.put("verified_craft_restart",true);
+            }
             f.queuedRestart=false;
         }
         if(!f.setup) {

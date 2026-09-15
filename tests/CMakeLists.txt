@@ -138,6 +138,8 @@ target_sources(living_activity_operations PRIVATE ../playerbot/LivingGuildMailHa
 target_sources(living_activity_operations PRIVATE ../playerbot/LivingCommissionMail.cpp)
 target_sources(living_activity_operations PRIVATE ../playerbot/LivingCommissionParcel.cpp)
 target_sources(living_activity_operations PRIVATE ../playerbot/LivingCommissionSettlement.cpp)
+target_sources(living_activity_operations PRIVATE ../playerbot/LivingActivityAuthority.cpp)
+target_sources(living_activity_operations PRIVATE ../playerbot/LivingCommissionTradeSettlement.cpp)
 
 target_sources(living_activity_spell_resources PRIVATE ../playerbot/LivingActivity.cpp ../playerbot/LivingActivityResources.cpp ../playerbot/LivingActivityResourceView.cpp ../playerbot/LivingActivitySpellResources.cpp)
 target_link_libraries(living_activity_spell_resources PRIVATE Threads::Threads)

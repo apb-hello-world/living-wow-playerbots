@@ -37,19 +37,22 @@ inline bool DecodeCommissionTradeQuote(const std::string& text,CommissionTradeQu
         result=std::move(q);return true;
     }catch(const std::exception&){return false;}
 }
-inline bool ExactCommissionTradeConsumption(const Task& task,const CommissionTradeQuote& q,
-    const std::vector<ClaimConsumption>& uses) {
+inline bool MatchesCommissionTradeOutput(const Task& task,const CommissionTradeQuote& q) {
     CommissionJob job;ProfessionJob recipe;std::string why;
     if(!ValidCommissionTradeQuote(q) || !Validate(task,why) || !IsCommissionJob(task) ||
         !ValidateCommissionTask(task,why) || !DecodeCommissionJob(task.checkpoint.data,job,why) ||
         !task.accepted || task.mode!=Mode::Active || Terminal(task.phase) || !job.craftFinishedRevision ||
         (job.agreement.delivery!="direct" && job.agreement.delivery!="meeting") ||
         job.agreement.actor!=q.actor || job.agreement.recipient!=q.recipient || job.agreement.feeCopper!=q.fee ||
-        !DecodeProfessionIntent(job.craft,recipe,why) || recipe.outputEntry!=q.entry ||
-        uses.empty() || uses.size()>16)return false;
-    std::map<uint32_t,uint64_t> remaining;uint64_t total=0;
-    for(const auto& item:q.items){remaining[item.item]=item.quantity;total+=item.quantity;}
-    if(total!=recipe.outputQuantity)return false;
+        !DecodeProfessionIntent(job.craft,recipe,why) || recipe.outputEntry!=q.entry)return false;
+    uint64_t total=0;for(const auto& item:q.items)total+=item.quantity;
+    return total==recipe.outputQuantity;
+}
+inline bool ExactCommissionTradeConsumption(const Task& task,const CommissionTradeQuote& q,
+    const std::vector<ClaimConsumption>& uses) {
+    if(!MatchesCommissionTradeOutput(task,q) || uses.empty() || uses.size()>16)return false;
+    std::map<uint32_t,uint64_t> remaining;
+    for(const auto& item:q.items)remaining[item.item]=item.quantity;
     std::set<std::string> ids;
     for(const auto& use:uses) {
         const auto& c=use.before;

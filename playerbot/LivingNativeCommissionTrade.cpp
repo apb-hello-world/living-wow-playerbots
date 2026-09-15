@@ -8,17 +8,17 @@
 #include "strategy/values/ItemUsageValue.h"
 
 namespace LivingActivity {
-bool PrepareNativeCommissionTradeOffer(Player& actor,const Task& task,const ActionContext& action,std::string& why) {
+bool PlanNativeCommissionTradeOffer(Player& actor,const Task& task,CommissionTradeQuote& quote,std::string& why) {
+    quote={};
     auto reject=[&](const char* code){why=code;return false;};
     const auto saved=sLivingActivityCoordinator.ReadSavedTask(task.id);
     CommissionJob job;ProfessionJob recipe;
     if(!sLivingActivityCoordinator.OnWorldThread() || !saved || saved->revision!=task.revision ||
-        saved->actor!=actor.GetGUIDLow() || saved->phase!=Phase::Preparing || !saved->accepted || saved->mode!=Mode::Active ||
+        saved->actor!=actor.GetGUIDLow() || (saved->phase!=Phase::Preparing && saved->phase!=Phase::Executing) ||
+        !saved->accepted || saved->mode!=Mode::Active ||
         !ValidateCommissionTask(*saved,why) || !DecodeCommissionJob(saved->checkpoint.data,job,why) ||
         !job.craftFinishedRevision || job.agreement.delivery=="mail" || !DecodeProfessionIntent(job.craft,recipe,why) ||
-        !ExecutionScope::Matches(task,action) || !actor.GetPlayerbotAI() ||
-        !sLivingActivityCoordinator.PermitEffects(*actor.GetPlayerbotAI(),{Mask(Effect::Inventory),Lane::Managed,true},
-            "commission trade offer"))return reject("commission_trade_offer_authority_required");
+        !actor.GetPlayerbotAI())return reject("commission_trade_offer_saved_task_required");
     auto* customer=actor.GetTrader();auto* offered=actor.GetTradeData();
     if(!customer || customer->GetGUIDLow()!=job.agreement.recipient || customer->GetTrader()!=&actor ||
         !offered || !customer->GetTradeData())return reject("commission_trade_recipient_window_required");
@@ -39,7 +39,7 @@ bool PrepareNativeCommissionTradeOffer(Player& actor,const Task& task,const Acti
     UnsettledClaimBatch claims;
     if(!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,why))return false;
     if(!claims.complete || claims.claims.empty() || claims.claims.size()>16)return reject("commission_trade_claims_incomplete");
-    CommissionTradeQuote quote{task.actor,job.agreement.recipient,recipe.outputEntry,job.agreement.feeCopper,
+    quote={task.actor,job.agreement.recipient,recipe.outputEntry,job.agreement.feeCopper,
         actor.GetMoney(),customer->GetMoney(),{}};
     std::vector<ClaimConsumption> uses;std::map<uint32_t,Item*> items;
     const auto privateItems=sPlayerbotActionBroker.ReservedItemsView();
@@ -61,12 +61,44 @@ bool PrepareNativeCommissionTradeOffer(Player& actor,const Task& task,const Acti
     }
     for(const auto& item:items)quote.items.push_back({item.first,item.second->GetCount()});
     if(!ExactCommissionTradeConsumption(task,quote,uses))return reject("commission_trade_exact_output_preparation_required");
-    // All validation precedes the first transient offer change. No stack is
-    // split and no item or money leaves either character until native accept.
-    uint8_t slot=0;
-    for(const auto& item:items)offered->SetItem(TradeSlots(slot++),item.second);
+    why.clear();return true;
+}
+bool NativeCommissionOffer::ValidateNative(Player& actor,const OperationRequest& request,std::string& why) {
+    const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);CommissionTradeQuote fresh;
+    if(!saved || request.beforeState!=EncodeCommissionTradeQuote(quote) ||
+        !PlanNativeCommissionTradeOffer(actor,*saved,fresh,why))return false;
+    if(EncodeCommissionTradeQuote(fresh)!=EncodeCommissionTradeQuote(quote)) {
+        why="commission_trade_offer_quote_changed";return false;
+    }
+    return true;
+}
+NativeObservation NativeCommissionOffer::ExecuteNative(Player& actor,const OperationRequest& request) {
+    NativeObservation out;std::string why;
+    if(!ValidateNative(actor,request,why) || !ExecutionScope::OwnsNativeOperation(actor.GetGUIDLow()) ||
+        !sLivingActivityCoordinator.PermitEffects(*actor.GetPlayerbotAI(),{Mask(Effect::Inventory),Lane::Managed,true},
+            "commission trade offer")) {
+        out.state=OperationState::Rejected;out.evidence=why.empty()?"commission_trade_offer_journal_required":why;return out;
+    }
+    // All prerequisites are checked before the first transient UI mutation.
+    // The item stays owned and claimed; this is never delivery or fee proof.
+    auto* customer=actor.GetTrader();auto* offered=actor.GetTradeData();uint8_t slot=0;
+    for(const auto& part:quote.items)
+        offered->SetItem(TradeSlots(slot++),actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,part.item)));
     customer->GetSession()->SendUpdateTrade(true);
-    why="commission_trade_waiting_for_customer";return true;
+    if(actor.GetMoney()!=quote.actorMoney || customer->GetMoney()!=quote.recipientMoney ||
+        offered->IsAccepted() || customer->GetTradeData()->IsAccepted()) {
+        out.evidence="commission_trade_offer_custody_uncertain";return out;
+    }
+    slot=0;
+    for(const auto& part:quote.items) {
+        const auto* item=offered->GetItem(TradeSlots(slot++));
+        if(!item || item->GetGUIDLow()!=part.item || item->GetOwnerGuid()!=actor.GetObjectGuid() ||
+            item->GetCount()!=part.quantity || item->GetEntry()!=quote.entry) {
+            out.evidence="commission_trade_offer_custody_uncertain";return out;
+        }
+    }
+    out.state=OperationState::Verified;out.evidence="native_commission_offer_observed";
+    out.nativeReference="trade_offer:"+request.transition.receipt;out.afterState=EncodeCommissionTradeQuote(quote);return out;
 }
 bool PlanNativeCommissionTrade(Player& actor,const Task& task,CommissionTradeQuote& q,
     std::vector<ClaimConsumption>& uses,std::string& why) {
