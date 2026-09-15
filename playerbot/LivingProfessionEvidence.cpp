@@ -425,7 +425,7 @@ std::string ProfessionHistoryQuery(const Task& task) {
         (gathering ? "kind='gather_open' AND state IN ('intent','reconciling') " :
             std::string("(kind='profession_craft' OR (kind='mail_collect' AND state IN ('intent','reconciling'))")+
             (IsCommissionJob(task)?" OR (kind='commission_mail_send' AND state<>'rejected') OR kind IN ('commission_customer_received','commission_fee_collected','commission_parcel_returned')":"")+") ")+
-        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(gathering?2:ProfessionWorkflowAttemptLimit(task.checkpoint.data)+(IsCommissionJob(task)?6:2))+") o ON o.task_id=t.task_id "
+        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(gathering?2:ProfessionWorkflowAttemptLimit(task.checkpoint.data)+(IsCommissionJob(task)?17:2))+") o ON o.task_id=t.task_id "
         "WHERE t.task_id="+id+" AND t.actor_guid="+std::to_string(task.actor)+" AND t.revision="+
         std::to_string(task.revision)+" AND t.root_task_id=t.task_id AND t.mode='active' "
         "AND t.accepted=1 AND t.source="+SqlValue(task.source)+" AND t.kind="+SqlValue(Name(task.kind))+" ORDER BY o.task_revision,o.operation_id";
@@ -440,7 +440,7 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
         Require(gathering || DecodeProfessionJob(owner.checkpoint.data,job,why),"profession_history_task_invalid");
         Require(!rows.empty(),"profession_history_task_changed_or_missing");
         const auto limit=gathering?0u:ProfessionWorkflowAttemptLimit(owner.checkpoint.data);
-        Require(rows.size()<=limit+(IsCommissionJob(owner)?5:1),"profession_history_attempt_limit_exceeded");
+        Require(rows.size()<=limit+(IsCommissionJob(owner)?16:1),"profession_history_attempt_limit_exceeded");
         bool first=true,unresolved=false;uint64_t previous=0;std::set<std::string> ids,commissionKinds;
         unsigned crafts=0,mails=0;
         for (const auto& fields : rows) {
@@ -464,7 +464,7 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
                 "profession_history_operation_identity_invalid");
             if(gathering) Require(++crafts==1 && owner.revision>1 && receipt.taskRevision==owner.revision-1 &&
                 fields[7]=="reconciling","gather_history_operation_identity_invalid");
-            else if(commission) Require(commissionKinds.insert(receipt.kind).second &&
+            else if(commission) Require((commissionKinds.insert(receipt.kind).second || receipt.kind=="commission_customer_received") &&
                 (receipt.kind=="commission_mail_send" || fields[7]=="verified"),"commission_history_duplicate_or_unverified_receipt");
             else if(receipt.kind=="profession_craft") Require(++crafts<=limit,"profession_history_attempt_limit_exceeded");
             else Require(++mails==1 && receipt.taskRevision==owner.revision &&

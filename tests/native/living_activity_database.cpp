@@ -113,6 +113,7 @@ public:
 #include "fixtures/GuildCancellationDatabase.inc"
 #include "fixtures/GuildMailHandoffDatabase.inc"
 #include "fixtures/CommissionMailDatabase.inc"
+#include "fixtures/CommissionParcelDatabase.inc"
 int main() {
     Connection db;
     Task task; task.id = task.root = Id; task.actor = task.context.actor = 497;
@@ -736,5 +737,6 @@ int main() {
     GuildMailRollbackDatabase(db);
     GuildCancellationDatabase(db);
     CommissionMailDatabase(db);
+    CommissionParcelDatabase(db);
     std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history, skill-job settlement and exact-row legacy handoff; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

@@ -4,6 +4,7 @@
 #include "LivingActivityReservations.h"
 namespace LivingActivity {
 bool PlanNativeCommissionMail(Player&,const Task&,CommissionMailQuote&,std::vector<ClaimConsumption>&,std::string&);
+bool NativeCommissionAdditionalItemsUnchanged(Player&,const CommissionMailQuote&);
 class NativeCommissionReturnReservation final : public NativeReservationAdapter {
 public:
     bool ValidatePurpose(Player&,const ReservationRequest&,std::string&) override;

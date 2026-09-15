@@ -4,25 +4,47 @@
 #include <boost/uuid/uuid_io.hpp>
 
 namespace LivingActivity {
+uint32_t CommissionMailQuantity(const CommissionMailQuote& q) {
+    uint64_t total=q.quantity;for(const auto& item:q.additional)total+=item.quantity;
+    return total<=10000?uint32_t(total):0;
+}
+std::vector<CommissionMailAttachment> CommissionMailAttachments(const CommissionMailQuote& q) {
+    std::vector<CommissionMailAttachment> items{{q.item,q.quantity,q.position}};
+    items.insert(items.end(),q.additional.begin(),q.additional.end());return items;
+}
 bool ValidCommissionMailQuote(const CommissionMailQuote& q) {
+    if(q.additional.size()>11 || !CommissionMailQuantity(q))return false;
+    std::set<uint32_t> ids{q.item};std::set<uint16_t> positions{q.position};
+    for(const auto& item:q.additional) {
+        if(!item.item || !item.quantity || item.quantity>10000 || !ids.insert(item.item).second ||
+            !positions.insert(item.position).second || (q.splitPosition && item.position==q.splitPosition))return false;
+    }
     return q.commission.size()>=5 && q.commission.size()<=36 && q.commission.compare(0,4,"lwc-")==0 &&
         q.commission.find_first_not_of("0123456789",4)==std::string::npos && q.sender && q.receiver &&
         q.sender!=q.receiver && q.item && q.entry && q.quantity && q.quantity<=10000 && q.count>=q.quantity && q.count<=10000 &&
         (q.count==q.quantity ? !q.splitPosition && !q.splitBagGuid : q.splitPosition && q.splitPosition!=q.position &&
             ((q.splitPosition>>8)==255 ? !q.splitBagGuid : bool(q.splitBagGuid))) &&
-        q.postage==30 && q.moneyBefore>=q.postage && q.mailbox && q.delay<=30u*86400u;
+        q.postage==30*(1+q.additional.size()) && q.moneyBefore>=q.postage && q.mailbox && q.delay<=30u*86400u;
 }
 std::string EncodeCommissionMailQuote(const CommissionMailQuote& q) {
     if(!ValidCommissionMailQuote(q))throw std::invalid_argument("exact_commission_mail_quote_required");
-    boost::property_tree::ptree p;p.put("version",1);p.put("commission",q.commission);
+    boost::property_tree::ptree p;p.put("version",q.additional.empty()?1:2);p.put("commission",q.commission);
     p.put("sender",q.sender);p.put("receiver",q.receiver);p.put("item",q.item);p.put("entry",q.entry);
     p.put("quantity",q.quantity);p.put("count",q.count);p.put("money_before",q.moneyBefore);
     p.put("postage",q.postage);p.put("cod",q.cod);p.put("delay",q.delay);p.put("position",q.position);p.put("mailbox",q.mailbox);
     if(q.count>q.quantity){p.put("split_position",q.splitPosition);p.put("split_bag_guid",q.splitBagGuid);}
+    if(!q.additional.empty()) {
+        boost::property_tree::ptree items;
+        for(const auto& item:q.additional) {
+            boost::property_tree::ptree part;part.put("item",item.item);part.put("quantity",item.quantity);part.put("position",item.position);
+            items.push_back({"",part});
+        }
+        p.add_child("additional",items);
+    }
     std::ostringstream out;boost::property_tree::write_json(out,p,false);return out.str();
 }
 bool DecodeCommissionMailQuote(const std::string& text,CommissionMailQuote& out) {
-    out={};if(text.empty() || text.size()>2048)return false;
+    out={};if(text.empty() || text.size()>4096)return false;
     try {
         boost::property_tree::ptree p;std::istringstream in(text);boost::property_tree::read_json(in,p);
         CommissionMailQuote q;q.commission=p.get<std::string>("commission");
@@ -31,6 +53,13 @@ bool DecodeCommissionMailQuote(const std::string& text,CommissionMailQuote& out)
         q.moneyBefore=p.get<uint32_t>("money_before");q.postage=p.get<uint32_t>("postage");q.cod=p.get<uint32_t>("cod");
         q.delay=p.get<uint32_t>("delay");q.position=p.get<uint16_t>("position");q.mailbox=p.get<uint64_t>("mailbox");
         q.splitPosition=p.get<uint16_t>("split_position",0);q.splitBagGuid=p.get<uint32_t>("split_bag_guid",0);
+        if(const auto extra=p.get_child_optional("additional")) {
+            if(!extra->data().empty() || extra->empty() || extra->size()>11)return false;
+            for(const auto& part:*extra) {
+                if(!part.first.empty())return false;
+                q.additional.push_back({part.second.get<uint32_t>("item"),part.second.get<uint32_t>("quantity"),part.second.get<uint16_t>("position")});
+            }
+        }
         if(!ValidCommissionMailQuote(q) || EncodeCommissionMailQuote(q)!=text)return false;
         out=std::move(q);return true;
     } catch(const std::exception&) {return false;}
@@ -41,21 +70,22 @@ bool ExactCommissionMailConsumption(const Task& task,const CommissionMailQuote& 
         !DecodeCommissionJob(task.checkpoint.data,job,why) || !job.craftFinishedRevision ||
         !DecodeProfessionIntent(job.craft,recipe,why) || task.actor!=q.sender || job.agreement.id!=q.commission ||
         job.agreement.recipient!=q.receiver || job.agreement.delivery!="mail" || job.agreement.feeCopper!=q.cod ||
-        recipe.outputEntry!=q.entry || recipe.outputQuantity!=q.quantity || uses.size()<2 || uses.size()>16)return false;
-    uint64_t items=0;bool money=false;std::set<std::string> ids;
+        recipe.outputEntry!=q.entry || recipe.outputQuantity!=CommissionMailQuantity(q) || uses.size()<2 || uses.size()>16)return false;
+    std::map<uint32_t,uint64_t> remaining;for(const auto& item:CommissionMailAttachments(q))remaining[item.item]=item.quantity;
+    bool money=false;std::set<std::string> ids;
     for(const auto& use:uses) {
         const auto& c=use.before;
         if(!ValidResourceClaim(c) || c.task!=task.id || c.actor!=q.sender || c.state!="held" ||
             c.nativeReference || !ids.insert(c.id).second)return false;
-        if(c.location=="bags" && c.itemGuid==q.item && c.itemEntry==q.entry && !c.copper &&
-            c.quantity && c.quantity<=q.quantity && use.used==c.quantity) {
-            items+=c.quantity;if(items>q.quantity)return false;
+        if(c.location=="bags" && remaining.count(c.itemGuid) && c.itemEntry==q.entry && !c.copper &&
+            c.quantity && use.used==c.quantity) {
+            auto& quantity=remaining.at(c.itemGuid);if(c.quantity>quantity)return false;quantity-=c.quantity;
         }
         else if(c.location=="money" && !c.itemGuid && !c.itemEntry && !c.quantity &&
             c.copper==q.postage && use.used==q.postage && !money)money=true;
         else return false;
     }
-    return items==q.quantity && money;
+    return money && std::all_of(remaining.begin(),remaining.end(),[](const auto& item){return item.second==0;});
 }
 std::string CommissionMailSubject(const std::string& operation) {
     if(!IsUuid(operation))throw std::invalid_argument("commission_mail_operation_required");
@@ -63,14 +93,23 @@ std::string CommissionMailSubject(const std::string& operation) {
 }
 bool VerifyCommissionMailSent(const CommissionMailQuote& q,const AuctionMail& m,const std::string& operation) {
     return ValidCommissionMailQuote(q) && IsUuid(operation) && m.id && m.sender==q.sender && m.receiver==q.receiver &&
-        !m.money && m.cod==q.cod && m.attachments==1 && m.itemGuid==q.item && m.itemEntry==q.entry &&
-        m.quantity==q.quantity && m.deliveredAt && m.expiresAt>m.deliveredAt &&
+        !m.money && m.cod==q.cod && m.attachments==1+q.additional.size() &&
+        (q.additional.empty() ? m.itemGuid==q.item && m.itemEntry==q.entry && m.quantity==q.quantity :
+            !m.itemGuid && !m.itemEntry && !m.quantity) && m.deliveredAt && m.expiresAt>m.deliveredAt &&
         m.subject==CommissionMailSubject(operation);
 }
 std::string CommissionMailSentProof(const Task& task,const CommissionMailQuote& q,const AuctionMail& m,const std::string& operation,uint32_t surplusItem) {
     if(task.actor!=q.sender || !VerifyCommissionMailSent(q,m,operation) ||
         (q.count>q.quantity ? !surplusItem || surplusItem==q.item : surplusItem!=0))return {};
     const auto n=[](uint64_t v){return std::to_string(v);};
+    std::string attachments;
+    for(const auto& part:q.additional)attachments+=
+        " AND EXISTS(SELECT 1 FROM mail_items a JOIN item_instance s ON s.guid=a.item_guid WHERE a.mail_id="+n(m.id)+
+        " AND a.item_guid="+n(part.item)+" AND a.item_template="+n(q.entry)+" AND a.receiver="+n(q.receiver)+
+        " AND s.owner_guid="+n(q.receiver)+" AND s.itemEntry="+n(q.entry)+" AND s.count="+n(part.quantity)+')'+
+        " AND NOT EXISTS(SELECT 1 FROM character_inventory v WHERE v.item="+n(part.item)+')'+
+        " AND NOT EXISTS(SELECT 1 FROM guild_bank_item v WHERE v.item_guid="+n(part.item)+')'+
+        " AND NOT EXISTS(SELECT 1 FROM mail_items a WHERE a.item_guid="+n(part.item)+" AND a.mail_id<>"+n(m.id)+')';
     const auto surplus=q.count>q.quantity ?
         " AND EXISTS(SELECT 1 FROM item_instance s JOIN character_inventory v ON v.item=s.guid WHERE s.guid="+n(surplusItem)+
         " AND s.owner_guid="+n(q.sender)+" AND v.guid="+n(q.sender)+" AND s.itemEntry="+n(q.entry)+
@@ -84,11 +123,11 @@ std::string CommissionMailSentProof(const Task& task,const CommissionMailQuote& 
         " AND m.deliver_time="+n(m.deliveredAt)+" AND m.expire_time="+n(m.expiresAt)+
         " AND mi.item_guid="+n(q.item)+" AND mi.item_template="+n(q.entry)+" AND mi.receiver="+n(q.receiver)+
         " AND i.owner_guid="+n(q.receiver)+" AND i.itemEntry="+n(q.entry)+" AND i.count="+n(q.quantity)+
-        " AND (SELECT COUNT(*) FROM mail_items a WHERE a.mail_id=m.id)=1"
+        " AND (SELECT COUNT(*) FROM mail_items a WHERE a.mail_id=m.id)="+n(1+q.additional.size())+
         " AND NOT EXISTS (SELECT 1 FROM character_inventory v WHERE v.item=i.guid)"
         " AND NOT EXISTS (SELECT 1 FROM guild_bank_item g WHERE g.item_guid=i.guid)"
         " AND NOT EXISTS (SELECT 1 FROM mail_items a WHERE a.item_guid=i.guid AND a.mail_id<>m.id)"
-        " AND EXISTS (SELECT 1 FROM characters c WHERE c.guid="+n(q.sender)+" AND c.money="+n(q.moneyBefore-q.postage)+')'+surplus;
+        " AND EXISTS (SELECT 1 FROM characters c WHERE c.guid="+n(q.sender)+" AND c.money="+n(q.moneyBefore-q.postage)+')'+surplus+attachments;
 }
 std::string CommissionMailOperationFromSubject(const std::string& subject) {
     const std::string prefix="Commission delivery ";
@@ -111,6 +150,7 @@ std::string CommissionMailReceiptId(const std::string& send,CommissionMailEvent 
     return boost::uuids::to_string(boost::uuids::name_generator(ns)(send+':'+ReceiptKind(event)));
 }
 std::string CommissionMailObservationWrite(const CommissionMailObservation& e) {
+    if(!e.parcelQuote.empty())return CommissionParcelObservationWrite(e);
     if(!IsUuid(e.sendOperation) || !*ReceiptKind(e.event) || !e.mail || !e.sender || !e.receiver ||
         e.sender==e.receiver || !e.atMs)return {};
     const auto n=[](uint64_t v){return std::to_string(v);};

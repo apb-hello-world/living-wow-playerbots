@@ -54,35 +54,45 @@ bool PlanNativeCommissionMail(Player& actor,const Task& task,CommissionMailQuote
     UnsettledClaimBatch claims;
     if(!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,why))return false;
     if(!claims.complete)return reject("commission_mail_claims_incomplete");
-    ResourceClaim output,postage;uint64_t outputQuantity=0;bool auxiliary=false;
+    ResourceClaim postage;uint64_t outputQuantity=0;bool auxiliary=false;
+    std::map<uint32_t,uint64_t> outputs;
     for(const auto& c:claims.claims) {
         if(c.state!="held" || c.nativeReference)return reject("commission_mail_claim_requires_reconciliation");
         if(c.location=="bags" && c.itemEntry==recipe.outputEntry && c.quantity && c.quantity<=recipe.outputQuantity) {
-            if(!output.id.empty() && output.itemGuid!=c.itemGuid)return reject("commission_mail_multiple_stacks_preparation_required");
-            output=c;outputQuantity+=c.quantity;uses.push_back({c,uint32_t(c.quantity)});
+            outputs[c.itemGuid]+=c.quantity;outputQuantity+=c.quantity;uses.push_back({c,uint32_t(c.quantity)});
         }
-        else if(c.location=="money" && c.copper==30 && postage.id.empty())postage=c;
+        else if(c.location=="money" && c.copper && postage.id.empty())postage=c;
         else if((c.location=="bags" || c.location=="bank") && c.itemEntry!=recipe.outputEntry && c.quantity && !c.copper)
             auxiliary=true; // Capacity demand may still exist; never mail with these outstanding.
         else return reject("commission_mail_exact_parcel_preparation_required");
     }
-    if(outputQuantity!=recipe.outputQuantity || uses.size()>15)return reject("commission_mail_exact_output_claims_required");
-    auto* item=output.id.empty()?nullptr:actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,output.itemGuid));
+    if(outputQuantity!=recipe.outputQuantity || uses.size()>15 || outputs.empty())return reject("commission_mail_exact_output_claims_required");
+    if(outputs.size()>MAX_MAIL_ITEMS || outputs.size()>12)return reject("commission_mail_native_attachment_limit");
+    q.postage=30*uint32_t(outputs.size());
+    if(!postage.id.empty() && postage.copper!=q.postage)return reject("commission_mail_postage_claim_changed");
     const auto privateItems=sPlayerbotActionBroker.ReservedItemsView();
-    if(!item || item->GetOwnerGuid()!=actor.GetObjectGuid() || !Player::IsInventoryPos(item->GetPos()) ||
-        item->GetEntry()!=recipe.outputEntry || item->GetCount()<recipe.outputQuantity || !item->CanBeTraded() ||
-        item->HasGeneratedLoot() || item->IsConjuredConsumable() || item->GetUInt32Value(ITEM_FIELD_DURATION) ||
-        sGuildSupplies.Reserved(item->GetGUIDLow()) || !privateItems || privateItems->Item(item->GetGUIDLow()) ||
-        ai::ItemUsageValue::IsNeededForQuest(&actor,item->GetEntry(),true))return reject("commission_mail_claimed_output_unavailable");
+    std::vector<Item*> items;Item* item=nullptr;
     uint32_t available=0;
-    if(!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,
-        {task.actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,"bags"},available,why))return false;
-    if(available<recipe.outputQuantity)return reject("commission_mail_output_reserved_elsewhere");
-    if(item->GetCount()>recipe.outputQuantity) {
-        // Another job's claim cannot remain on the GUID that is mailed. Do not
-        // split a mixed-obligation stack until its other reservations clear.
-        if(available!=item->GetCount())return reject("commission_mail_surplus_reserved_elsewhere");
-        q.entry=item->GetEntry();q.quantity=recipe.outputQuantity;q.count=item->GetCount();
+    for(const auto& output:outputs) {
+        auto* part=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,output.first));
+        if(!part || part->GetOwnerGuid()!=actor.GetObjectGuid() || !Player::IsInventoryPos(part->GetPos()) ||
+            part->GetEntry()!=recipe.outputEntry || part->GetCount()<output.second || !part->CanBeTraded() ||
+            part->HasGeneratedLoot() || part->IsConjuredConsumable() || part->GetUInt32Value(ITEM_FIELD_DURATION) ||
+            sGuildSupplies.Reserved(part->GetGUIDLow()) || !privateItems || privateItems->Item(part->GetGUIDLow()) ||
+            ai::ItemUsageValue::IsNeededForQuest(&actor,part->GetEntry(),true))return reject("commission_mail_claimed_output_unavailable");
+        if(!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,
+            {task.actor,part->GetGUIDLow(),part->GetEntry(),part->GetCount(),0,"bags"},available,why))return false;
+        if(available!=part->GetCount())return reject("commission_mail_output_reserved_elsewhere");
+        if(part->GetCount()>output.second) {
+            if(item)return reject("commission_mail_multiple_surplus_preparation_required");
+            item=part;
+        }
+        items.push_back(part);
+    }
+    if(!item)item=items.front();
+    q.entry=item->GetEntry();q.quantity=uint32_t(outputs.at(item->GetGUIDLow()));q.count=item->GetCount();
+    for(auto* part:items)if(part!=item)q.additional.push_back({part->GetGUIDLow(),part->GetCount(),part->GetPos()});
+    if(q.count>q.quantity) {
         if(!EmptyNativeParcelSlot(actor,*item,q.count-q.quantity,q.splitPosition))return reject("commission_mail_split_capacity_required");
         if((q.splitPosition>>8)!=INVENTORY_SLOT_BAG_0) {
             const auto* bag=actor.GetItemByPos(INVENTORY_SLOT_BAG_0,uint8_t(q.splitPosition>>8));
@@ -92,35 +102,47 @@ bool PlanNativeCommissionMail(Player& actor,const Task& task,CommissionMailQuote
     }
     if(auxiliary)return reject("commission_mail_preparation_claims_pending");
     if(!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,{task.actor,0,0,0,actor.GetMoney(),"money"},available,why))return false;
-    if(available<30)return reject("commission_mail_postage_unavailable");
+    if(available<q.postage)return reject("commission_mail_postage_unavailable");
     const auto mailbox=NativeNearbyMailbox(actor);if(!mailbox)return reject("commission_mailbox_travel_required");
     q.commission=job.agreement.id;q.sender=task.actor;q.receiver=job.agreement.recipient;q.cod=job.agreement.feeCopper;
-    q.item=item->GetGUIDLow();q.entry=item->GetEntry();q.quantity=recipe.outputQuantity;q.count=item->GetCount();
-    q.moneyBefore=actor.GetMoney();q.postage=30;q.position=item->GetPos();q.mailbox=mailbox;
+    q.item=item->GetGUIDLow();q.moneyBefore=actor.GetMoney();q.position=item->GetPos();q.mailbox=mailbox;
     q.delay=actor.GetSession()->GetAccountId()==customer->Fetch()[1].GetUInt32()?0:sWorld.getConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY);
     if(!ValidCommissionMailQuote(q))return reject("commission_mail_quote_invalid");
-    if(!postage.id.empty())uses.push_back({postage,30});
+    if(!postage.id.empty())uses.push_back({postage,q.postage});
     why.clear();return true;
+}
+bool NativeCommissionAdditionalItemsUnchanged(Player& actor,const CommissionMailQuote& quote) {
+    for(const auto& part:quote.additional) {
+        const auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,part.item));
+        if(!item || item->GetOwnerGuid()!=actor.GetObjectGuid() || !Player::IsInventoryPos(item->GetPos()) ||
+            item->GetEntry()!=quote.entry || item->GetCount()!=part.quantity || item->GetPos()!=part.position)return false;
+    }
+    return true;
 }
 bool NativeCommissionReturnReservation::ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& why) {
     guard=" AND 1=0";
     const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);
-    ProfessionHistory history;ResourceClaim expected;UnsettledClaimBatch claims;NativeResourceBalance native;
+    ProfessionHistory history;std::vector<ResourceClaim> expected;UnsettledClaimBatch claims;NativeResourceBalance native;
     if(!saved || saved->revision!=request.transition.expectedRevision || saved->phase!=Phase::Preparing ||
-        request.transition.task.checkpoint.step!="commission_return_collect" || request.changes.size()!=1 ||
+        request.transition.task.checkpoint.step!="commission_return_collect" || request.changes.empty() || request.changes.size()>12 ||
         !sLivingActivityCoordinator.ReadProfessionHistory(actor.GetGUIDLow(),saved->id,saved->revision,history,why) ||
-        !ReturnedCommissionClaim(*saved,history,expected,why) ||
+        !ReturnedCommissionClaims(*saved,history,expected,why) ||
         !sLivingActivityCoordinator.ReadTaskClaims(actor.GetGUIDLow(),saved->id,saved->revision,claims,why))return false;
-    const auto& change=request.changes.front();
-    if(!claims.complete || !claims.claims.empty() || change.expectedRevision || !SameResourceClaim(change.after,expected) ||
-        !ReadNativeMailBalance(actor,expected,native)) {why="commission_return_attachment_changed";return false;}
-    const auto* mail=actor.GetMail(uint32_t(expected.nativeReference));
+    if(!claims.complete || !claims.claims.empty() || request.changes.size()!=expected.size())return false;
+    std::set<std::string> seen;guard.clear();
+    for(const auto& change:request.changes) {
+        const auto part=std::find_if(expected.begin(),expected.end(),[&](const auto& c){return SameResourceClaim(c,change.after);});
+        if(change.expectedRevision || part==expected.end() || !seen.insert(part->id).second || !ReadNativeMailBalance(actor,*part,native))
+            {guard=" AND 1=0";why="commission_return_attachment_changed";return false;}
+        guard+=ReturnedCommissionClaimGuard(*saved,history,*part);
+    }
+    const auto* mail=actor.GetMail(uint32_t(expected.front().nativeReference));
     CommissionDeliveryProof proof;
     if(!InspectCommissionDelivery(*saved,history,proof,why))return false;
     if(!mail || mail->COD || mail->money || mail->sender!=proof.quote.receiver ||
-        mail->subject!=CommissionMailSubject(proof.send) || mail->items.size()!=1 ||
+        mail->subject!=CommissionMailSubject(proof.send) || mail->items.size()!=expected.size() ||
         !(mail->checked&MAIL_CHECK_MASK_RETURNED)) {why="commission_return_envelope_changed";return false;}
-    guard=ReturnedCommissionClaimGuard(*saved,history,expected);why.clear();return true;
+    why.clear();return true;
 }
 bool NativeCommissionMailReservation::ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& why) {
     const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);
@@ -130,7 +152,7 @@ bool NativeCommissionMailReservation::ValidatePurpose(Player& actor,const Reserv
         std::any_of(uses.begin(),uses.end(),[](const ClaimConsumption& use){return use.before.copper!=0;}))return false;
     const auto& change=request.changes.front();
     if(change.expectedRevision || change.after.revision!=1){why="commission_mail_new_postage_claim_required";return false;}
-    uses.push_back({change.after,30});
+    uses.push_back({change.after,q.postage});
     if(!ExactCommissionMailConsumption(*saved,q,uses)){why="commission_mail_exact_postage_required";return false;}
     return true;
 }
@@ -168,13 +190,23 @@ NativeObservation NativeCommissionMail::ExecuteNative(Player& actor,const Operat
     WorldPacket packet(CMSG_SEND_MAIL);
     packet<<ObjectGuid(quote.mailbox)<<customer->Fetch()[0].GetCppString()<<CommissionMailSubject(operation);
     packet<<std::string("Your commissioned item. The agreed fee is collected by the game's COD mail system.");
-    packet<<uint32(0)<<uint32(0)<<uint8(1)<<uint8(0)<<ObjectGuid(HIGHGUID_ITEM,quote.item);
+    const auto attachments=CommissionMailAttachments(quote);
+    packet<<uint32(0)<<uint32(0)<<uint8(attachments.size());
+    for(size_t i=0;i<attachments.size();++i)packet<<uint8(i)<<ObjectGuid(HIGHGUID_ITEM,attachments[i].item);
     packet<<uint32(0)<<quote.cod<<uint64(0)<<uint8(0);
     actor.GetSession()->HandleSendMail(packet);
     const auto* remaining=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item));
+    const bool additionalUnchanged=std::all_of(quote.additional.begin(),quote.additional.end(),[&](const auto& part){
+        const auto* current=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,part.item));
+        return current && current->GetOwnerGuid()==actor.GetObjectGuid() && current->GetEntry()==quote.entry &&
+            current->GetCount()==part.quantity && current->GetPos()==part.position;
+    });
+    const bool additionalSent=std::all_of(quote.additional.begin(),quote.additional.end(),[&](const auto& part){
+        return !actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,part.item));
+    });
     if(!surplusItem && capture.Valid() && capture.Rows().empty() && remaining && remaining->GetOwnerGuid()==actor.GetObjectGuid() &&
         remaining->GetEntry()==quote.entry && remaining->GetCount()==quote.count && remaining->GetPos()==quote.position &&
-        actor.GetMoney()==quote.moneyBefore) {
+        actor.GetMoney()==quote.moneyBefore && additionalUnchanged) {
         out.state=OperationState::Rejected;out.evidence="commission_mail_native_handler_rejected";return out;
     }
     const auto* extra=surplusItem?actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,surplusItem)):nullptr;
@@ -182,24 +214,25 @@ NativeObservation NativeCommissionMail::ExecuteNative(Player& actor,const Operat
         extra->GetPos()==quote.splitPosition && extra->GetEntry()==quote.entry && extra->GetCount()==quote.count-quote.quantity);
     if(surplusItem && surplusValid && capture.Valid() && capture.Rows().empty() && remaining &&
         remaining->GetOwnerGuid()==actor.GetObjectGuid() && remaining->GetEntry()==quote.entry &&
-        remaining->GetCount()==quote.quantity && remaining->GetPos()==quote.position && actor.GetMoney()==quote.moneyBefore) {
+        remaining->GetCount()==quote.quantity && remaining->GetPos()==quote.position && actor.GetMoney()==quote.moneyBefore && additionalUnchanged) {
         out.evidence="commission_mail_native_split_only";out.nativeReference="item:"+std::to_string(quote.item);
         out.afterState="{\"mail_not_sent\":true,\"surplus_item\":"+std::to_string(surplusItem)+
             ",\"surplus_count\":"+std::to_string(quote.count-quote.quantity)+'}';
         return out;
     }
     if(!capture.Valid() || capture.Rows().size()!=1 || !VerifyCommissionMailSent(quote,capture.Rows().front(),operation) || !surplusValid ||
-        remaining || actor.GetMoney()!=quote.moneyBefore-quote.postage || !CharacterDatabase.HasOpenTransaction()) {
+        remaining || !additionalSent || actor.GetMoney()!=quote.moneyBefore-quote.postage || !CharacterDatabase.HasOpenTransaction()) {
         out.evidence="commission_mail_native_custody_uncertain";return out;
     }
     sent=capture.Rows().front();out.state=OperationState::Verified;out.evidence="native_commission_parcel_and_postage_observed";
     if(surplusItem)out.retainedSplit={quote.sender,surplusItem,quote.entry,quote.count-quote.quantity,0,"bags"};
-    out.nativeReference="mail:"+std::to_string(sent.id)+":item:"+std::to_string(sent.itemGuid);
-    out.afterState="{\"mail\":"+std::to_string(sent.id)+",\"item\":"+std::to_string(sent.itemGuid)+
+    out.nativeReference="mail:"+std::to_string(sent.id)+":item:"+std::to_string(quote.item);
+    out.afterState="{\"mail\":"+std::to_string(sent.id)+",\"item\":"+std::to_string(quote.item)+
         ",\"receiver\":"+std::to_string(sent.receiver)+",\"cod\":"+std::to_string(sent.cod)+
         ",\"delivered_at\":"+std::to_string(sent.deliveredAt)+",\"expires_at\":"+std::to_string(sent.expiresAt)+
         ",\"postage\":"+std::to_string(quote.postage)+",\"customer_received\":false,\"fee_paid\":false"+
-        (surplusItem?",\"surplus_item\":"+std::to_string(surplusItem)+",\"surplus_count\":"+std::to_string(quote.count-quote.quantity):std::string())+'}';
+        (surplusItem?",\"surplus_item\":"+std::to_string(surplusItem)+",\"surplus_count\":"+std::to_string(quote.count-quote.quantity):std::string())+
+        (quote.additional.empty()?std::string():",\"attachment_count\":"+std::to_string(attachments.size()))+'}';
     return out;
 }
 std::string NativeCommissionMail::PersistedNativeProof(Player& actor,const OperationRequest&,const Task& task) const {
@@ -208,10 +241,19 @@ std::string NativeCommissionMail::PersistedNativeProof(Player& actor,const Opera
     // inventory-position bag index. Rejected sends must verify either location.
     const auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item));
     const auto bag=item && item->GetContainer()?item->GetContainer()->GetGUIDLow():0;
+    std::string extraGuards;
+    for(const auto& part:quote.additional) {
+        const auto* native=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,part.item));if(!native)return {};
+        const auto partBag=native->GetContainer()?native->GetContainer()->GetGUIDLow():0;
+        extraGuards+=" AND EXISTS(SELECT 1 FROM character_inventory p JOIN item_instance s ON s.guid=p.item WHERE p.guid=c.guid"
+            " AND s.owner_guid=c.guid AND s.guid="+std::to_string(part.item)+" AND s.itemEntry="+std::to_string(quote.entry)+
+            " AND s.count="+std::to_string(part.quantity)+" AND p.bag="+std::to_string(partBag)+
+            " AND p.slot="+std::to_string(part.position&255)+") AND NOT EXISTS(SELECT 1 FROM mail_items p WHERE p.item_guid="+std::to_string(part.item)+')';
+    }
     return "SELECT "+SqlValue(task.id)+','+std::to_string(task.revision)+" FROM characters c JOIN character_inventory v ON v.guid=c.guid"
         " JOIN item_instance i ON i.guid=v.item WHERE c.guid="+std::to_string(quote.sender)+" AND c.money="+std::to_string(quote.moneyBefore)+
         " AND i.guid="+std::to_string(quote.item)+" AND i.owner_guid=c.guid AND i.itemEntry="+std::to_string(quote.entry)+
         " AND i.count="+std::to_string(quote.count)+" AND v.bag="+std::to_string(bag)+" AND v.slot="+
-        std::to_string(quote.position&255)+" AND NOT EXISTS (SELECT 1 FROM mail_items a WHERE a.item_guid=i.guid)";
+        std::to_string(quote.position&255)+" AND NOT EXISTS (SELECT 1 FROM mail_items a WHERE a.item_guid=i.guid)"+extraGuards;
 }
 }

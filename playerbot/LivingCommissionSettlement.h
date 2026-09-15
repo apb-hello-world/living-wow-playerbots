@@ -11,9 +11,12 @@ struct CommissionDeliveryProof {
     CommissionMailQuote quote;
     std::string send,received,fee,returned;
     uint32_t mail=0,paymentMail=0,returnedMail=0;
+    std::vector<CommissionMailAttachment> receivedAttachments,returnedAttachments;
 };
+bool InspectCommissionParcelReceipts(CommissionDeliveryProof&,const ProfessionHistory&,const StoredCraftOperation&,std::string&);
 bool InspectCommissionDelivery(const Task&,const ProfessionHistory&,CommissionDeliveryProof&,std::string&);
 bool ReturnedCommissionClaim(const Task&,const ProfessionHistory&,ResourceClaim&,std::string&);
+bool ReturnedCommissionClaims(const Task&,const ProfessionHistory&,std::vector<ResourceClaim>&,std::string&);
 std::string ReturnedCommissionClaimGuard(const Task&,const ProfessionHistory&,const ResourceClaim&);
 struct CommissionReturnClosure {
     Task task;

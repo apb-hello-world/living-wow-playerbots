@@ -219,6 +219,127 @@ inline void TestCommissionMail() {
         row.afterState=EnchantCodec::Json(p);return row;
     };
     const auto receivedRow=eventRow(received,"commission_customer_received"),feeRow=eventRow(paid,"commission_fee_collected");
+    {
+        auto parcel=q;parcel.additional={{104,1,24}};parcel.postage=60;
+        const auto parcelText=EncodeCommissionMailQuote(parcel);
+        CommissionMailQuote roundtrip;assert(DecodeCommissionMailQuote(parcelText,roundtrip) && roundtrip.additional.size()==1);
+        assert(CommissionMailQuantity(roundtrip)==2 && EncodeCommissionMailQuote(q)==encoded);
+        auto parcelRecipe=recipe;parcelRecipe.outputQuantity=2;auto parcelJob=job;
+        parcelJob.agreement.recipe=EncodeProfessionJob(parcelRecipe);parcelJob.craft=parcelJob.agreement.recipe;
+        auto parcelTask=owner;parcelTask.checkpoint.data=EncodeCommissionJob(parcelJob);
+        auto extra=item;extra.id="d1879146-6e96-4e71-827d-6d12d965edc0";extra.itemGuid=104;
+        auto envelopeFee=money;envelopeFee.copper=60;
+        const std::vector<ClaimConsumption> parcelUses={{item,1},{extra,1},{envelopeFee,60}};
+        assert(ExactCommissionMailConsumption(parcelTask,parcel,parcelUses));
+        auto wrongUses=parcelUses;wrongUses[1].before.itemGuid=105;assert(!ExactCommissionMailConsumption(parcelTask,parcel,wrongUses));
+        wrongUses=parcelUses;wrongUses[2].used=30;assert(!ExactCommissionMailConsumption(parcelTask,parcel,wrongUses));
+        auto nativeMail=sent;nativeMail.attachments=2;nativeMail.itemGuid=nativeMail.itemEntry=nativeMail.quantity=0;
+        assert(VerifyCommissionMailSent(parcel,nativeMail,operation));
+        auto nativeProof=CommissionMailSentProof(parcelTask,parcel,nativeMail,operation);
+        assert(nativeProof.find("a.item_guid=104")!=std::string::npos && nativeProof.find("a.mail_id=m.id)=2")!=std::string::npos);
+        for(unsigned i=0;i<7;++i) {
+            auto bad=parcel;
+            if(i==0)bad.postage=30;
+            if(i==1)bad.additional[0].item=bad.item;
+            if(i==2)bad.additional[0].position=bad.position;
+            if(i==3)bad.additional[0].quantity=0;
+            if(i==4)bad.additional.resize(12,bad.additional.front());
+            if(i==5)bad.additional[0].quantity=10000;
+            if(i==6){bad.count=2;bad.splitPosition=24;}
+            assert(!ValidCommissionMailQuote(bad));
+        }
+        auto parcelSend=sendRow;
+        parcelSend.beforeState="{\"effects\":12,\"persistence\":1,\"native\":"+ClaimedNativeState(parcelText,parcelUses,8192)+'}';
+        parcelSend.afterState=ClaimedNativeState("{\"mail\":9832,\"item\":103,\"receiver\":9,\"cod\":120,\"delivered_at\":1100,\"expires_at\":3000,\"postage\":60,\"customer_received\":false,\"fee_paid\":false,\"attachment_count\":2}",parcelUses,8192);
+        auto first=received;first.parcelQuote=parcelText;first.attachmentsBefore=2;first.attachmentsAfter=1;
+        auto second=first;second.item=104;second.copper=0;second.moneyBefore=second.moneyAfter=first.moneyAfter;
+        second.inventoryBefore=first.inventoryAfter;second.inventoryAfter=second.inventoryBefore+1;second.generated={};
+        second.attachmentsBefore=1;second.attachmentsAfter=0;
+        auto parcelPaid=paid;parcelPaid.parcelQuote=parcelText;
+        assert(!CommissionMailObservationWrite(first).empty() && !CommissionMailObservationWrite(second).empty() && !CommissionMailObservationWrite(parcelPaid).empty());
+        assert(CommissionParcelReceiptId(operation,103)!=CommissionParcelReceiptId(operation,104));
+        auto row2=[&](const CommissionMailObservation& e,const char* kind) {
+            auto row=eventRow(e,kind);boost::property_tree::ptree p;std::istringstream in(row.afterState);boost::property_tree::read_json(in,p);
+            p.put("version",2);p.put("attachments_before",e.attachmentsBefore);p.put("attachments_after",e.attachmentsAfter);
+            row.afterState=EnchantCodec::Json(p);
+            if(e.event==CommissionMailEvent::CustomerReceived)row.receipt.id=CommissionParcelReceiptId(operation,e.item);
+            return row;
+        };
+        const auto firstRow=row2(first,"commission_customer_received"),secondRow=row2(second,"commission_customer_received"),
+            parcelFee=row2(parcelPaid,"commission_fee_collected");
+        auto parcelHistory=history;parcelHistory.commissionMail={parcelSend,firstRow,parcelFee};
+        assert(InspectCommissionDelivery(parcelTask,parcelHistory,delivered,why) && delivered.state==CommissionDeliveryState::WaitingCustomer);
+        parcelHistory.commissionMail.push_back(secondRow);
+        assert(InspectCommissionDelivery(parcelTask,parcelHistory,delivered,why) && delivered.state==CommissionDeliveryState::Complete &&
+            delivered.receivedAttachments.size()==2);
+        for(unsigned i=0;i<7;++i) {
+            auto bad=parcelHistory;
+            if(i==0)bad.commissionMail.push_back(secondRow);
+            if(i==1)bad.commissionMail.erase(bad.commissionMail.begin()+1);
+            if(i==2){auto twice=second;twice.copper=120;twice.moneyBefore=200;twice.moneyAfter=80;twice.generated=first.generated;bad.commissionMail[3]=row2(twice,"commission_customer_received");}
+            if(i==3){auto foreign=second;foreign.item=105;bad.commissionMail[3]=row2(foreign,"commission_customer_received");}
+            if(i==4){auto gap=second;gap.attachmentsBefore=2;gap.attachmentsAfter=1;bad.commissionMail[3]=row2(gap,"commission_customer_received");}
+            if(i==5)bad.commissionMail[3]=receivedRow;
+            if(i==6)bad.commissionMail[3].receipt.id=firstRow.receipt.id;
+            assert(!InspectCommissionDelivery(parcelTask,bad,delivered,why));
+        }
+        auto badEvent=second;badEvent.quantity=2;assert(CommissionMailObservationWrite(badEvent).empty());
+        badEvent=second;badEvent.attachmentsAfter=1;assert(CommissionMailObservationWrite(badEvent).empty());
+        badEvent=parcelPaid;badEvent.copper=121;assert(CommissionMailObservationWrite(badEvent).empty());
+        badEvent=second;badEvent.event=static_cast<CommissionMailEvent>(99);assert(CommissionMailObservationWrite(badEvent).empty());
+        // Exact intent survives restart with all attachments and all postage;
+        // neither a changed extra stack nor the v1 postage may pass recovery.
+        auto interruptedTask=parcelTask;interruptedTask.context={};interruptedTask.context.actor=parcelTask.actor;
+        interruptedTask.phase=Phase::Executing;interruptedTask.checkpoint.step="commission_mail_send";
+        auto interruptedHistory=parcelHistory;interruptedHistory.commissionMail={parcelSend};interruptedHistory.unresolvedOperation=true;
+        auto& intent=interruptedHistory.commissionMail.front();intent.receipt.taskRevision=interruptedTask.revision;
+        intent.receipt.state=OperationState::Intent;intent.receipt.evidence.clear();intent.receipt.nativeReference.clear();intent.afterState="{}";
+        UnsettledClaimBatch pending;pending.complete=true;pending.bookRevision=1;
+        for(const auto& use:parcelUses)pending.claims.push_back(use.before);
+        CommissionMailQuote recoveredQuote;ProfessionPreparation resumed;
+        const std::string resumeId="908bfe62-f662-5c75-a0be-daf926036be4";
+        assert(DecodeUnsentCommission(interruptedTask,interruptedHistory,pending,recoveredQuote,why));
+        assert(PrepareUnsentCommission(interruptedTask,parcelTask.context,interruptedHistory,pending,parcel,0,2002000,resumeId,resumed,why));
+        assert(resumed.plan.statements[1].find("i.guid=104")!=std::string::npos);
+        auto changed=parcel;changed.additional[0].quantity=2;
+        assert(!PrepareUnsentCommission(interruptedTask,parcelTask.context,interruptedHistory,pending,changed,0,2002000,resumeId,resumed,why));
+        auto lost=pending;lost.claims.pop_back();assert(!DecodeUnsentCommission(interruptedTask,interruptedHistory,lost,recoveredQuote,why));
+        auto capturedTask=interruptedTask;++capturedTask.revision;capturedTask.phase=Phase::Reconciling;
+        auto capturedHistory=interruptedHistory;capturedHistory.revision=capturedTask.revision;
+        auto& capture=capturedHistory.commissionMail.front();capture.receipt.state=OperationState::Reconciling;
+        capture.receipt.evidence="native_save_capture_requires_reconciliation";capture.receipt.nativeReference=parcelSend.receipt.nativeReference;
+        {boost::property_tree::ptree p;std::istringstream in(parcelSend.afterState);boost::property_tree::read_json(in,p);
+            capture.afterState=EnchantCodec::Json(p.get_child("native"));}
+        CommissionSendRecovery recovered;
+        assert(PrepareCapturedCommissionSend(capturedTask,parcelTask.context,capturedHistory,pending,2002000,resumeId,recovered,why));
+        assert(recovered.claims.size()==3);
+        auto back=returned;back.parcelQuote=parcelText;back.item=back.entry=back.quantity=0;
+        back.generated.attachments=2;back.generated.itemGuid=back.generated.itemEntry=back.generated.quantity=0;
+        back.attachmentsBefore=back.attachmentsAfter=2;
+        assert(!CommissionMailObservationWrite(back).empty());
+        auto backRow=row2(back,"commission_parcel_returned");
+        {boost::property_tree::ptree p,list;std::istringstream in(backRow.afterState);boost::property_tree::read_json(in,p);
+            for(const auto& part:CommissionMailAttachments(parcel)){boost::property_tree::ptree item;item.put("item",part.item);item.put("quantity",part.quantity);list.push_back({"",item});}
+            p.add_child("returned_items",list);backRow.afterState=EnchantCodec::Json(p);}
+        auto returnHistory=parcelHistory;returnHistory.commissionMail={parcelSend,backRow};
+        std::vector<ResourceClaim> returns;assert(ReturnedCommissionClaims(parcelTask,returnHistory,returns,why) && returns.size()==2);
+        assert(returns[0].id!=returns[1].id && returns[0].nativeReference==back.mail);
+        pending.claims=returns;
+        auto returningTask=parcelTask;returningTask.context={};returningTask.context.actor=parcelTask.actor;
+        returningTask.phase=Phase::Traveling;
+        assert(PrepareCommissionReturnResume(returningTask,parcelTask.context,returnHistory,pending,{},2002000,resumeId,resumed,why));
+        auto one=returns[0];one.location="bags";one.nativeReference=0;++one.revision;
+        pending.claims[0]=one;
+        const NativeResourceBalance firstOwned{parcelTask.actor,one.itemGuid,one.itemEntry,1,0,"bags"};
+        assert(PrepareCommissionReturnResume(returningTask,parcelTask.context,returnHistory,pending,{firstOwned},2002000,resumeId,resumed,why));
+        assert(resumed.plan.statements[1].find("native_mail_attachment_collected")!=std::string::npos);
+        CommissionReturnClosure closure;
+        assert(!PrepareCommissionReturnClosure(returningTask,parcelTask.context,returnHistory,pending,{firstOwned},2002000,resumeId,closure,why));
+        auto two=returns[1];two.location="bags";two.nativeReference=0;++two.revision;two.itemGuid=one.itemGuid;
+        pending.claims[1]=two;auto merged=firstOwned;merged.quantity=2;
+        assert(PrepareCommissionReturnClosure(returningTask,parcelTask.context,returnHistory,pending,{merged},2002000,resumeId,closure,why));
+        assert(closure.task.phase==Phase::Failed && closure.claims.size()==2);
+    }
     history.commissionMail.push_back(receivedRow);
     assert(InspectCommissionDelivery(owner,history,delivered,why) && delivered.state==CommissionDeliveryState::WaitingFee);
     history.commissionMail.push_back(feeRow);

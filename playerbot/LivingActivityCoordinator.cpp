@@ -2308,9 +2308,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     const auto deliveryContext=ReadNativeContext(*bot,state->policyRevision,state->boot);
     const bool restoredDelivery=saved->context.boot.empty() && !saved->context.actorGeneration && !saved->context.mapGeneration;
     if(saved->phase!=Phase::Executing && (saved->context==deliveryContext || restoredDelivery)) {
-        ProfessionHistory history;ResourceClaim parcel;
+        ProfessionHistory history;std::vector<ResourceClaim> parcels;
         if(!ReadProfessionHistory(actor,id,saved->revision,history,why))return stop(why);
-        if(ReturnedCommissionClaim(*saved,history,parcel,why)) {
+        if(ReturnedCommissionClaims(*saved,history,parcels,why)) {
             if(DefersNativeSave(actor) || state->operationDispatching)return stop("commission_native_save_pending");
             UnsettledClaimBatch claims;
             if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
@@ -2319,15 +2319,19 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             if(!owned.operation.empty())return stop("commission_native_operation_pending");
             for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)
                 return stop("commission_native_operation_pending");
-            const bool alreadyCollected=std::any_of(claims.claims.begin(),claims.claims.end(),[&](const ResourceClaim& c){
+            const auto collected=[&](const ResourceClaim& parcel){return std::any_of(claims.claims.begin(),claims.claims.end(),[&](const ResourceClaim& c){
                 return c.id==parcel.id && c.location=="bags" && !c.nativeReference;
+            });};
+            const bool alreadyCollected=std::all_of(parcels.begin(),parcels.end(),[&](const auto& parcel){
+                return collected(parcel);
             });
             if(restoredDelivery && !alreadyCollected) {
                 if(NativeSafety(bot))return stop("commission_return_safety_pause");
                 if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
                     return stop("commission_settlement_backpressure");
                 NativeResourceBalance native;
-                if(!ReadNativeMailBalance(*bot,parcel,native))return stop("commission_return_native_attachment_missing");
+                for(const auto& parcel:parcels)if(!collected(parcel) && !ReadNativeMailBalance(*bot,parcel,native))
+                    return stop("commission_return_native_attachment_missing");
                 const auto balances=NativeClaimBalances(*bot,claims.claims,false);
                 ProfessionPreparation resumed;const auto receipt=NewId();
                 if(!PrepareCommissionReturnResume(*saved,deliveryContext,history,claims,balances,NowMs(),receipt,resumed,why))return stop(why);
@@ -2353,15 +2357,20 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                 ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
                 ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
                 request.transition.task.checkpoint.step="commission_return_collect";
-                request.authorization=grant.action;request.changes.push_back({parcel,0});
+                request.authorization=grant.action;for(const auto& parcel:parcels)request.changes.push_back({parcel,0});
                 NativeCommissionReturnReservation adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
             }
-            for(const auto& claim:claims.claims)if(claim.id==parcel.id) {
+            for(const auto& parcel:parcels) {
+                const auto found=std::find_if(claims.claims.begin(),claims.claims.end(),[&](const auto& c){return c.id==parcel.id;});
+                if(found==claims.claims.end())return stop("commission_return_claim_missing");
+                const auto& claim=*found;
                 if(claim.actor!=actor || claim.itemEntry!=parcel.itemEntry || claim.quantity!=parcel.quantity || claim.state!="held")
                     return stop("commission_return_claim_changed");
                 if(claim.location=="mail" && claim.nativeReference==parcel.nativeReference && claim.itemGuid==parcel.itemGuid)
                     return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{parcel.itemEntry,uint32_t(parcel.quantity)}).blocker);
-                if(claim.location=="bags" && !claim.nativeReference) {
+                if(claim.location!="bags" || claim.nativeReference)return stop("commission_return_custody_requires_reconciliation");
+            }
+            if(alreadyCollected) {
                     if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
                         return stop("commission_settlement_backpressure");
                     const auto balances=NativeClaimBalances(*bot,claims.claims,false);
@@ -2372,8 +2381,6 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                     write.admissionReceipt=receipt;state->pending.push_back(std::move(write));state->nextWork=0;
                     if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
                     return stop("commission_return_closure_persistence_pending");
-                }
-                return stop("commission_return_custody_requires_reconciliation");
             }
             return stop("commission_return_claim_missing");
         }
@@ -2401,6 +2408,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                 item->GetEntry()==quote.entry && (item->GetCount()==quote.count || item->GetCount()==quote.quantity) &&
                 item->GetPos()==quote.position && bot->GetMoney()==quote.moneyBefore) {
                 quote.count=item->GetCount(); // Recovery independently validates split-only evidence and both native stacks.
+                if(!NativeCommissionAdditionalItemsUnchanged(*bot,quote))return stop("commission_unsent_additional_item_changed");
                 if(!PrepareUnsentCommission(*saved,current,history,claims,quote,item->GetContainer()?item->GetContainer()->GetGUIDLow():0,
                     NowMs(),receipt,prepared,why))return stop(why);
                 write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
@@ -2437,6 +2445,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             return stop("commission_unsent_native_state_changed");
         RefreshPermission(actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
         const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);const auto receipt=NewId();
+        if(!NativeCommissionAdditionalItemsUnchanged(*bot,quote))return stop("commission_unsent_additional_item_changed");
         if(!PrepareUnsentCommission(*saved,current,history,claims,quote,item->GetContainer()?item->GetContainer()->GetGUIDLow():0,
             NowMs(),receipt,prepared,why))return stop(why);
         State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);write.admissionReceipt=receipt;
@@ -2529,7 +2538,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(!grant.Permitted())return stop(grant.blocker);
     if(std::none_of(uses.begin(),uses.end(),[](const ClaimConsumption& use){return use.before.copper!=0;})) {
         ResourceClaim postage;postage.id=NewId();postage.task=id;postage.actor=actor;postage.location="money";
-        postage.copper=30;postage.state="held";
+        postage.copper=quote.postage;postage.state="held";
         ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
         ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
         request.authorization=grant.action;request.changes.push_back({postage,0});
