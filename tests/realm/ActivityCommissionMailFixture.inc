@@ -5,22 +5,22 @@
 // Ordinary preparation, timed native crafting and mail own the actual work.
 namespace {
 template<class FixtureState>
-void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false) {
+void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,bool capacityCase=false) {
     struct Fixture {
         uint32_t actor=0,recipient=0,money=0,output=0,quantity=1;
         uint64_t deadline=0,nextDiagnostic=0;
-        bool login=false,setup=false,admitted=false;
+        bool login=false,setup=false,admitted=false,capacityFilled=false;
         TaskRequest request;
         std::string blocker;
         boost::property_tree::ptree input;
     };
     static Fixture f;
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
-    state.fixtureNext=NowMs()+500;
+    state.fixtureNext=NowMs()+(capacityCase?0:500);
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     auto emit=[&](bool sent,const std::string& why,Player* actor) {
         auto report=f.input;
-        report.put("suite",parcelCase?"activity-commission-parcel-v2":"activity-commission-mail-v1");report.put("boot",state.boot);
+        report.put("suite",capacityCase?"activity-commission-capacity-v1":parcelCase?"activity-commission-parcel-v2":"activity-commission-mail-v1");report.put("boot",state.boot);
         report.put("test_only",true);report.put("outcome",sent?"sent_checkpoint":"failed");
         report.put("failure",why);report.put("blocker",f.blocker);report.put("task",f.request.task.id);
         report.put("actor",f.actor);report.put("recipient",f.recipient);
@@ -112,15 +112,17 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false)
             recipe.outputEntry=2454;recipe.outputQuantity=f.quantity;recipe.purpose=ProfessionPurpose::RequestedItem;
             recipe.attemptLimit=std::max(recipe.attemptLimit,f.quantity);
             recipe.reagents={{765,1},{2449,1},{3371,1}};
-            require(parcelCase || actor->GetItemCount(3371,false)>=1,"owned_native_commission_vial_required");
+            require(parcelCase || capacityCase || actor->GetItemCount(3371,false)>=1,"owned_native_commission_vial_required");
+            if(capacityCase)require(actor->GetItemCount(2454,false)>0 && actor->GetItemCount(2454,false)<20,
+                "capacity_fixture_owned_output_surplus_required");
             boost::property_tree::ptree grants;
-            for(uint32_t entry:{765u,2449u,3371u})if((parcelCase || entry!=3371) && actor->GetItemCount(entry,true)<f.quantity) {
+            for(uint32_t entry:{765u,2449u,3371u})if((parcelCase || capacityCase || entry!=3371) && actor->GetItemCount(entry,true)<f.quantity) {
                 const auto owned=actor->GetItemCount(entry,true),missing=f.quantity-owned;
                 ItemPosCountVec positions;
                 require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,entry,missing)==EQUIP_ERR_OK,
                     "commission_fixture_herb_capacity_required");
                 boost::property_tree::ptree row;row.put("entry",entry);row.put("quantity",missing);
-                if(parcelCase)row.put("owned_before",owned);grants.push_back({"",row});
+                if(parcelCase || capacityCase)row.put("owned_before",owned);grants.push_back({"",row});
             }
             CommissionJob job;job.agreement={"lwc-"+std::to_string(NowMs()),"isolated-commission-mail-v1","mail",
                 EncodeProfessionJob(recipe),f.actor,f.recipient,60,NowMs()};job.craft=job.agreement.recipe;
@@ -135,6 +137,7 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false)
             f.input.put("recipient",f.recipient);f.input.put("agreement",EncodeCommissionContract(job.agreement));
             f.input.put("money_before",f.money);f.input.put("output_before",f.output);
             if(parcelCase){f.input.put("requested_quantity",f.quantity);f.input.put("output_grants",0);}
+            if(capacityCase){f.input.put("capacity_case",true);f.input.put("output_grants",0);}
             f.input.put("customer_money_before",customer->Fetch()[2].GetUInt32());
             f.input.put("item_grants",grants.size());f.input.add_child("material_grants",grants);
             f.input.put("earned_materials_proof",false);f.input.put("money_grants",0);f.input.put("skill_grants",0);
@@ -164,6 +167,15 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false)
         }
         const auto saved=sLivingActivityCoordinator.ReadSavedTask(f.request.task.id);
         if(!saved){f.blocker="commission_fixture_admission_pending";return;}
+        if(capacityCase && !f.capacityFilled) {
+            CommissionJob job;std::string why;
+            require(DecodeCommissionJob(saved->checkpoint.data,job,why),"capacity_fixture_commission_required");
+            if(job.craftFinishedRevision) {
+                require(!sLivingActivityCoordinator.DefersNativeSave(f.actor) && saved->phase!=Phase::Executing,
+                    "capacity_fixture_must_precede_parcel_execution");
+                FillIsolatedCommissionCapacity(*actor,*saved);f.capacityFilled=true;return;
+            }
+        }
         const auto blocker=state.executionBlockers.find(saved->id);
         f.blocker=blocker==state.executionBlockers.end()?saved->checkpoint.blocker:blocker->second;
         if(NowMs()>=f.nextDiagnostic) {
@@ -182,7 +194,9 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false)
         if(proof.send.empty())return;
         require(!sLivingActivityCoordinator.DefersNativeSave(f.actor),"commission_fixture_native_save_pending");
         require(!parcelCase || proof.quote.additional.size()==1,"two_native_attachments_required");
-        require(actor->GetMoney()==f.money-proof.quote.postage && actor->GetItemCount(2454,true)==f.output,
+        const auto proceeds=capacityCase?IsolatedCommissionCapacityProceeds(*saved):0u;
+        if(capacityCase)f.input.put("capacity_sale_proceeds",proceeds);
+        require(actor->GetMoney()==uint64_t(f.money)+proceeds-proof.quote.postage && actor->GetItemCount(2454,true)==f.output,
             "commission_fixture_native_stock_or_postage_mismatch");
         f.input.put("send_operation",proof.send);f.input.put("mail",proof.mail);
         f.input.put("sent_item",proof.quote.item);f.input.put("native_send_verified",true);
@@ -199,6 +213,7 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
     struct Fixture {
         uint32_t actor=0,recipient=0;
         uint64_t deadline=0,nextDiagnostic=0;
+        uint32_t capacityProceeds=0;
         bool senderLogin=false,customerLogin=false,positioned=false,customerRevived=false;
         bool paid=false;
         std::set<uint32_t> collected;
@@ -271,6 +286,7 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
             f.task=f.input.template get<std::string>("task");const auto boot=f.input.template get<std::string>("setup_boot");
             require(IsUuid(f.task) && IsUuid(boot) && boot!=state.boot,"commission_sent_boot_restart_required");
             const auto sent=read("/isolated/evidence/commission-mail-sent-v1.json");
+            f.capacityProceeds=sent.template get<uint32_t>("capacity_sale_proceeds",0);
             require(sent.template get<std::string>("task")==f.task && sent.template get<std::string>("outcome")=="sent_checkpoint",
                 "verified_sent_checkpoint_required");
             require(IsUuid(sent.template get<std::string>("verification_boot")) &&
@@ -312,7 +328,7 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
         require(proof.quote.receiver==f.recipient && proof.quote.cod==60 && proof.returned.empty(),"original_unreturned_parcel_required");
         if(proof.state==CommissionDeliveryState::Complete) {
             if(saved->phase!=Phase::Completed){f.blocker="ordinary_commission_settlement_pending";return;}
-            require(sender->GetMoney()==f.input.template get<uint32_t>("money_before")-proof.quote.postage+60 &&
+            require(sender->GetMoney()==uint64_t(f.input.template get<uint32_t>("money_before"))+f.capacityProceeds-proof.quote.postage+60 &&
                 customer->GetMoney()==f.input.template get<uint32_t>("customer_money_before")-60,"native_commission_money_conservation");
             emit(true,"",sender,customer);return;
         }

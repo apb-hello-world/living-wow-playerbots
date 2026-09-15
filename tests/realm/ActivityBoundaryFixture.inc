@@ -39,6 +39,7 @@ namespace {
 #include "ActivityToolFixture.inc"
 #include "ActivityGuildDepositFixture.inc"
 #include "ActivityGuildMailFixture.inc"
+#include "ActivityCommissionCapacityFixture.inc"
 #include "ActivityCommissionMailFixture.inc"
 #include "ActivityGuildAdmissionFixture.inc"
 #include "ActivitySkinningSourceFixture.inc"
@@ -49,6 +50,9 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     if(requested && std::string(requested)=="activity-commission-collect-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedCommissionCollectionFixture(*state);return;
+    }
+    if(requested && std::string(requested)=="activity-commission-capacity-v1") {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedCommissionMailFixture(*state,false,true);return;
     }
     if(requested && (std::string(requested)=="activity-commission-mail-v1" || std::string(requested)=="activity-commission-parcel-v2")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedCommissionMailFixture(*state,std::string(requested)=="activity-commission-parcel-v2");return;
