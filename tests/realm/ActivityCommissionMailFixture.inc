@@ -171,10 +171,10 @@ template<class FixtureState>
 void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
     struct Fixture {
         uint32_t actor=0,recipient=0;
-        uint64_t deadline=0;
+        uint64_t deadline=0,nextDiagnostic=0;
         bool senderLogin=false,customerLogin=false,positioned=false;
         bool collected=false,paid=false;
-        std::string task,blocker;
+        std::string task,blocker,lastDiagnostic;
         boost::property_tree::ptree input;
     };
     static Fixture f;
@@ -210,6 +210,29 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
         sLog.outString("Living isolated fixture: %s",Json(report).c_str());
     };
     Player* sender=nullptr;Player* customer=nullptr;
+    struct ProgressOnReturn {
+        std::function<void()> report;
+        ~ProgressOnReturn(){try{report();}catch(const std::exception&) {}}
+    } progress{[&] {
+        if(state.fixtureFinished || (f.blocker==f.lastDiagnostic && NowMs()<f.nextDiagnostic))return;
+        f.lastDiagnostic=f.blocker;f.nextDiagnostic=NowMs()+30000;
+        boost::property_tree::ptree report;report.put("boot",state.boot);report.put("task",f.task);
+        report.put("blocker",f.blocker);report.put("at_ms",NowMs());report.put("gameplay_proof",false);
+        auto actor=[&](const char* name,Player* player) {
+            boost::property_tree::ptree p;p.put("loaded",bool(player));
+            if(player) {
+                p.put("guid",player->GetGUIDLow());p.put("in_world",player->IsInWorld());
+                p.put("safety",NativeSafety(player));p.put("stopped",player->IsStopped());
+                p.put("grouped",bool(player->GetGroup()));p.put("trade",bool(player->GetTradeData()));
+                p.put("service_busy",LivingServiceExecution::Busy(player));p.put("mailbox",NativeNearbyMailbox(*player));
+                p.put("map",player->GetMapId());p.put("x",player->GetPositionX());p.put("y",player->GetPositionY());
+                p.put("z",player->GetPositionZ());
+            }
+            report.add_child(name,p);
+        };
+        actor("sender",sender);actor("customer",customer);
+        std::ofstream out("/isolated/evidence/commission-collection-progress-"+state.boot+".json");out<<Json(report);
+    }};
     try {
         if(!f.actor) {
             f.input=read("/isolated/evidence/commission-mail-input-v1.json");
