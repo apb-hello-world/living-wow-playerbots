@@ -377,6 +377,11 @@ inline void TestCommissionMail() {
         assert(resumed.task.id==owner.id && resumed.task.phase==Phase::Preparing && resumed.task.retryAtMs==2100000);
         assert(resumed.task.context==owner.context && resumed.task.checkpoint.data==owner.checkpoint.data);
         assert(!PrepareCommissionReturnResume(owner,owner.context,returnedHistory,resumeClaims,{},2002000,settlement,resumed,why));
+        auto relocated=owner.context;++relocated.mapGeneration;
+        assert(PrepareCommissionReturnResume(owner,relocated,returnedHistory,resumeClaims,{},2002000,settlement,resumed,why));
+        assert(resumed.task.context==relocated && resumed.task.id==owner.id && resumed.task.checkpoint.data==owner.checkpoint.data);
+        auto wrongActor=relocated;++wrongActor.actor;
+        assert(!PrepareCommissionReturnResume(owner,wrongActor,returnedHistory,resumeClaims,{},2002000,settlement,resumed,why));
         auto pendingHistory=returnedHistory;pendingHistory.unresolvedOperation=true;
         assert(!PrepareCommissionReturnResume(travelling,owner.context,pendingHistory,resumeClaims,{},2002000,settlement,resumed,why));
         auto held=mailClaim;held.location="bags";held.nativeReference=0;++held.revision;

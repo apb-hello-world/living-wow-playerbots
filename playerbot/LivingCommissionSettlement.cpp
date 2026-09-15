@@ -216,7 +216,7 @@ bool PrepareCommissionReturnResume(const Task& saved,const WorldContext& current
     out={};std::vector<ResourceClaim> parcels;
     if(!ReturnedCommissionClaims(saved,history,parcels,why))return false;
     auto reject=[&](const char* code){why=code;return false;};
-    if(!saved.context.boot.empty() || saved.context.actorGeneration || saved.context.mapGeneration ||
+    if(saved.context==current ||
         Terminal(saved.phase) || saved.phase==Phase::Executing || !saved.accepted || saved.mode!=Mode::Active ||
         current.actor!=saved.actor || !IsUuid(current.boot) || !current.actorGeneration || !current.mapGeneration || !current.policyRevision ||
         !IsUuid(receipt) || now<saved.updatedAtMs || saved.revision>=UINT64_MAX-1 || !batch.complete || !batch.bookRevision ||

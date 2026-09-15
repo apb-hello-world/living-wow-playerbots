@@ -2331,7 +2331,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return stop(RevalidateProfessionPreparation(actor,id,saved->revision,NewId()).blocker);
     const auto deliveryContext=ReadNativeContext(*bot,state->policyRevision,state->boot);
     const bool restoredDelivery=saved->context.boot.empty() && !saved->context.actorGeneration && !saved->context.mapGeneration;
-    if(saved->phase!=Phase::Executing && (saved->context==deliveryContext || restoredDelivery)) {
+    if(saved->phase!=Phase::Executing) {
         ProfessionHistory history;std::vector<ResourceClaim> parcels;
         if(!ReadProfessionHistory(actor,id,saved->revision,history,why))return stop(why);
         if(ReturnedCommissionClaims(*saved,history,parcels,why)) {
@@ -2349,7 +2349,10 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             const bool alreadyCollected=std::all_of(parcels.begin(),parcels.end(),[&](const auto& parcel){
                 return collected(parcel);
             });
-            if(restoredDelivery && !alreadyCollected) {
+            // Native zoning/group/teleport handoffs invalidate context during
+            // this process as well as restart. Reconcile the existing return
+            // before considering any send path; this grants no execution lease.
+            if(!(saved->context==deliveryContext)) {
                 if(NativeSafety(bot))return stop("commission_return_safety_pause");
                 if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
                     return stop("commission_settlement_backpressure");
