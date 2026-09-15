@@ -1,12 +1,13 @@
 // Isolated binary only. No fabricated craft/send receipts or money grants.
-// Only missing herbs (one of each) may be supplied and are recorded separately.
+// V1 supplies missing herbs only. V2 supplies a recorded bounded batch of
+// reagents, never output, spells, skills or money, to cross a native stack edge.
 // The recorded agreement is fixture consent, not a human request.
 // Ordinary preparation, timed native crafting and mail own the actual work.
 namespace {
 template<class FixtureState>
-void RunIsolatedCommissionMailFixture(FixtureState& state) {
+void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false) {
     struct Fixture {
-        uint32_t actor=0,recipient=0,money=0,output=0;
+        uint32_t actor=0,recipient=0,money=0,output=0,quantity=1;
         uint64_t deadline=0,nextDiagnostic=0;
         bool login=false,setup=false,admitted=false;
         TaskRequest request;
@@ -19,7 +20,7 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     auto emit=[&](bool sent,const std::string& why,Player* actor) {
         auto report=f.input;
-        report.put("suite","activity-commission-mail-v1");report.put("boot",state.boot);
+        report.put("suite",parcelCase?"activity-commission-parcel-v2":"activity-commission-mail-v1");report.put("boot",state.boot);
         report.put("test_only",true);report.put("outcome",sent?"sent_checkpoint":"failed");
         report.put("failure",why);report.put("blocker",f.blocker);report.put("task",f.request.task.id);
         report.put("actor",f.actor);report.put("recipient",f.recipient);
@@ -82,6 +83,7 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
                 // No new consent row, task, material grants or native clicks.
                 f.input=input;f.request.task.id=input.template get<std::string>("task");
                 f.money=input.template get<uint32_t>("money_before");f.output=input.template get<uint32_t>("output_before");
+                f.quantity=input.template get<uint32_t>("requested_quantity",1);
                 f.setup=f.admitted=true;
             }
         }
@@ -97,16 +99,28 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
                 "offline_same_faction_native_bot_customer_required");
             require(actor->HasSpell(2329) && actor->GetSkillValuePure(171)>0 && actor->GetMoney()>=30,
                 "existing_recipe_profession_and_postage_required");
+            if(parcelCase) {
+                const auto* proto=sObjectMgr.GetItemPrototype(2454);
+                require(proto && proto->GetMaxStackSize()>1 && proto->GetMaxStackSize()<=20,
+                    "bounded_native_potion_stack_required");
+                f.quantity=proto->GetMaxStackSize();
+                require(actor->GetItemCount(2454,false)>0 && actor->GetItemCount(2454,false)<f.quantity &&
+                    actor->GetItemCount(2454,true)==actor->GetItemCount(2454,false) && actor->GetMoney()>=60,
+                    "owned_partial_output_stack_required_no_output_grants");
+            }
             ProfessionJob recipe;recipe.recipe=2329;recipe.skill=171;recipe.initialSkill=actor->GetSkillValuePure(171);
-            recipe.outputEntry=2454;recipe.outputQuantity=1;recipe.purpose=ProfessionPurpose::RequestedItem;
+            recipe.outputEntry=2454;recipe.outputQuantity=f.quantity;recipe.purpose=ProfessionPurpose::RequestedItem;
+            recipe.attemptLimit=std::max(recipe.attemptLimit,f.quantity);
             recipe.reagents={{765,1},{2449,1},{3371,1}};
-            require(actor->GetItemCount(3371,false)>=1,"owned_native_commission_vial_required");
+            require(parcelCase || actor->GetItemCount(3371,false)>=1,"owned_native_commission_vial_required");
             boost::property_tree::ptree grants;
-            for(uint32_t entry:{765u,2449u})if(!actor->GetItemCount(entry,true)) {
+            for(uint32_t entry:{765u,2449u,3371u})if((parcelCase || entry!=3371) && actor->GetItemCount(entry,true)<f.quantity) {
+                const auto owned=actor->GetItemCount(entry,true),missing=f.quantity-owned;
                 ItemPosCountVec positions;
-                require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,entry,1)==EQUIP_ERR_OK,
+                require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,entry,missing)==EQUIP_ERR_OK,
                     "commission_fixture_herb_capacity_required");
-                boost::property_tree::ptree row;row.put("entry",entry);row.put("quantity",1);grants.push_back({"",row});
+                boost::property_tree::ptree row;row.put("entry",entry);row.put("quantity",missing);
+                if(parcelCase)row.put("owned_before",owned);grants.push_back({"",row});
             }
             CommissionJob job;job.agreement={"lwc-"+std::to_string(NowMs()),"isolated-commission-mail-v1","mail",
                 EncodeProfessionJob(recipe),f.actor,f.recipient,60,NowMs()};job.craft=job.agreement.recipe;
@@ -120,6 +134,7 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
             f.input.put("setup_boot",state.boot);f.input.put("task",task.id);f.input.put("commission",job.agreement.id);f.input.put("actor",f.actor);
             f.input.put("recipient",f.recipient);f.input.put("agreement",EncodeCommissionContract(job.agreement));
             f.input.put("money_before",f.money);f.input.put("output_before",f.output);
+            if(parcelCase){f.input.put("requested_quantity",f.quantity);f.input.put("output_grants",0);}
             f.input.put("customer_money_before",customer->Fetch()[2].GetUInt32());
             f.input.put("item_grants",grants.size());f.input.add_child("material_grants",grants);
             f.input.put("earned_materials_proof",false);f.input.put("money_grants",0);f.input.put("skill_grants",0);
@@ -128,18 +143,19 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
             std::ofstream intent("/isolated/evidence/commission-mail-input-v1.json");intent<<Json(f.input);intent.close();
             require(bool(intent),"commission_fixture_intent_saved");
             for(const auto& row:grants) {
-                const auto entry=row.second.template get<uint32_t>("entry");ItemPosCountVec positions;
-                require(!actor->GetItemCount(entry,true) &&
-                    actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,entry,1)==EQUIP_ERR_OK,
+                const auto entry=row.second.template get<uint32_t>("entry"),quantity=row.second.template get<uint32_t>("quantity");
+                const auto owned=row.second.template get<uint32_t>("owned_before",0);ItemPosCountVec positions;
+                require(actor->GetItemCount(entry,true)==owned &&
+                    actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,entry,quantity)==EQUIP_ERR_OK,
                     "commission_fixture_input_changed");
                 auto* herb=actor->StoreNewItem(positions,entry,true);
-                require(herb && actor->GetItemCount(entry,false)==1,"commission_fixture_input_grant_failed");
+                require(herb && actor->GetItemCount(entry,true)==owned+quantity,"commission_fixture_input_grant_failed");
             }
             actor->SaveToDB();
             const auto sql="INSERT INTO organic_economy_commission(commission_id,bot_guid,player_guid,recipe_spell_id,"
                 "output_item_entry,quantity,materials_source,service_fee_copper,state,authoritative_payload,expires_at) VALUES("+
                 SqlValue(job.agreement.id)+','+std::to_string(f.actor)+','+std::to_string(f.recipient)+
-                ",2329,2454,1,'bot',60,'crafting',"+SqlValue(EncodeCommissionContract(job.agreement))+",DATE_ADD(NOW(),INTERVAL 1 DAY))";
+                ",2329,2454,"+std::to_string(f.quantity)+",'bot',60,'crafting',"+SqlValue(EncodeCommissionContract(job.agreement))+",DATE_ADD(NOW(),INTERVAL 1 DAY))";
             CharacterDatabase.Execute(sql.c_str());f.setup=true;return;
         }
         if(!f.admitted) {
@@ -165,10 +181,12 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
             !InspectCommissionDelivery(*saved,history,proof,f.blocker))return;
         if(proof.send.empty())return;
         require(!sLivingActivityCoordinator.DefersNativeSave(f.actor),"commission_fixture_native_save_pending");
-        require(actor->GetMoney()==f.money-30 && actor->GetItemCount(2454,true)==f.output,
+        require(!parcelCase || proof.quote.additional.size()==1,"two_native_attachments_required");
+        require(actor->GetMoney()==f.money-proof.quote.postage && actor->GetItemCount(2454,true)==f.output,
             "commission_fixture_native_stock_or_postage_mismatch");
         f.input.put("send_operation",proof.send);f.input.put("mail",proof.mail);
         f.input.put("sent_item",proof.quote.item);f.input.put("native_send_verified",true);
+        if(parcelCase){f.input.put("sent_quantity",CommissionMailQuantity(proof.quote));f.input.put("postage",proof.quote.postage);}
         emit(true,"",actor);
     } catch(const std::exception& error){emit(false,error.what(),actor);}
 }
@@ -182,7 +200,8 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
         uint32_t actor=0,recipient=0;
         uint64_t deadline=0,nextDiagnostic=0;
         bool senderLogin=false,customerLogin=false,positioned=false,customerRevived=false;
-        bool collected=false,paid=false;
+        bool paid=false;
+        std::set<uint32_t> collected;
         std::string task,blocker,lastDiagnostic;
         boost::property_tree::ptree input;
     };
@@ -291,7 +310,7 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
         require(proof.quote.receiver==f.recipient && proof.quote.cod==60 && proof.returned.empty(),"original_unreturned_parcel_required");
         if(proof.state==CommissionDeliveryState::Complete) {
             if(saved->phase!=Phase::Completed){f.blocker="ordinary_commission_settlement_pending";return;}
-            require(sender->GetMoney()==f.input.template get<uint32_t>("money_before")-30+60 &&
+            require(sender->GetMoney()==f.input.template get<uint32_t>("money_before")-proof.quote.postage+60 &&
                 customer->GetMoney()==f.input.template get<uint32_t>("customer_money_before")-60,"native_commission_money_conservation");
             emit(true,"",sender,customer);return;
         }
@@ -326,16 +345,24 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
         if(!mailbox){f.blocker="commission_sender_mailbox_unavailable";return;}
         if(NativeNearbyMailbox(*customer)!=mailbox){f.blocker="commission_customer_mailbox_arrival_pending";return;}
         if(proof.received.empty()) {
-            if(f.collected){f.blocker="native_customer_receipt_pending";return;}
+            const auto parts=CommissionMailAttachments(proof.quote);
+            const auto part=std::find_if(parts.begin(),parts.end(),[&](const auto& p){return std::none_of(
+                proof.receivedAttachments.begin(),proof.receivedAttachments.end(),[&](const auto& delivered){return delivered.item==p.item;});});
+            require(part!=parts.end(),"missing_attachment_receipt_required");
+            if(f.collected.count(part->item)){f.blocker="native_customer_receipt_pending";return;}
             auto* mail=customer->GetMail(proof.mail);require(mail,"original_customer_mail_required");
             if(mail->deliver_time>time(nullptr)) {
                 f.deadline=std::max(f.deadline,(uint64_t(mail->deliver_time)+300)*1000);
                 f.blocker="native_parcel_delivery_time_pending";return;
             }
-            require(mail->COD==60 && mail->items.size()==1 && mail->items.front().item_guid==proof.quote.item,
+            require(mail->COD==(proof.receivedAttachments.empty()?60u:0u) &&
+                mail->items.size()==parts.size()-proof.receivedAttachments.size() &&
+                std::any_of(mail->items.begin(),mail->items.end(),[&](const auto& i){return i.item_guid==part->item;}),
                 "original_uncollected_native_parcel_required");
-            intent("commission-customer-click-v1.json",*customer);f.collected=true;
-            WorldPacket packet(CMSG_MAIL_TAKE_ITEM,16);packet<<ObjectGuid(mailbox)<<uint32(proof.mail)<<uint32(proof.quote.item);
+            const auto click=proof.quote.additional.empty()?std::string("commission-customer-click-v1.json"):
+                "commission-customer-click-"+std::to_string(part->item)+"-v2.json";
+            intent(click.c_str(),*customer);f.collected.insert(part->item);
+            WorldPacket packet(CMSG_MAIL_TAKE_ITEM,16);packet<<ObjectGuid(mailbox)<<uint32(proof.mail)<<uint32(part->item);
             customer->GetSession()->HandleMailTakeItem(packet);return;
         }
         if(proof.fee.empty()) {

@@ -50,8 +50,8 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     if(requested && std::string(requested)=="activity-commission-collect-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedCommissionCollectionFixture(*state);return;
     }
-    if(requested && std::string(requested)=="activity-commission-mail-v1") {
-        RequireIsolatedNativeFixtureEnvironment();RunIsolatedCommissionMailFixture(*state);return;
+    if(requested && (std::string(requested)=="activity-commission-mail-v1" || std::string(requested)=="activity-commission-parcel-v2")) {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedCommissionMailFixture(*state,std::string(requested)=="activity-commission-parcel-v2");return;
     }
     if(requested && std::string(requested)=="activity-services-observe-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedServicesObservation(*state);return;
