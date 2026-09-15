@@ -5,6 +5,7 @@
 #include "LivingNativeMailCollection.h"
 #include "LivingNativeGuildMail.h"
 #include "LivingNativeCommissionMail.h"
+#include "LivingNativeCommissionTrade.h"
 #include "LivingCommissionSettlement.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingProfessionNative.h"
@@ -40,6 +41,13 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
         CommissionJob job;
         if(!DecodeCommissionJob(task.checkpoint.data,job,blocker))return false;
         if(job.craftFinishedRevision) {
+            if(job.agreement.delivery!="mail") {
+                CommissionPartitionQuote q;std::string why;
+                if(!PlanNativeCommissionPartition(actor,task,q,why,true) && why=="commission_partition_empty_slot_required") {
+                    need={q.entry,q.count-q.quantity};return true;
+                }
+                blocker=why=="commission_partition_not_needed" || why.empty()?"capacity_already_available":why;return false;
+            }
             // A verified return needs capacity for collection, not permission
             // to send the already-sent agreement again. Keep this tied to the
             // exact native return evidence, never just a checkpoint label.

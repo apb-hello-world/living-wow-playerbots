@@ -10,7 +10,7 @@
 #include "LivingActivityTransfer.h"
 
 namespace LivingActivity {
-bool PlanNativeCommissionPartition(Player& actor,const Task& task,CommissionPartitionQuote& quote,std::string& why) {
+bool PlanNativeCommissionPartition(Player& actor,const Task& task,CommissionPartitionQuote& quote,std::string& why,bool capacityInspection) {
     quote={};auto reject=[&](const char* code){why=code;return false;};
     CommissionJob job;ProfessionJob recipe;
     if(!sLivingActivityCoordinator.OnWorldThread() || task.actor!=actor.GetGUIDLow() || !actor.GetPlayerbotAI() ||
@@ -25,6 +25,10 @@ bool PlanNativeCommissionPartition(Player& actor,const Task& task,CommissionPart
     if(!claims.complete || claims.claims.empty() || claims.claims.size()>16)return reject("commission_partition_claims_required");
     std::vector<ClaimConsumption> coverage;std::map<uint32_t,uint64_t> quantities;
     for(const auto& c:claims.claims) {
+        if(c.itemEntry!=recipe.outputEntry) {
+            if(!capacityInspection)return reject("commission_partition_preparation_claims_pending");
+            continue;
+        }
         if(c.quantity>UINT32_MAX)return reject("commission_partition_quantity_invalid");
         coverage.push_back({c,uint32_t(c.quantity)});quantities[c.itemGuid]+=c.quantity;
     }

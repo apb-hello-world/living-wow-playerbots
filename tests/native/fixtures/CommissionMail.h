@@ -36,6 +36,23 @@ inline void TestCommissionMail() {
         assert(ready.claims.size()==1 && ready.claims.front().after.id==stored.id && ready.claims.front().after.state=="released");
         assert(ready.task.phase==Phase::Preparing && ready.task.checkpoint.step=="commission_mail_prepare");
         assert(ready.plan.statements[1].find("native_bank_stack_deposited")!=std::string::npos);
+        {
+            auto direct=task;auto agreement=job;agreement.agreement.delivery="direct";
+            direct.checkpoint.data=EncodeCommissionJob(agreement);
+            auto held=claims;held.claims={item,stored};auto native=stock;native.erase(native.begin()+1);
+            assert(PrepareCommissionParcelClaims(direct,direct.context,held,native,2000,receipt,ready,why));
+            assert(ready.task.checkpoint.step=="commission_trade_prepare" && ready.claims.size()==1 &&
+                ready.claims.front().after.id==stored.id && ready.claims.front().after.state=="released");
+            assert(ready.plan.statements[1].find("'commission_mail_send','commission_trade'")!=std::string::npos);
+            // A direct delivery never retains a postage/fake payment claim.
+            assert(!PrepareCommissionParcelClaims(direct,direct.context,claims,stock,2000,receipt,ready,why));
+            held.claims={item};native.resize(1);direct.phase=Phase::Verifying;direct.revision=9;
+            direct.checkpoint.step="profession_capacity_sale";
+            assert(PrepareCommissionParcelClaims(direct,direct.context,held,native,2000,receipt,ready,why));
+            assert(ready.claims.empty() && ready.task.phase==Phase::Preparing && ready.task.checkpoint.step=="commission_trade_prepare");
+            assert(ready.plan.statements[1].find("p.task_revision=8")!=std::string::npos &&
+                ready.plan.statements[1].find(SqlValue("capacity_vendor_sale"))!=std::string::npos);
+        }
         for(unsigned i=0;i<5;++i) {
             auto bad=claims;auto native=stock;
             if(i==0)bad.claims[0].quantity=2;

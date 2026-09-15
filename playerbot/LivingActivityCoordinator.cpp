@@ -65,6 +65,7 @@
 #include "LivingCommissionJob.h"
 #include "LivingNativeCommissionMail.h"
 #include "LivingNativeCommissionTrade.h"
+#include "LivingNativeParcelSlot.h"
 #include "LivingCommissionTradeSettlement.h"
 #include "LivingCommissionSettlement.h"
 #include "PlayerbotOrganicEconomy.h"
@@ -2318,6 +2319,33 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     return stop("item_preparation_step_not_supported");
 }
 
+LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::ReconcileCommissionPreparation(uint32_t actor,const std::string& id) {
+    auto stop=[](const std::string& why){return ProfessionProgress{false,why};};
+    if(!OnWorldThread() || !EffectEnforcementEnabled())return stop("execution_disabled");
+    const auto saved=ReadSavedTask(id);auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);std::string why;
+    if(!saved || saved->actor!=actor || !IsCommissionJob(*saved) || !bot || !bot->GetPlayerbotAI() || !bot->IsInWorld())
+        return stop("commission_preparation_actor_unavailable");
+    if(NativeSafety(bot) || DefersNativeSave(actor) || state->operationDispatching)return stop("commission_preparation_safety_pause");
+    const auto partyBlocker=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+    if(*partyBlocker)return stop(partyBlocker);
+    for(const auto& write:state->pending)if(write.task.actor==actor)return stop("commission_preparation_write_pending");
+    for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)return stop("commission_native_operation_pending");
+    const auto owned=state->authority.Read(actor);
+    if(!owned.operation.empty())return stop("commission_native_operation_pending");
+    if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)return stop("commission_settlement_backpressure");
+    UnsettledClaimBatch claims;
+    if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
+    RefreshPermission(actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
+    const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);const auto receipt=NewId();
+    CommissionReturnClosure prepared;
+    if(!PrepareCommissionParcelClaims(*saved,current,claims,NativeClaimBalances(*bot,claims.claims,false),NowMs(),receipt,prepared,why))return stop(why);
+    State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
+    write.claims=std::move(prepared.claims);write.admissionReceipt=receipt;write.closureRefreshRevision=saved->revision;
+    state->pending.push_back(std::move(write));state->nextWork=0;
+    if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+    return stop("commission_preparation_claims_persistence_pending");
+}
+
 LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceCommissionDelivery(uint32_t actor,const std::string& id) {
     auto stop=[](const std::string& why){return ProfessionProgress{false,why};};
     if(!OnWorldThread() || !EffectEnforcementEnabled())return stop("execution_disabled");
@@ -2495,26 +2523,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
         state->nextWork=0;return stop("commission_unsent_reconciliation_pending");
     }
-    auto reconcileParcelClaims=[&]() {
-        if(NativeSafety(bot) || DefersNativeSave(actor) || state->operationDispatching)return stop("commission_preparation_safety_pause");
-        const auto partyBlocker=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
-        if(*partyBlocker)return stop(partyBlocker);
-        for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)return stop("commission_native_operation_pending");
-        const auto owned=state->authority.Read(actor);
-        if(!owned.operation.empty())return stop("commission_native_operation_pending");
-        if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)return stop("commission_settlement_backpressure");
-        UnsettledClaimBatch claims;
-        if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
-        RefreshPermission(actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
-        const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);const auto receipt=NewId();
-        CommissionReturnClosure prepared;
-        if(!PrepareCommissionParcelClaims(*saved,current,claims,NativeClaimBalances(*bot,claims.claims,false),NowMs(),receipt,prepared,why))return stop(why);
-        State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
-        write.claims=std::move(prepared.claims);write.admissionReceipt=receipt;write.closureRefreshRevision=saved->revision;
-        state->pending.push_back(std::move(write));state->nextWork=0;
-        if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
-        return stop("commission_preparation_claims_persistence_pending");
-    };
+    auto reconcileParcelClaims=[&]() {return ReconcileCommissionPreparation(actor,id);};
     if(!(saved->context==deliveryContext) && saved->phase!=Phase::Executing && saved->phase!=Phase::Reconciling && !Terminal(saved->phase))
         return reconcileParcelClaims();
     // No retry is admitted merely because the callback or old process vanished.
@@ -2608,6 +2617,22 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     for(const auto& write:state->pending)if(write.task.actor==actor)return stop("commission_trade_write_pending");
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
     if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || DefersNativeSave(actor))return stop("commission_trade_actor_unavailable");
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    const auto* capacityFixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(capacityFixture && std::string(capacityFixture)=="activity-commission-direct-broker-v1" &&
+        std::ifstream("/isolated/evidence/commission-capacity-full-bags") &&
+        !std::ifstream("/isolated/evidence/commission-capacity-prepared-input.json"))
+        return stop("isolated_commission_capacity_fixture_pending");
+#endif
+    // Capacity is a step of this same accepted order, not a competing errand.
+    for(const auto& op:state->operations)if(op.second.request.transition.task.id==id &&
+        (op.second.request.kind=="capacity_vendor_sale" || op.second.request.kind=="bank_deposit")) {
+        const auto service=DispatchPendingItemService(actor,id);
+        return stop(service?service->blocker:"commission_capacity_operation_requires_reconciliation");
+    }
+    const bool capacityStep=saved->checkpoint.step=="profession_capacity_sale" || saved->checkpoint.step=="profession_capacity_bank";
+    if(saved->phase==Phase::Executing && capacityStep && saved->context.boot.empty())
+        return stop(RevalidateProfessionPreparation(actor,id,saved->revision,NewId()).blocker);
     const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
     for(const auto& row:state->operations)if(row.second.request.transition.task.actor==actor) {
         if(row.second.request.transition.task.id!=id ||
@@ -2695,6 +2720,11 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(owned.lease.rootTask==id && owned.operation.empty())ReleaseTaskLease(owned.lease);
         return stop("commission_trade_settlement_pending");
     }
+    ServiceDestination preparationService;
+    const bool serviceStep=ParseServiceStep(saved->checkpoint.step,preparationService);
+    if((capacityStep && saved->phase!=Phase::Executing) ||
+        (serviceStep && !(saved->context==current) && saved->phase!=Phase::Reconciling))
+        return ReconcileCommissionPreparation(actor,id);
     if(!(saved->context==current) && saved->phase!=Phase::Executing) {
         if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || bot->GetTradeData())return stop("commission_trade_restore_safety_pause");
         const std::string party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
@@ -2713,6 +2743,12 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         (saved->phase==Phase::Reconciling && saved->checkpoint.step!="commission_trade_wait") || !(saved->context==current))
         return stop("commission_trade_restart_reconciliation_required");
     if(saved->retryAtMs>NowMs())return stop("commission_trade_waiting_for_customer");
+    if(serviceStep) {
+        if(preparationService!=ServiceDestination::Vendor && preparationService!=ServiceDestination::PersonalBank)
+            return stop("commission_capacity_service_invalid");
+        ProfessionJob recipe;if(!DecodeProfessionIntent(job.craft,recipe,why))return stop(why);
+        return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,{recipe.outputEntry,recipe.outputQuantity}).blocker);
+    }
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     if(saved->phase==Phase::Verifying && saved->checkpoint.step=="commission_output_partition") {
         const auto* fixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
@@ -2766,6 +2802,21 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     CommissionPartitionQuote partition;
     if(PlanNativeCommissionPartition(*bot,*saved,partition,why)) {
         NativeCommissionPartition adapter(partition);return submit(adapter,EncodeCommissionPartition(partition),{});
+    }
+    if(why=="commission_partition_preparation_claims_pending") {
+        // A reserved capacity stack is still needed until its native operation
+        // runs. Do not release/recreate that claim on each planner refresh.
+        CommissionPartitionQuote capacity;std::string pending;
+        if(!PlanNativeCommissionPartition(*bot,*saved,capacity,pending,true) &&
+            pending=="commission_partition_empty_slot_required")
+            return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,
+                {capacity.entry,capacity.count-capacity.quantity}).blocker);
+        if(!pending.empty() && pending!="commission_partition_not_needed")return stop(pending);
+        return ReconcileCommissionPreparation(actor,id);
+    }
+    if(why=="commission_partition_empty_slot_required") {
+        if(bot->GetTradeData())return stop("commission_capacity_waiting_for_trade_window_close");
+        return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,{partition.entry,partition.count-partition.quantity}).blocker);
     }
     if(why!="commission_partition_not_needed")return stop(why);
     CommissionTradeQuote quote;std::vector<ClaimConsumption> uses;

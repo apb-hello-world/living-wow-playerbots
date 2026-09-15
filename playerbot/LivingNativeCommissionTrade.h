@@ -5,7 +5,9 @@
 #include "LivingCommissionPartition.h"
 
 namespace LivingActivity {
-bool PlanNativeCommissionPartition(Player&,const Task&,CommissionPartitionQuote&,std::string&);
+// Capacity inspection may see the same root's auxiliary bank/vendor claim;
+// actual partition execution requires those preparation claims reconciled first.
+bool PlanNativeCommissionPartition(Player&,const Task&,CommissionPartitionQuote&,std::string&,bool capacityInspection=false);
 class NativeCommissionPartition final : public NativeOperationAdapter {
 public:
     explicit NativeCommissionPartition(CommissionPartitionQuote value):quote(std::move(value)) {}

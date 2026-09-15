@@ -11,7 +11,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
         TaskRequest request;
         ChatDirectorEvent brokerEvent;
         ChatDirectorActionProposal brokerProposal;
-        bool brokerAccepted=false,partialStock=false;
+        bool brokerAccepted=false,partialStock=false,capacity=false,capacityPrepared=false;
         boost::property_tree::ptree input;
     };
     static Fixture f;
@@ -33,6 +33,8 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             };
             f.actor=id("LIVING_WOW_NATIVE_FIXTURE_ACTOR");f.customer=id("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
             f.partialStock=brokerCase && bool(std::ifstream("/isolated/evidence/commission-partition-existing-stock"));
+            f.capacity=brokerCase && bool(std::ifstream("/isolated/evidence/commission-capacity-full-bags"));
+            require(!f.capacity || f.partialStock,"capacity_fixture_requires_existing_stock");
             require(f.actor && f.customer && f.actor!=f.customer,"distinct_commission_trade_actors_required");
             std::ifstream prior("/isolated/evidence/commission-trade-input-v1.json",std::ios::ate);
             if(prior) {
@@ -159,6 +161,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             f.input.put("autonomous_travel_proof",false);f.input.put("broker_admission_proof",false);
             f.input.put("automatic_offer",automaticOffer);
             f.input.put("broker_case",brokerCase);
+            f.input.put("capacity_test",f.capacity);
             if(brokerCase)f.input.put("broker_event_id",f.brokerEvent.eventId);
             // Disclosed OLD-stock fixture, not a grant of the ordered output:
             // the verified craft must add one, and this original one must remain.
@@ -226,6 +229,47 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
         if(NowMs()>=f.nextReport) {f.nextReport=NowMs()+30000;write("commission-trade-progress.json",report);}
         CommissionJob job;std::string why;
         require(DecodeCommissionJob(saved->checkpoint.data,job,why),"saved_commission_job_required");
+        if(f.capacity && !f.capacityPrepared && job.craftFinishedRevision) {
+            require(!actor->GetTradeData() && !customer->GetTradeData(),"capacity_fixture_before_any_trade_window");
+            UnsettledClaimBatch held;
+            if(!sLivingActivityCoordinator.ReadTaskClaims(f.actor,saved->id,saved->revision,held,why))return;
+            require(held.complete && held.claims.size()==1 && held.claims.front().itemEntry==2454 &&
+                held.claims.front().quantity==1,"capacity_fixture_exact_output_claim");
+            auto* output=actor->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,held.claims.front().itemGuid));
+            require(output && output->GetCount()==2,"capacity_fixture_partial_output_required");
+            require(f.input.template get<uint32_t>("preexisting_output_grants")==0,"capacity_fixture_reuses_owned_stock");
+            boost::property_tree::ptree fillReport;
+            fillReport.put("task",saved->id);fillReport.put("actor",f.actor);fillReport.put("test_only",true);
+            fillReport.put("money_before",actor->GetMoney());fillReport.put("output_count",output->GetCount());
+            fillReport.add_child("inventory_before",GuildMailFixtureInventory(*actor));
+            const auto* trash=sObjectMgr.GetItemPrototype(7073);
+            require(trash && trash->Quality==ITEM_QUALITY_POOR && trash->SellPrice==6 && trash->Stackable==5,"native_disclosed_capacity_fixture_item");
+            boost::property_tree::ptree grants;
+            auto fill=[&](uint8_t bag,uint8_t slot) {
+                const uint16_t pos=uint16_t(uint16_t(bag)<<8|slot);
+                if(actor->GetItemByPos(pos))return;
+                ItemPosCountVec positions;
+                if(actor->CanStoreNewItem(bag,slot,positions,7073,5)!=EQUIP_ERR_OK || positions.size()!=1 ||
+                    positions.front().pos!=pos || positions.front().count!=5)return;
+                auto* item=actor->StoreNewItem(positions,7073,true);
+                require(item && item->GetPos()==pos && item->GetCount()==5,"capacity_fixture_stack_grant_failed");
+                boost::property_tree::ptree row;row.put("guid",item->GetGUIDLow());row.put("entry",7073);row.put("quantity",5);
+                row.put("bag",bag);row.put("slot",slot);grants.push_back({"",row});
+            };
+            for(uint8_t slot=INVENTORY_SLOT_ITEM_START;slot<INVENTORY_SLOT_ITEM_END;++slot)fill(INVENTORY_SLOT_BAG_0,slot);
+            for(uint8_t bag=INVENTORY_SLOT_BAG_START;bag<INVENTORY_SLOT_BAG_END;++bag) {
+                auto* container=static_cast<Bag*>(actor->GetItemByPos(INVENTORY_SLOT_BAG_0,bag));
+                if(container)for(uint8_t slot=0;slot<container->GetBagSize();++slot)fill(bag,slot);
+            }
+            uint16_t available=0;
+            require(!grants.empty() && grants.size()<=80 && !EmptyNativeParcelSlot(*actor,*output,1,available),"capacity_fixture_really_full");
+            f.input.add_child("capacity_fixture_grants",grants);f.input.put("capacity_output_claim",held.claims.front().id);
+            f.input.put("capacity_claim_revision",held.claims.front().revision);
+            actor->SaveToDB();f.capacityPrepared=true;
+            fillReport.put("split_blocked",true);fillReport.add_child("grants",grants);
+            write("commission-capacity-filled-v1.json",fillReport);
+            write("commission-trade-input-v1.json",f.input);write("commission-capacity-prepared-input.json",f.input);return;
+        }
         if(saved->phase==Phase::Completed) {
             if(brokerCase) {
                 const auto replay=sPlayerbotActionBroker.Create(f.brokerProposal,f.brokerEvent);
@@ -237,7 +281,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             }
             require(f.offered && actor->GetItemCount(2454,true)==(f.partialStock?1u:0u) &&
                 customer->GetItemCount(2454,true)==f.input.template get<uint32_t>("recipient_items_before")+1 &&
-                actor->GetMoney()==f.input.template get<uint32_t>("actor_money_before")+60 &&
+                (f.capacity || actor->GetMoney()==f.input.template get<uint32_t>("actor_money_before")+60) &&
                 customer->GetMoney()+60==f.input.template get<uint32_t>("recipient_money_before"),"native_commission_conservation_required");
             report.put("outcome","passed");report.put("actor_money_after",actor->GetMoney());
             report.put("recipient_money_after",customer->GetMoney());report.put("revision",saved->revision);
@@ -264,6 +308,18 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
         // context validation. Recovery runs first, preserving the same order.
         if(!(saved->context==ReadNativeContext(*actor,state.policyRevision,state.boot)))return;
         if(!job.craftFinishedRevision || f.offered || saved->phase==Phase::Executing)return;
+        if(f.capacity && !f.windowOpened) {
+            UnsettledClaimBatch held;if(!sLivingActivityCoordinator.ReadTaskClaims(f.actor,saved->id,saved->revision,held,why))return;
+            if(held.claims.size()!=1)return;
+            auto* output=actor->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,held.claims.front().itemGuid));
+            if(!output || output->GetEntry()!=2454 || output->GetCount()!=1)return;
+            if(!actor->IsWithinDistInMap(customer,TRADE_DISTANCE,false)) {
+                // The customer fixture follows the bot's real service travel;
+                // never move the crafter to a vendor or grant a service result.
+                customer->GetMotionMaster()->Clear();customer->StopMoving();
+                customer->NearTeleportTo(actor->GetPositionX(),actor->GetPositionY(),actor->GetPositionZ(),actor->GetOrientation());return;
+            }
+        }
         require(actor->IsWithinDistInMap(customer,TRADE_DISTANCE,false),"fixture_customer_arrival_required");
         if(automaticOffer && !f.windowOpened) {
             require(!actor->GetTradeData() && !customer->GetTradeData(),"fresh_customer_trade_required");
