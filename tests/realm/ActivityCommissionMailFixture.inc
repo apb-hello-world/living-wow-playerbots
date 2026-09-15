@@ -6,6 +6,49 @@
 #include "playerbot/PlayerbotChatDirector.h"
 namespace {
 template<class FixtureState>
+void RunIsolatedCommissionReplayFixture(FixtureState& state) {
+    if(state.fixtureFinished || !state.loaded || state.ioPending || !state.pending.empty() || !state.incoming.empty() ||
+        !state.resources.Protection().ready || sWorld.GetActiveAndQueuedSessionCount())return;
+    boost::property_tree::ptree report;report.put("boot",state.boot);report.put("suite","activity-commission-replay-v1");
+    report.put("test_only",true);report.put("independent_audit_required",true);
+    auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
+    try {
+        std::ifstream in("/isolated/evidence/commission-mail-input-v1.json",std::ios::ate);
+        require(in.good() && in.tellg()>0 && in.tellg()<=1024*1024,"bounded_original_broker_input_required");
+        in.seekg(0);boost::property_tree::ptree input;boost::property_tree::read_json(in,input);
+        require(input.get<bool>("broker_case") && input.get<std::string>("setup_boot")!=state.boot,"original_broker_restart_required");
+        const auto task=input.get<std::string>("task"),commission=input.get<std::string>("commission");
+        require(!sLivingActivityCoordinator.ReadSavedTask(task),"terminal_order_must_be_outside_active_cache");
+        state.enforceEffects.store(true,std::memory_order_release);
+        bool readable=false;const auto saved=sLivingActivityCoordinator.ReadSavedCommission(commission,&readable);
+        require(readable && saved && saved->id==task && saved->phase==Phase::Completed,"original_completed_order_required");
+        auto snapshot=[&]() {
+            auto row=CharacterDatabase.PQuery("SELECT revision,(SELECT money FROM characters WHERE guid=%u),"
+                "(SELECT money FROM characters WHERE guid=%u),(SELECT COUNT(*) FROM living_activity_operation WHERE task_id='%s') "
+                "FROM living_activity_task WHERE task_id='%s'",input.get<uint32_t>("actor"),input.get<uint32_t>("recipient"),task.c_str(),task.c_str());
+            require(bool(row),"native_replay_snapshot_required");boost::property_tree::ptree p;
+            p.put("revision",row->Fetch()[0].GetUInt64());p.put("sender_money",row->Fetch()[1].GetUInt32());
+            p.put("customer_money",row->Fetch()[2].GetUInt32());p.put("operations",row->Fetch()[3].GetUInt32());return p;
+        };
+        const auto before=snapshot();
+        ChatDirectorEvent event;event.eventId=input.get<std::string>("broker_event");event.speakerGuid=input.get<uint32_t>("recipient");
+        ChatDirectorActionProposal p;p.proposalId="accepted";p.botGuid=input.get<uint32_t>("actor");p.targetGuid=event.speakerGuid;
+        p.type="craft_commission";p.capabilityRef="spell:craft:2329:2454";p.quantity=1;p.priceCopper=60;p.delivery="mail";
+        const auto result=sPlayerbotActionBroker.Create(p,event);
+        require(result.created && result.reasonCode=="commission_queued","completed_broker_replay_must_acknowledge_original");
+        p.quantity=2;const auto conflict=sPlayerbotActionBroker.Create(p,event);
+        require(!conflict.created && conflict.reasonCode=="commission_agreement_conflict","completed_broker_changed_order_must_reject");
+        const auto after=snapshot();require(Json(before)==Json(after),"replay_cannot_mutate_native_order_money_or_operations");
+        require(!sLivingActivityCoordinator.ReadSavedTask(task),"replay_cannot_restore_execution");
+        report.put("task",task);report.put("commission",commission);report.put("outcome","passed");
+        report.put("new_grants",0);report.put("new_native_operations",0);report.put("execution_restored",false);
+        report.add_child("before",before);report.add_child("after",after);
+    } catch(const std::exception& e){report.put("outcome","failed");report.put("failure",e.what());}
+    std::ofstream out("/isolated/evidence/commission-broker-replay-"+state.boot+".json");out<<Json(report);out.close();
+    state.fixtureFinished=true;sLog.outString("Living isolated broker replay: %s",Json(report).c_str());
+}
+
+template<class FixtureState>
 void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,bool capacityCase=false,bool brokerCase=false) {
     struct Fixture {
         uint32_t actor=0,recipient=0,money=0,output=0,quantity=1;

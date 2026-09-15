@@ -194,7 +194,10 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
     if(proposal.type=="craft_commission" && proposal.delivery=="mail" &&
         sLivingActivityCoordinator.EffectEnforcementEnabled()) {
         const auto id="lwc-"+std::to_string(std::hash<std::string>{}(transactionId));
-        if(const auto saved=sLivingActivityCoordinator.ReadSavedCommission(id)) {
+        bool readable=false;
+        const auto saved=sLivingActivityCoordinator.ReadSavedCommission(id,&readable);
+        if(!readable)return reject("commission_history_unavailable","I can't safely check that order right now. Please try again shortly.");
+        if(saved) {
             LivingActivity::CommissionJob job;std::string why;
             if(!LivingActivity::ValidateCommissionTask(*saved,why) ||
                 !LivingActivity::DecodeCommissionJob(saved->checkpoint.data,job,why) ||

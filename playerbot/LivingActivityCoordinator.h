@@ -77,7 +77,9 @@ public:
     LivingActivity::ResourceReader ResourceReservations() const;
     bool AcknowledgedResourceClaim(const LivingActivity::ResourceClaim&) const;
     std::optional<LivingActivity::Task> ReadSavedTask(const std::string& id) const;
-    std::optional<LivingActivity::Task> ReadSavedCommission(const std::string& commission) const;
+    // Explicit request lookup only: completed orders are not in the active
+    // cache. One primary-key native read never restores execution ownership.
+    std::optional<LivingActivity::Task> ReadSavedCommission(const std::string& commission,bool* readable=nullptr) const;
     bool TaskResourceAvailability(const std::string& task,uint64_t revision,
         const LivingActivity::NativeResourceBalance& native,uint32_t& available,std::string& blocker) const;
     bool ReadTaskClaims(uint32_t actor,const std::string& task,uint64_t revision,

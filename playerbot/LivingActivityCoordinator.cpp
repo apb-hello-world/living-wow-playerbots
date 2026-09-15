@@ -3789,8 +3789,28 @@ AdmissionResult LivingActivityCoordinator::SubmitMailCommission(const Commission
     return SubmitTask(request);
 }
 
-std::optional<Task> LivingActivityCoordinator::ReadSavedCommission(const std::string& commission) const {
-    return ReadSavedTask(SourceId("commission_job",commission));
+std::optional<Task> LivingActivityCoordinator::ReadSavedCommission(const std::string& commission,bool* readable) const {
+    if(readable)*readable=false;
+    if(!OnWorldThread() || !state->loaded || !state->schemaReady || commission.size()>36 ||
+        commission.size()<5 || commission.compare(0,4,"lwc-") || commission.find_first_not_of("0123456789",4)!=std::string::npos)return {};
+    const auto id=SourceId("commission_job",commission);
+    if(auto cached=ReadSavedTask(id)){if(readable)*readable=true;return cached;}
+    // No per-tick scan, timer, or second executor. Native guild/trade request
+    // handlers already use indexed reads; this one is bounded to one exact
+    // accepted order, including terminal history after a realm restart.
+    const auto sql="SELECT task_id,"+PersistedTaskProjection()+" payload FROM living_activity_task WHERE task_id="+
+        SqlValue(id)+" UNION ALL SELECT '','{}'";
+    auto result=CharacterDatabase.Query(sql.c_str());
+    if(!result || result->GetFieldCount()!=2)return {};
+    do {
+        const auto key=result->Fetch()[0].GetCppString();if(key.empty())continue;
+        Task task;std::string why;
+        if(key!=id || !DecodeTaskProjection(result->Fetch()[1].GetCppString(),task,why) ||
+            task.id!=id || task.source!="commission_job" || task.sourceKey!=commission ||
+            !task.accepted || task.mode!=Mode::Active || !ValidateCommissionTask(task,why))return {};
+        if(readable)*readable=true;return task;
+    }while(result->NextRow());
+    if(readable)*readable=true;return {};
 }
 
 AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request) {
