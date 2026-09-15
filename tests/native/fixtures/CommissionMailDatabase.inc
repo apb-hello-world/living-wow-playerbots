@@ -54,10 +54,16 @@ static void CommissionMailDatabase(Connection& db) {
     CommissionJob job;job.agreement={quote.commission,"wow-tx-receipt-fixture","mail",EncodeProfessionJob(recipe),9981,9982,120,1000};
     job.craft=job.agreement.recipe;task.checkpoint.data=EncodeCommissionJob(job);
     assert(db.Write(TaskWrite(task,0,"769b8ae6-3123-4587-8ad7-fb51b9c01905","fixture_created")));
-    const auto before="{\"native\":{\"native\":"+EncodeCommissionMailQuote(quote)+"}}";
+    ResourceClaim parcel;parcel.id="d1879146-6e96-4e71-827d-6d12d965edb7";parcel.task=task.id;parcel.actor=9981;
+    parcel.itemGuid=9981001;parcel.itemEntry=2454;parcel.quantity=1;parcel.state="held";parcel.location="bags";
+    ResourceClaim postage;postage.id="f90f9bb6-58c8-4d82-a3be-a25d3fec47b7";postage.task=task.id;postage.actor=9981;
+    postage.copper=30;postage.state="held";postage.location="money";
+    const std::vector<ClaimConsumption> uses={{parcel,1},{postage,30}};
+    const auto before="{\"effects\":"+std::to_string(Mask(Effect::Inventory)|Mask(Effect::Money))+",\"persistence\":1,\"native\":"+ClaimedNativeState(EncodeCommissionMailQuote(quote),uses,8192)+'}';
+    const auto sentAfter=ClaimedNativeState("{\"mail\":90031,\"item\":9981001,\"receiver\":9982,\"cod\":120,\"delivered_at\":1120,\"expires_at\":200000,\"postage\":30,\"customer_received\":false,\"fee_paid\":false}",uses,8192);
     assert(db.Execute("INSERT INTO living_activity_operation VALUES("+SqlValue(operation)+','+SqlValue(task.id)+
         ",1,'commission_mail_send',REPEAT('a',64),'verified','mail:90031:item:9981001',"+SqlValue(before)+
-        ",' {\"native\":{\"mail\":90031}}','native_commission_parcel_and_postage_observed',1000,1000)"));
+        ','+SqlValue(sentAfter)+",'native_commission_parcel_and_postage_observed',1000,1000)"));
     assert(db.Execute("ALTER TABLE mail ADD COLUMN checked INT UNSIGNED NOT NULL DEFAULT 0"));
     CommissionMailObservation received;received.sendOperation=operation;received.mail=90031;
     received.sender=9981;received.receiver=9982;received.item=9981001;received.entry=2454;received.quantity=1;
@@ -137,6 +143,61 @@ static void CommissionMailDatabase(Connection& db) {
     assert(db.Execute(feeSql));assert(receiptCount(feeId)=="1");assert(db.Execute("COMMIT"));
     assert(db.Execute("DELETE FROM mail WHERE id=90032"));
     {Connection restarted;assert(restarted.Scalar("SELECT COUNT(*) FROM living_activity_operation WHERE operation_id="+SqlValue(feeId))=="1");}
+    assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="590");
+    assert(db.Scalar("SELECT money FROM characters WHERE guid=9982")=="880");
+
+    // Settlement consumes the actual acknowledged journal query, not caller
+    // booleans or current inventory (the envelopes above are already gone).
+    job.craftFinishedRevision=6;task.checkpoint.data=EncodeCommissionJob(job);task.revision=9;
+    task.phase=Phase::Verifying;task.checkpoint.step="commission_mail_send";
+    task.context.boot="769b8ae6-3123-4587-8ad7-fb51b9c01906";
+    task.context.actorGeneration=task.context.mapGeneration=task.context.policyRevision=1;
+    assert(db.Execute("UPDATE living_activity_task SET revision=9,phase='verifying',step='commission_mail_send',checkpoint="+
+        SqlValue(task.checkpoint.data)+" WHERE task_id="+SqlValue(task.id)));
+    assert(db.Execute("UPDATE living_activity_operation SET task_revision=8 WHERE task_id="+SqlValue(task.id)));
+    assert(db.Execute("UPDATE living_activity_operation SET task_revision=7 WHERE operation_id="+SqlValue(operation)));
+    assert(db.Execute("INSERT INTO living_activity_transition(transition_id,task_id,task_revision,actor_guid,phase,code,request_hash,occurred_at_ms) VALUES"
+        "('769b8ae6-3123-4587-8ad7-fb51b9c01907',"+SqlValue(task.id)+",6,9981,'preparing','commission_craft_verified',REPEAT('c',64),1000)"));
+    assert(db.Execute("CREATE TABLE organic_economy_commission(commission_id VARCHAR(36) PRIMARY KEY,bot_guid INT,player_guid INT,"
+        "state VARCHAR(32),authoritative_payload TEXT,failure_reason VARCHAR(255))"));
+    assert(db.Execute("INSERT INTO organic_economy_commission VALUES('lwc-987',9981,9982,'traveling',"+
+        SqlValue(EncodeCommissionContract(job.agreement))+",'')"));
+    const auto readHistory=[&](const Task& owner) {
+        ProfessionHistoryCursor cursor;std::string why;
+        assert(cursor.Begin(owner,db.History(owner),why));
+        while(!cursor.Result().complete)assert(cursor.Advance(why));
+        return cursor.Result();
+    };
+    auto history=readHistory(task);assert(history.commissionMail.size()==3 && !history.unresolvedOperation);
+    CommissionDeliveryProof delivery;std::string why;
+    assert(InspectCommissionDelivery(task,history,delivery,why) && delivery.state==CommissionDeliveryState::Complete);
+    UnsettledClaimBatch claims;claims.complete=true;claims.bookRevision=1;
+    ProfessionPreparation settlement;const std::string settledId="769b8ae6-3123-4587-8ad7-fb51b9c01908";
+    assert(PrepareCommissionSettlement(task,task.context,history,claims,2002000,settledId,settlement,why));
+    assert(settlement.task.phase==Phase::Completed && ValidateCommissionTask(settlement.task,why));
+    // A changed receipt between read and CAS cannot finalize or project legacy completion.
+    assert(db.Execute("UPDATE living_activity_operation SET evidence_code='changed' WHERE operation_id="+SqlValue(feeId)));
+    assert(!db.Write(settlement.plan));
+    assert(db.Scalar("SELECT state FROM organic_economy_commission WHERE commission_id='lwc-987'")=="traveling");
+    assert(db.Execute("UPDATE living_activity_operation SET evidence_code='native_mail_transaction_observed' WHERE operation_id="+SqlValue(feeId)));
+    // Waiting snapshots do not call a timer completion. They keep the same ID.
+    for(bool customerOnly:{true,false}) {
+        assert(db.Execute("START TRANSACTION"));
+        assert(db.Execute("DELETE FROM living_activity_operation WHERE operation_id="+SqlValue(feeId)));
+        if(!customerOnly)assert(db.Execute("DELETE FROM living_activity_operation WHERE operation_id="+SqlValue(receiveId)));
+        const auto pending=readHistory(task);
+        assert(InspectCommissionDelivery(task,pending,delivery,why));
+        assert(delivery.state==(customerOnly?CommissionDeliveryState::WaitingFee:CommissionDeliveryState::WaitingCustomer));
+        ProfessionPreparation wait;
+        assert(PrepareCommissionSettlement(task,task.context,pending,claims,2002000,settledId,wait,why));
+        assert(wait.task.id==task.id && wait.task.phase==Phase::WaitingExternal && wait.task.retryAtMs==2062000);
+        assert(db.Execute("ROLLBACK"));
+    }
+    auto restored=task;restored.context.boot.clear();restored.context.actorGeneration=restored.context.mapGeneration=0;
+    assert(PrepareCommissionSettlement(restored,task.context,history,claims,2002000,settledId,settlement,why));
+    assert(db.Write(settlement.plan));assert(db.Write(settlement.plan));
+    assert(db.Scalar("SELECT state FROM organic_economy_commission WHERE commission_id='lwc-987'")=="completed");
+    assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id="+SqlValue(task.id))=="completed");
     assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="590");
     assert(db.Scalar("SELECT money FROM characters WHERE guid=9982")=="880");
 }

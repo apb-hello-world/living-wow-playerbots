@@ -53,6 +53,7 @@ namespace LivingActivity {
         std::optional<StoredCraftOperation> interruptedCraft;
         std::optional<StoredCraftOperation> interruptedMail;
         std::optional<StoredCraftOperation> interruptedGather;
+        std::vector<StoredCraftOperation> commissionMail; // bounded send/receipt/fee/return evidence
     };
     bool IsGatheringRecoveryTask(const Task&);
     std::string ProfessionHistoryQuery(const Task& task);

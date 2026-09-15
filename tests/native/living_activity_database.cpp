@@ -18,6 +18,7 @@
 #include "LivingGuildDeliveryCancellation.h"
 #include "LivingGuildDeposit.h"
 #include "LivingCommissionMail.h"
+#include "LivingCommissionSettlement.h"
 #include "fixtures/CraftEvidence.h"
 #include <mysql.h>
 #include <cassert>

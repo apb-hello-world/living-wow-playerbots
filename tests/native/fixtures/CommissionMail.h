@@ -1,5 +1,6 @@
 #pragma once
 #include "LivingCommissionMail.h"
+#include "LivingCommissionSettlement.h"
 inline void TestCommissionMail() {
     ProfessionJob recipe;recipe.recipe=2329;recipe.skill=171;recipe.initialSkill=75;
     recipe.purpose=ProfessionPurpose::RequestedItem;recipe.outputEntry=2454;recipe.outputQuantity=1;
@@ -127,4 +128,56 @@ inline void TestCommissionMail() {
     assert(IsUuid(receiveId) && receiveId==CommissionMailReceiptId(operation,CommissionMailEvent::CustomerReceived));
     assert(receiveId!=CommissionMailReceiptId(operation,CommissionMailEvent::FeeCollected));
     assert(receiveId!=CommissionMailReceiptId(operation,CommissionMailEvent::ParcelReturned));
+    auto owner=task;owner.revision=8;owner.phase=Phase::Verifying;owner.checkpoint.step="commission_mail_send";
+    ProfessionHistory history;history.task=owner.id;history.revision=owner.revision;history.complete=true;history.unresolvedOperation=false;
+    StoredCraftOperation sendRow;sendRow.acknowledged=true;sendRow.journalDigest=std::string(64,'a');
+    sendRow.receipt.id=operation;sendRow.receipt.task=owner.id;sendRow.receipt.taskRevision=6;
+    sendRow.receipt.kind="commission_mail_send";sendRow.receipt.state=OperationState::Verified;
+    sendRow.receipt.evidence="native_commission_parcel_and_postage_observed";sendRow.receipt.nativeReference="mail:9832:item:103";
+    sendRow.beforeState="{\"effects\":12,\"persistence\":1,\"native\":"+ClaimedNativeState(encoded,uses,8192)+'}';
+    sendRow.afterState=ClaimedNativeState("{\"mail\":9832,\"item\":103,\"receiver\":9,\"cod\":120,\"delivered_at\":1100,\"expires_at\":3000,\"postage\":30,\"customer_received\":false,\"fee_paid\":false}",uses,8192);
+    history.commissionMail={sendRow};CommissionDeliveryProof delivered;
+    assert(InspectCommissionDelivery(owner,history,delivered,why) && delivered.state==CommissionDeliveryState::WaitingCustomer);
+    auto eventRow=[&](const CommissionMailObservation& e,const char* kind) {
+        StoredCraftOperation row;row.acknowledged=true;row.journalDigest=std::string(64,'b');
+        row.receipt.id=CommissionMailReceiptId(operation,e.event);row.receipt.task=owner.id;row.receipt.taskRevision=7;
+        row.receipt.kind=kind;row.receipt.state=OperationState::Verified;row.receipt.evidence="native_mail_transaction_observed";
+        row.receipt.nativeReference="mail:"+std::to_string(e.mail);row.beforeState="{}";
+        boost::property_tree::ptree p;p.put("version",1);p.put("send_operation",operation);p.put("mail",e.mail);
+        p.put("sender",e.sender);p.put("receiver",e.receiver);p.put("item",e.item);p.put("entry",e.entry);p.put("quantity",e.quantity);
+        p.put("copper",e.copper);p.put("money_before",e.moneyBefore);p.put("money_after",e.moneyAfter);
+        p.put("inventory_before",e.inventoryBefore);p.put("inventory_after",e.inventoryAfter);
+        p.put("payment_mail",e.event==CommissionMailEvent::CustomerReceived?e.generated.id:0);p.put("observed_at_ms",e.atMs);
+        row.afterState=EnchantCodec::Json(p);return row;
+    };
+    const auto receivedRow=eventRow(received,"commission_customer_received"),feeRow=eventRow(paid,"commission_fee_collected");
+    history.commissionMail.push_back(receivedRow);
+    assert(InspectCommissionDelivery(owner,history,delivered,why) && delivered.state==CommissionDeliveryState::WaitingFee);
+    history.commissionMail.push_back(feeRow);
+    assert(InspectCommissionDelivery(owner,history,delivered,why) && delivered.state==CommissionDeliveryState::Complete);
+    UnsettledClaimBatch claims;claims.complete=true;claims.bookRevision=1;ProfessionPreparation settled;
+    const auto settlement="d1879146-6e96-4e71-827d-6d12d965edb8";
+    assert(PrepareCommissionSettlement(owner,owner.context,history,claims,2002000,settlement,settled,why));
+    assert(settled.task.phase==Phase::Completed && settled.task.id==owner.id && settled.task.revision==9);
+    auto restarted=owner;restarted.context.boot.clear();restarted.context.actorGeneration=restarted.context.mapGeneration=0;
+    assert(PrepareCommissionSettlement(restarted,owner.context,history,claims,2002000,settlement,settled,why));
+    for(unsigned i=0;i<10;++i) {
+        auto bad=history;
+        if(i==0)bad.complete=false;
+        if(i==1)bad.unresolvedOperation=true;
+        if(i==2)bad.commissionMail[0].receipt.state=OperationState::Intent;
+        if(i==3)bad.commissionMail[1].receipt.id=settlement;
+        if(i==4)bad.commissionMail[2].receipt.nativeReference="mail:9999";
+        if(i==5)bad.commissionMail.push_back(receivedRow);
+        if(i==6)bad.commissionMail[0].journalDigest.clear();
+        if(i==7){auto wrong=paid;wrong.moneyAfter=70;bad.commissionMail[2]=eventRow(wrong,"commission_fee_collected");}
+        if(i==8){auto wrong=received;wrong.receiver=10;bad.commissionMail[1]=eventRow(wrong,"commission_customer_received");}
+        if(i==9)bad.commissionMail.push_back(eventRow(returned,"commission_parcel_returned"));
+        assert(!InspectCommissionDelivery(owner,bad,delivered,why));
+    }
+    auto returnedHistory=history;returnedHistory.commissionMail={sendRow,eventRow(returned,"commission_parcel_returned")};
+    assert(InspectCommissionDelivery(owner,returnedHistory,delivered,why) && delivered.state==CommissionDeliveryState::Returned);
+    assert(PrepareCommissionSettlement(owner,owner.context,returnedHistory,claims,2002000,settlement,settled,why));
+    assert(settled.task.phase==Phase::Reconciling && settled.task.checkpoint.blocker=="commission_returned_parcel_reconciliation_required");
+    claims.claims={item};assert(!PrepareCommissionSettlement(owner,owner.context,history,claims,2002000,settlement,settled,why));
 }

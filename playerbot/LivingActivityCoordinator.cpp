@@ -61,6 +61,7 @@
 #include "LivingCommissionContract.h"
 #include "LivingCommissionJob.h"
 #include "LivingNativeCommissionMail.h"
+#include "LivingCommissionSettlement.h"
 #include "PlayerbotOrganicEconomy.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -504,7 +505,7 @@ struct LivingActivityCoordinator::State {
         Task task;
         ProfessionHistoryCursor cursor;
         std::string blocker="profession_history_queued";
-        uint64_t generation=1, requestedAt=0, dueAt=0;
+        uint64_t generation=1, requestedAt=0, dueAt=0, receivedAt=0;
         bool pending=false, decoding=false;
     };
     std::map<std::string,HistoryRead> professionHistory; // At most 64 requested reads.
@@ -1054,7 +1055,7 @@ struct LivingActivityCoordinator::State {
                 if (read.generation!=generation || read.task.revision!=revision) {++historyStaleReads;return;}
                 std::vector<ProfessionHistoryRow> rows;
                 if (result && result->GetFieldCount()==ProfessionHistoryRow{}.size()) do {
-                    if (rows.size()==34) break; // Root (20), four tools (3 each), mail and overflow sentinel.
+                    if (rows.size()==(IsCommissionJob(read.task)?38u:34u)) break; // Root/tools, mail, four commission receipts and overflow sentinel.
                     auto* fields=result->Fetch();ProfessionHistoryRow row;
                     for (size_t i=0;i<row.size();++i) row[i]=fields[i].GetCppString();
                     rows.push_back(std::move(row));
@@ -1064,7 +1065,7 @@ struct LivingActivityCoordinator::State {
                 if (!read.cursor.Begin(read.task,rows,read.blocker)) {
                     ++historyFailures;read.dueAt=NowMs()+5000;return;
                 }
-                read.dueAt=0;read.decoding=!read.cursor.Result().complete;
+                read.dueAt=0;read.receivedAt=NowMs();read.decoding=!read.cursor.Result().complete;
             },query.c_str())) {
                 ioPending=false;read.pending=false;read.dueAt=now+5000;
                 read.blocker="profession_history_queue_unavailable";++historyFailures;
@@ -1387,7 +1388,9 @@ void LivingActivityCoordinator::Update() {
                     Turn(std::string& value,const std::string& task):current(value){current=task;}
                     ~Turn(){current.clear();}
                 } turn(state->executingTask,id);
-                const auto preparation=AdvanceCriticalPreparation(saved->second.actor,id);
+                const bool receiptOnly=IsCommissionJob(saved->second) && saved->second.phase!=Phase::Executing &&
+                    (saved->second.checkpoint.step=="commission_mail_send" || saved->second.checkpoint.step=="commission_mail_wait");
+                const auto preparation=receiptOnly?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
                 auto progress=preparation ? *preparation : IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
                     IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
                     IsGuildProcurementTask(saved->second) ? AdvanceGuildProcurement(saved->second.actor,id) :
@@ -1798,8 +1801,10 @@ bool LivingActivityCoordinator::ReadProfessionHistory(uint32_t actor,const std::
         found=state->professionHistory.emplace(id,State::HistoryRead{}).first;
     }
     auto& read=found->second;read.requestedAt=now;
-    if (read.task.id!=id || read.task.revision!=revision) {
+    if (read.task.id!=id || read.task.revision!=revision ||
+        (IsCommissionJob(saved->second) && !read.pending && !read.decoding && read.receivedAt && now>=read.receivedAt+15000)) {
         ++read.generation;read.task=saved->second;read.cursor={};read.decoding=false;read.dueAt=now;
+        read.receivedAt=0;
         read.blocker="profession_history_queued";
     }
     if (read.pending) return reject("profession_history_read_pending");
@@ -2288,8 +2293,28 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     for(const auto& write:state->pending)if(write.task.actor==actor)return stop("commission_delivery_write_pending");
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
     if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld())return stop("commission_delivery_actor_unavailable");
+    if((saved->phase==Phase::Verifying || saved->phase==Phase::WaitingExternal || saved->phase==Phase::Reconciling) &&
+        (saved->checkpoint.step=="commission_mail_send" || saved->checkpoint.step=="commission_mail_wait")) {
+        if(DefersNativeSave(actor) || state->operationDispatching)return stop("commission_native_save_pending");
+        for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)return stop("commission_native_operation_pending");
+        const auto owned=state->authority.Read(actor);
+        if(!owned.operation.empty())return stop("commission_native_operation_pending");
+        if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+            return stop("commission_settlement_backpressure");
+        ProfessionHistory history;UnsettledClaimBatch claims;ProfessionPreparation prepared;
+        if(!ReadProfessionHistory(actor,id,saved->revision,history,why) ||
+            !state->resources.ReadUnsettled(id,claims,why))return stop(why);
+        RefreshPermission(actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
+        const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
+        const auto receipt=NewId();
+        if(!PrepareCommissionSettlement(*saved,current,history,claims,NowMs(),receipt,prepared,why))return stop(why);
+        State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);write.admissionReceipt=receipt;
+        state->pending.push_back(std::move(write));
+        if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+        state->nextWork=0;return stop("commission_settlement_persistence_pending");
+    }
     // No retry is admitted merely because the callback or old process vanished.
-    // Post-send, return, and payment recovery still require their native receipts.
+    // A pre-send interruption still requires reconciliation, not a fresh send.
     if(!(saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot)))
         return stop("commission_delivery_restart_reconciliation_required");
     for(const auto& row:state->operations)if(row.second.request.transition.task.actor==actor) {
@@ -2303,8 +2328,6 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(!grant.Permitted())return stop(grant.blocker);
         return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
     }
-    if(saved->phase==Phase::Verifying && saved->checkpoint.step=="commission_mail_send")
-        return stop("commission_mail_delivery_payment_reconciliation_required");
     if(saved->phase==Phase::Reconciling || Terminal(saved->phase))return stop("commission_delivery_reconciliation_required");
     if(saved->retryAtMs>NowMs())return stop("commission_delivery_retry_wait");
     if(DefersNativeSave(actor))return stop("native_save_pending");

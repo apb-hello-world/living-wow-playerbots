@@ -53,7 +53,9 @@ inline bool ValidateCommissionTask(const Task& task,std::string& why) {
     if(!DecodeCommissionJob(task.checkpoint.data,job,why))return false;
     if(task.kind!=Kind::Commission || task.actor!=job.agreement.actor || task.sourceKey!=job.agreement.id ||
         task.root!=task.id || !task.parent.empty() || job.craftFinishedRevision>task.revision ||
-        task.phase==Phase::Completed) {why="commission_identity_or_settlement_invalid";return false;}
+        (task.phase==Phase::Completed && (!job.craftFinishedRevision || task.checkpoint.step!="commission_completed"))) {
+        why="commission_identity_or_settlement_invalid";return false;
+    }
     why.clear();return true;
 }
 inline bool PreserveCommissionIntent(const Task& before,const Task& after,std::string& why) {

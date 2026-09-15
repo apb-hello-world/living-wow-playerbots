@@ -423,8 +423,9 @@ std::string ProfessionHistoryQuery(const Task& task) {
         "LEFT JOIN (SELECT operation_id,task_id,task_revision,kind,state,native_reference,before_state,after_state,evidence_code "
         "FROM living_activity_operation WHERE task_id="+id+" AND "+
         (gathering ? "kind='gather_open' AND state IN ('intent','reconciling') " :
-            "(kind='profession_craft' OR (kind='mail_collect' AND state IN ('intent','reconciling'))) ")+
-        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(gathering?2:ProfessionWorkflowAttemptLimit(task.checkpoint.data)+2)+") o ON o.task_id=t.task_id "
+            std::string("(kind='profession_craft' OR (kind='mail_collect' AND state IN ('intent','reconciling'))")+
+            (IsCommissionJob(task)?" OR (kind='commission_mail_send' AND state<>'rejected') OR kind IN ('commission_customer_received','commission_fee_collected','commission_parcel_returned')":"")+") ")+
+        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(gathering?2:ProfessionWorkflowAttemptLimit(task.checkpoint.data)+(IsCommissionJob(task)?6:2))+") o ON o.task_id=t.task_id "
         "WHERE t.task_id="+id+" AND t.actor_guid="+std::to_string(task.actor)+" AND t.revision="+
         std::to_string(task.revision)+" AND t.root_task_id=t.task_id AND t.mode='active' "
         "AND t.accepted=1 AND t.source="+SqlValue(task.source)+" AND t.kind="+SqlValue(Name(task.kind))+" ORDER BY o.task_revision,o.operation_id";
@@ -439,8 +440,8 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
         Require(gathering || DecodeProfessionJob(owner.checkpoint.data,job,why),"profession_history_task_invalid");
         Require(!rows.empty(),"profession_history_task_changed_or_missing");
         const auto limit=gathering?0u:ProfessionWorkflowAttemptLimit(owner.checkpoint.data);
-        Require(rows.size()<=limit+1,"profession_history_attempt_limit_exceeded");
-        bool first=true,unresolved=false;uint64_t previous=0;std::set<std::string> ids;
+        Require(rows.size()<=limit+(IsCommissionJob(owner)?5:1),"profession_history_attempt_limit_exceeded");
+        bool first=true,unresolved=false;uint64_t previous=0;std::set<std::string> ids,commissionKinds;
         unsigned crafts=0,mails=0;
         for (const auto& fields : rows) {
             auto number=[&](size_t i){Tree scalar;scalar.data()=fields[i];return Number<uint64_t>(scalar);};
@@ -455,12 +456,16 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
             }
             StoredCraftOperation row;auto& receipt=row.receipt;
             receipt.id=fields[3];receipt.task=fields[4];receipt.taskRevision=number(5);receipt.kind=fields[6];
+            const bool commission=IsCommissionJob(owner) && (receipt.kind=="commission_mail_send" ||
+                receipt.kind=="commission_customer_received" || receipt.kind=="commission_fee_collected" || receipt.kind=="commission_parcel_returned");
             Require(IsUuid(receipt.id) && ids.insert(receipt.id).second && receipt.task==owner.id &&
-                receipt.taskRevision>previous && receipt.taskRevision<=owner.revision &&
-                (gathering ? receipt.kind=="gather_open" : (receipt.kind=="profession_craft" || receipt.kind=="mail_collect")),
+                receipt.taskRevision && (receipt.taskRevision>previous || (commission && receipt.taskRevision==previous)) && receipt.taskRevision<=owner.revision &&
+                (gathering ? receipt.kind=="gather_open" : (commission || receipt.kind=="profession_craft" || receipt.kind=="mail_collect")),
                 "profession_history_operation_identity_invalid");
             if(gathering) Require(++crafts==1 && owner.revision>1 && receipt.taskRevision==owner.revision-1 &&
                 fields[7]=="reconciling","gather_history_operation_identity_invalid");
+            else if(commission) Require(commissionKinds.insert(receipt.kind).second &&
+                (receipt.kind=="commission_mail_send" || fields[7]=="verified"),"commission_history_duplicate_or_unverified_receipt");
             else if(receipt.kind=="profession_craft") Require(++crafts<=limit,"profession_history_attempt_limit_exceeded");
             else Require(++mails==1 && receipt.taskRevision==owner.revision &&
                 (fields[7]=="intent" || fields[7]=="reconciling"),"profession_history_mail_identity_invalid");
@@ -487,7 +492,9 @@ bool ProfessionHistoryCursor::Advance(std::string& blocker) {
     if (history.complete) return true;
     if (task.id.empty() || position>=records.size()) {blocker="profession_history_read_not_started";return false;}
     const auto& row=records[position];
-    if (row.receipt.state==OperationState::Verified || row.receipt.state==OperationState::Rejected) {
+    if(IsCommissionJob(task) && row.receipt.kind.compare(0,11,"commission_")==0) {
+        history.commissionMail.push_back(row); // Domain decoder validates the exact native contract before use.
+    } else if (row.receipt.state==OperationState::Verified || row.receipt.state==OperationState::Rejected) {
         StoredCraftProof proof;
         if (!DecodeStoredCraftProof(task,row,proof,blocker)) {
             // No partial list may reach the next-step planner as a complete read.
