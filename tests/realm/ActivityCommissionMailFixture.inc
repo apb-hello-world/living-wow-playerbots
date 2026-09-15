@@ -317,7 +317,7 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,
 // crafter payment collection. Native mail hooks supply the receipts; ordinary
 // coordinator recovery/settlement must finish the order without another craft.
 template<class FixtureState>
-void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
+void RunIsolatedCommissionCollectionFixture(FixtureState& state,bool returnCase=false) {
     struct Fixture {
         uint32_t actor=0,recipient=0;
         uint64_t deadline=0,nextDiagnostic=0;
@@ -347,7 +347,7 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
         std::ofstream out(path);out<<Json(report);out.close();require(bool(out),"native_mail_click_intent_saved");
     };
     auto emit=[&](bool passed,const std::string& failure,Player* sender,Player* customer) {
-        boost::property_tree::ptree report;report.put("suite","activity-commission-collect-v1");
+        boost::property_tree::ptree report;report.put("suite",returnCase?"activity-commission-return-v1":"activity-commission-collect-v1");
         report.put("test_only",true);report.put("outcome",passed?"passed":"failed");report.put("failure",failure);
         report.put("boot",state.boot);report.put("task",f.task);report.put("actor",f.actor);report.put("recipient",f.recipient);
         report.put("blocker",f.blocker);report.put("same_task_restart",state.boot!=f.input.template get<std::string>("setup_boot",state.boot));
@@ -357,7 +357,7 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
         report.put("new_item_grants",0);report.put("money_grants",0);report.put("ordinary_receipt_settlement",true);
         if(sender)report.put("sender_money",sender->GetMoney());
         if(customer){report.put("customer_money",customer->GetMoney());report.put("customer_output",customer->GetItemCount(2454,true));}
-        std::ofstream out("/isolated/evidence/activity-commission-collect-"+state.boot+".json");
+        std::ofstream out(std::string("/isolated/evidence/")+(returnCase?"activity-commission-return-":"activity-commission-collect-")+state.boot+".json");
         out<<Json(report);out.close();state.fixtureFinished=true;
         if(!out)sLog.outError("Living commission collection evidence write failed");
         sLog.outString("Living isolated fixture: %s",Json(report).c_str());
@@ -433,7 +433,16 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
         ProfessionHistory history;CommissionDeliveryProof proof;
         if(!sLivingActivityCoordinator.ReadProfessionHistory(f.actor,f.task,saved->revision,history,f.blocker) ||
             !InspectCommissionDelivery(*saved,history,proof,f.blocker))return;
-        require(proof.quote.receiver==f.recipient && proof.quote.cod==60 && proof.returned.empty(),"original_unreturned_parcel_required");
+        require(proof.quote.receiver==f.recipient && proof.quote.cod==60 && (returnCase || proof.returned.empty()),"original_unreturned_parcel_required");
+        if(returnCase && !proof.returned.empty()) {
+            require(proof.received.empty() && proof.fee.empty(),"returned_unpaid_order_cannot_have_customer_or_payment_receipt");
+            if(saved->phase!=Phase::Failed){f.blocker="ordinary_return_collection_and_closure_pending";return;}
+            require(sender->GetMoney()==uint64_t(f.input.template get<uint32_t>("money_before"))+f.capacityProceeds-proof.quote.postage &&
+                customer->GetMoney()==f.input.template get<uint32_t>("customer_money_before"),"returned_order_money_conservation");
+            require(sender->GetItemCount(2454,true)==f.input.template get<uint32_t>("output_before")+1,
+                "returned_crafted_item_must_be_in_sender_inventory");
+            emit(true,"",sender,customer);return;
+        }
         if(proof.state==CommissionDeliveryState::Complete) {
             if(saved->phase!=Phase::Completed){f.blocker="ordinary_commission_settlement_pending";return;}
             require(sender->GetMoney()==uint64_t(f.input.template get<uint32_t>("money_before"))+f.capacityProceeds-proof.quote.postage+60 &&
@@ -485,6 +494,13 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
                 mail->items.size()==parts.size()-proof.receivedAttachments.size() &&
                 std::any_of(mail->items.begin(),mail->items.end(),[&](const auto& i){return i.item_guid==part->item;}),
                 "original_uncollected_native_parcel_required");
+            if(returnCase) {
+                require(parts.size()==1 && proof.receivedAttachments.empty(),"single_unpaid_return_fixture_required");
+                intent("commission-return-click-v1.json",*customer);f.collected.insert(part->item);
+                WorldPacket packet(CMSG_MAIL_RETURN_TO_SENDER,20);
+                packet<<ObjectGuid(mailbox)<<uint32(proof.mail)<<sender->GetObjectGuid();
+                customer->GetSession()->HandleMailReturnToSender(packet);return;
+            }
             const auto click=proof.quote.additional.empty()?std::string("commission-customer-click-v1.json"):
                 "commission-customer-click-"+std::to_string(part->item)+"-v2.json";
             intent(click.c_str(),*customer);f.collected.insert(part->item);

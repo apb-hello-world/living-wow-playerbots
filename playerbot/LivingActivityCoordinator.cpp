@@ -665,6 +665,7 @@ struct LivingActivityCoordinator::State {
             std::string(mode)!="activity-commission-parcel-v2" &&
             std::string(mode)!="activity-commission-capacity-v1" &&
             std::string(mode)!="activity-commission-collect-v1" &&
+            std::string(mode)!="activity-commission-return-v1" &&
             std::string(mode)!="activity-guild-admission-v1" &&
             std::string(mode)!="activity-services-observe-v1" &&
             std::string(mode)!="activity-enchant-v1" && std::string(mode)!="activity-tool-v1")return false;
