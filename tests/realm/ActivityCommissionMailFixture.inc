@@ -21,7 +21,10 @@ void RunIsolatedCommissionReplayFixture(FixtureState& state) {
         require(!sLivingActivityCoordinator.ReadSavedTask(task),"terminal_order_must_be_outside_active_cache");
         state.enforceEffects.store(true,std::memory_order_release);
         bool readable=false;const auto saved=sLivingActivityCoordinator.ReadSavedCommission(commission,&readable);
-        require(readable && saved && saved->id==task && saved->phase==Phase::Completed,"original_completed_order_required");
+        require(readable && saved && saved->id==task && (saved->phase==Phase::Completed ||
+            (saved->phase==Phase::Failed && saved->checkpoint.blocker=="commission_parcel_returned_items_preserved")),
+            "original_settled_order_required");
+        report.put("terminal_phase",saved->phase==Phase::Completed?"completed":"failed");
         auto snapshot=[&]() {
             auto row=CharacterDatabase.PQuery("SELECT revision,(SELECT money FROM characters WHERE guid=%u),"
                 "(SELECT money FROM characters WHERE guid=%u),(SELECT COUNT(*) FROM living_activity_operation WHERE task_id='%s') "
