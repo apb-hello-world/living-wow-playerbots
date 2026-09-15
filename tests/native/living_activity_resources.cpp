@@ -337,7 +337,7 @@ int main() {
     assert(plan.statements.size() == 4);
     assert(plan.statements.front().find("SET actor_guid=actor_guid") != std::string::npos);
     assert(plan.statements.at(1).find("SUM(c.quantity)") != std::string::npos);
-    assert(plan.statements.back().find("request_hash=SHA2(") != std::string::npos);
+    assert(plan.statements.back().find("request_hash=X'") != std::string::npos);
     assert(plan.receiptQuery.find("living_activity_claim") != std::string::npos);
     auto lowerBalance = balance; --lowerBalance.quantity;
     assert(plan.receiptQuery != ResourceReservationWrite(task,1,receipt,{{leather,0}},{lowerBalance}).receiptQuery);
