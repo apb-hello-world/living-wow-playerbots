@@ -46,6 +46,9 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
             f.actor=id("LIVING_WOW_NATIVE_FIXTURE_ACTOR");f.recipient=id("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
             require(f.actor!=f.recipient,"distinct_commission_customer_required");
             state.gameplayFixtureActor.store(f.actor,std::memory_order_release);
+            // If ordinary population loading brings the customer online, keep
+            // its AI from collecting this parcel before the independent audit.
+            state.professionCohortActors[0].store(f.recipient,std::memory_order_release);
         }
         if(sWorld.GetActiveAndQueuedSessionCount() || !state.loaded || state.ioPending ||
             !state.pending.empty() || !state.incoming.empty() || !state.resources.Protection().ready)return;
@@ -66,7 +69,7 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
                 "existing_commission_fixture_must_be_reconciled_not_recreated");
             for(const auto& row:state.cache)if(row.second.actor==f.actor && row.second.mode==Mode::Active && !Terminal(row.second.phase))
                 require(false,"existing_commission_actor_obligation_preserved");
-            auto customer=CharacterDatabase.PQuery("SELECT account,online FROM characters WHERE guid=%u",f.recipient);
+            auto customer=CharacterDatabase.PQuery("SELECT account,online,money FROM characters WHERE guid=%u",f.recipient);
             require(customer && !customer->Fetch()[1].GetUInt32() &&
                 sPlayerbotAIConfig.IsInRandomAccountList(customer->Fetch()[0].GetUInt32()) &&
                 actor->GetTeam()==sObjectMgr.GetPlayerTeamByGUID(ObjectGuid(HIGHGUID_PLAYER,f.recipient)),
@@ -92,6 +95,7 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
             f.input.put("task",task.id);f.input.put("commission",job.agreement.id);f.input.put("actor",f.actor);
             f.input.put("recipient",f.recipient);f.input.put("agreement",EncodeCommissionContract(job.agreement));
             f.input.put("money_before",f.money);f.input.put("output_before",f.output);
+            f.input.put("customer_money_before",customer->Fetch()[2].GetUInt32());
             f.input.put("item_grants",0);f.input.put("money_grants",0);f.input.put("skill_grants",0);
             f.input.put("recipe_grants",0);f.input.put("fixture_consent",true);f.input.put("ordinary_due_queue",true);
             f.input.add_child("inventory_before",GuildMailFixtureInventory(*actor));
