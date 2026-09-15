@@ -217,6 +217,11 @@ namespace {
         std::vector<ResourceClaim> claims;
         for (const auto& use : request.consumption) claims.push_back(use.before);
         if (!request.itemTransfer.id.empty()) claims.push_back(request.itemTransfer);
+        if(request.kind=="commission_output_partition") {
+            CommissionPartitionQuote q;
+            if(!DecodeCommissionPartition(request.beforeState,q))throw std::invalid_argument("commission_partition_quote_invalid");
+            claims=q.claims;
+        }
         return NativeClaimBalances(bot,claims,admission);
     }
     std::vector<NativeItemStack> NativeGainStacks(Player& bot,const ItemGainSpec& spec) {
@@ -2606,10 +2611,19 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
     for(const auto& row:state->operations)if(row.second.request.transition.task.actor==actor) {
         if(row.second.request.transition.task.id!=id ||
-            (row.second.request.kind!="commission_trade" && row.second.request.kind!="commission_trade_offer"))
+            (row.second.request.kind!="commission_trade" && row.second.request.kind!="commission_trade_offer" &&
+                row.second.request.kind!="commission_output_partition"))
             return stop("commission_other_native_operation_pending");
         if(!row.second.ready || row.second.dispatched)return stop("commission_trade_receipt_pending");
         if(!(saved->context==current))return stop("commission_trade_intent_reconciliation_required");
+        if(row.second.request.kind=="commission_output_partition") {
+            CommissionPartitionQuote quote;
+            if(!DecodeCommissionPartition(row.second.request.beforeState,quote))return stop("commission_partition_quote_invalid");
+            NativeCommissionPartition adapter(quote);
+            const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"commission_output_partition");
+            if(!grant.Permitted())return stop(grant.blocker);
+            return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
         CommissionTradeQuote quote;
         if(!DecodeCommissionTradeQuote(row.second.request.beforeState,quote))return stop("commission_saved_trade_quote_invalid");
         if(row.second.request.kind=="commission_trade_offer") {
@@ -2708,7 +2722,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         request.receipt=NewId();return stop(SubmitTask(request).blocker);
     }
     if(saved->phase!=Phase::Preparing)return stop("commission_trade_preparation_required");
-    auto submit=[&](NativeOperationAdapter& adapter,const CommissionTradeQuote& quote,std::vector<ClaimConsumption> uses) {
+    auto submit=[&](NativeOperationAdapter& adapter,const std::string& before,std::vector<ClaimConsumption> uses) {
         const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"commission_trade_prepare");
         if(!grant.Permitted())return stop(grant.blocker);
         OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
@@ -2716,14 +2730,19 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         request.transition.task.checkpoint.step=adapter.OperationKind();request.transition.task.updatedAtMs=NowMs();
         request.transition.receipt=NewId();request.authorization=grant.action;request.kind=adapter.OperationKind();
         request.effects=adapter.OperationEffects();request.persistence=adapter.PersistencePolicy();
-        request.beforeState=EncodeCommissionTradeQuote(quote);request.consumption=std::move(uses);
+        request.beforeState=before;request.consumption=std::move(uses);
         return stop(SubmitOperationIntent(request,adapter).blocker);
     };
+    CommissionPartitionQuote partition;
+    if(PlanNativeCommissionPartition(*bot,*saved,partition,why)) {
+        NativeCommissionPartition adapter(partition);return submit(adapter,EncodeCommissionPartition(partition),{});
+    }
+    if(why!="commission_partition_not_needed")return stop(why);
     CommissionTradeQuote quote;std::vector<ClaimConsumption> uses;
     if(!PlanNativeCommissionTrade(*bot,*saved,quote,uses,why)) {
         if(why=="commission_trade_customer_acceptance_required") {
             if(!PlanNativeCommissionTradeOffer(*bot,*saved,quote,why))return stop(why);
-            NativeCommissionOffer adapter(quote);return submit(adapter,quote,{});
+            NativeCommissionOffer adapter(quote);return submit(adapter,EncodeCommissionTradeQuote(quote),{});
         }
         if(why=="commission_trade_recipient_window_required" || why=="commission_trade_customer_acceptance_required") {
             TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
@@ -2738,7 +2757,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return stop(why);
     }
     NativeCommissionTrade adapter(quote);
-    return submit(adapter,quote,std::move(uses));
+    return submit(adapter,EncodeCommissionTradeQuote(quote),std::move(uses));
 }
 
 LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceProfessionJob(uint32_t actor,const std::string& id) {
@@ -4211,7 +4230,8 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
         return reject(AdmissionCode::StaleContext, "current_predecessor_lease_required");
     try {
         const bool otherTrade=bot->GetTradeData() && !((request.kind=="commission_trade" && adapter.SupportsCommissionTrade()) ||
-            (request.kind=="commission_trade_offer" && adapter.SupportsCommissionOffer()));
+            (request.kind=="commission_trade_offer" && adapter.SupportsCommissionOffer()) ||
+            (request.kind=="commission_output_partition" && adapter.SupportsCommissionPartition()));
         if (otherTrade || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker))
             return reject(AdmissionCode::InvalidRequest,otherTrade ? "native_trade_in_progress" : blocker);
         if (!adapter.ValidateNative(*bot, request, blocker))
@@ -4311,7 +4331,8 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     bool nativeTransactionOpen = false;
     try {
         const bool otherTrade=bot->GetTradeData() && !((request.kind=="commission_trade" && adapter.SupportsCommissionTrade()) ||
-            (request.kind=="commission_trade_offer" && adapter.SupportsCommissionOffer()));
+            (request.kind=="commission_trade_offer" && adapter.SupportsCommissionOffer()) ||
+            (request.kind=="commission_output_partition" && adapter.SupportsCommissionPartition()));
         if (otherTrade || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker) ||
             !adapter.ValidateNative(*bot, request, blocker)) {
             observation.state = OperationState::Rejected;
@@ -4376,7 +4397,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                 if(observation.state==OperationState::Verified && observation.retainedSplit.itemGuid) {
                     const auto& split=observation.retainedSplit;
                     const auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,split.itemGuid));
-                    if(!adapter.SupportsCommissionMailSend() || !item || item->GetOwnerGuid()!=bot->GetObjectGuid() ||
+                    if((!adapter.SupportsCommissionMailSend() && !adapter.SupportsCommissionPartition()) || !item || item->GetOwnerGuid()!=bot->GetObjectGuid() ||
                         !Player::IsInventoryPos(item->GetPos())) {
                         observation.state=OperationState::Reconciling;observation.evidence="native_retained_split_not_owned";
                     } else nativeAfter.push_back({bot->GetGUIDLow(),item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,"bags"});
@@ -4474,7 +4495,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     pending.uncertain = observation.state == OperationState::Reconciling;
     if(pending.uncertain && pending.relatedGuild)pending.saveBlocked=true;
     if (pending.uncertain && (!request.itemGain.Empty() || !request.mailGain.Empty() || request.kind=="guild_mail_send" ||
-        request.kind=="commission_mail_send" || request.kind=="commission_trade")) pending.saveBlocked=true;
+        request.kind=="commission_mail_send" || request.kind=="commission_trade" || request.kind=="commission_output_partition")) pending.saveBlocked=true;
     if (pending.uncertain && !request.itemTransfer.id.empty()) {
         // An uncertain merge may have consumed the old GUID. Protecting that
         // GUID alone is insufficient; stop consumers until native evidence is
@@ -4486,7 +4507,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     pending.outcome = observation.state;
     after.phase = pending.uncertain ? Phase::Reconciling : Phase::Verifying;
     after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
-    if((request.kind=="capacity_vendor_sale" || request.kind=="guild_bank_deposit" || request.kind=="gather_open" || request.kind=="loot_collect" || request.kind=="critical_equipment_repair") && observation.state==OperationState::Rejected) {
+    if((request.kind=="capacity_vendor_sale" || request.kind=="guild_bank_deposit" || request.kind=="gather_open" || request.kind=="loot_collect" || request.kind=="critical_equipment_repair" || request.kind=="commission_output_partition") && observation.state==OperationState::Rejected) {
         after.retryAtMs=after.updatedAtMs+300000;
         after.checkpoint.blocker=observation.evidence; // Retain claim, do not hammer a rejecting native service.
     }

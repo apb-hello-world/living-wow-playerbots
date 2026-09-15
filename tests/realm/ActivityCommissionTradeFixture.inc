@@ -11,7 +11,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
         TaskRequest request;
         ChatDirectorEvent brokerEvent;
         ChatDirectorActionProposal brokerProposal;
-        bool brokerAccepted=false;
+        bool brokerAccepted=false,partialStock=false;
         boost::property_tree::ptree input;
     };
     static Fixture f;
@@ -32,6 +32,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
                     "explicit_commission_trade_actors_required");return uint32_t(std::stoul(value));
             };
             f.actor=id("LIVING_WOW_NATIVE_FIXTURE_ACTOR");f.customer=id("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
+            f.partialStock=brokerCase && bool(std::ifstream("/isolated/evidence/commission-partition-existing-stock"));
             require(f.actor && f.customer && f.actor!=f.customer,"distinct_commission_trade_actors_required");
             std::ifstream prior("/isolated/evidence/commission-trade-input-v1.json",std::ios::ate);
             if(prior) {
@@ -142,6 +143,9 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             f.input.put("autonomous_travel_proof",false);f.input.put("broker_admission_proof",false);
             f.input.put("automatic_offer",automaticOffer);
             f.input.put("broker_case",brokerCase);
+            // Disclosed OLD-stock fixture, not a grant of the ordered output:
+            // the verified craft must add one, and this original one must remain.
+            f.input.put("preexisting_output_grants",f.partialStock?1:0);
             f.input.put("offer_restart_test",automaticOffer && bool(std::ifstream("/isolated/evidence/commission-offer-pause-before-dispatch")));
             f.input.add_child("inventory_before",GuildMailFixtureInventory(*actor));
             boost::property_tree::ptree grants;
@@ -159,6 +163,11 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
                 require(!actor->GetItemCount(entry,true) && actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,entry,1)==EQUIP_ERR_OK,
                     "fixture_material_changed");
                 require(actor->StoreNewItem(positions,entry,true) && actor->GetItemCount(entry,true)==1,"fixture_material_grant_failed");
+            }
+            if(f.partialStock) {
+                ItemPosCountVec positions;
+                require(actor->GetItemCount(2454,true)==0 && actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,2454,1)==EQUIP_ERR_OK &&
+                    actor->StoreNewItem(positions,2454,true) && actor->GetItemCount(2454,true)==1,"fixture_preexisting_stock_failed");
             }
             actor->SaveToDB();actor->GetMotionMaster()->Clear();actor->StopMoving();
             customer->GetMotionMaster()->Clear();customer->StopMoving();
@@ -207,7 +216,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
                 require(!conflict.created && conflict.reasonCode=="commission_agreement_conflict","direct_broker_completed_contract_immutable");
                 report.put("broker_completed_replay",true);report.put("broker_completed_conflict_rejected",true);
             }
-            require(f.offered && actor->GetItemCount(2454,true)==0 &&
+            require(f.offered && actor->GetItemCount(2454,true)==(f.partialStock?1u:0u) &&
                 customer->GetItemCount(2454,true)==f.input.template get<uint32_t>("recipient_items_before")+1 &&
                 actor->GetMoney()==f.input.template get<uint32_t>("actor_money_before")+60 &&
                 customer->GetMoney()+60==f.input.template get<uint32_t>("recipient_money_before"),"native_commission_conservation_required");

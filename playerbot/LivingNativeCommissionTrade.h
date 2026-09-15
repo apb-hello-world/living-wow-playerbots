@@ -2,8 +2,25 @@
 #include "LivingCommissionTradeContract.h"
 #include "LivingCommissionTradeEvidence.h"
 #include "LivingActivityOperations.h"
+#include "LivingCommissionPartition.h"
 
 namespace LivingActivity {
+bool PlanNativeCommissionPartition(Player&,const Task&,CommissionPartitionQuote&,std::string&);
+class NativeCommissionPartition final : public NativeOperationAdapter {
+public:
+    explicit NativeCommissionPartition(CommissionPartitionQuote value):quote(std::move(value)) {}
+    const char* OperationKind() const override {return "commission_output_partition";}
+    uint32_t OperationEffects() const override {return Mask(Effect::Inventory);}
+    bool SupportsCommissionPartition() const override {return true;}
+    NativePersistence PersistencePolicy() const override {return NativePersistence::Inventory;}
+    bool ValidateNative(Player&,const OperationRequest&,std::string&) override;
+    NativeObservation ExecuteNative(Player&,const OperationRequest&) override;
+    std::string PersistedNativeProof(Player&,const OperationRequest&,const Task&) const override;
+private:
+    CommissionPartitionQuote quote;
+    uint32_t surplusItem=0;
+    bool unchanged=false;
+};
 // Finite final acceptance only. Preparing an offer and travelling to its
 // recipient remain separate saved steps; this adapter never edits consent.
 bool PlanNativeCommissionTrade(Player&,const Task&,CommissionTradeQuote&,

@@ -8,7 +8,7 @@
 using namespace LivingActivity;
 struct TestAdapter final : NativeOperationAdapter {
     std::string kind;uint32_t effects=0;NativePersistence persistence=NativePersistence::Inventory;
-    bool consumes=false,gains=false,transfers=false,mail=false,guildMail=false,cast=false,trade=false,offer=false;
+    bool consumes=false,gains=false,transfers=false,mail=false,guildMail=false,cast=false,trade=false,offer=false,partition=false;
     explicit TestAdapter(const OperationRequest& r):kind(r.kind),effects(r.effects),persistence(r.persistence) {}
     const char* OperationKind()const override{return kind.c_str();}
     uint32_t OperationEffects()const override{return effects;}
@@ -20,6 +20,7 @@ struct TestAdapter final : NativeOperationAdapter {
     bool SupportsGuildMailHandoff()const override{return guildMail;}
     bool SupportsCommissionTrade()const override{return trade;}
     bool SupportsCommissionOffer()const override{return offer;}
+    bool SupportsCommissionPartition()const override{return partition;}
     bool DeferredNativeCast()const override{return cast;}
     bool ValidateNative(Player&,const OperationRequest&,std::string&)override{assert(false);return false;}
     NativeObservation ExecuteNative(Player&,const OperationRequest&)override{assert(false);return {};}

@@ -2,6 +2,7 @@
 #include "LivingCommissionTradeContract.h"
 #include "LivingCommissionTradeSettlement.h"
 #include "LivingActivityAuthority.h"
+#include "LivingCommissionPartition.h"
 inline void TestCommissionTradeOperation() {
     ProfessionJob recipe;recipe.recipe=2329;recipe.skill=171;recipe.initialSkill=75;
     recipe.purpose=ProfessionPurpose::RequestedItem;recipe.outputEntry=2454;recipe.outputQuantity=1;
@@ -26,6 +27,59 @@ inline void TestCommissionTradeOperation() {
     action.task=action.rootTask=task.id;action.world=task.context;action.revision=task.revision;
     action.ownerGeneration=7;action.origin="commission_trade";action.permittedEffects=request.effects;
     std::string why;TestAdapter adapter(request);adapter.consumes=true;
+    {
+        CommissionPartitionQuote q;q.actor=703;q.recipient=9;q.item=103;q.entry=2454;q.count=3;q.quantity=1;
+        q.money=100;q.position=65303;q.destination=65304;q.claims={item};
+        assert(ValidCommissionPartition(q) && MatchesCommissionPartition(task,q));
+        CommissionPartitionQuote decoded;const auto encoded=EncodeCommissionPartition(q);
+        assert(DecodeCommissionPartition(encoded,decoded) && EncodeCommissionPartition(decoded)==encoded);
+        assert(!DecodeCommissionPartition(encoded+" ",decoded));
+        auto partition=request;partition.kind=partition.transition.task.checkpoint.step="commission_output_partition";
+        partition.effects=Mask(Effect::Inventory);partition.consumption.clear();partition.beforeState=encoded;
+        TestAdapter prepare(partition);prepare.partition=true;
+        assert(ValidateOperationAdapter(partition,prepare,why));
+        assert(ValidateOperationRequest(partition,task,task.context,nullptr,1000,why));
+        ResourceClaimBook book;assert(book.RestoreBatch({item})==ClaimInstall::Installed && book.FinishRestore());
+        const std::vector<NativeResourceBalance> before{{703,103,2454,3,0,"bags"}},after{{703,103,2454,1,0,"bags"},{703,104,2454,2,0,"bags"}};
+        const auto surplus=after.back();
+        assert(ValidateOperationResources(partition,book,before,why));
+        assert(VerifyConsumedNativeResources(partition,before,after,why,surplus));
+        assert(book.Inspect(item.id)->state=="held" && SameResourceClaim(*book.Inspect(item.id),item));
+        const auto plan=OperationRequestWrite(partition);
+        for(const auto& sql:plan.statements)assert(sql.find("UPDATE living_activity_claim")==std::string::npos);
+        for(unsigned i=0;i<10;++i) {
+            auto bad=partition;
+            if(i==0)bad.effects|=Mask(Effect::Money);
+            if(i==1)bad.consumption=request.consumption;
+            if(i==2)bad.itemGain={2454,1};
+            if(i==3)bad.persistence=NativePersistence::JournalOnly;
+            if(i==4)bad.transition.task.checkpoint.step="commission_trade";
+            if(i==5)bad.beforeState="{}";
+            if(i==6)bad.itemTransfer=item;
+            if(i==7){auto changed=q;++changed.recipient;bad.beforeState=EncodeCommissionPartition(changed);}
+            if(i==8)bad.transition.task.accepted=false;
+            if(i==9){auto changed=q;changed.claims.front().revision++;bad.beforeState=EncodeCommissionPartition(changed);
+                assert(!ValidateOperationResources(bad,book,before,why));continue;}
+            TestAdapter rejected(bad);rejected.partition=true;
+            assert(!ValidateOperationAdapter(bad,rejected,why));
+            assert(!ValidateOperationRequest(bad,task,task.context,nullptr,1000,why));
+        }
+        for(unsigned i=0;i<7;++i) {
+            auto b=before,a=after;auto s=surplus;
+            if(i==0)b.front().quantity=2;
+            if(i==1)a.front().quantity=2;
+            if(i==2)a.back().quantity=3;
+            if(i==3)s.itemGuid=103;
+            if(i==4)a.back().actor=9;
+            if(i==5)a.pop_back();
+            if(i==6)a.push_back(surplus);
+            assert(!VerifyConsumedNativeResources(partition,b,a,why,s));
+        }
+        auto other=item;other.id="ff2efbdf-f0ec-4539-b840-299847970c04";other.task="ff2efbdf-f0ec-4539-b840-299847970c05";
+        ResourceClaimBook shared;assert(shared.RestoreBatch({item,other})==ClaimInstall::Installed && shared.FinishRestore());
+        assert(!ValidateOperationResources(partition,shared,before,why));
+        prepare.partition=false;assert(!ValidateOperationAdapter(partition,prepare,why));
+    }
     {
         auto ready=task;ready.checkpoint.step="commission_craft_ready";
         auto current=task.context;current.boot="c859a150-352b-4685-93c1-a35b7728e495";

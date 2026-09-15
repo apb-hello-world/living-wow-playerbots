@@ -3,6 +3,7 @@
 #include "LivingGuildMailHandoff.h"
 #include "LivingCommissionMail.h"
 #include "LivingCommissionTradeContract.h"
+#include "LivingCommissionPartition.h"
 #include "LivingLootQuote.h"
 #include "LivingGatherQuote.h"
 #include "LivingRepairQuote.h"
@@ -21,6 +22,14 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(request.kind=="commission_output_partition") {
+                CommissionPartitionQuote quote;
+                if(!DecodeCommissionPartition(request.beforeState,quote) || !MatchesCommissionPartition(request.transition.task,quote) ||
+                    request.transition.task.checkpoint.step!="commission_output_partition" || request.effects!=Mask(Effect::Inventory) ||
+                    request.persistence!=NativePersistence::Inventory || !request.consumption.empty() ||
+                    !request.mailGain.Empty() || !request.itemGain.Empty() || !request.itemTransfer.id.empty())
+                    throw std::invalid_argument("Exact non-consuming commission partition required");
+            }
             if(request.kind=="commission_trade_offer") {
                 CommissionTradeQuote quote;
                 if(!DecodeCommissionTradeQuote(request.beforeState,quote) ||
@@ -125,11 +134,13 @@ namespace LivingActivity {
         const bool gather=request.kind=="gather_open" && adapter.DeferredNativeCast();
         const bool offer=request.kind=="commission_trade_offer" && adapter.SupportsCommissionOffer() &&
             !adapter.DeferredNativeCast();
-        if(loot || gather || offer) {
+        const bool partition=request.kind=="commission_output_partition" && adapter.SupportsCommissionPartition() &&
+            !adapter.DeferredNativeCast();
+        if(loot || gather || offer || partition) {
             try {NativeBefore(request);}
             catch(const std::exception&) {return reject("invalid_native_acquisition_contract");}
         }
-        if(!transfer && !loot && !gather && !offer && (request.effects&(Mask(Effect::Money)|Mask(Effect::Inventory))) &&
+        if(!transfer && !loot && !gather && !offer && !partition && (request.effects&(Mask(Effect::Money)|Mask(Effect::Inventory))) &&
             (!adapter.SupportsClaimedConsumption() || request.consumption.empty() || request.persistence==NativePersistence::JournalOnly))
             return reject("resource_effect_adapter_not_supported");
         if(!request.consumption.empty() && !adapter.SupportsClaimedConsumption())return reject("native_adapter_mismatch");
@@ -146,6 +157,7 @@ namespace LivingActivity {
         }
         if(adapter.SupportsCommissionTrade() && request.kind!="commission_trade")return reject("native_commission_trade_adapter_mismatch");
         if(adapter.SupportsCommissionOffer() && !offer)return reject("native_commission_offer_adapter_mismatch");
+        if(adapter.SupportsCommissionPartition() && !partition)return reject("native_commission_partition_adapter_mismatch");
         blocker.clear();return true;
     }
     bool ValidateOperationRequest(const OperationRequest& request, const Task& saved,
@@ -198,6 +210,23 @@ namespace LivingActivity {
     bool ValidateOperationResources(const OperationRequest& request, const ResourceClaimBook& claims,
         const std::vector<NativeResourceBalance>& balances, std::string& blocker) {
         auto reject=[&](const char* code) { blocker=code; return false; };
+        if(request.kind=="commission_output_partition") {
+            CommissionPartitionQuote q;
+            if(!DecodeCommissionPartition(request.beforeState,q) || !MatchesCommissionPartition(request.transition.task,q) ||
+                !claims.Protection().ready || balances.size()!=1)return reject("commission_partition_claims_required");
+            const auto& b=balances.front();
+            if(b.actor!=q.actor || b.itemGuid!=q.item || b.itemEntry!=q.entry || b.quantity!=q.count ||
+                b.copper || b.nativeReference || b.location!="bags")return reject("commission_partition_source_changed");
+            for(const auto& c:q.claims) {
+                const auto* saved=claims.Inspect(c.id);
+                if(!saved || !SameResourceClaim(*saved,c))return reject("commission_partition_claim_changed");
+            }
+            uint32_t available=0;
+            if(!claims.AvailableToTask(q.claims.front().task,b,available) || available!=q.count ||
+                claims.Protection().ProtectedItem(q.actor,q.item,q.entry)!=q.quantity)
+                return reject("commission_partition_other_commitment");
+            blocker.clear();return true;
+        }
         if (request.consumption.empty() && request.itemTransfer.id.empty()) { blocker.clear(); return true; }
         if (!claims.Protection().ready) return reject("resource_protection_unavailable");
         try { NativeBefore(request); }
@@ -238,6 +267,12 @@ namespace LivingActivity {
         const std::vector<NativeResourceBalance>& before, const std::vector<NativeResourceBalance>& after,
         std::string& blocker, const NativeResourceBalance& retainedSplit) {
         auto reject=[&](const char* code){blocker=code;return false;};
+        if(request.kind=="commission_output_partition") {
+            CommissionPartitionQuote q;
+            if(!DecodeCommissionPartition(request.beforeState,q) ||
+                !VerifyCommissionPartitionBalances(q,before,after,retainedSplit))return reject("commission_partition_custody_mismatch");
+            blocker.clear();return true;
+        }
         if (request.consumption.empty()) {blocker.clear();return true;}
         try {NativeBefore(request);}
         catch (const std::exception&) {return reject("invalid_claimed_consumption");}

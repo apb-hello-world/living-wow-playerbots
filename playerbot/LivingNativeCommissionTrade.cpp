@@ -6,8 +6,121 @@
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
 #include "strategy/values/ItemUsageValue.h"
+#include "LivingNativeParcelSlot.h"
+#include "LivingActivityTransfer.h"
 
 namespace LivingActivity {
+bool PlanNativeCommissionPartition(Player& actor,const Task& task,CommissionPartitionQuote& quote,std::string& why) {
+    quote={};auto reject=[&](const char* code){why=code;return false;};
+    CommissionJob job;ProfessionJob recipe;
+    if(!sLivingActivityCoordinator.OnWorldThread() || task.actor!=actor.GetGUIDLow() || !actor.GetPlayerbotAI() ||
+        !ValidateCommissionTask(task,why) || !DecodeCommissionJob(task.checkpoint.data,job,why) ||
+        !job.craftFinishedRevision || job.agreement.delivery=="mail" || !DecodeProfessionIntent(job.craft,recipe,why) ||
+        (task.phase!=Phase::Preparing && task.phase!=Phase::Executing))return reject("commission_partition_task_required");
+    if(!actor.IsInWorld() || !actor.GetMap() || actor.GetMap()->IsDungeon() || !actor.GetSession() ||
+        ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) ||
+        !actor.IsStopped() || actor.IsNonMeleeSpellCasted(false))return reject("commission_partition_safety_pause");
+    UnsettledClaimBatch claims;
+    if(!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,why))return false;
+    if(!claims.complete || claims.claims.empty() || claims.claims.size()>16)return reject("commission_partition_claims_required");
+    std::vector<ClaimConsumption> coverage;std::map<uint32_t,uint64_t> quantities;
+    for(const auto& c:claims.claims) {
+        if(c.quantity>UINT32_MAX)return reject("commission_partition_quantity_invalid");
+        coverage.push_back({c,uint32_t(c.quantity)});quantities[c.itemGuid]+=c.quantity;
+    }
+    CommissionTradeQuote output{task.actor,job.agreement.recipient,recipe.outputEntry,job.agreement.feeCopper,0,job.agreement.feeCopper,{}};
+    for(const auto& row:quantities) {
+        if(row.second>UINT32_MAX)return reject("commission_partition_quantity_invalid");
+        output.items.push_back({row.first,uint32_t(row.second)});
+    }
+    if(!ExactCommissionTradeConsumption(task,output,coverage))return reject("commission_partition_exact_output_claims_required");
+    const auto privateItems=sPlayerbotActionBroker.ReservedItemsView();
+    for(const auto& row:quantities) {
+        auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,row.first));
+        if(!item || item->GetOwnerGuid()!=actor.GetObjectGuid() || !Player::IsInventoryPos(item->GetPos()) ||
+            item->GetEntry()!=recipe.outputEntry || item->GetCount()<row.second)return reject("commission_partition_source_missing");
+        if(item->GetCount()==row.second)continue;
+        if(auto* offered=actor.GetTradeData()) {
+            auto* customer=actor.GetTrader();
+            if(!customer || customer->GetGUIDLow()!=job.agreement.recipient || !customer->GetTradeData() ||
+                offered->IsAccepted() || customer->GetTradeData()->IsAccepted())return reject("commission_partition_accepted_window_preserved");
+            for(uint8_t slot=0;slot<TRADE_SLOT_COUNT;++slot)
+                if(offered->GetItem(TradeSlots(slot)))return reject("commission_partition_existing_offer_preserved");
+        }
+        if(!item->CanBeTraded() || item->IsInTrade() || item->HasGeneratedLoot() || item->IsConjuredConsumable() ||
+            item->GetUInt32Value(ITEM_FIELD_DURATION) || !privateItems || privateItems->Item(item->GetGUIDLow()) ||
+            sGuildSupplies.Reserved(item->GetGUIDLow()) || ai::ItemUsageValue::IsNeededForQuest(&actor,item->GetEntry(),true))
+            return reject("commission_partition_source_protected");
+        uint32_t available=0;
+        if(!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,
+            {task.actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,"bags"},available,why))return false;
+        if(available!=item->GetCount())return reject("commission_partition_other_commitment");
+        quote.actor=task.actor;quote.recipient=job.agreement.recipient;quote.item=item->GetGUIDLow();
+        quote.entry=item->GetEntry();quote.count=item->GetCount();quote.quantity=uint32_t(row.second);
+        quote.money=actor.GetMoney();quote.position=item->GetPos();quote.sourceBag=item->GetContainer()?item->GetContainer()->GetGUIDLow():0;
+        if(!EmptyNativeParcelSlot(actor,*item,quote.count-quote.quantity,quote.destination))
+            return reject("commission_partition_empty_slot_required");
+        auto* container=actor.GetItemByPos(INVENTORY_SLOT_BAG_0,uint8_t(quote.destination>>8));
+        quote.destinationBag=(quote.destination>>8)==INVENTORY_SLOT_BAG_0?0:container?container->GetGUIDLow():0;
+        for(const auto& c:claims.claims)if(c.itemGuid==quote.item)quote.claims.push_back(c);
+        std::sort(quote.claims.begin(),quote.claims.end(),[](const auto& a,const auto& b){return a.id<b.id;});
+        if(!MatchesCommissionPartition(task,quote))return reject("commission_partition_quote_invalid");
+        try {(void)EncodeCommissionPartition(quote);}catch(const std::exception&){return reject("commission_partition_quote_bound");}
+        why.clear();return true;
+    }
+    return reject("commission_partition_not_needed");
+}
+bool NativeCommissionPartition::ValidateNative(Player& actor,const OperationRequest& request,std::string& why) {
+    const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);CommissionPartitionQuote fresh;
+    if(!saved || request.beforeState!=EncodeCommissionPartition(quote) ||
+        !PlanNativeCommissionPartition(actor,*saved,fresh,why))return false;
+    if(EncodeCommissionPartition(fresh)!=EncodeCommissionPartition(quote)) {why="commission_partition_quote_changed";return false;}
+    return true;
+}
+NativeObservation NativeCommissionPartition::ExecuteNative(Player& actor,const OperationRequest& request) {
+    NativeObservation out;std::string why;surplusItem=0;unchanged=false;
+    if(!ValidateNative(actor,request,why)) {out.state=OperationState::Rejected;out.evidence=why.empty()?"commission_partition_rejected":why;return out;}
+    if(!CharacterDatabase.HasOpenTransaction()) {out.state=OperationState::Rejected;out.evidence="commission_partition_native_transaction_required";return out;}
+    const auto total=actor.GetItemCount(quote.entry,false);
+    actor.SplitItem(quote.position,quote.destination,quote.count-quote.quantity);
+    const auto* source=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item));const auto* extra=actor.GetItemByPos(quote.destination);
+    unchanged=source && source->GetOwnerGuid()==actor.GetObjectGuid() && source->GetEntry()==quote.entry &&
+        source->GetPos()==quote.position && source->GetCount()==quote.count && !extra && actor.GetMoney()==quote.money &&
+        actor.GetItemCount(quote.entry,false)==total;
+    if(unchanged) {out.state=OperationState::Rejected;out.evidence="commission_partition_native_handler_rejected";return out;}
+    if(!source || !extra || source->GetOwnerGuid()!=actor.GetObjectGuid() || extra->GetOwnerGuid()!=actor.GetObjectGuid() ||
+        extra->GetGUIDLow()==quote.item || source->GetEntry()!=quote.entry || extra->GetEntry()!=quote.entry ||
+        source->GetPos()!=quote.position || source->GetCount()!=quote.quantity || extra->GetCount()!=quote.count-quote.quantity ||
+        actor.GetMoney()!=quote.money || actor.GetItemCount(quote.entry,false)!=total) {
+        out.evidence="commission_partition_native_custody_uncertain";return out;
+    }
+    surplusItem=extra->GetGUIDLow();out.state=OperationState::Verified;out.evidence="native_commission_partition_observed";
+    out.nativeReference="item:"+std::to_string(quote.item)+":surplus:"+std::to_string(surplusItem);
+    out.retainedSplit={quote.actor,surplusItem,quote.entry,quote.count-quote.quantity,0,"bags"};
+    out.afterState="{\"claimed_item\":"+std::to_string(quote.item)+",\"claimed_count\":"+std::to_string(quote.quantity)+
+        ",\"surplus_item\":"+std::to_string(surplusItem)+",\"surplus_count\":"+std::to_string(quote.count-quote.quantity)+
+        ",\"money\":"+std::to_string(quote.money)+",\"claims_unchanged\":true}";
+    return out;
+}
+std::string NativeCommissionPartition::PersistedNativeProof(Player&,const OperationRequest&,const Task& task) const {
+    if(!surplusItem && !unchanged)return {};
+    auto n=[](uint64_t value){return std::to_string(value);};
+    std::string sql="SELECT "+SqlValue(task.id)+','+n(task.revision)+" FROM characters a WHERE a.guid="+n(quote.actor)+" AND a.money="+n(quote.money);
+    auto item=[&](uint32_t guid,uint32_t count,uint32_t bag,uint16_t position) {
+        return " AND EXISTS(SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid=a.guid AND i.owner_guid=a.guid"
+            " AND i.guid="+n(guid)+" AND i.itemEntry="+n(quote.entry)+" AND i.count="+n(count)+" AND v.bag="+n(bag)+" AND v.slot="+n(position&255)+')'+
+            " AND (SELECT COUNT(*) FROM character_inventory v WHERE v.item="+n(guid)+")=1"+
+            " AND NOT EXISTS(SELECT 1 FROM mail_items m WHERE m.item_guid="+n(guid)+')'+
+            " AND NOT EXISTS(SELECT 1 FROM guild_bank_item g WHERE g.item_guid="+n(guid)+')'+
+            " AND NOT EXISTS(SELECT 1 FROM auction x WHERE x.itemguid="+n(guid)+')';
+    };
+    sql+=item(quote.item,surplusItem?quote.quantity:quote.count,quote.sourceBag,quote.position);
+    if(surplusItem)sql+=item(surplusItem,quote.count-quote.quantity,quote.destinationBag,quote.destination);
+    else sql+=" AND NOT EXISTS(SELECT 1 FROM character_inventory v WHERE v.guid=a.guid AND v.bag="+n(quote.destinationBag)+" AND v.slot="+n(quote.destination&255)+')';
+    for(const auto& c:quote.claims)sql+=" AND EXISTS(SELECT 1 FROM living_activity_claim c WHERE "+TransferClaimPredicate(c)+')';
+    sql+=" AND (SELECT COUNT(*) FROM living_activity_claim c WHERE c.actor_guid=a.guid AND c.item_guid="+n(quote.item)+" AND c.state='held')="+n(quote.claims.size());
+    return sql;
+}
 bool PlanNativeCommissionTradeOffer(Player& actor,const Task& task,CommissionTradeQuote& quote,std::string& why) {
     quote={};
     auto reject=[&](const char* code){why=code;return false;};
