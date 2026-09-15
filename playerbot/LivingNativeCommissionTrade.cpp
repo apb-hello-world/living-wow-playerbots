@@ -116,12 +116,8 @@ NativeObservation NativeCommissionTrade::ExecuteNative(Player& actor,const Opera
     if(!VerifyCommissionTrade(quote,capture,why) || actor.GetTradeData() || customer->GetTradeData() ||
         !CharacterDatabase.HasOpenTransaction()) {out.evidence="commission_trade_native_custody_uncertain";return out;}
     std::map<uint16_t,TradeDestination> final;
-    boost::property_tree::ptree proof,transfers;
     for(const auto& row:capture.Rows())for(const auto& d:row.destinations) {
-        final[d.position]=d;boost::property_tree::ptree p;
-        p.put("source",row.item);p.put("position",d.position);p.put("quantity",d.quantity);
-        p.put("before_item",d.beforeItem);p.put("before_count",d.beforeCount);
-        p.put("after_item",d.afterItem);p.put("after_count",d.afterCount);transfers.push_back({"",p});
+        final[d.position]=d;
     }
     for(const auto& row:final) {
         const auto& d=row.second;const auto* item=customer->GetItemByPos(d.position);
@@ -131,11 +127,8 @@ NativeObservation NativeCommissionTrade::ExecuteNative(Player& actor,const Opera
         }
         delivered.push_back({item->GetGUIDLow(),item->GetCount(),item->GetContainer()?item->GetContainer()->GetGUIDLow():0,item->GetSlot()});
     }
-    proof.put("version",1);proof.put("actor",quote.actor);proof.put("recipient",quote.recipient);
-    proof.put("actor_money",actor.GetMoney());proof.put("recipient_money",customer->GetMoney());
-    proof.add_child("transfers",transfers);std::ostringstream json;boost::property_tree::write_json(json,proof,false);
-    out.afterState=json.str();
-    if(out.afterState.size()>8192) {out.afterState="{}";out.evidence="commission_trade_evidence_capacity";return out;}
+    try {out.afterState=EncodeCommissionTradeEvidence(quote,{capture.Rows(),capture.Completion()});}
+    catch(const std::exception&){out.evidence="commission_trade_evidence_capacity";return out;}
     verified=true;out.state=OperationState::Verified;out.evidence="native_commission_trade_and_fee_observed";
     out.nativeReference="trade:"+request.transition.receipt;return out;
 }

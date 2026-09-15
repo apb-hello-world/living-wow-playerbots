@@ -1,5 +1,6 @@
 #pragma once
 #include "LivingCommissionTradeContract.h"
+#include "LivingCommissionTradeEvidence.h"
 #include "LivingActivityOperations.h"
 
 namespace LivingActivity {

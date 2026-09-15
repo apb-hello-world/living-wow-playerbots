@@ -1,4 +1,5 @@
 #include "LivingCommissionTradeContract.h"
+#include "LivingCommissionTradeEvidence.h"
 #include <cassert>
 #include <iostream>
 using namespace LivingActivity;
@@ -55,6 +56,15 @@ int main() {
         assert(!VerifyCommissionTrade(quote,capture,why)); // window disappearance is not proof
         NativeTradeCapture::Complete({20,28,481,1120});
         assert(VerifyCommissionTrade(quote,capture,why));
+        const auto encoded=EncodeCommissionTradeEvidence(quote,{capture.Rows(),capture.Completion()});
+        CommissionTradeEvidence stored;assert(DecodeCommissionTradeEvidence(quote,encoded,stored,why));
+        assert(NativeTradeCapture::Active() && capture.Valid()); // decoding cannot corrupt live native scopes
+        assert(EncodeCommissionTradeEvidence(quote,stored)==encoded);
+        auto duplicate=encoded;duplicate.insert(1,"\"actor_money\":\"0\",");
+        assert(!DecodeCommissionTradeEvidence(quote,duplicate,stored,why));
+        auto overflow=encoded;const auto at=overflow.find("\"23\"");assert(at!=std::string::npos);
+        overflow.replace(at,4,"\"65536\"");assert(!DecodeCommissionTradeEvidence(quote,overflow,stored,why));
+        assert(!DecodeCommissionTradeEvidence(quote,"{}",stored,why));
         auto changed=quote;changed.fee=59;assert(!VerifyCommissionTrade(changed,capture,why));
         changed=quote;changed.recipient=29;assert(!VerifyCommissionTrade(changed,capture,why));
         changed=quote;changed.items[0].quantity=4;assert(!VerifyCommissionTrade(changed,capture,why));

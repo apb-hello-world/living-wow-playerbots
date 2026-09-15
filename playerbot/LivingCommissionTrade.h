@@ -18,11 +18,10 @@ inline bool ValidCommissionTradeQuote(const CommissionTradeQuote& q) {
 }
 // This proves the observed exchange against an already validated quote. It
 // does not validate consent, acquire a lease, persist intent or finish a task.
-inline bool VerifyCommissionTrade(const CommissionTradeQuote& q,const NativeTradeCapture& capture,std::string& why) {
+inline bool VerifyCommissionTradeRows(const CommissionTradeQuote& q,const std::vector<TradeItemTransfer>& rows,
+    const TradeCompletion& completion,std::string& why) {
     auto reject=[&](const char* reason){why=reason;return false;};
     if(!ValidCommissionTradeQuote(q))return reject("commission_trade_quote_invalid");
-    if(!capture.Completed())return reject("commission_trade_native_completion_missing");
-    const auto& completion=capture.Completion();
     const bool forward=completion.first==q.actor && completion.second==q.recipient;
     if(!forward && !(completion.first==q.recipient && completion.second==q.actor))
         return reject("commission_trade_participants_changed");
@@ -30,11 +29,11 @@ inline bool VerifyCommissionTrade(const CommissionTradeQuote& q,const NativeTrad
     const auto recipientMoney=forward?completion.secondMoney:completion.firstMoney;
     if(uint64_t(q.actorMoney)+q.fee!=actorMoney || q.recipientMoney-q.fee!=recipientMoney)
         return reject("commission_trade_fee_not_observed");
-    if(capture.Rows().size()!=q.items.size())return reject("commission_trade_output_count_changed");
+    if(rows.size()!=q.items.size())return reject("commission_trade_output_count_changed");
     std::set<uint32_t> sources;
     std::map<uint16_t,std::pair<uint32_t,uint32_t>> latest;
     std::map<uint32_t,uint16_t> locations;
-    for(const auto& transfer:capture.Rows()) {
+    for(const auto& transfer:rows) {
         if(!VerifiedTradeTransfer(transfer) || transfer.sender!=q.actor || transfer.receiver!=q.recipient || transfer.entry!=q.entry ||
             !sources.insert(transfer.item).second)return reject("commission_trade_output_changed");
         bool matched=false;
@@ -52,5 +51,9 @@ inline bool VerifyCommissionTrade(const CommissionTradeQuote& q,const NativeTrad
         }
     }
     why.clear();return true;
+}
+inline bool VerifyCommissionTrade(const CommissionTradeQuote& q,const NativeTradeCapture& capture,std::string& why) {
+    if(!capture.Completed()){why="commission_trade_native_completion_missing";return false;}
+    return VerifyCommissionTradeRows(q,capture.Rows(),capture.Completion(),why);
 }
 }

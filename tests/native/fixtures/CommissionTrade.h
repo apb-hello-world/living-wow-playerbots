@@ -1,5 +1,6 @@
 #pragma once
 #include "LivingCommissionTradeContract.h"
+#include "LivingCommissionTradeSettlement.h"
 inline void TestCommissionTradeOperation() {
     ProfessionJob recipe;recipe.recipe=2329;recipe.skill=171;recipe.initialSkill=75;
     recipe.purpose=ProfessionPurpose::RequestedItem;recipe.outputEntry=2454;recipe.outputQuantity=1;
@@ -30,6 +31,45 @@ inline void TestCommissionTradeOperation() {
     assert(OperationRequestWrite(request).receiptQuery.find(SqlValue("commission_trade"))!=std::string::npos);
     assert(VerifyConsumedNativeResources(request,{{703,103,2454,1,0,"bags"}},{},why));
     assert(!VerifyConsumedNativeResources(request,{{703,103,2454,1,0,"bags"}},{{703,103,2454,1,0,"bags"}},why));
+    {
+        auto completed=task;completed.revision=7;completed.phase=Phase::Verifying;
+        StoredCraftOperation stored;stored.acknowledged=true;stored.journalDigest=std::string(64,'a');
+        auto& r=stored.receipt;r.id=request.transition.receipt;r.task=task.id;r.taskRevision=6;
+        r.kind="commission_trade";r.state=OperationState::Verified;r.nativeReference="trade:"+r.id;
+        r.evidence="native_commission_trade_and_fee_observed";
+        stored.beforeState="{\"effects\":12,\"persistence\":1,\"native\":"+
+            ClaimedNativeState(request.beforeState,request.consumption,8192)+'}';
+        const CommissionTradeEvidence native{{{703,9,103,2454,1,{{65303,1,104,4,104,5}},true}},{703,9,220,380}};
+        stored.afterState=ClaimedNativeState(EncodeCommissionTradeEvidence(quote,native),request.consumption,8192);
+        CommissionTradeQuote decoded;assert(DecodeStoredCommissionTrade(completed,stored,decoded,why));
+        ProfessionHistory history;history.task=task.id;history.revision=7;history.complete=true;
+        history.unresolvedOperation=false;history.commissionTrade={stored};
+        UnsettledClaimBatch claims;claims.complete=true;claims.bookRevision=1;
+        ProfessionPreparation result;auto current=task.context;current.boot="c859a150-352b-4685-93c1-a35b7728e495";
+        const std::string receipt="ff2efbdf-f0ec-4539-b840-299847970c02";
+        assert(PrepareCommissionTradeSettlement(completed,current,history,claims,2000,receipt,result,why));
+        assert(result.task.phase==Phase::Completed && result.task.checkpoint.step=="commission_completed" && result.task.context==current);
+        assert(result.plan.statements.front().find("SHA2(CONCAT(o.before_state,'|',o.after_state),256)")!=std::string::npos);
+        for(const auto& sql:result.plan.statements) {
+            assert(sql.find("SET money")==std::string::npos && sql.find("INSERT INTO item_instance")==std::string::npos);
+        }
+        for(unsigned i=0;i<12;++i) {
+            auto h=history;auto c=claims;auto t=completed;auto ctx=current;
+            if(i==0)h.complete=false;
+            if(i==1)h.unresolvedOperation=true;
+            if(i==2)h.commissionTrade.push_back(stored);
+            if(i==3)h.commissionTrade.front().acknowledged=false;
+            if(i==4)h.commissionTrade.front().receipt.state=OperationState::Intent;
+            if(i==5)h.commissionTrade.front().afterState="{}";
+            if(i==6)h.commissionTrade.front().journalDigest.clear();
+            if(i==7)c.claims.push_back(item);
+            if(i==8)ctx.actor=9;
+            if(i==9)t.phase=Phase::Completed;
+            if(i==10)h.commissionMail.push_back(stored);
+            if(i==11)h.commissionTrade.front().receipt.nativeReference="trade:other";
+            assert(!PrepareCommissionTradeSettlement(t,ctx,h,c,2000,receipt,result,why));
+        }
+    }
     for(unsigned i=0;i<10;++i) {
         auto changed=request;
         if(i==0)changed.beforeState="{}";

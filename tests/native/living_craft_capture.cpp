@@ -1,6 +1,7 @@
 #include "LivingCraftCapture.h"
 #include "LivingEnchantCapture.h"
 #include "LivingProfessionEvidence.h"
+#include "LivingCommissionJob.h"
 #include "fixtures/CraftEvidence.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <atomic>
@@ -72,6 +73,26 @@ namespace {
         const auto query=ProfessionHistoryQuery(task);
         assert(query.find("LEFT JOIN")!=std::string::npos && query.find("LIMIT 7")!=std::string::npos);
         assert(query.find("owner.actor_guid=t.actor_guid")!=std::string::npos);
+        {
+            auto commission=task;ProfessionJob recipe;
+            assert(DecodeProfessionJob(task.checkpoint.data,recipe,blocker));recipe.purpose=ProfessionPurpose::RequestedItem;recipe.targetSkill=0;
+            CommissionJob job;job.agreement={"lwc-456","trade-history-order","direct",EncodeProfessionJob(recipe),task.actor,999,60,1000};
+            job.craft=job.agreement.recipe;job.craftFinishedRevision=5;
+            commission.kind=Kind::Commission;commission.source="commission_job";commission.sourceKey=job.agreement.id;
+            commission.checkpoint.data=EncodeCommissionJob(job);
+            auto trade=first;trade[5]="6";trade[6]="commission_trade";trade[8]="trade:"+trade[3];
+            trade[9]=trade[10]="{}";trade[11]="native_commission_trade_and_fee_observed";trade[12]=std::string(64,'a');
+            assert(ProfessionHistoryQuery(commission).find("'commission_trade'")!=std::string::npos);
+            assert(cursor.Begin(commission,{trade},blocker) && cursor.Advance(blocker));
+            assert(cursor.Result().complete && cursor.Result().commissionMail.empty() && cursor.Result().commissionTrade.size()==1);
+            // History collection is not domain acceptance: the exact receipt
+            // decoder rejects these deliberately empty before/after payloads.
+            auto duplicate=trade;duplicate[3]="47cfba40-31fe-4664-86db-fb2e87036cb8";duplicate[5]="7";
+            assert(!cursor.Begin(commission,{trade,duplicate},blocker));
+            trade[2]="1";trade[7]="intent";
+            assert(cursor.Begin(commission,{trade},blocker) && cursor.Advance(blocker));
+            assert(cursor.Result().unresolvedOperation && cursor.Result().commissionTrade.size()==1);
+        }
     }
     void StoredEvidence(const ProfessionJob& job,const CraftFrame& before,const CraftFrame& after) {
         Task task;task.id=task.root="137e6854-06ea-5e21-8371-6b40c8c19f4e";task.actor=before.actor;

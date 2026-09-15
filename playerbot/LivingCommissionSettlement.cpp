@@ -34,7 +34,7 @@ bool InspectCommissionDelivery(const Task& task,const ProfessionHistory& history
         CommissionJob job;ProfessionJob recipe;
         Require(IsCommissionJob(task) && ValidateCommissionTask(task,why) && DecodeCommissionJob(task.checkpoint.data,job,why) &&
             job.craftFinishedRevision && job.agreement.delivery=="mail" && DecodeProfessionIntent(job.craft,recipe,why),"commission_settlement_task_invalid");
-        Require(history.complete && history.task==task.id && history.revision==task.revision && !history.unresolvedOperation,
+        Require(history.complete && history.task==task.id && history.revision==task.revision && !history.unresolvedOperation && history.commissionTrade.empty(),
             "commission_delivery_history_unresolved");
         Require(!history.commissionMail.empty() && history.commissionMail.size()<=15,"commission_verified_send_required");
         std::set<std::string> kinds,ids;
