@@ -2446,6 +2446,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     }
     auto reconcileParcelClaims=[&]() {
         if(NativeSafety(bot) || DefersNativeSave(actor) || state->operationDispatching)return stop("commission_preparation_safety_pause");
+        const auto partyBlocker=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+        if(*partyBlocker)return stop(partyBlocker);
         for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)return stop("commission_native_operation_pending");
         const auto owned=state->authority.Read(actor);
         if(!owned.operation.empty())return stop("commission_native_operation_pending");
@@ -2462,7 +2464,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
         return stop("commission_preparation_claims_persistence_pending");
     };
-    if(restoredDelivery && saved->phase!=Phase::Executing && saved->phase!=Phase::Reconciling && !Terminal(saved->phase))
+    if(!(saved->context==deliveryContext) && saved->phase!=Phase::Executing && saved->phase!=Phase::Reconciling && !Terminal(saved->phase))
         return reconcileParcelClaims();
     // No retry is admitted merely because the callback or old process vanished.
     // A pre-send interruption still requires reconciliation, not a fresh send.

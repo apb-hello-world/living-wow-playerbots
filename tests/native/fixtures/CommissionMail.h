@@ -51,6 +51,24 @@ inline void TestCommissionMail() {
         restored.phase=Phase::Traveling;restored.retryAtMs=5000;
         assert(PrepareCommissionParcelClaims(restored,task.context,claims,stock,2000,receipt,ready,why));
         assert(ready.claims.empty() && ready.task.context==task.context && ready.task.retryAtMs==5000);
+        // A native same-process lifecycle invalidation must not strand a
+        // crafted parcel. Preserve claims/backoff and reacquire only later.
+        auto traveling=task;traveling.phase=Phase::Traveling;traveling.retryAtMs=5000;
+        auto current=task.context;++current.mapGeneration;
+        assert(PrepareCommissionParcelClaims(traveling,current,claims,stock,2000,receipt,ready,why));
+        assert(ready.task.id==task.id && ready.task.revision==task.revision+1 && ready.task.context==current);
+        assert(ready.claims.empty() && ready.task.retryAtMs==5000 && ready.task.phase==Phase::Preparing);
+        for(unsigned i=0;i<7;++i) {
+            auto old=traveling;auto now=current;auto native=stock;
+            if(i==0)now.actor++;
+            if(i==1)now.mapGeneration=0;
+            if(i==2)old.phase=Phase::Executing;
+            if(i==3)old.phase=Phase::Reconciling;
+            if(i==4)native[0].quantity=0;
+            if(i==5)old.accepted=false;
+            if(i==6)old.phase=Phase::Completed;
+            assert(!PrepareCommissionParcelClaims(old,now,claims,native,2000,receipt,ready,why));
+        }
     }
     for(unsigned i=0;i<8;++i) {
         auto changed=q;auto c=uses;auto t=task;

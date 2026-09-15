@@ -230,9 +230,12 @@ bool PrepareCommissionParcelClaims(const Task& saved,const WorldContext& current
     if(!IsCommissionJob(saved) || !ValidateCommissionTask(saved,why) || !DecodeCommissionJob(saved.checkpoint.data,job,why) ||
         !job.craftFinishedRevision || job.agreement.delivery!="mail" || !DecodeProfessionIntent(job.craft,recipe,why))return false;
     auto reject=[&](const char* code){why=code;return false;};
-    const bool restored=saved.context.boot.empty() && !saved.context.actorGeneration && !saved.context.mapGeneration;
+    // Native teleport/group lifecycle changes invalidate grants during the
+    // same process too. Rebind the durable obligation only after full native
+    // claim/consent reconciliation below; this transition grants no authority.
+    const bool rebind=!(saved.context==current);
     if(Terminal(saved.phase) || saved.phase==Phase::Executing || saved.phase==Phase::Reconciling || !saved.accepted || saved.mode!=Mode::Active ||
-        (!(saved.context==current) && !restored) || current.actor!=saved.actor || !IsUuid(current.boot) ||
+        current.actor!=saved.actor || !IsUuid(current.boot) ||
         !current.actorGeneration || !current.mapGeneration || !current.policyRevision || !IsUuid(receipt) ||
         now<saved.updatedAtMs || saved.revision>=UINT64_MAX-1 || !batch.complete || !batch.bookRevision)
         return reject("commission_parcel_claim_context_invalid");
@@ -250,7 +253,7 @@ bool PrepareCommissionParcelClaims(const Task& saved,const WorldContext& current
         } else return reject("commission_parcel_claim_unreconciled");
     }
     if(output!=recipe.outputQuantity)return reject("commission_parcel_exact_output_claims_required");
-    if(release.claims.empty() && !restored)return reject("commission_parcel_claims_already_ready");
+    if(release.claims.empty() && !rebind)return reject("commission_parcel_claims_already_ready");
     resources.claims=changes; // Keep full-batch guards, release only auxiliaries.
     const auto n=[](uint64_t v){return std::to_string(v);};
     auto next=saved;next.context=current;++next.revision;next.updatedAtMs=now;next.phase=Phase::Preparing;
