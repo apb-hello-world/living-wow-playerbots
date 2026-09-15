@@ -166,6 +166,9 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             write("activity-commission-trade-"+state.boot+".json",report);state.fixtureFinished=true;return;
         }
         require(!Terminal(saved->phase),"commission_trade_unexpected_terminal");
+        // A customer window must not block the ordinary executor's restart
+        // context validation. Recovery runs first, preserving the same order.
+        if(!(saved->context==ReadNativeContext(*actor,state.policyRevision,state.boot)))return;
         if(!job.craftFinishedRevision || f.offered || saved->phase==Phase::Executing)return;
         require(actor->IsWithinDistInMap(customer,TRADE_DISTANCE,false),"fixture_customer_arrival_required");
         if(automaticOffer && !f.windowOpened) {
