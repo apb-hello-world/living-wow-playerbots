@@ -1,5 +1,6 @@
-// Isolated binary only. No fabricated craft/send receipts, item or money
-// grants. The recorded agreement is fixture consent, not a human request.
+// Isolated binary only. No fabricated craft/send receipts or money grants.
+// Only missing herbs (one of each) may be supplied and are recorded separately.
+// The recorded agreement is fixture consent, not a human request.
 // Ordinary preparation, timed native crafting and mail own the actual work.
 namespace {
 template<class FixtureState>
@@ -79,10 +80,14 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
             ProfessionJob recipe;recipe.recipe=2329;recipe.skill=171;recipe.initialSkill=actor->GetSkillValuePure(171);
             recipe.outputEntry=2454;recipe.outputQuantity=1;recipe.purpose=ProfessionPurpose::RequestedItem;
             recipe.reagents={{765,1},{2449,1},{3371,1}};
-            // Bound this first native parcel scenario to already-owned inputs.
-            // Separate paid sourcing scenarios retain their own evidence.
-            for(const auto& reagent:recipe.reagents)
-                require(actor->GetItemCount(reagent.entry,false)>=reagent.perAttempt,"owned_native_commission_inputs_required");
+            require(actor->GetItemCount(3371,false)>=1,"owned_native_commission_vial_required");
+            boost::property_tree::ptree grants;
+            for(uint32_t entry:{765u,2449u})if(!actor->GetItemCount(entry,true)) {
+                ItemPosCountVec positions;
+                require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,entry,1)==EQUIP_ERR_OK,
+                    "commission_fixture_herb_capacity_required");
+                boost::property_tree::ptree row;row.put("entry",entry);row.put("quantity",1);grants.push_back({"",row});
+            }
             CommissionJob job;job.agreement={"lwc-"+std::to_string(NowMs()),"isolated-commission-mail-v1","mail",
                 EncodeProfessionJob(recipe),f.actor,f.recipient,60,NowMs()};job.craft=job.agreement.recipe;
             auto& task=f.request.task;task.source="commission_job";task.sourceKey=job.agreement.id;
@@ -96,11 +101,21 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
             f.input.put("recipient",f.recipient);f.input.put("agreement",EncodeCommissionContract(job.agreement));
             f.input.put("money_before",f.money);f.input.put("output_before",f.output);
             f.input.put("customer_money_before",customer->Fetch()[2].GetUInt32());
-            f.input.put("item_grants",0);f.input.put("money_grants",0);f.input.put("skill_grants",0);
+            f.input.put("item_grants",grants.size());f.input.add_child("material_grants",grants);
+            f.input.put("earned_materials_proof",false);f.input.put("money_grants",0);f.input.put("skill_grants",0);
             f.input.put("recipe_grants",0);f.input.put("fixture_consent",true);f.input.put("ordinary_due_queue",true);
             f.input.add_child("inventory_before",GuildMailFixtureInventory(*actor));
             std::ofstream intent("/isolated/evidence/commission-mail-input-v1.json");intent<<Json(f.input);intent.close();
             require(bool(intent),"commission_fixture_intent_saved");
+            for(const auto& row:grants) {
+                const auto entry=row.second.template get<uint32_t>("entry");ItemPosCountVec positions;
+                require(!actor->GetItemCount(entry,true) &&
+                    actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,entry,1)==EQUIP_ERR_OK,
+                    "commission_fixture_input_changed");
+                auto* herb=actor->StoreNewItem(positions,entry,true);
+                require(herb && actor->GetItemCount(entry,false)==1,"commission_fixture_input_grant_failed");
+            }
+            actor->SaveToDB();
             const auto sql="INSERT INTO organic_economy_commission(commission_id,bot_guid,player_guid,recipe_spell_id,"
                 "output_item_entry,quantity,materials_source,service_fee_copper,state,authoritative_payload,expires_at) VALUES("+
                 SqlValue(job.agreement.id)+','+std::to_string(f.actor)+','+std::to_string(f.recipient)+
