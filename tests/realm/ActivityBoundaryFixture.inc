@@ -41,6 +41,7 @@ namespace {
 #include "ActivityGuildMailFixture.inc"
 #include "ActivityCommissionCapacityFixture.inc"
 #include "ActivityCommissionMailFixture.inc"
+#include "ActivityTradeCaptureFixture.inc"
 #include "ActivityGuildAdmissionFixture.inc"
 #include "ActivitySkinningSourceFixture.inc"
 #include "ActivityServicesObservation.inc"
@@ -48,6 +49,9 @@ namespace {
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(requested && std::string(requested)=="activity-trade-capture-v1") {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedTradeCaptureFixture(*state);return;
+    }
     if(requested && std::string(requested)=="activity-commission-replay-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedCommissionReplayFixture(*state);return;
     }
