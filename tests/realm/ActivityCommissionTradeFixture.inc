@@ -6,7 +6,7 @@ template<class FixtureState>
 void RunIsolatedCommissionTradeFixture(FixtureState& state) {
     struct Fixture {
         uint32_t actor=0,customer=0;
-        bool actorLogin=false,customerLogin=false,setup=false,admitted=false,offered=false;
+        bool actorLogin=false,customerLogin=false,setup=false,admitted=false,offered=false,queuedRestart=false;
         uint64_t deadline=0,nextReport=0;
         TaskRequest request;
         boost::property_tree::ptree input;
@@ -30,8 +30,16 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state) {
             };
             f.actor=id("LIVING_WOW_NATIVE_FIXTURE_ACTOR");f.customer=id("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
             require(f.actor && f.customer && f.actor!=f.customer,"distinct_commission_trade_actors_required");
-            require(!std::ifstream("/isolated/evidence/commission-trade-input-v1.json"),
-                "existing_commission_trade_requires_reconciliation_not_fixture_replay");
+            std::ifstream prior("/isolated/evidence/commission-trade-input-v1.json",std::ios::ate);
+            if(prior) {
+                require(prior.tellg()>0 && prior.tellg()<=1024*1024,"bounded_original_trade_fixture_required");
+                prior.seekg(0);boost::property_tree::read_json(prior,f.input);
+                require(f.input.template get<std::string>("setup_boot")!=state.boot &&
+                    f.input.template get<uint32_t>("actor")==f.actor && f.input.template get<uint32_t>("recipient")==f.customer &&
+                    IsUuid(f.input.template get<std::string>("task")),"original_commission_fixture_actors_required");
+                f.request.task.id=f.input.template get<std::string>("task");
+                f.setup=f.admitted=f.queuedRestart=true;
+            }
             state.gameplayFixtureActor.store(f.actor,std::memory_order_release);
             state.professionCohortActors[0].store(f.customer,std::memory_order_release);
             f.deadline=NowMs()+900000;
@@ -54,6 +62,20 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state) {
                 sLivingActivityCoordinator.DefersNativeSave(bot->GetGUIDLow()))return;
         }
         state.enforceEffects.store(true,std::memory_order_release);
+        if(f.queuedRestart) {
+            // Resume the original queued order, never create a second one or
+            // repeat reagent grants. Other restart phases need their own proof.
+            const auto prior=sLivingActivityCoordinator.ReadSavedTask(f.request.task.id);
+            CommissionJob job;std::string why;
+            require(prior && prior->phase==Phase::Queued && prior->actor==f.actor &&
+                DecodeCommissionJob(prior->checkpoint.data,job,why) && !job.craftFinishedRevision &&
+                EncodeCommissionContract(job.agreement)==f.input.template get<std::string>("agreement"),
+                "original_queued_trade_task_required_for_fixture_resume");
+            auto operations=CharacterDatabase.PQuery("SELECT COUNT(*) FROM living_activity_operation WHERE task_id='%s'",
+                prior->id.c_str());
+            require(operations && !operations->Fetch()[0].GetUInt32(),"queued_fixture_cannot_replay_native_effects");
+            f.queuedRestart=false;
+        }
         if(!f.setup) {
             require(!actor->GetTradeData() && !customer->GetTradeData() && actor->GetTeam()==customer->GetTeam() &&
                 actor->GetMapId()==customer->GetMapId() && customer->GetMoney()>=60,"native_customer_availability_required");

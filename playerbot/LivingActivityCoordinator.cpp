@@ -664,6 +664,7 @@ struct LivingActivityCoordinator::State {
             std::string(mode)!="activity-profession-cohort-v1" &&
             std::string(mode)!="activity-commission-mail-v1" &&
             std::string(mode)!="activity-commission-broker-v1" &&
+            std::string(mode)!="activity-commission-trade-v1" &&
             std::string(mode)!="activity-commission-parcel-v2" &&
             std::string(mode)!="activity-commission-capacity-v1" &&
             std::string(mode)!="activity-commission-collect-v1" &&
