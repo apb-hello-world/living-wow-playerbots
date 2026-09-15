@@ -7,7 +7,7 @@ template<class FixtureState>
 void RunIsolatedCommissionMailFixture(FixtureState& state) {
     struct Fixture {
         uint32_t actor=0,recipient=0,money=0,output=0;
-        uint64_t deadline=0;
+        uint64_t deadline=0,nextDiagnostic=0;
         bool login=false,setup=false,admitted=false;
         TaskRequest request;
         std::string blocker;
@@ -150,6 +150,15 @@ void RunIsolatedCommissionMailFixture(FixtureState& state) {
         if(!saved){f.blocker="commission_fixture_admission_pending";return;}
         const auto blocker=state.executionBlockers.find(saved->id);
         f.blocker=blocker==state.executionBlockers.end()?saved->checkpoint.blocker:blocker->second;
+        if(NowMs()>=f.nextDiagnostic) {
+            f.nextDiagnostic=NowMs()+30000;
+            boost::property_tree::ptree report;report.put("boot",state.boot);report.put("task",saved->id);
+            report.put("blocker",f.blocker);report.put("safety",NativeSafety(actor));
+            report.put("activity_json",sLivingActivityCoordinator.ActorJson(f.actor));report.put("gameplay_proof",false);
+            report.put("map",actor->GetMapId());report.put("x",actor->GetPositionX());report.put("y",actor->GetPositionY());
+            report.put("z",actor->GetPositionZ());report.put("at_ms",NowMs());
+            std::ofstream out("/isolated/evidence/commission-mail-progress-"+state.boot+".json");out<<Json(report);
+        }
         require(!Terminal(saved->phase),"commission_fixture_premature_terminal_state");
         ProfessionHistory history;CommissionDeliveryProof proof;
         if(!sLivingActivityCoordinator.ReadProfessionHistory(f.actor,saved->id,saved->revision,history,f.blocker) ||
