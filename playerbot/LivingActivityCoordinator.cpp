@@ -10,6 +10,7 @@
 #include "LivingActivityReceipts.h"
 #include "LivingActivityNativeCommit.h"
 #include "LivingActivityMailbox.h"
+#include "LivingActivityProjection.h"
 #include "LivingActivityAuthority.h"
 #include "LivingActivityPermissions.h"
 #include "LivingActivityScope.h"
@@ -53,6 +54,7 @@
 #endif
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotActionBroker.h"
+#include "PlayerbotLLMInterface.h"
 #include "PlayerbotGuildSupplies.h"
 #include "LivingGuildProcurementHandoff.h"
 #include "LivingNativeGuildProcurement.h"
@@ -74,6 +76,7 @@
 #include <array>
 #include <deque>
 #include <fstream>
+#include <future>
 #include <map>
 #include <set>
 #include <sstream>
@@ -336,6 +339,10 @@ struct LivingActivityCoordinator::State {
     };
     std::map<std::string,RepairRead> repairReads;
     std::atomic<uint64_t> publishedPolicyRevision{0};
+    std::future<bool> projectionSend;
+    std::set<std::string> projectionIds;
+    uint64_t projectionDue=0,projectionReads=0,projectionReceipts=0,projectionFailures=0;
+    std::string projectionBlocker;
     std::atomic<uint64_t> leaseBoundaries[3][2]{};
     std::thread::id worldThread;
     std::atomic<bool> worldThreadReady{false};
@@ -666,7 +673,6 @@ struct LivingActivityCoordinator::State {
     }
     void Remember(const Task& task) {
         cache[task.id] = task;
-        if(IsCommissionJob(task))sPlayerbotActionBroker.ReportManagedCommission(task);
         cachedByActor[task.actor].insert(task.id);
         const auto queued=executionTimes.find(task.id);
         if (queued!=executionTimes.end()) {executionDue.erase({queued->second,task.id});executionTimes.erase(queued);}
@@ -999,6 +1005,7 @@ struct LivingActivityCoordinator::State {
             nextWork = NowMs() + (schemaReady ? 1000 : 60000);
         }, sql.c_str())) { ioPending = false; nextWork = NowMs() + 60000; }
     }
+    #include "LivingActivityProjection.inc"
     bool QueryPurchaseBudget(uint64_t now) {
         for (auto it=purchaseBudgets.begin();it!=purchaseBudgets.end();) {
             if (!it->second.pending && now>it->second.requestedAt+30000) it=purchaseBudgets.erase(it);
@@ -1385,6 +1392,7 @@ void LivingActivityCoordinator::Update() {
         !queues.pending) {
         state->DecodeProfessionHistory(deadline);
         if (std::chrono::steady_clock::now()>=deadline) return;
+        if (state->DeliverCommissionProjection(now))return;
         if (state->preferHistoryRead && state->QueryProfessionHistory(now)) {state->preferHistoryRead=false;return;}
         if (state->QueryPurchaseBudget(now)) {state->preferHistoryRead=true;return;}
         if (!state->preferHistoryRead && state->QueryProfessionHistory(now)) {state->preferHistoryRead=false;return;}
@@ -1460,6 +1468,9 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("ownership_restore_ready",state->schemaReady && state->loaded && state->incoming.empty());
     p.put("receipt_count", state->acknowledged); p.put("persistence_failures", state->persistenceFailures);
     p.put("retained_transitions", state->transitionCount);
+    p.put("projection_reads",state->projectionReads);p.put("projection_gateway_receipts",state->projectionReceipts);
+    p.put("projection_failures",state->projectionFailures);p.put("projection_blocker",state->projectionBlocker);
+    p.put("projection_in_flight",state->projectionSend.valid());p.put("projection_retry_at_ms",state->projectionDue);
     p.put("pending_decode", state->incoming.size()); p.put("maximum_dispatch_us", state->maximumDispatchUs);
     p.put("over_budget_updates", state->overBudgetUpdates); p.put("next_import_family", state->importFamily);
     p.put("invalid_records", state->invalidRecords); p.put("gameplay_mutations", state->nativeVerifiedResults);

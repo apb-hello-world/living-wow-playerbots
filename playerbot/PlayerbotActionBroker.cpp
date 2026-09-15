@@ -204,7 +204,6 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
                 !LivingActivity::MatchesAcceptedCommissionProposal(job.agreement,transactionId,proposal.botGuid,
                     proposal.targetGuid,proposal.delivery,proposal.capabilityRef,proposal.quantity,proposal.priceCopper))
                 return reject("commission_agreement_conflict","That request no longer matches the recorded order.");
-            ReportManagedCommission(*saved);
             return PlayerbotActionResult(true,"commission_queued","That crafting order is already recorded.");
         }
     }
@@ -1049,11 +1048,11 @@ void PlayerbotActionBroker::ReportRejected(const ChatDirectorActionProposal& pro
     Report(transaction);
 }
 
-void PlayerbotActionBroker::ReportManagedCommission(const LivingActivity::Task& task) const {
+std::string PlayerbotActionBroker::ManagedCommissionStatus(const LivingActivity::Task& task) const {
     using namespace LivingActivity;
     CommissionJob job;ProfessionJob recipe;std::string why;
     if(!sLivingActivityCoordinator.OnWorldThread() || !task.accepted || task.mode!=Mode::Active || !IsCommissionJob(task) || !ValidateCommissionTask(task,why) ||
-        !DecodeCommissionJob(task.checkpoint.data,job,why) || !DecodeProfessionJob(job.craft,recipe,why))return;
+        !DecodeCommissionJob(task.checkpoint.data,job,why) || !DecodeProfessionJob(job.craft,recipe,why))return {};
     Transaction view;view.transactionId=job.agreement.transaction;view.commissionId=job.agreement.id;
     view.botGuid=task.actor;view.playerGuid=job.agreement.recipient;view.itemEntry=recipe.outputEntry;
     view.spellId=recipe.recipe;view.quantity=recipe.outputQuantity;view.priceCopper=job.agreement.feeCopper;
@@ -1062,10 +1061,10 @@ void PlayerbotActionBroker::ReportManagedCommission(const LivingActivity::Task& 
     view.failureReason=task.checkpoint.blocker;
     view.state=task.phase==Phase::Completed?"completed":task.phase==Phase::Cancelled?"cancelled":
         task.phase==Phase::Failed?"failed":task.phase==Phase::Traveling?"mail_travel":"preparing";
-    Report(view); // Read-only projection; not a second transaction/executor.
+    return StatusPayload(view); // Durable transition delivery owns dispatch.
 }
 
-void PlayerbotActionBroker::Report(const Transaction& transaction) const
+std::string PlayerbotActionBroker::StatusPayload(const Transaction& transaction) const
 {
     Player* bot = sRandomPlayerbotMgr.GetPlayerBot(transaction.botGuid);
     Player* player = sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER, transaction.playerGuid));
@@ -1089,13 +1088,19 @@ void PlayerbotActionBroker::Report(const Transaction& transaction) const
         << "\",\"activity_revision\":" << transaction.managedRevision << ",\"activity_phase\":\"" << transaction.managedPhase
         << "\",\"activity_step\":\"" << PlayerbotLLMInterface::SanitizeForJson(transaction.managedStep) << '"';
     body << '}';
-    std::string payload = body.str();
+    return body.str();
+}
+
+void PlayerbotActionBroker::Report(const Transaction& transaction) const
+{
+    const auto payload = StatusPayload(transaction);
     std::thread([payload]() {
         std::vector<std::string> debug;
         PlayerbotLLMInterface::Generate(payload, 3, 2, debug, true, "/v2/action-status");
     }).detach();
     if (transaction.managedTask.empty() && transaction.type == "craft_commission" && !transaction.commissionId.empty())
     {
+        ItemPrototype const* proto = sObjectMgr.GetItemPrototype(transaction.itemEntry);
         std::string commissionState = transaction.state;
         if (commissionState == "preparing") commissionState = "crafting";
         else if (commissionState == "meeting" || commissionState == "mail_travel") commissionState = "traveling";

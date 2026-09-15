@@ -54,7 +54,7 @@ public:
     void CancelTrade(Player* bot, Player* trader, const std::string& reason);
     void CancelTrade(Player* bot, const std::string& reason);
     void Update();
-    void ReportManagedCommission(const LivingActivity::Task& task) const;
+    std::string ManagedCommissionStatus(const LivingActivity::Task& task) const;
     void ReportRejected(const ChatDirectorActionProposal& proposal, const ChatDirectorEvent& event,
         const std::string& reason) const;
     void UpsertEconomicQuote(const LivingWowChatJson::EconomicQuote& quote, bool update);
@@ -100,6 +100,7 @@ private:
     Transaction* Find(uint32 botGuid, uint32 playerGuid);
     const Transaction* Find(uint32 botGuid, uint32 playerGuid) const;
     void Report(const Transaction& transaction) const;
+    std::string StatusPayload(const Transaction& transaction) const;
     void ReserveItem(uint32 guid,const std::string& transaction);
     void ReleaseItem(uint32 guid);
     LivingActivity::LegacyResourcePublisher itemProtection;
