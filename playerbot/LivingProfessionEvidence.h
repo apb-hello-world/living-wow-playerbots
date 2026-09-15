@@ -38,12 +38,13 @@ namespace LivingActivity {
     // This decodes identity, not proof that a native effect did or did not run.
     bool DecodeInterruptedCraftIntent(const Task&,const StoredCraftOperation&,
         InterruptedCraftIntent&,std::string& blocker);
-    struct InterruptedCapacitySale {
+    struct InterruptedCapacityIntent {
         ResourceClaim claim;
-        uint32_t money=0,entryCount=0;
-        uint16_t position=0;
+        uint32_t money=0,entryCount=0,totalCount=0;
+        uint16_t position=0,destination=0;
+        bool bankDeposit=false;
     };
-    bool DecodeInterruptedCapacitySale(const Task&,const StoredCraftOperation&,InterruptedCapacitySale&,std::string&);
+    bool DecodeInterruptedCapacityIntent(const Task&,const StoredCraftOperation&,InterruptedCapacityIntent&,std::string&);
 
     // Exact, bounded result of ProfessionHistoryQuery. Fields are actor, task
     // revision, unresolved-actor-operation flag, operation ID, operation task,
@@ -58,7 +59,7 @@ namespace LivingActivity {
         std::vector<ProfessionCraftProof> attempts;
         std::optional<StoredCraftOperation> interruptedCraft;
         std::optional<StoredCraftOperation> interruptedMail;
-        std::optional<StoredCraftOperation> interruptedCapacitySale;
+        std::optional<StoredCraftOperation> interruptedCapacity;
         std::optional<StoredCraftOperation> interruptedGather;
         std::optional<StoredCraftOperation> interruptedCommissionOffer;
         std::vector<StoredCraftOperation> commissionPartitions; // verified or unresolved native stack preparation

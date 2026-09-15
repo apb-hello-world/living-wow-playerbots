@@ -1945,6 +1945,12 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
             return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
         }
         if (row.second.request.kind=="bank_deposit") {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+            const auto* fixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+            if (fixture && std::string(fixture)=="activity-commission-direct-broker-v1" &&
+                std::ifstream("/isolated/evidence/commission-bank-pause-before-dispatch"))
+                return stop("isolated_capacity_bank_intent_checkpoint");
+#endif
             NativeBankQuote quote;
             if (!DecodeNativeBankQuote(row.second.request.beforeState,quote)) return stop("capacity_bank_intent_invalid");
             const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"profession_capacity_bank");
@@ -2626,7 +2632,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     const auto* capacityFixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     if(capacityFixture && std::string(capacityFixture)=="activity-commission-direct-broker-v1" &&
-        std::ifstream("/isolated/evidence/commission-capacity-full-bags") &&
+        (std::ifstream("/isolated/evidence/commission-capacity-full-bags") || std::ifstream("/isolated/evidence/commission-bank-full-bags")) &&
         !std::ifstream("/isolated/evidence/commission-capacity-prepared-input.json"))
         return stop("isolated_commission_capacity_fixture_pending");
 #endif
@@ -3334,21 +3340,31 @@ AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint3
     if (!owned.operation.empty()) return reject(AdmissionCode::ReconciliationRequired,"atomic_operation_pending");
     ProfessionHistory history;ProfessionSnapshot snapshot;UnsettledClaimBatch batch;std::string blocker;
     if (!ReadProfessionHistory(actor,id,expectedRevision,history,blocker)) return reject(AdmissionCode::NotReady,blocker);
-    if(history.interruptedCapacitySale && saved->second.phase==Phase::Executing) {
+    if(history.interruptedCapacity && saved->second.phase==Phase::Executing) {
         if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || LivingServiceExecution::Busy(bot))
             return reject(AdmissionCode::NotReady,"capacity_restart_safety_pause");
         const auto party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
         if(*party)return reject(AdmissionCode::NotReady,party);
-        InterruptedCapacitySale before;ProfessionPreparation prepared;
-        if(!DecodeInterruptedCapacitySale(saved->second,*history.interruptedCapacitySale,before,blocker) ||
+        InterruptedCapacityIntent before;ProfessionPreparation prepared;
+        if(!DecodeInterruptedCapacityIntent(saved->second,*history.interruptedCapacity,before,blocker) ||
             !state->resources.ReadUnsettled(id,batch,blocker))return reject(AdmissionCode::ReconciliationRequired,blocker);
         auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,before.claim.itemGuid));
         if(!item || item->GetOwnerGuid()!=bot->GetObjectGuid() || !Player::IsInventoryPos(item->GetPos()))
             return reject(AdmissionCode::ReconciliationRequired,"capacity_restart_source_missing");
-        NativeItemStack original{actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),
+        CapacityRestoreSnapshot physical;
+        physical.item={actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),
             item->GetContainer()?item->GetContainer()->GetGUIDLow():0,item->GetSlot()};
-        if(!PrepareInterruptedCapacitySale(saved->second,current,history,batch,NativeClaimBalances(*bot,batch.claims,false),original,
-            item->GetPos(),bot->GetMoney(),bot->GetItemCount(item->GetEntry(),false),NowMs(),receipt,prepared,blocker))
+        physical.position=item->GetPos();physical.money=bot->GetMoney();physical.entryCount=bot->GetItemCount(item->GetEntry(),false);
+        if(before.bankDeposit) {
+            if(!Player::IsBankPos(before.destination))return reject(AdmissionCode::ReconciliationRequired,"capacity_restart_bank_position_invalid");
+            const auto* bag=bot->GetItemByPos(INVENTORY_SLOT_BAG_0,uint8_t(before.destination>>8));
+            physical.destinationBag=(before.destination>>8)==INVENTORY_SLOT_BAG_0?0:bag?bag->GetGUIDLow():0;
+            if((before.destination>>8)!=INVENTORY_SLOT_BAG_0 && !physical.destinationBag)
+                return reject(AdmissionCode::ReconciliationRequired,"capacity_restart_bank_container_missing");
+            physical.totalCount=bot->GetItemCount(item->GetEntry(),true);physical.destinationEmpty=!bot->GetItemByPos(before.destination);
+        }
+        if(!PrepareInterruptedCapacity(saved->second,current,history,batch,NativeClaimBalances(*bot,batch.claims,false),physical,
+            NowMs(),receipt,prepared,blocker))
             return reject(AdmissionCode::ReconciliationRequired,blocker);
         State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
         write.admissionReceipt=receipt;state->pending.push_back(std::move(write));

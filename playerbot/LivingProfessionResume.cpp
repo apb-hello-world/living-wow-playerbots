@@ -8,9 +8,9 @@
 #include <set>
 
 namespace LivingActivity {
-bool PrepareInterruptedCapacitySale(const Task& saved,const WorldContext& current,const ProfessionHistory& history,
-    const UnsettledClaimBatch& batch,const std::vector<NativeResourceBalance>& balances,const NativeItemStack& item,
-    uint16_t position,uint32_t money,uint32_t entryCount,uint64_t now,const std::string& receipt,
+bool PrepareInterruptedCapacity(const Task& saved,const WorldContext& current,const ProfessionHistory& history,
+    const UnsettledClaimBatch& batch,const std::vector<NativeResourceBalance>& balances,const CapacityRestoreSnapshot& physical,
+    uint64_t now,const std::string& receipt,
     ProfessionPreparation& result,std::string& why) {
     result={};auto reject=[&](const char* code){why=code;return false;};
     if(!saved.context.boot.empty() || saved.context.actorGeneration || saved.context.mapGeneration ||
@@ -19,15 +19,19 @@ bool PrepareInterruptedCapacitySale(const Task& saved,const WorldContext& curren
         !IsUuid(receipt) || now<saved.updatedAtMs || saved.revision>=UINT64_MAX-1)
         return reject("capacity_restart_restored_context_required");
     if(!history.complete || history.task!=saved.id || history.revision!=saved.revision || !history.unresolvedOperation ||
-        !history.interruptedCapacitySale || history.interruptedMail || history.interruptedCraft ||
+        !history.interruptedCapacity || history.interruptedMail || history.interruptedCraft ||
         !batch.complete || !batch.bookRevision || batch.claims.empty())return reject("capacity_restart_history_incomplete");
-    const auto& row=*history.interruptedCapacitySale;InterruptedCapacitySale before;
-    if(!DecodeInterruptedCapacitySale(saved,row,before,why))return false;
+    const auto& row=*history.interruptedCapacity;InterruptedCapacityIntent before;
+    if(!DecodeInterruptedCapacityIntent(saved,row,before,why))return false;
+    const auto& item=physical.item;const auto position=physical.position;
+    const auto money=physical.money,entryCount=physical.entryCount;
     if(item.actor!=saved.actor || item.guid!=before.claim.itemGuid || item.entry!=before.claim.itemEntry ||
         item.count!=before.claim.quantity || item.slot!=uint8_t(position) || position!=before.position ||
         money!=before.money || entryCount!=before.entryCount ||
         std::none_of(batch.claims.begin(),batch.claims.end(),[&](const auto& c){return SameResourceClaim(c,before.claim);}))
         return reject("capacity_restart_native_state_changed");
+    if(before.bankDeposit && (!physical.destinationEmpty || physical.totalCount!=before.totalCount))
+        return reject("capacity_restart_bank_state_changed");
     PersonalResourceSettlement resources;
     if(!PreparePersonalResourceSettlement(saved,batch,balances,resources,why,"capacity_restart_"))return false;
     const auto n=[](uint64_t v){return std::to_string(v);};
@@ -36,6 +40,14 @@ bool PrepareInterruptedCapacitySale(const Task& saved,const WorldContext& curren
         " AND EXISTS(SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+n(saved.actor)+
         " AND v.item="+n(item.guid)+" AND v.bag="+n(item.bagGuid)+" AND v.slot="+n(item.slot)+
         " AND i.owner_guid=v.guid AND i.itemEntry="+n(item.entry)+" AND i.count="+n(item.count)+')';
+    if(before.bankDeposit) {
+        guard+=" AND NOT EXISTS(SELECT 1 FROM character_inventory WHERE guid="+n(saved.actor)+
+            " AND bag="+n(physical.destinationBag)+" AND slot="+n(uint8_t(before.destination))+')'+
+            " AND (SELECT COALESCE(SUM(i.count),0) FROM character_inventory v JOIN item_instance i ON i.guid=v.item"
+            " WHERE v.guid="+n(saved.actor)+" AND i.owner_guid=v.guid AND i.itemEntry="+n(item.entry)+")="+n(physical.totalCount);
+        if(physical.destinationBag)guard+=" AND EXISTS(SELECT 1 FROM character_inventory WHERE guid="+n(saved.actor)+
+            " AND bag=0 AND slot="+n(uint8_t(before.destination>>8))+" AND item="+n(physical.destinationBag)+')';
+    }
     for(const auto& b:balances)if(b.itemGuid) {
         guard+=" AND EXISTS(SELECT 1 FROM character_inventory v JOIN item_instance i ON i.guid=v.item WHERE v.guid="+n(saved.actor)+
             " AND i.owner_guid=v.guid AND i.guid="+n(b.itemGuid)+" AND i.itemEntry="+n(b.itemEntry)+" AND i.count="+n(b.quantity)+')'+
@@ -47,11 +59,12 @@ bool PrepareInterruptedCapacitySale(const Task& saved,const WorldContext& curren
     next.checkpoint.step="profession_prepare";next.checkpoint.blocker.clear();next.retryAtMs=0;
     auto outcome=row.receipt;outcome.state=OperationState::Rejected;outcome.evidence="native_capacity_intent_not_committed";
     const auto after="{\"unchanged_item\":"+n(item.guid)+",\"quantity\":"+n(item.count)+",\"money\":"+n(money)+
-        ",\"entry_count\":"+n(entryCount)+",\"claims_unchanged\":true}";
+        ",\"entry_count\":"+n(entryCount)+",\"claims_unchanged\":true"+
+        (before.bankDeposit?",\"total_count\":"+n(physical.totalCount)+",\"destination_empty\":true":"")+'}';
     auto plan=OperationOutcomeWrite(next,saved.revision,outcome,receipt,after);
     plan.statements.front()+=" AND phase='executing' AND accepted=1 AND checkpoint="+SqlValue(saved.checkpoint.data)+
         " AND EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+SqlValue(outcome.id)+
-        " AND o.kind='capacity_vendor_sale' AND o.state='intent' AND o.before_state="+SqlValue(row.beforeState)+
+        " AND o.kind="+SqlValue(row.receipt.kind)+" AND o.state='intent' AND o.before_state="+SqlValue(row.beforeState)+
         " AND o.after_state='{}' AND o.evidence_code='' AND o.native_reference=''"
         " AND SHA2(CONCAT(o.before_state,'|',o.after_state),256)="+SqlValue(row.journalDigest)+')'+
         " AND (SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task owner ON owner.task_id=o.task_id"

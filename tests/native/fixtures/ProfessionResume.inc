@@ -97,13 +97,13 @@ void TestProfessionResumption() {
         const std::string quote="{\"actor\":704,\"guid\":110,\"entry\":7073,\"quantity\":5,\"unit_copper\":6,\"money\":100,\"copper\":30,\"count_before\":5,\"vendor\":12,\"vendor_entry\":13,\"from\":65304,\"capacity_entry\":2454,\"capacity_quantity\":1}";
         row.beforeState="{\"effects\":12,\"persistence\":1,\"native\":"+ClaimedNativeState(quote,{{c,5}})+"}";row.afterState="{}";
         ProfessionHistory history;history.task=saved.id;history.revision=saved.revision;history.complete=true;
-        history.unresolvedOperation=true;history.interruptedCapacitySale=row;
-        InterruptedCapacitySale decoded;
-        assert(DecodeInterruptedCapacitySale(saved,row,decoded,blocker));
+        history.unresolvedOperation=true;history.interruptedCapacity=row;
+        InterruptedCapacityIntent decoded;
+        assert(DecodeInterruptedCapacityIntent(saved,row,decoded,blocker));
         assert(decoded.position==65304 && SameResourceClaim(decoded.claim,c));
         auto recover=[&](const Task& task,const ProfessionHistory& h,const UnsettledClaimBatch& b,
             const NativeItemStack& physical,uint32_t wallet=100) {
-            return PrepareInterruptedCapacitySale(task,f.current,h,b,balances,physical,65304,wallet,5,1200,f.receipt,result,blocker);
+            return PrepareInterruptedCapacity(task,f.current,h,b,balances,{physical,65304,wallet,5},1200,f.receipt,result,blocker);
         };
         assert(recover(saved,history,batch,item));
         assert(result.task.phase==Phase::Verifying && result.task.checkpoint.step=="profession_prepare" && result.task.id==saved.id);
@@ -123,12 +123,37 @@ void TestProfessionResumption() {
             if(fault==4)bad.acknowledged=false;
             if(fault==5)bad.journalDigest.clear();
             if(fault==6)bad.beforeState="{}";
-            assert(!DecodeInterruptedCapacitySale(saved,bad,decoded,blocker));
+            assert(!DecodeInterruptedCapacityIntent(saved,bad,decoded,blocker));
         }
         ProfessionHistoryRow dbrow={"704",std::to_string(saved.revision),"1",row.receipt.id,saved.id,
             std::to_string(saved.revision),"capacity_vendor_sale","intent","",row.beforeState,"{}","",row.journalDigest};
         ProfessionHistoryCursor cursor;assert(cursor.Begin(saved,{dbrow},blocker));assert(cursor.Advance(blocker));
-        assert(cursor.Result().complete && cursor.Result().interruptedCapacitySale && !cursor.Result().interruptedCraft);
+        assert(cursor.Result().complete && cursor.Result().interruptedCapacity && !cursor.Result().interruptedCraft);
+        // Bank preparation shares the same no-effect recovery, but also
+        // requires the quoted destination empty and the total stock unchanged.
+        auto bank=saved;bank.checkpoint.step="profession_capacity_bank";
+        auto bankRow=row;bankRow.receipt.kind="bank_deposit";
+        const auto transfer="{\"claim\":\""+c.id+"\",\"revision\":1,\"guid\":110,\"entry\":7073,\"quantity\":5,\"destination\":\"bank\"}";
+        bankRow.beforeState="{\"effects\":4,\"persistence\":1,\"native\":{\"native\":{\"actor\":704,\"guid\":110,\"entry\":7073,\"quantity\":5,\"banker\":12,\"banker_entry\":13,\"from\":65304,\"to\":65319,\"bag_before\":5,\"total_before\":7,\"deposit\":true,\"money_before\":100},\"transfer\":"+transfer+"}}";
+        assert(DecodeInterruptedCapacityIntent(bank,bankRow,decoded,blocker) && decoded.bankDeposit && decoded.totalCount==7);
+        auto bankHistory=history;bankHistory.interruptedCapacity=bankRow;
+        CapacityRestoreSnapshot physical{item,65304,100,5,7,0,true};
+        auto recoverBank=[&](const CapacityRestoreSnapshot& p) {
+            return PrepareInterruptedCapacity(bank,f.current,bankHistory,batch,balances,p,1200,f.receipt,result,blocker);
+        };
+        assert(recoverBank(physical));
+        assert(result.plan.statements[1].find("COALESCE(SUM(i.count),0)")!=std::string::npos);
+        assert(result.plan.statements[1].find("AND bag=0 AND slot=39")!=std::string::npos);
+        auto wrongBank=physical;wrongBank.destinationEmpty=false;assert(!recoverBank(wrongBank));
+        wrongBank=physical;++wrongBank.totalCount;assert(!recoverBank(wrongBank));
+        wrongBank=physical;++wrongBank.item.count;assert(!recoverBank(wrongBank));
+        wrongBank=physical;++wrongBank.money;assert(!recoverBank(wrongBank));
+        assert(!DecodeInterruptedCapacityIntent(saved,bankRow,decoded,blocker));
+        auto malformed=bankRow;malformed.beforeState.insert(malformed.beforeState.find("\"deposit\""),"\"merge_guid\":11,");
+        assert(!DecodeInterruptedCapacityIntent(bank,malformed,decoded,blocker));
+        dbrow[6]="bank_deposit";dbrow[9]=bankRow.beforeState;
+        assert(cursor.Begin(bank,{dbrow},blocker) && cursor.Advance(blocker));
+        assert(cursor.Result().complete && cursor.Result().interruptedCapacity && !cursor.Result().interruptedCraft);
     }
 }
 }

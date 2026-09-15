@@ -11,7 +11,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
         TaskRequest request;
         ChatDirectorEvent brokerEvent;
         ChatDirectorActionProposal brokerProposal;
-        bool brokerAccepted=false,partialStock=false,capacity=false,capacityPrepared=false;
+        bool brokerAccepted=false,partialStock=false,capacity=false,capacityPrepared=false,bankCapacity=false;
         bool cancelFirstOffer=false,cancelled=false;
         uint64_t cancelledAt=0;
         boost::property_tree::ptree input;
@@ -35,7 +35,8 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             };
             f.actor=id("LIVING_WOW_NATIVE_FIXTURE_ACTOR");f.customer=id("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
             f.partialStock=brokerCase && bool(std::ifstream("/isolated/evidence/commission-partition-existing-stock"));
-            f.capacity=brokerCase && bool(std::ifstream("/isolated/evidence/commission-capacity-full-bags"));
+            f.bankCapacity=brokerCase && bool(std::ifstream("/isolated/evidence/commission-bank-full-bags"));
+            f.capacity=f.bankCapacity || (brokerCase && bool(std::ifstream("/isolated/evidence/commission-capacity-full-bags")));
             f.cancelFirstOffer=automaticOffer && bool(std::ifstream("/isolated/evidence/commission-cancel-first-offer"));
             require(!f.capacity || f.partialStock,"capacity_fixture_requires_existing_stock");
             require(f.actor && f.customer && f.actor!=f.customer,"distinct_commission_trade_actors_required");
@@ -92,9 +93,9 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
                 job.craftFinishedRevision && (prior->phase==Phase::Executing || prior->phase==Phase::Verifying || prior->phase==Phase::Reconciling) &&
                 prior->checkpoint.step=="commission_output_partition";
             const bool capacityRestart=automaticOffer && f.capacity && f.input.template get<bool>("capacity_restart_test",false) &&
-                job.craftFinishedRevision && prior->phase==Phase::Executing && prior->checkpoint.step=="profession_capacity_sale";
+                job.craftFinishedRevision && prior->phase==Phase::Executing && prior->checkpoint.step==(f.bankCapacity?"profession_capacity_bank":"profession_capacity_sale");
             require(crafted || interruptedOffer || partitionRestart || capacityRestart || (prior->phase==Phase::Queued && !job.craftFinishedRevision),"only_queued_or_verified_craft_resume");
-            auto operations=CharacterDatabase.PQuery("SELECT COUNT(*),SUM(kind='profession_craft' AND state='verified'),SUM(kind='commission_trade_offer' AND state='intent'),SUM(kind='commission_output_partition' AND state='intent'),SUM(kind='commission_output_partition' AND state='verified'),SUM(kind='commission_output_partition' AND state='rejected'),SUM(kind='capacity_vendor_sale' AND state='intent') FROM living_activity_operation WHERE task_id='%s'",
+            auto operations=CharacterDatabase.PQuery("SELECT COUNT(*),SUM(kind='profession_craft' AND state='verified'),SUM(kind='commission_trade_offer' AND state='intent'),SUM(kind='commission_output_partition' AND state='intent'),SUM(kind='commission_output_partition' AND state='verified'),SUM(kind='commission_output_partition' AND state='rejected'),SUM(kind IN ('capacity_vendor_sale','bank_deposit') AND state='intent') FROM living_activity_operation WHERE task_id='%s'",
                 prior->id.c_str());
             const bool partitionIntent=partitionRestart && operations && operations->Fetch()[3].GetUInt32()==1;
             const bool partitionSaved=partitionRestart && operations && operations->Fetch()[4].GetUInt32()==1;
@@ -173,7 +174,9 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             f.input.put("automatic_offer",automaticOffer);
             f.input.put("broker_case",brokerCase);
             f.input.put("capacity_test",f.capacity);
-            f.input.put("capacity_restart_test",f.capacity && bool(std::ifstream("/isolated/evidence/commission-capacity-pause-before-dispatch")));
+            f.input.put("capacity_bank_test",f.bankCapacity);
+            f.input.put("capacity_restart_test",f.capacity && bool(std::ifstream(f.bankCapacity?
+                "/isolated/evidence/commission-bank-pause-before-dispatch":"/isolated/evidence/commission-capacity-pause-before-dispatch")));
             f.input.put("cancel_first_offer",f.cancelFirstOffer);
             if(brokerCase)f.input.put("broker_event_id",f.brokerEvent.eventId);
             // Disclosed OLD-stock fixture, not a grant of the ordered output:
@@ -255,18 +258,34 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             fillReport.put("task",saved->id);fillReport.put("actor",f.actor);fillReport.put("test_only",true);
             fillReport.put("money_before",actor->GetMoney());fillReport.put("output_count",output->GetCount());
             fillReport.add_child("inventory_before",GuildMailFixtureInventory(*actor));
-            const auto* trash=sObjectMgr.GetItemPrototype(7073);
-            require(trash && trash->Quality==ITEM_QUALITY_POOR && trash->SellPrice==6 && trash->Stackable==5,"native_disclosed_capacity_fixture_item");
+            uint32_t fillEntry=7073,fillQuantity=5;
+            if(f.bankCapacity) {
+                fillEntry=0;fillQuantity=20;
+                for(const uint32_t entry:{4470u,2589u,2770u}) {
+                    const auto* proto=sObjectMgr.GetItemPrototype(entry);
+                    require(proto && proto->Class==ITEM_CLASS_TRADE_GOODS && proto->Stackable==20,"native_storable_fixture_item");
+                    ai::ItemQualifier qualifier(entry);
+                    auto* value=actor->GetPlayerbotAI()->GetAiObjectContext()->template GetValue<ai::ItemUsage>("item usage",qualifier.GetQualifier());
+                    value->Reset();const auto usage=value->Get();
+                    if(usage==ai::ItemUsage::ITEM_USAGE_BANK || usage==ai::ItemUsage::ITEM_USAGE_SKILL ||
+                        usage==ai::ItemUsage::ITEM_USAGE_AH || usage==ai::ItemUsage::ITEM_USAGE_BROKEN_AH) {fillEntry=entry;break;}
+                }
+                require(fillEntry!=0,"native_fixture_storable_classification_required");
+            } else {
+                const auto* trash=sObjectMgr.GetItemPrototype(fillEntry);
+                require(trash && trash->Quality==ITEM_QUALITY_POOR && trash->SellPrice==6 && trash->Stackable==5,"native_disclosed_capacity_fixture_item");
+            }
+            f.input.put("capacity_filler_entry",fillEntry);f.input.put("capacity_filler_quantity",fillQuantity);
             boost::property_tree::ptree grants;
             auto fill=[&](uint8_t bag,uint8_t slot) {
                 const uint16_t pos=uint16_t(uint16_t(bag)<<8|slot);
                 if(actor->GetItemByPos(pos))return;
                 ItemPosCountVec positions;
-                if(actor->CanStoreNewItem(bag,slot,positions,7073,5)!=EQUIP_ERR_OK || positions.size()!=1 ||
-                    positions.front().pos!=pos || positions.front().count!=5)return;
-                auto* item=actor->StoreNewItem(positions,7073,true);
-                require(item && item->GetPos()==pos && item->GetCount()==5,"capacity_fixture_stack_grant_failed");
-                boost::property_tree::ptree row;row.put("guid",item->GetGUIDLow());row.put("entry",7073);row.put("quantity",5);
+                if(actor->CanStoreNewItem(bag,slot,positions,fillEntry,fillQuantity)!=EQUIP_ERR_OK || positions.size()!=1 ||
+                    positions.front().pos!=pos || positions.front().count!=fillQuantity)return;
+                auto* item=actor->StoreNewItem(positions,fillEntry,true);
+                require(item && item->GetPos()==pos && item->GetCount()==fillQuantity,"capacity_fixture_stack_grant_failed");
+                boost::property_tree::ptree row;row.put("guid",item->GetGUIDLow());row.put("entry",fillEntry);row.put("quantity",fillQuantity);
                 row.put("bag",bag);row.put("slot",slot);grants.push_back({"",row});
             };
             for(uint8_t slot=INVENTORY_SLOT_ITEM_START;slot<INVENTORY_SLOT_ITEM_END;++slot)fill(INVENTORY_SLOT_BAG_0,slot);
@@ -302,8 +321,8 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             write("activity-commission-trade-"+state.boot+".json",report);state.fixtureFinished=true;return;
         }
         require(!Terminal(saved->phase),"commission_trade_unexpected_terminal");
-        if(f.capacity && saved->phase==Phase::Executing && saved->checkpoint.step=="profession_capacity_sale" &&
-            std::ifstream("/isolated/evidence/commission-capacity-pause-before-dispatch")) {
+        if(f.capacity && saved->phase==Phase::Executing && saved->checkpoint.step==(f.bankCapacity?"profession_capacity_bank":"profession_capacity_sale") &&
+            std::ifstream(f.bankCapacity?"/isolated/evidence/commission-bank-pause-before-dispatch":"/isolated/evidence/commission-capacity-pause-before-dispatch")) {
             report.put("outcome","awaiting_restart_before_capacity_sale");
             write("commission-capacity-intent-checkpoint.json",report);return;
         }
