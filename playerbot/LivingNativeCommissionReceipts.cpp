@@ -30,7 +30,10 @@ void RecordCommissionCollection(Player& actor,CommissionMailObservation e,const 
 void RecordCommissionFeeCollection(Player& actor,const Mail& mail,uint32_t before,uint32_t amount) {
     CommissionMailObservation e;e.sendOperation=CommissionMailOperationFromSubject(mail.subject);
     if(e.sendOperation.empty() || mail.messageType!=MAIL_NORMAL || !(mail.checked&MAIL_CHECK_MASK_COD_PAYMENT) ||
-        mail.receiverGuid!=actor.GetObjectGuid() || mail.HasItems() || mail.COD || mail.money)return;
+        // HasItems() is the legacy template-generation flag, not the actual
+        // attachment list. Pinned core leaves that flag uninitialized on new
+        // online money-only mail. Inspect custody and reject templates instead.
+        mail.receiverGuid!=actor.GetObjectGuid() || mail.mailTemplateId || !mail.items.empty() || mail.COD || mail.money)return;
     e.event=CommissionMailEvent::FeeCollected;e.mail=mail.messageID;e.sender=mail.sender;e.receiver=actor.GetGUIDLow();
     e.copper=amount;e.moneyBefore=before;e.moneyAfter=actor.GetMoney();Record(std::move(e));
 }
