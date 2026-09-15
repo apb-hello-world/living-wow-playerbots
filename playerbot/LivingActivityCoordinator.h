@@ -17,7 +17,7 @@
 #include <optional>
 class PlayerbotAI;
 class WorldPacket;
-namespace LivingActivity { struct GuildProcurementStatus; }
+namespace LivingActivity { struct GuildProcurementStatus; struct CommissionContract; }
 
 class LivingActivityCoordinator {
 public:
@@ -69,6 +69,7 @@ public:
     // Trusted domain producers only, on the native world thread. No native
     // operation or lease is started by submission or persistence callbacks.
     LivingActivity::AdmissionResult SubmitTask(const LivingActivity::TaskRequest& request);
+    LivingActivity::AdmissionResult SubmitMailCommission(const LivingActivity::CommissionContract& agreement);
     LivingActivity::AdmissionResult SubmitResourceReservation(const LivingActivity::ReservationRequest& request,
         LivingActivity::NativeReservationAdapter& adapter);
     // Read-only immutable projection. Never permission to consume a reserved

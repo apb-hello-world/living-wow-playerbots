@@ -2,7 +2,9 @@
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
 #include "LivingCommissionContract.h"
+#include "LivingCommissionJob.h"
 #include "LivingProfessionNative.h"
+#include "LivingActivityCoordinator.h"
 
 #include "PlayerbotAI.h"
 #include "PlayerbotChatDirector.h"
@@ -414,6 +416,8 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
 
     std::string transactionId = "wow-tx-" + event.eventId + "-" + proposal.proposalId;
     std::string commissionId,commissionPayload;
+    LivingActivity::AdmissionResult managedAdmission;
+    const bool managedCommission=crafting && proposal.delivery=="mail" && sLivingActivityCoordinator.EffectEnforcementEnabled();
     if(crafting)
     {
         // Persist the accepted native recipe, fee and delivery target instead
@@ -422,6 +426,12 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
         LivingActivity::ProfessionJob nativeRecipe;std::string why;
         if(!LivingActivity::BuildNativeRequestedItemJob(*bot,spellId,itemEntry,proposal.quantity,nativeRecipe,why))
             return reject(why,"I can't validate that exact recipe right now.");
+        if(managedCommission) {
+            const auto batches=(uint64_t(proposal.quantity)+nativeRecipe.outputQuantity-1)/nativeRecipe.outputQuantity;
+            if(batches>20)return reject("commission_batch_limit","Please split that into smaller crafting orders.");
+            nativeRecipe.outputQuantity=proposal.quantity;
+            nativeRecipe.attemptLimit=std::max<uint32_t>(nativeRecipe.attemptLimit,uint32_t(batches));
+        }
         commissionId="lwc-"+std::to_string(std::hash<std::string>{}(transactionId));
         LivingActivity::CommissionContract contract{commissionId,transactionId,proposal.delivery,
             LivingActivity::EncodeProfessionJob(nativeRecipe),bot->GetGUIDLow(),player->GetGUIDLow(),price,
@@ -429,7 +439,19 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
         if(!LivingActivity::ValidCommissionContract(contract,why))
             return reject(why,"That crafting request needs a valid recipient and delivery agreement.");
         commissionPayload=LivingActivity::EncodeCommissionContract(contract);
+        if(managedCommission) {
+            managedAdmission=sLivingActivityCoordinator.SubmitMailCommission(contract);
+            if(managedAdmission.code!=LivingActivity::AdmissionCode::Pending && managedAdmission.code!=LivingActivity::AdmissionCode::Saved)
+                return reject(managedAdmission.blocker,"I couldn't record that crafting request safely. Please try again shortly.");
+        }
         CharacterDatabase.escape_string(commissionPayload);
+    }
+    if(managedCommission) {
+        // No transient broker transaction, legacy cast, mail, item inference or
+        // timeout. Acknowledged coordinator transitions report the actual state,
+        // including after a restart; this return only confirms queueing.
+        return PlayerbotActionResult(true,"commission_queued",managedAdmission.code==LivingActivity::AdmissionCode::Saved ?
+            "That crafting order is already recorded." : "I'm recording that crafting request. I'll confirm once it's saved.");
     }
     if (proposal.delivery == "meeting" && !conjure)
     {
@@ -1010,6 +1032,22 @@ void PlayerbotActionBroker::ReportRejected(const ChatDirectorActionProposal& pro
     Report(transaction);
 }
 
+void PlayerbotActionBroker::ReportManagedCommission(const LivingActivity::Task& task) const {
+    using namespace LivingActivity;
+    CommissionJob job;ProfessionJob recipe;std::string why;
+    if(!sLivingActivityCoordinator.OnWorldThread() || !task.accepted || task.mode!=Mode::Active || !IsCommissionJob(task) || !ValidateCommissionTask(task,why) ||
+        !DecodeCommissionJob(task.checkpoint.data,job,why) || !DecodeProfessionJob(job.craft,recipe,why))return;
+    Transaction view;view.transactionId=job.agreement.transaction;view.commissionId=job.agreement.id;
+    view.botGuid=task.actor;view.playerGuid=job.agreement.recipient;view.itemEntry=recipe.outputEntry;
+    view.spellId=recipe.recipe;view.quantity=recipe.outputQuantity;view.priceCopper=job.agreement.feeCopper;
+    view.type="craft_commission";view.delivery=job.agreement.delivery;
+    view.managedTask=task.id;view.managedRevision=task.revision;view.managedPhase=Name(task.phase);view.managedStep=task.checkpoint.step;
+    view.failureReason=task.checkpoint.blocker;
+    view.state=task.phase==Phase::Completed?"completed":task.phase==Phase::Cancelled?"cancelled":
+        task.phase==Phase::Failed?"failed":task.phase==Phase::Traveling?"mail_travel":"preparing";
+    Report(view); // Read-only projection; not a second transaction/executor.
+}
+
 void PlayerbotActionBroker::Report(const Transaction& transaction) const
 {
     Player* bot = sRandomPlayerbotMgr.GetPlayerBot(transaction.botGuid);
@@ -1029,13 +1067,17 @@ void PlayerbotActionBroker::Report(const Transaction& transaction) const
          << "\",\"rendezvous_state\":\"" << sPlayerbotRendezvousManager.State(transaction.botGuid, transaction.playerGuid)
          << "\",\"catchup_relocated\":" << (sPlayerbotRendezvousManager.WasRelocated(transaction.botGuid, transaction.playerGuid) ? "true" : "false")
          << ",\"failure_reason\":\"" << PlayerbotLLMInterface::SanitizeForJson(transaction.failureReason)
-         << "\",\"expires_at\":\"world-clock\"}";
+         << "\",\"expires_at\":\"world-clock\"";
+    if(!transaction.managedTask.empty())body << ",\"activity_task_id\":\"" << transaction.managedTask
+        << "\",\"activity_revision\":" << transaction.managedRevision << ",\"activity_phase\":\"" << transaction.managedPhase
+        << "\",\"activity_step\":\"" << PlayerbotLLMInterface::SanitizeForJson(transaction.managedStep) << '"';
+    body << '}';
     std::string payload = body.str();
     std::thread([payload]() {
         std::vector<std::string> debug;
         PlayerbotLLMInterface::Generate(payload, 3, 2, debug, true, "/v2/action-status");
     }).detach();
-    if (transaction.type == "craft_commission" && !transaction.commissionId.empty())
+    if (transaction.managedTask.empty() && transaction.type == "craft_commission" && !transaction.commissionId.empty())
     {
         std::string commissionState = transaction.state;
         if (commissionState == "preparing") commissionState = "crafting";

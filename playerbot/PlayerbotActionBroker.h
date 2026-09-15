@@ -13,6 +13,7 @@ class Player;
 struct ChatDirectorEvent;
 struct ChatDirectorCandidate;
 namespace LivingWowChatJson { struct EconomicQuote; }
+namespace LivingActivity { struct Task; }
 
 struct ChatDirectorActionProposal
 {
@@ -53,6 +54,7 @@ public:
     void CancelTrade(Player* bot, Player* trader, const std::string& reason);
     void CancelTrade(Player* bot, const std::string& reason);
     void Update();
+    void ReportManagedCommission(const LivingActivity::Task& task) const;
     void ReportRejected(const ChatDirectorActionProposal& proposal, const ChatDirectorEvent& event,
         const std::string& reason) const;
     void UpsertEconomicQuote(const LivingWowChatJson::EconomicQuote& quote, bool update);
@@ -72,6 +74,9 @@ private:
     {
         std::string transactionId;
         std::string commissionId;
+        std::string managedTask; // Status projection only; never a second executor.
+        std::string managedPhase,managedStep;
+        uint64_t managedRevision=0;
         std::string eventId;
         std::string proposalId;
         uint32 botGuid = 0;

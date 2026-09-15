@@ -3,6 +3,7 @@
 #include "LivingActivityCoordinator.h"
 #include "LivingActivity.h"
 #include "LivingActivityAdmission.h"
+#include "LivingCommissionAdmission.h"
 #include "LivingActivityObservation.h"
 #include "LivingActivityCodec.h"
 #include "LivingActivityClaimCodec.h"
@@ -266,7 +267,9 @@ namespace {
                 "'materials_source',g.materials_source,'authoritative_payload',g.authoritative_payload) checkpoint "
                 "FROM organic_economy_commission g JOIN characters c ON c.guid=g.bot_guid "
                 "JOIN tbcrealmd.account a ON a.id=c.account ";
-            where = "g.state IN ('awaiting_materials','materials_received','traveling','crafting','ready')"; order = "g.commission_id";
+            where = "g.state IN ('awaiting_materials','materials_received','traveling','crafting','ready')"
+                " AND NOT EXISTS(SELECT 1 FROM living_activity_task managed WHERE managed.source='commission_job'"
+                " AND managed.source_key=g.commission_id)"; order = "g.commission_id";
         } else {
             select = "SELECT 'guild_event' source,CONCAT(g.event_id,':',r.character_guid) source_key,r.character_guid actor,"
                 "JSON_OBJECT('event_id',g.event_id,'event_revision',g.revision,'accepted_revision',r.accepted_revision,"
@@ -662,6 +665,7 @@ struct LivingActivityCoordinator::State {
     }
     void Remember(const Task& task) {
         cache[task.id] = task;
+        if(IsCommissionJob(task))sPlayerbotActionBroker.ReportManagedCommission(task);
         cachedByActor[task.actor].insert(task.id);
         const auto queued=executionTimes.find(task.id);
         if (queued!=executionTimes.end()) {executionDue.erase({queued->second,task.id});executionTimes.erase(queued);}
@@ -3748,6 +3752,34 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Handoff
     state->HoldNativeSave(actor,true);state->pending.push_back(std::move(write));state->nextWork=0;
     return stop("guild_procurement_handoff_receipt_pending");
 }
+AdmissionResult LivingActivityCoordinator::SubmitMailCommission(const CommissionContract& agreement) {
+    const auto id=SourceId("commission_job",agreement.id);
+    auto reject=[&](AdmissionCode code,const std::string& why){return AdmissionResult{code,id,why,0};};
+    std::string why;
+    if(!OnWorldThread() || !EffectEnforcementEnabled())return reject(AdmissionCode::Disabled,"execution_disabled");
+    if(agreement.delivery!="mail" || !ValidCommissionContract(agreement,why))
+        return reject(AdmissionCode::InvalidRequest,"valid_mail_commission_required");
+    if(auto saved=ReadSavedTask(id)) {
+        CommissionJob existing;auto comparison=agreement;
+        if(!DecodeCommissionJob(saved->checkpoint.data,existing,why))return reject(AdmissionCode::ConflictingWrite,why);
+        comparison.acceptedAtMs=existing.agreement.acceptedAtMs;
+        if(EncodeCommissionContract(comparison)!=EncodeCommissionContract(existing.agreement))
+            return reject(AdmissionCode::ConflictingWrite,"accepted_commission_agreement_is_immutable");
+        return {AdmissionCode::Saved,id,"commission_already_saved",saved->revision};
+    }
+    auto* actor=sRandomPlayerbotMgr.GetPlayerBot(agreement.actor);
+    if(!actor || !actor->GetPlayerbotAI() || !actor->IsInWorld())return reject(AdmissionCode::NotReady,"actor_not_available");
+    TaskRequest request;auto& task=request.task;
+    task.id=task.root=id;task.source="commission_job";task.sourceKey=agreement.id;
+    task.actor=agreement.actor;task.kind=Kind::Commission;task.priority=Priority::Delivery;
+    task.mode=Mode::Active;task.accepted=true;task.phase=Phase::Queued;task.revision=1;
+    task.context=ReadNativeContext(*actor,state->policyRevision,state->boot);
+    task.createdAtMs=task.updatedAtMs=agreement.acceptedAtMs;
+    task.checkpoint.step="profession_prepare";task.checkpoint.data=EncodeCommissionJob({agreement,agreement.recipe,0});
+    request.receipt=SourceId("commission_admission",agreement.id);
+    return SubmitTask(request);
+}
+
 AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request) {
     AdmissionResult result; result.task = request.task.id; result.revision = request.task.revision;
     auto reject = [&](AdmissionCode code, const std::string& reason = "") {
@@ -3772,7 +3804,11 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
     const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
     const auto saved = state->cache.find(task.id);
     WritePlan plan;
-    try { plan = TaskWrite(task, request.expectedRevision, request.receipt, "task_admitted"); }
+    const auto admissionPlan=[&](const Task& value) {
+        return !request.expectedRevision && IsCommissionJob(value) ? CommissionAdmissionWrite(value,request.receipt) :
+            TaskWrite(value,request.expectedRevision,request.receipt,"task_admitted");
+    };
+    try { plan = admissionPlan(task); }
     catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest); }
     for (const auto& queued : state->pending) {
         if (queued.admissionReceipt == request.receipt && queued.task.id != task.id)
@@ -3789,7 +3825,7 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
     if (saved != state->cache.end() && saved->second.revision == task.revision &&
         acknowledgedReceipt != state->admissionReceipts.end() && acknowledgedReceipt->second == request.receipt &&
         saved->second.context == task.context && task.context == current &&
-        SameRequest(TaskWrite(saved->second, request.expectedRevision, request.receipt, "task_admitted"), plan))
+        SameRequest(admissionPlan(saved->second), plan))
         return reject(AdmissionCode::Saved);
     std::string reason;
     const auto parent = state->cache.find(task.root);

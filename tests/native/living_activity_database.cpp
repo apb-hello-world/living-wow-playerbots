@@ -19,6 +19,7 @@
 #include "LivingGuildDeposit.h"
 #include "LivingCommissionMail.h"
 #include "LivingCommissionSettlement.h"
+#include "LivingCommissionAdmission.h"
 #include "fixtures/CraftEvidence.h"
 #include <mysql.h>
 #include <cassert>
@@ -114,6 +115,7 @@ public:
 #include "fixtures/GuildMailHandoffDatabase.inc"
 #include "fixtures/CommissionMailDatabase.inc"
 #include "fixtures/CommissionParcelDatabase.inc"
+#include "fixtures/CommissionAdmissionDatabase.inc"
 int main() {
     Connection db;
     Task task; task.id = task.root = Id; task.actor = task.context.actor = 497;
@@ -750,6 +752,7 @@ int main() {
     GuildCancellationDatabase(db);
     CommissionMailDatabase(db);
     CommissionParcelDatabase(db);
+    CommissionAdmissionDatabase(db);
     {
         auto foldedTask=owner;foldedTask.id=foldedTask.root="ce06cbd9-09ac-41a2-9107-ab1b5ed30d01";
         foldedTask.actor=foldedTask.context.actor=9991;foldedTask.revision=1;foldedTask.phase=Phase::Queued;

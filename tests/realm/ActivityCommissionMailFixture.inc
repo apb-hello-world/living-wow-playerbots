@@ -155,14 +155,14 @@ void RunIsolatedCommissionMailFixture(FixtureState& state,bool parcelCase=false,
                 require(herb && actor->GetItemCount(entry,true)==owned+quantity,"commission_fixture_input_grant_failed");
             }
             actor->SaveToDB();
-            const auto sql="INSERT INTO organic_economy_commission(commission_id,bot_guid,player_guid,recipe_spell_id,"
-                "output_item_entry,quantity,materials_source,service_fee_copper,state,authoritative_payload,expires_at) VALUES("+
-                SqlValue(job.agreement.id)+','+std::to_string(f.actor)+','+std::to_string(f.recipient)+
-                ",2329,2454,"+std::to_string(f.quantity)+",'bot',60,'crafting',"+SqlValue(EncodeCommissionContract(job.agreement))+",DATE_ADD(NOW(),INTERVAL 1 DAY))";
-            CharacterDatabase.Execute(sql.c_str());f.setup=true;return;
+            // Use the same atomic contract/task admission as a validated player
+            // request. The fixture no longer pre-inserts its own acceptance row.
+            f.setup=true;return;
         }
         if(!f.admitted) {
-            const auto result=sLivingActivityCoordinator.SubmitTask(f.request);f.blocker=result.blocker;
+            CommissionJob accepted;std::string why;
+            require(DecodeCommissionJob(f.request.task.checkpoint.data,accepted,why),"fixture_original_agreement_required");
+            const auto result=sLivingActivityCoordinator.SubmitMailCommission(accepted.agreement);f.blocker=result.blocker;
             require(result.code==AdmissionCode::Pending,"commission_fixture_admission:"+f.blocker);f.admitted=true;return;
         }
         const auto saved=sLivingActivityCoordinator.ReadSavedTask(f.request.task.id);
