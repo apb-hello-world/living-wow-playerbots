@@ -248,6 +248,8 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
         f.lastDiagnostic=f.blocker;f.nextDiagnostic=NowMs()+30000;
         boost::property_tree::ptree report;report.put("boot",state.boot);report.put("task",f.task);
         report.put("blocker",f.blocker);report.put("at_ms",NowMs());report.put("gameplay_proof",false);
+        report.put("journal_pending",state.pending.size());report.put("database_pending",state.ioPending);
+        if(f.actor)report.put("activity_json",sLivingActivityCoordinator.ActorJson(f.actor));
         auto actor=[&](const char* name,Player* player) {
             boost::property_tree::ptree p;p.put("loaded",bool(player));
             if(player) {

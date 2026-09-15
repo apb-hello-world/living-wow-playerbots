@@ -118,6 +118,23 @@ static void CommissionParcelDatabase(Connection& db) {
         [&](const auto& row){return row.receipt.id==secondId;}),partial.commissionMail.end());
     assert(InspectCommissionDelivery(task,partial,proof,why) && proof.state==CommissionDeliveryState::WaitingCustomer);
     UnsettledClaimBatch claims;claims.complete=true;claims.bookRevision=1;ProfessionPreparation closed;
+    // Receipt two arrived after this waiting snapshot. Preserve strict CAS;
+    // unchanged predecessor and absent receipt prove it can be refreshed.
+    ProfessionPreparation waiting;
+    assert(PrepareCommissionSettlement(task,task.context,partial,claims,2002500,"05101385-a8e4-5140-abf5-d3f83df4a676",waiting,why));
+    assert(waiting.task.phase==Phase::WaitingExternal);
+    const auto writeInside=[&](const WritePlan& p){for(const auto& sql:p.statements)assert(db.Execute(sql));return db.ReceiptPresent(p);};
+    assert(db.Execute("START TRANSACTION"));assert(!writeInside(waiting.plan));
+    assert(db.Scalar("SELECT revision FROM living_activity_task WHERE task_id="+SqlValue(task.id)+
+        " AND revision=9 AND phase='verifying' AND NOT EXISTS(SELECT 1 FROM living_activity_transition WHERE transition_id='05101385-a8e4-5140-abf5-d3f83df4a676')")=="9");
+    assert(db.Execute("ROLLBACK"));
+    // An observed receipt changing is NOT monotonic new evidence.
+    assert(db.Execute("START TRANSACTION"));
+    assert(db.Execute("UPDATE living_activity_operation SET evidence_code='changed' WHERE operation_id="+SqlValue(firstId)));
+    assert(!writeInside(waiting.plan));assert(db.Execute("ROLLBACK"));
     assert(PrepareCommissionSettlement(task,task.context,history,claims,2003000,"f4d35c03-c0f2-5658-83c3-3272a8ee9d52",closed,why));
+    assert(db.Execute("START TRANSACTION"));
+    assert(db.Execute("INSERT INTO living_activity_operation SELECT 'e9c08c18-2621-523a-827f-3cf8fe7f724a',task_id,task_revision,kind,request_hash,state,native_reference,before_state,after_state,evidence_code,created_at_ms,updated_at_ms FROM living_activity_operation WHERE operation_id="+SqlValue(secondId)));
+    assert(!writeInside(closed.plan));assert(db.Execute("ROLLBACK"));
     assert(db.Write(closed.plan));assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id="+SqlValue(task.id))=="completed");
 }

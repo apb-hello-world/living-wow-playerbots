@@ -529,6 +529,7 @@ struct LivingActivityCoordinator::State {
         ActivityLease custodyLease;
         bool recoverySaveHold=false;
         uint64_t closureRefreshRevision=0; // Safe, journal-only no-effect proposal; never native work.
+        Phase closureRefreshPhase=Phase::Preparing;
         bool observerRetirement=false;
     };
     struct PendingOperation {
@@ -747,7 +748,7 @@ struct LivingActivityCoordinator::State {
                 query+=" UNION ALL SELECT "+SqlValue("guild_closure_refresh:"+pending[count].task.id)+",revision"
                     " FROM living_activity_task WHERE task_id="+SqlValue(pending[count].task.id)+
                     " AND revision="+std::to_string(pending[count].closureRefreshRevision)+
-                    " AND phase='preparing' AND NOT EXISTS(SELECT 1 FROM living_activity_transition WHERE transition_id="+
+                    " AND phase="+SqlValue(Name(pending[count].closureRefreshPhase))+" AND NOT EXISTS(SELECT 1 FROM living_activity_transition WHERE transition_id="+
                     SqlValue(pending[count].admissionReceipt)+')';
             ++count;
             if (std::chrono::steady_clock::now() >= deadline) break;
@@ -919,6 +920,10 @@ struct LivingActivityCoordinator::State {
                     // of retaining an optimistic cancellation forever.
                     guildDeliveryReads.erase(it->task.id);
                     executionBlockers[it->task.id]="guild_delivery_goal_changed_refresh_pending";
+                    if(IsCommissionJob(it->task)) {
+                        professionHistory.erase(it->task.id);
+                        executionBlockers[it->task.id]="commission_receipts_changed_refresh_pending";
+                    }
                     if(it->custodyLease.actor) {
                         authority.Release(it->custodyLease);HoldNativeSave(it->custodyLease.actor,false);
                         const auto binding=bindings.find(it->custodyLease.actor);
@@ -2426,6 +2431,11 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         }
         if(!PrepareCommissionSettlement(*saved,current,history,claims,NowMs(),receipt,prepared,why))return stop(why);
         State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);write.admissionReceipt=receipt;
+        // Customer/COD receipts append independently. If this strict snapshot
+        // loses its race, use the existing no-effect proposal refresh path.
+        // Exact predecessor revision/phase and absent receipt prove no change;
+        // never apply this to an outstanding native transaction.
+        write.closureRefreshRevision=saved->revision;write.closureRefreshPhase=saved->phase;
         state->pending.push_back(std::move(write));
         if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
         state->nextWork=0;return stop("commission_settlement_persistence_pending");
