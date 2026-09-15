@@ -37,7 +37,7 @@ bool DeliverCommissionProjection(uint64_t now) {
         "(SELECT "+PersistedTaskProjection()+" FROM living_activity_task WHERE task_id=q.task_id) payload "
         "FROM living_activity_transition q WHERE q.delivered_at_ms=0"+fixtureScope+" AND EXISTS(SELECT 1 FROM living_activity_task t "
         "WHERE t.task_id=q.task_id AND t.source='commission_job' AND t.mode='active' "
-        "AND JSON_UNQUOTE(JSON_EXTRACT(t.checkpoint,'$.agreement.delivery'))='mail') ORDER BY q.sequence_id LIMIT 8) limited "
+        "AND JSON_UNQUOTE(JSON_EXTRACT(t.checkpoint,'$.agreement.delivery')) IN ('mail','direct')) ORDER BY q.sequence_id LIMIT 8) limited "
         "UNION ALL SELECT '','',0,0,'','',0,'{}'";
     if(!CharacterDatabase.AsyncQuery([this](QueryResult* result) {
         ioPending=false;++projectionReads;

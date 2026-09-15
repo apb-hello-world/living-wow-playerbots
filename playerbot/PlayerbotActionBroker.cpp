@@ -191,7 +191,7 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
     if (proposal.botGuid == 0 || proposal.targetGuid != event.speakerGuid || proposal.quantity == 0)
         return reject("malformed_proposal", "That trade request was incomplete.");
     const std::string transactionId = "wow-tx-" + event.eventId + "-" + proposal.proposalId;
-    if(proposal.type=="craft_commission" && proposal.delivery=="mail" &&
+    if(proposal.type=="craft_commission" && (proposal.delivery=="mail" || proposal.delivery=="direct") &&
         sLivingActivityCoordinator.EffectEnforcementEnabled()) {
         const auto id="lwc-"+std::to_string(std::hash<std::string>{}(transactionId));
         bool readable=false;
@@ -433,7 +433,7 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
 
     std::string commissionId,commissionPayload;
     LivingActivity::AdmissionResult managedAdmission;
-    const bool managedCommission=crafting && proposal.delivery=="mail" && sLivingActivityCoordinator.EffectEnforcementEnabled();
+    const bool managedCommission=crafting && (proposal.delivery=="mail" || proposal.delivery=="direct") && sLivingActivityCoordinator.EffectEnforcementEnabled();
     if(crafting)
     {
         // Persist the accepted native recipe, fee and delivery target instead
@@ -456,7 +456,7 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
             return reject(why,"That crafting request needs a valid recipient and delivery agreement.");
         commissionPayload=LivingActivity::EncodeCommissionContract(contract);
         if(managedCommission) {
-            managedAdmission=sLivingActivityCoordinator.SubmitMailCommission(contract);
+            managedAdmission=sLivingActivityCoordinator.SubmitCommission(contract);
             if(managedAdmission.code!=LivingActivity::AdmissionCode::Pending && managedAdmission.code!=LivingActivity::AdmissionCode::Saved)
                 return reject(managedAdmission.blocker,"I couldn't record that crafting request safely. Please try again shortly.");
         }
@@ -1060,7 +1060,7 @@ std::string PlayerbotActionBroker::ManagedCommissionStatus(const LivingActivity:
     view.managedTask=task.id;view.managedRevision=task.revision;view.managedPhase=Name(task.phase);view.managedStep=task.checkpoint.step;
     view.failureReason=task.checkpoint.blocker;
     view.state=task.phase==Phase::Completed?"completed":task.phase==Phase::Cancelled?"cancelled":
-        task.phase==Phase::Failed?"failed":task.phase==Phase::Traveling?"mail_travel":"preparing";
+        task.phase==Phase::Failed?"failed":task.phase==Phase::Traveling && job.agreement.delivery=="mail"?"mail_travel":"preparing";
     return StatusPayload(view); // Durable transition delivery owns dispatch.
 }
 

@@ -666,6 +666,7 @@ struct LivingActivityCoordinator::State {
             std::string(mode)!="activity-commission-broker-v1" &&
             std::string(mode)!="activity-commission-trade-v1" &&
             std::string(mode)!="activity-commission-offer-v1" &&
+            std::string(mode)!="activity-commission-direct-broker-v1" &&
             std::string(mode)!="activity-commission-parcel-v2" &&
             std::string(mode)!="activity-commission-capacity-v1" &&
             std::string(mode)!="activity-commission-collect-v1" &&
@@ -3923,12 +3924,16 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Handoff
     return stop("guild_procurement_handoff_receipt_pending");
 }
 AdmissionResult LivingActivityCoordinator::SubmitMailCommission(const CommissionContract& agreement) {
+    if(agreement.delivery!="mail")return {AdmissionCode::InvalidRequest,SourceId("commission_job",agreement.id),"valid_mail_commission_required",0};
+    return SubmitCommission(agreement);
+}
+AdmissionResult LivingActivityCoordinator::SubmitCommission(const CommissionContract& agreement) {
     const auto id=SourceId("commission_job",agreement.id);
     auto reject=[&](AdmissionCode code,const std::string& why){return AdmissionResult{code,id,why,0};};
     std::string why;
     if(!OnWorldThread() || !EffectEnforcementEnabled())return reject(AdmissionCode::Disabled,"execution_disabled");
-    if(agreement.delivery!="mail" || !ValidCommissionContract(agreement,why))
-        return reject(AdmissionCode::InvalidRequest,"valid_mail_commission_required");
+    if((agreement.delivery!="mail" && agreement.delivery!="direct") || !ValidCommissionContract(agreement,why))
+        return reject(AdmissionCode::InvalidRequest,"supported_commission_delivery_required");
     if(auto saved=ReadSavedTask(id)) {
         CommissionJob existing;auto comparison=agreement;
         if(!DecodeCommissionJob(saved->checkpoint.data,existing,why))return reject(AdmissionCode::ConflictingWrite,why);
@@ -3949,7 +3954,7 @@ AdmissionResult LivingActivityCoordinator::SubmitMailCommission(const Commission
     if(!actor || !actor->GetPlayerbotAI() || !actor->IsInWorld())return reject(AdmissionCode::NotReady,"actor_not_available");
     TaskRequest request;auto& task=request.task;
     task.id=task.root=id;task.source="commission_job";task.sourceKey=agreement.id;
-    task.actor=agreement.actor;task.kind=Kind::Commission;task.priority=Priority::Delivery;
+    task.actor=agreement.actor;task.kind=Kind::Commission;task.priority=agreement.delivery=="direct"?Priority::Human:Priority::Delivery;
     task.mode=Mode::Active;task.accepted=true;task.phase=Phase::Queued;task.revision=1;
     task.context=ReadNativeContext(*actor,state->policyRevision,state->boot);
     task.createdAtMs=task.updatedAtMs=agreement.acceptedAtMs;

@@ -70,6 +70,7 @@ public:
     // operation or lease is started by submission or persistence callbacks.
     LivingActivity::AdmissionResult SubmitTask(const LivingActivity::TaskRequest& request);
     LivingActivity::AdmissionResult SubmitMailCommission(const LivingActivity::CommissionContract& agreement);
+    LivingActivity::AdmissionResult SubmitCommission(const LivingActivity::CommissionContract& agreement);
     LivingActivity::AdmissionResult SubmitResourceReservation(const LivingActivity::ReservationRequest& request,
         LivingActivity::NativeReservationAdapter& adapter);
     // Read-only immutable projection. Never permission to consume a reserved

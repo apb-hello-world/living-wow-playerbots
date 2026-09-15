@@ -50,6 +50,9 @@ namespace {
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(requested && std::string(requested)=="activity-commission-direct-broker-v1") {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedCommissionTradeFixture(*state,true,true);return;
+    }
     if(requested && std::string(requested)=="activity-commission-offer-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedCommissionTradeFixture(*state,true);return;
     }

@@ -3,12 +3,15 @@
 // journal the exchange and settle the order. No output, fee or receipt grants.
 namespace {
 template<class FixtureState>
-void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=false) {
+void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=false,bool brokerCase=false) {
     struct Fixture {
         uint32_t actor=0,customer=0;
         bool actorLogin=false,customerLogin=false,setup=false,admitted=false,offered=false,queuedRestart=false,windowOpened=false;
         uint64_t deadline=0,nextReport=0;
         TaskRequest request;
+        ChatDirectorEvent brokerEvent;
+        ChatDirectorActionProposal brokerProposal;
+        bool brokerAccepted=false;
         boost::property_tree::ptree input;
     };
     static Fixture f;
@@ -40,6 +43,8 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
                 f.request.task.id=f.input.template get<std::string>("task");
                 f.setup=f.admitted=f.queuedRestart=true;
             }
+            else require(!brokerCase || !std::ifstream("/isolated/evidence/commission-trade-proposal-v1.json"),
+                "interrupted_broker_setup_requires_reconciliation");
             state.gameplayFixtureActor.store(f.actor,std::memory_order_release);
             state.professionCohortActors[0].store(f.customer,std::memory_order_release);
             f.deadline=NowMs()+900000;
@@ -111,6 +116,17 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             CommissionJob job;job.agreement={"lwc-"+std::to_string(NowMs()),"isolated-direct-v1","direct",
                 EncodeProfessionJob(recipe),f.actor,f.customer,60,NowMs()};job.craft=job.agreement.recipe;
             job.agreement.transaction="isolated-direct-"+job.agreement.id;
+            if(brokerCase) {
+                f.brokerEvent.eventId="isolated-direct-"+std::to_string(NowMs());f.brokerEvent.speakerGuid=f.customer;
+                auto& p=f.brokerProposal;p.proposalId="accepted";p.botGuid=f.actor;p.targetGuid=f.customer;
+                p.type="craft_commission";p.capabilityRef="spell:craft:2329:2454";p.delivery="direct";p.quantity=1;p.priceCopper=60;
+                auto& candidate=f.brokerEvent.candidates[f.actor];candidate.guid=f.actor;
+                ChatDirectorCapability capability;capability.capabilityRef=p.capabilityRef;capability.type=p.type;
+                capability.itemId=2454;capability.minQuantity=capability.maxQuantity=capability.quantity=1;
+                capability.priceCopper=60;capability.deliveries={"direct"};candidate.actionCapabilities.push_back(capability);
+                job.agreement.transaction="wow-tx-"+f.brokerEvent.eventId+'-'+p.proposalId;
+                job.agreement.id="lwc-"+std::to_string(std::hash<std::string>{}(job.agreement.transaction));
+            }
             auto& task=f.request.task;task.source="commission_job";task.sourceKey=job.agreement.id;
             task.id=task.root=SourceId(task.source,task.sourceKey);task.actor=f.actor;task.kind=Kind::Commission;
             task.mode=Mode::Active;task.accepted=true;task.phase=Phase::Queued;task.priority=Priority::Human;
@@ -125,6 +141,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             f.input.put("skill_grants",0);f.input.put("recipe_grants",0);f.input.put("fixture_consent",true);
             f.input.put("autonomous_travel_proof",false);f.input.put("broker_admission_proof",false);
             f.input.put("automatic_offer",automaticOffer);
+            f.input.put("broker_case",brokerCase);
             f.input.put("offer_restart_test",automaticOffer && bool(std::ifstream("/isolated/evidence/commission-offer-pause-before-dispatch")));
             f.input.add_child("inventory_before",GuildMailFixtureInventory(*actor));
             boost::property_tree::ptree grants;
@@ -136,7 +153,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             f.input.add_child("material_grants",grants);
             f.input.put("recipient_original_x",customer->GetPositionX());f.input.put("recipient_original_y",customer->GetPositionY());
             f.input.put("recipient_original_z",customer->GetPositionZ());f.input.put("recipient_original_map",customer->GetMapId());
-            write("commission-trade-input-v1.json",f.input);
+            write(brokerCase?"commission-trade-proposal-v1.json":"commission-trade-input-v1.json",f.input);
             for(const auto& row:grants) {
                 const auto entry=row.second.template get<uint32_t>("entry");ItemPosCountVec positions;
                 require(!actor->GetItemCount(entry,true) && actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,entry,1)==EQUIP_ERR_OK,
@@ -149,12 +166,32 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             f.setup=true;return;
         }
         if(!f.admitted) {
-            const auto result=sLivingActivityCoordinator.SubmitTask(f.request);
-            require(result.code==AdmissionCode::Pending,"native_commission_admission:"+result.blocker);
+            if(brokerCase) {
+                auto changed=f.brokerProposal;changed.priceCopper=61;
+                const auto invalid=sPlayerbotActionBroker.Create(changed,f.brokerEvent);
+                require(!invalid.created && invalid.reasonCode=="craft_fee_changed","direct_broker_changed_fee_must_reject");
+                const auto result=sPlayerbotActionBroker.Create(f.brokerProposal,f.brokerEvent);
+                require(result.created && result.reasonCode=="commission_queued","direct_broker_admission:"+result.reasonCode);
+                const auto replay=sPlayerbotActionBroker.Create(f.brokerProposal,f.brokerEvent);
+                require(replay.created && replay.reasonCode=="commission_queued","direct_broker_pending_replay_required");
+                f.input.put("broker_pending_replay",true);f.input.put("broker_changed_fee_rejected",true);
+            } else {
+                const auto result=sLivingActivityCoordinator.SubmitTask(f.request);
+                require(result.code==AdmissionCode::Pending,"native_commission_admission:"+result.blocker);
+            }
             f.admitted=true;return;
         }
         const auto saved=sLivingActivityCoordinator.ReadSavedTask(f.request.task.id);
         if(!saved)return;
+        if(brokerCase && !f.brokerAccepted) {
+            CommissionJob actual,expected;std::string why;
+            require(DecodeCommissionJob(saved->checkpoint.data,actual,why) &&
+                DecodeCommissionJob(f.request.task.checkpoint.data,expected,why),"direct_broker_accepted_agreement_required");
+            expected.agreement.acceptedAtMs=actual.agreement.acceptedAtMs;
+            require(EncodeCommissionContract(expected.agreement)==EncodeCommissionContract(actual.agreement),"direct_broker_agreement_changed");
+            f.input.put("agreement",EncodeCommissionContract(actual.agreement));f.input.put("broker_admission_proof",true);
+            write("commission-trade-input-v1.json",f.input);f.brokerAccepted=true;
+        }
         report=f.input;report.put("suite","activity-commission-trade-v1");report.put("boot",state.boot);
         report.put("test_only",true);report.put("independent_audit_required",true);
         report.put("activity_json",sLivingActivityCoordinator.ActorJson(f.actor));
@@ -162,6 +199,14 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
         CommissionJob job;std::string why;
         require(DecodeCommissionJob(saved->checkpoint.data,job,why),"saved_commission_job_required");
         if(saved->phase==Phase::Completed) {
+            if(brokerCase) {
+                const auto replay=sPlayerbotActionBroker.Create(f.brokerProposal,f.brokerEvent);
+                require(replay.created && replay.reasonCode=="commission_queued","direct_broker_completed_replay_required");
+                auto changed=f.brokerProposal;changed.quantity=2;
+                const auto conflict=sPlayerbotActionBroker.Create(changed,f.brokerEvent);
+                require(!conflict.created && conflict.reasonCode=="commission_agreement_conflict","direct_broker_completed_contract_immutable");
+                report.put("broker_completed_replay",true);report.put("broker_completed_conflict_rejected",true);
+            }
             require(f.offered && actor->GetItemCount(2454,true)==0 &&
                 customer->GetItemCount(2454,true)==f.input.template get<uint32_t>("recipient_items_before")+1 &&
                 actor->GetMoney()==f.input.template get<uint32_t>("actor_money_before")+60 &&
