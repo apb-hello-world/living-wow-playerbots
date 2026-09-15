@@ -75,7 +75,12 @@ bool InspectCommissionDelivery(const Task& task,const ProfessionHistory& history
             q.cod==job.agreement.feeCopper && q.entry==recipe.outputEntry && q.quantity==recipe.outputQuantity,
             "commission_sent_agreement_mismatch");
         const auto& native=after.get_child("native");
-        EnchantCodec::Object(native,{"mail","item","receiver","cod","delivered_at","expires_at","postage","customer_received","fee_paid"});
+        if(q.count>q.quantity) {
+            EnchantCodec::Object(native,{"mail","item","receiver","cod","delivered_at","expires_at","postage","customer_received","fee_paid","surplus_item","surplus_count"});
+            const auto surplus=Number(native,"surplus_item");
+            Require(surplus && surplus<=UINT32_MAX && surplus!=q.item && Number(native,"surplus_count")==q.count-q.quantity,
+                "commission_surplus_receipt_invalid");
+        } else EnchantCodec::Object(native,{"mail","item","receiver","cod","delivered_at","expires_at","postage","customer_received","fee_paid"});
         Require(Number(native,"delivered_at") && Number(native,"expires_at")>Number(native,"delivered_at") &&
             native.get<std::string>("customer_received")=="false" && native.get<std::string>("fee_paid")=="false", "commission_send_not_receipt");
         const auto mail=Number(native,"mail");Require(mail && mail<=UINT32_MAX,"commission_sent_mail_invalid");proof.mail=uint32_t(mail);
@@ -340,7 +345,8 @@ bool DecodeInterruptedCommission(const Task& saved,const ProfessionHistory& hist
     const auto& row=history.commissionMail.front();const auto& r=row.receipt;
     if(r.state!=OperationState::Reconciling || r.taskRevision!=saved.revision-1 ||
         (r.evidence!="native_save_capture_requires_reconciliation" && r.evidence!="claim_outcome_requires_reconciliation" &&
-         r.evidence!="commission_mail_native_custody_uncertain")) {why="commission_interrupted_observation_invalid";return false;}
+         r.evidence!="commission_mail_native_custody_uncertain" && r.evidence!="commission_mail_native_split_only" &&
+         r.evidence!="commission_mail_split_requires_reconciliation")) {why="commission_interrupted_observation_invalid";return false;}
     // Reuse the exact intent/claims decoder; this read-only normalization is
     // never persisted. Recovery SQL compares the ORIGINAL uncertain record.
     auto intentTask=saved;intentTask.phase=Phase::Executing;
@@ -350,6 +356,15 @@ bool DecodeInterruptedCommission(const Task& saved,const ProfessionHistory& hist
     if(!DecodeUnsentCommission(intentTask,intentHistory,claims,q,why))return false;
     if(row.afterState=="{}" && r.nativeReference.empty()){why.clear();return true;}
     try {
+        const auto observation=Parse(row.afterState);
+        if(observation.get_optional<std::string>("mail_not_sent")) {
+            EnchantCodec::Object(observation,{"mail_not_sent","surplus_item","surplus_count"});
+            const auto extra=Number(observation,"surplus_item");
+            Require(q.count>q.quantity && observation.get<std::string>("mail_not_sent")=="true" && extra && extra<=UINT32_MAX &&
+                extra!=q.item && Number(observation,"surplus_count")==q.count-q.quantity &&
+                r.nativeReference=="item:"+std::to_string(q.item),"commission_split_only_observation_invalid");
+            why.clear();return true;
+        }
         // The capture-failure path retains the native observation, without the
         // successful consumed-claims envelope. Validate it with the same send
         // receipt decoder used after ordinary execution, not a looser schema.
@@ -408,8 +423,9 @@ bool PrepareCapturedCommissionSend(const Task& saved,const WorldContext& current
     outcome.evidence="native_commission_parcel_and_postage_observed";
     std::vector<ClaimConsumption> uses;for(const auto& c:claims.claims)uses.push_back({c,c.copper?30u:uint32_t(c.quantity)});
     auto consumed=ConsumedOperationWrite(next,saved.revision,outcome,receipt,row.afterState,uses);
+    const auto surplus=q.count>q.quantity?uint32_t(Number(Parse(row.afterState),"surplus_item")):0;
     consumed.journal.statements.front()+=InterruptedCommissionGuard(saved,history,claims.claims.size())+
-        " AND EXISTS("+CommissionMailSentProof(next,q,captured,outcome.id)+')'+
+        " AND EXISTS("+CommissionMailSentProof(next,q,captured,outcome.id,surplus)+')'+
         " AND (SELECT COUNT(*) FROM mail WHERE subject="+SqlValue(captured.subject)+")=1";
     consumed.journal.statements.insert(consumed.journal.statements.begin(),
         "UPDATE living_activity_task SET actor_guid=actor_guid WHERE actor_guid="+std::to_string(saved.actor));
@@ -423,19 +439,34 @@ bool PrepareUnsentCommission(const Task& saved,const WorldContext& current,const
     if(!DecodeInterruptedCommission(saved,history,claims,q,captured,why))return false;
     why="commission_unsent_restored_context_required";
     if(!RestoredSendContext(saved,current,now,receipt))return false;
-    if(!ValidCommissionMailQuote(native) || EncodeCommissionMailQuote(native)!=EncodeCommissionMailQuote(q)) {
+    const auto& row=history.commissionMail.front();
+    const bool splitOnly=q.count>q.quantity && native.count==q.quantity &&
+        Parse(row.afterState).get_optional<std::string>("mail_not_sent").is_initialized();
+    auto compared=native;if(splitOnly)compared.count=q.count;
+    if(!ValidCommissionMailQuote(compared) || EncodeCommissionMailQuote(compared)!=EncodeCommissionMailQuote(q)) {
         why="commission_unsent_native_state_changed";return false;
     }
-    const auto& row=history.commissionMail.front();auto n=[](uint64_t value){return std::to_string(value);};
+    auto n=[](uint64_t value){return std::to_string(value);};
     std::string guard=InterruptedCommissionGuard(saved,history,claims.claims.size())+
         " AND NOT EXISTS(SELECT 1 FROM mail WHERE subject="+SqlValue(CommissionMailSubject(row.receipt.id))+')'+
         " AND NOT EXISTS(SELECT 1 FROM mail_items WHERE item_guid="+n(q.item)+')'+
         " AND NOT EXISTS(SELECT 1 FROM guild_bank_item WHERE item_guid="+n(q.item)+')'+
         " AND EXISTS(SELECT 1 FROM characters c JOIN character_inventory v ON v.guid=c.guid JOIN item_instance i ON i.guid=v.item"
         " WHERE c.guid="+n(q.sender)+" AND c.money="+n(q.moneyBefore)+" AND i.guid="+n(q.item)+
-        " AND i.owner_guid=c.guid AND i.itemEntry="+n(q.entry)+" AND i.count="+n(q.count)+
+        " AND i.owner_guid=c.guid AND i.itemEntry="+n(q.entry)+" AND i.count="+n(native.count)+
         " AND v.bag="+n(bagGuid)+" AND v.slot="+n(uint8_t(q.position))+')'+
         " AND (SELECT COUNT(*) FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id AND c.state NOT IN ('consumed','released'))="+n(claims.claims.size());
+    if(q.count>q.quantity) {
+        if(splitOnly) {
+            const auto extra=Number(Parse(row.afterState),"surplus_item");
+            guard+=" AND EXISTS(SELECT 1 FROM item_instance i JOIN character_inventory v ON v.item=i.guid WHERE i.guid="+n(extra)+
+                " AND i.owner_guid="+n(q.sender)+" AND v.guid="+n(q.sender)+" AND i.itemEntry="+n(q.entry)+
+                " AND i.count="+n(q.count-q.quantity)+" AND v.bag="+n(q.splitBagGuid)+" AND v.slot="+n(q.splitPosition&255)+')'+
+                " AND NOT EXISTS(SELECT 1 FROM mail_items WHERE item_guid="+n(extra)+')'+
+                " AND NOT EXISTS(SELECT 1 FROM guild_bank_item WHERE item_guid="+n(extra)+')';
+        } else guard+=" AND NOT EXISTS(SELECT 1 FROM character_inventory WHERE guid="+n(q.sender)+
+            " AND bag="+n(q.splitBagGuid)+" AND slot="+n(q.splitPosition&255)+')';
+    }
     for(const auto& c:claims.claims)guard+=" AND EXISTS(SELECT 1 FROM living_activity_claim c WHERE "+ConsumptionClaimPredicate(c)+')';
     auto next=saved;next.context=current;++next.revision;next.phase=Phase::Verifying;next.updatedAtMs=now;
     next.checkpoint.step="commission_mail_prepare";next.checkpoint.blocker.clear();next.retryAtMs=0;

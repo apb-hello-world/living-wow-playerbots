@@ -2395,7 +2395,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item));
             State::Pending write;
             if(item && item->GetOwnerGuid()==bot->GetObjectGuid() && Player::IsInventoryPos(item->GetPos()) &&
-                item->GetEntry()==quote.entry && item->GetCount()==quote.count && item->GetPos()==quote.position && bot->GetMoney()==quote.moneyBefore) {
+                item->GetEntry()==quote.entry && (item->GetCount()==quote.count || item->GetCount()==quote.quantity) &&
+                item->GetPos()==quote.position && bot->GetMoney()==quote.moneyBefore) {
+                quote.count=item->GetCount(); // Recovery independently validates split-only evidence and both native stacks.
                 if(!PrepareUnsentCommission(*saved,current,history,claims,quote,item->GetContainer()?item->GetContainer()->GetGUIDLow():0,
                     NowMs(),receipt,prepared,why))return stop(why);
                 write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);

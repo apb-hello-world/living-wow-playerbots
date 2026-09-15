@@ -430,4 +430,62 @@ static void CommissionMailDatabase(Connection& db) {
     assert(InspectCommissionDelivery(batchRecovered.task,collectedBatch,delivery,why) && delivery.state==CommissionDeliveryState::WaitingFee);
     assert(db.Scalar("SELECT money FROM characters WHERE guid=9982")=="880");
     assert(db.Scalar("SELECT count FROM item_instance WHERE guid=9981001")=="5");
+    // Native SplitItem preserves the ordered GUID and creates a separate
+    // owned surplus stack. Rehearse all transaction boundaries in MariaDB.
+    for(unsigned scenario=0;scenario<3;++scenario) {
+        auto splitTask=batchTask;splitTask.revision=34+scenario*4;
+        auto splitQuote=batchQuote;splitQuote.count=8;splitQuote.splitPosition=uint16_t(255u<<8|24u);
+        const auto splitBefore="{\"effects\":12,\"persistence\":1,\"native\":"+ClaimedNativeState(EncodeCommissionMailQuote(splitQuote),batchUses,8192)+'}';
+        const auto splitAfter=scenario==2 ? captureAfter.substr(0,captureAfter.size()-1)+",\"surplus_item\":9981003,\"surplus_count\":3}" :
+            std::string("{\"mail_not_sent\":true,\"surplus_item\":9981003,\"surplus_count\":3}");
+        assert(db.Execute("UPDATE living_activity_task SET revision="+std::to_string(splitTask.revision)+",phase='reconciling' WHERE task_id="+SqlValue(task.id)));
+        assert(db.Execute("DELETE FROM living_activity_operation WHERE task_id="+SqlValue(task.id)+" AND operation_id<>"+SqlValue(operation)));
+        assert(db.Execute("UPDATE living_activity_operation SET task_revision="+std::to_string(splitTask.revision-1)+
+            ",state='reconciling',before_state="+SqlValue(splitBefore)+",after_state="+SqlValue(splitAfter)+
+            ",evidence_code='native_save_capture_requires_reconciliation',native_reference="+
+            SqlValue(scenario==2?"mail:90041:item:9981001":"item:9981001")+" WHERE operation_id="+SqlValue(operation)));
+        for(const auto& c:{partA,partB,postage})assert(db.Execute("UPDATE living_activity_claim SET state='held',revision=1 WHERE claim_id="+SqlValue(c.id)));
+        assert(db.Execute("DELETE FROM mail WHERE subject="+SqlValue(sent.subject)));
+        assert(db.Execute("DELETE FROM mail_items WHERE item_guid IN (9981001,9981003)"));
+        assert(db.Execute("DELETE FROM character_inventory WHERE item IN (9981001,9981003)"));
+        assert(db.Execute("DELETE FROM item_instance WHERE guid=9981003"));
+        assert(db.Execute("UPDATE item_instance SET owner_guid="+std::to_string(scenario==2?9982:9981)+",count="+
+            std::to_string(scenario?5:8)+" WHERE guid=9981001"));
+        assert(db.Execute("UPDATE characters SET money="+std::to_string(scenario==2?470:500)+" WHERE guid=9981"));
+        if(scenario) {
+            assert(db.Execute("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES(9981003,2454,9981,3)"));
+            assert(db.Execute("INSERT INTO character_inventory(guid,bag,slot,item,item_template) VALUES(9981,0,24,9981003,2454)"));
+        }
+        if(scenario==2) {
+            assert(db.Execute("INSERT INTO mail(id,messageType,sender,receiver,money,cod,deliver_time,expire_time,subject) VALUES(90041,0,9981,9982,0,120,1120,200000,"+SqlValue(sent.subject)+')'));
+            assert(db.Execute("INSERT INTO mail_items VALUES(90041,9981001,2454,9982)"));
+        } else assert(db.Execute("INSERT INTO character_inventory(guid,bag,slot,item,item_template) VALUES(9981,0,23,9981001,2454)"));
+        claims.claims={partB,postage,partA};auto splitHistory=readHistory(splitTask);
+        const auto receipt=std::string("769b8ae6-3123-4587-8ad7-fb51b9c0193")+char('0'+scenario);
+        WritePlan plan;
+        if(scenario==2) {
+            assert(PrepareCapturedCommissionSend(splitTask,task.context,splitHistory,claims,2015000,receipt,batchRecovered,why));
+            plan=batchRecovered.plan;
+        } else {
+            auto native=splitQuote;if(scenario==1)native.count=5;
+            assert(PrepareUnsentCommission(splitTask,task.context,splitHistory,claims,native,0,2015000,receipt,recovery,why));
+            plan=recovery.plan;
+        }
+        if(scenario) {
+            assert(db.Execute("UPDATE item_instance SET count=4 WHERE guid=9981003"));assert(!db.Write(plan));
+            assert(db.Execute("UPDATE item_instance SET count=3,owner_guid=9982 WHERE guid=9981003"));assert(!db.Write(plan));
+            assert(db.Execute("UPDATE item_instance SET owner_guid=9981 WHERE guid=9981003"));
+            assert(db.Execute("UPDATE character_inventory SET slot=25 WHERE item=9981003"));assert(!db.Write(plan));
+            assert(db.Execute("UPDATE character_inventory SET slot=24 WHERE item=9981003"));
+        } else {
+            assert(db.Execute("INSERT INTO character_inventory(guid,bag,slot,item,item_template) VALUES(9981,0,24,9981003,2454)"));
+            assert(!db.Write(plan));assert(db.Execute("DELETE FROM character_inventory WHERE item=9981003"));
+        }
+        assert(db.Write(plan));assert(db.Write(plan));
+        assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(partA.id))==(scenario==2?"consumed":"held"));
+        assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(partB.id))==(scenario==2?"consumed":"held"));
+        assert(db.Scalar("SELECT SUM(count) FROM item_instance WHERE guid IN (9981001,9981003)")=="8");
+        assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")== (scenario==2?"470":"500"));
+        assert(db.Scalar("SELECT state FROM organic_economy_commission WHERE commission_id='lwc-987'")=="traveling");
+    }
 }

@@ -7,7 +7,9 @@ namespace LivingActivity {
 bool ValidCommissionMailQuote(const CommissionMailQuote& q) {
     return q.commission.size()>=5 && q.commission.size()<=36 && q.commission.compare(0,4,"lwc-")==0 &&
         q.commission.find_first_not_of("0123456789",4)==std::string::npos && q.sender && q.receiver &&
-        q.sender!=q.receiver && q.item && q.entry && q.quantity && q.quantity<=10000 && q.count==q.quantity &&
+        q.sender!=q.receiver && q.item && q.entry && q.quantity && q.quantity<=10000 && q.count>=q.quantity && q.count<=10000 &&
+        (q.count==q.quantity ? !q.splitPosition && !q.splitBagGuid : q.splitPosition && q.splitPosition!=q.position &&
+            ((q.splitPosition>>8)==255 ? !q.splitBagGuid : bool(q.splitBagGuid))) &&
         q.postage==30 && q.moneyBefore>=q.postage && q.mailbox && q.delay<=30u*86400u;
 }
 std::string EncodeCommissionMailQuote(const CommissionMailQuote& q) {
@@ -16,6 +18,7 @@ std::string EncodeCommissionMailQuote(const CommissionMailQuote& q) {
     p.put("sender",q.sender);p.put("receiver",q.receiver);p.put("item",q.item);p.put("entry",q.entry);
     p.put("quantity",q.quantity);p.put("count",q.count);p.put("money_before",q.moneyBefore);
     p.put("postage",q.postage);p.put("cod",q.cod);p.put("delay",q.delay);p.put("position",q.position);p.put("mailbox",q.mailbox);
+    if(q.count>q.quantity){p.put("split_position",q.splitPosition);p.put("split_bag_guid",q.splitBagGuid);}
     std::ostringstream out;boost::property_tree::write_json(out,p,false);return out.str();
 }
 bool DecodeCommissionMailQuote(const std::string& text,CommissionMailQuote& out) {
@@ -27,6 +30,7 @@ bool DecodeCommissionMailQuote(const std::string& text,CommissionMailQuote& out)
         q.entry=p.get<uint32_t>("entry");q.quantity=p.get<uint32_t>("quantity");q.count=p.get<uint32_t>("count");
         q.moneyBefore=p.get<uint32_t>("money_before");q.postage=p.get<uint32_t>("postage");q.cod=p.get<uint32_t>("cod");
         q.delay=p.get<uint32_t>("delay");q.position=p.get<uint16_t>("position");q.mailbox=p.get<uint64_t>("mailbox");
+        q.splitPosition=p.get<uint16_t>("split_position",0);q.splitBagGuid=p.get<uint32_t>("split_bag_guid",0);
         if(!ValidCommissionMailQuote(q) || EncodeCommissionMailQuote(q)!=text)return false;
         out=std::move(q);return true;
     } catch(const std::exception&) {return false;}
@@ -63,9 +67,16 @@ bool VerifyCommissionMailSent(const CommissionMailQuote& q,const AuctionMail& m,
         m.quantity==q.quantity && m.deliveredAt && m.expiresAt>m.deliveredAt &&
         m.subject==CommissionMailSubject(operation);
 }
-std::string CommissionMailSentProof(const Task& task,const CommissionMailQuote& q,const AuctionMail& m,const std::string& operation) {
-    if(task.actor!=q.sender || !VerifyCommissionMailSent(q,m,operation))return {};
+std::string CommissionMailSentProof(const Task& task,const CommissionMailQuote& q,const AuctionMail& m,const std::string& operation,uint32_t surplusItem) {
+    if(task.actor!=q.sender || !VerifyCommissionMailSent(q,m,operation) ||
+        (q.count>q.quantity ? !surplusItem || surplusItem==q.item : surplusItem!=0))return {};
     const auto n=[](uint64_t v){return std::to_string(v);};
+    const auto surplus=q.count>q.quantity ?
+        " AND EXISTS(SELECT 1 FROM item_instance s JOIN character_inventory v ON v.item=s.guid WHERE s.guid="+n(surplusItem)+
+        " AND s.owner_guid="+n(q.sender)+" AND v.guid="+n(q.sender)+" AND s.itemEntry="+n(q.entry)+
+        " AND s.count="+n(q.count-q.quantity)+" AND v.bag="+n(q.splitBagGuid)+" AND v.slot="+n(q.splitPosition&255)+')'+
+        " AND NOT EXISTS(SELECT 1 FROM mail_items a WHERE a.item_guid="+n(surplusItem)+')'+
+        " AND NOT EXISTS(SELECT 1 FROM guild_bank_item a WHERE a.item_guid="+n(surplusItem)+')' : std::string();
     return "SELECT "+SqlValue(task.id)+','+n(task.revision)+" FROM mail m JOIN mail_items mi ON mi.mail_id=m.id"
         " JOIN item_instance i ON i.guid=mi.item_guid WHERE m.id="+n(m.id)+
         " AND m.messageType=0 AND m.sender="+n(q.sender)+" AND m.receiver="+n(q.receiver)+
@@ -77,7 +88,7 @@ std::string CommissionMailSentProof(const Task& task,const CommissionMailQuote& 
         " AND NOT EXISTS (SELECT 1 FROM character_inventory v WHERE v.item=i.guid)"
         " AND NOT EXISTS (SELECT 1 FROM guild_bank_item g WHERE g.item_guid=i.guid)"
         " AND NOT EXISTS (SELECT 1 FROM mail_items a WHERE a.item_guid=i.guid AND a.mail_id<>m.id)"
-        " AND EXISTS (SELECT 1 FROM characters c WHERE c.guid="+n(q.sender)+" AND c.money="+n(q.moneyBefore-q.postage)+')';
+        " AND EXISTS (SELECT 1 FROM characters c WHERE c.guid="+n(q.sender)+" AND c.money="+n(q.moneyBefore-q.postage)+')'+surplus;
 }
 std::string CommissionMailOperationFromSubject(const std::string& subject) {
     const std::string prefix="Commission delivery ";

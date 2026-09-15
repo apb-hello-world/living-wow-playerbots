@@ -313,5 +313,41 @@ inline void TestCommissionMail() {
         assert(PrepareCapturedCommissionSend(batchInterrupted,batchTask.context,batchHistory,batchClaims,2002000,settlement,recovered,why));
         assert(recovered.claims.size()==3);
         for(const auto& c:recovered.claims)assert(c.after.state=="consumed");
+        // Keep the ordered GUID; only surplus is split off. Historical exact
+        // quotes still round-trip without any optional split fields.
+        auto split=batchQuote;split.count=8;split.splitPosition=uint16_t(255u<<8|24u);
+        assert(ValidCommissionMailQuote(split));
+        assert(DecodeCommissionMailQuote(EncodeCommissionMailQuote(split),decoded) && decoded.count==8);
+        assert(ExactCommissionMailConsumption(batchTask,split,batchUses));
+        assert(CommissionMailSentProof(batchTask,split,batchSent,operation).empty());
+        assert(CommissionMailSentProof(batchTask,split,batchSent,operation,split.item).empty());
+        assert(CommissionMailSentProof(batchTask,split,batchSent,operation,104).find("s.count=3")!=std::string::npos);
+        for(unsigned i=0;i<5;++i) {
+            auto bad=split;
+            if(i==0)bad.splitPosition=0;
+            if(i==1)bad.splitPosition=bad.position;
+            if(i==2)bad.splitBagGuid=88;
+            if(i==3)bad.count=5;
+            if(i==4)bad.count=10001;
+            assert(!ValidCommissionMailQuote(bad));
+        }
+        partial.beforeState="{\"effects\":12,\"persistence\":1,\"native\":"+ClaimedNativeState(EncodeCommissionMailQuote(split),batchUses,8192)+'}';
+        partial.afterState=native.substr(0,native.size()-1)+",\"surplus_item\":104,\"surplus_count\":3}";
+        assert(PrepareCapturedCommissionSend(batchInterrupted,batchTask.context,batchHistory,batchClaims,2002000,settlement,recovered,why));
+        assert(recovered.plan.statements[1].find("s.count=3")!=std::string::npos);
+        partial.afterState=native;
+        assert(!PrepareCapturedCommissionSend(batchInterrupted,batchTask.context,batchHistory,batchClaims,2002000,settlement,recovered,why));
+        partial.afterState="{\"mail_not_sent\":true,\"surplus_item\":104,\"surplus_count\":3}";
+        partial.receipt.nativeReference="item:103";partial.receipt.evidence="commission_mail_native_split_only";
+        auto splitNative=split;splitNative.count=5;
+        assert(PrepareUnsentCommission(batchInterrupted,batchTask.context,batchHistory,batchClaims,splitNative,0,2002000,settlement,settled,why));
+        assert(settled.task.phase==Phase::Verifying && settled.plan.statements[1].find("i.count=3")!=std::string::npos);
+        assert(!PrepareCapturedCommissionSend(batchInterrupted,batchTask.context,batchHistory,batchClaims,2002000,settlement,recovered,why));
+        // Rolled-back split: original stack is intact and the selected slot
+        // must be empty. Both cases keep the order claims, never consume them.
+        assert(PrepareUnsentCommission(batchInterrupted,batchTask.context,batchHistory,batchClaims,split,0,2002000,settlement,settled,why));
+        assert(settled.plan.statements[1].find("AND slot=24")!=std::string::npos);
+        partial.afterState="{\"mail_not_sent\":true,\"surplus_item\":104,\"surplus_count\":4}";
+        assert(!PrepareUnsentCommission(batchInterrupted,batchTask.context,batchHistory,batchClaims,splitNative,0,2002000,settlement,settled,why));
     }
 }

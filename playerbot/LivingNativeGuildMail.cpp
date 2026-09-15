@@ -1,5 +1,6 @@
 #include "botpch.h"
 #include "LivingNativeGuildMail.h"
+#include "LivingNativeParcelSlot.h"
 #include "LivingNativeMailCollection.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
@@ -47,25 +48,6 @@ Player* EligibleRecipient(Player& sender,Guild& guild,Item& item,uint32_t actor,
     // The recipient checks actual space before any native deposit operation.
     blocker.clear();return p;
 }
-bool EmptyParcelSlot(Player& actor,Item& item,uint32_t quantity,uint16_t& result) {
-    auto fits=[&](uint8_t bag,uint8_t slot) {
-        const auto position=uint16_t(uint16_t(bag)<<8|slot);
-        if(actor.GetItemByPos(position) || !Player::IsInventoryPos(position))return false;
-        ItemPosCountVec positions;
-        // Conservative preflight; the native split revalidates the cloned
-        // item's exact restrictions before it changes either stack.
-        if(actor.CanStoreNewItem(bag,slot,positions,item.GetEntry(),quantity)!=EQUIP_ERR_OK ||
-            positions.size()!=1 || positions[0].pos!=position || positions[0].count!=quantity)return false;
-        result=position;return true;
-    };
-    for(uint8_t slot=INVENTORY_SLOT_ITEM_START;slot<INVENTORY_SLOT_ITEM_END;++slot)
-        if(fits(INVENTORY_SLOT_BAG_0,slot))return true;
-    for(uint8_t bag=INVENTORY_SLOT_BAG_START;bag<INVENTORY_SLOT_BAG_END;++bag) {
-        auto* container=static_cast<Bag*>(actor.GetItemByPos(INVENTORY_SLOT_BAG_0,bag));
-        if(container)for(uint8_t slot=0;slot<container->GetBagSize();++slot)if(fits(bag,slot))return true;
-    }
-    return false;
-}
 bool FreshDelivery(const GuildMailQuote& q) {
     auto rows=CharacterDatabase.PQuery("SELECT d.delivery_id FROM guild_society_supply_delivery d "
         "JOIN guild_society_supply_goal g ON g.goal_id=d.goal_id AND g.guild_id=d.guild_id "
@@ -111,7 +93,7 @@ bool PlanNativeGuildMail(Player& actor,const Task& task,GuildMailQuote& q,std::v
     q.job=carry.job;q.sender=task.actor;q.item=item->GetGUIDLow();
     if(item->GetCount()>carry.job.quantity) {
         q.sourceCount=item->GetCount();
-        if(!EmptyParcelSlot(actor,*item,carry.job.quantity,q.splitPosition))return reject("guild_mail_split_capacity_required");
+        if(!EmptyNativeParcelSlot(actor,*item,carry.job.quantity,q.splitPosition))return reject("guild_mail_split_capacity_required");
     }
     for(const auto& c:claims.claims) {
         if(c.location=="money") {

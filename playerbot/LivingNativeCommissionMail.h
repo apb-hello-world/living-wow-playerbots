@@ -31,5 +31,6 @@ private:
     CommissionMailQuote quote;
     AuctionMail sent;
     std::string operation;
+    uint32_t surplusItem=0;
 };
 }

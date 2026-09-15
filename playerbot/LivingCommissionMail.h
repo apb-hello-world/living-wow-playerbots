@@ -11,6 +11,10 @@ struct CommissionMailQuote {
     uint32_t moneyBefore=0,postage=0,cod=0,delay=0;
     uint16_t position=0;
     uint64_t mailbox=0;
+    // Split surplus OFF the original GUID, so ordered claims and every native
+    // mail/return receipt retain their identity. Absent for historical quotes.
+    uint16_t splitPosition=0;
+    uint32_t splitBagGuid=0;
 };
 bool ValidCommissionMailQuote(const CommissionMailQuote&);
 std::string EncodeCommissionMailQuote(const CommissionMailQuote&);
@@ -18,7 +22,7 @@ bool DecodeCommissionMailQuote(const std::string&,CommissionMailQuote&);
 bool ExactCommissionMailConsumption(const Task&,const CommissionMailQuote&,const std::vector<ClaimConsumption>&);
 std::string CommissionMailSubject(const std::string& operation);
 bool VerifyCommissionMailSent(const CommissionMailQuote&,const AuctionMail&,const std::string& operation);
-std::string CommissionMailSentProof(const Task&,const CommissionMailQuote&,const AuctionMail&,const std::string& operation);
+std::string CommissionMailSentProof(const Task&,const CommissionMailQuote&,const AuctionMail&,const std::string& operation,uint32_t surplusItem=0);
 
 // Post-success native observations. These do not admit work, move possessions,
 // change task state, or substitute for the original verified send operation.
