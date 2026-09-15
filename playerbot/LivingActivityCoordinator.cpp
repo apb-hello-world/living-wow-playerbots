@@ -4051,8 +4051,9 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
     if (state->authority.Authorize({0, Lane::Managed, true}, current, now, &predecessor, &request.authorization) != AuthorityCode::Allowed)
         return reject(AdmissionCode::StaleContext, "current_predecessor_lease_required");
     try {
-        if (bot->GetTradeData() || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker))
-            return reject(AdmissionCode::InvalidRequest,bot->GetTradeData() ? "native_trade_in_progress" : blocker);
+        const bool otherTrade=bot->GetTradeData() && !(request.kind=="commission_trade" && adapter.SupportsCommissionTrade());
+        if (otherTrade || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker))
+            return reject(AdmissionCode::InvalidRequest,otherTrade ? "native_trade_in_progress" : blocker);
         if (!adapter.ValidateNative(*bot, request, blocker))
             return reject(AdmissionCode::InvalidRequest, IsToken(blocker) ? blocker : "native_prerequisite_unavailable");
     } catch (const std::exception&) { return reject(AdmissionCode::InvalidRequest, "native_validation_failed"); }
@@ -4149,10 +4150,11 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
     std::vector<VerifiedItemGain> nativeGains;
     bool nativeTransactionOpen = false;
     try {
-        if (bot->GetTradeData() || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker) ||
+        const bool otherTrade=bot->GetTradeData() && !(request.kind=="commission_trade" && adapter.SupportsCommissionTrade());
+        if (otherTrade || !ValidateOperationResources(request,state->resources,NativeConsumptionBalances(*bot,request),blocker) ||
             !adapter.ValidateNative(*bot, request, blocker)) {
             observation.state = OperationState::Rejected;
-            observation.evidence = bot->GetTradeData() ? "native_trade_in_progress" :
+            observation.evidence = otherTrade ? "native_trade_in_progress" :
                 (IsToken(blocker) ? blocker : "native_prerequisite_changed");
         } else if (state->authority.BeginDispatch(held, id, monotonic).code == AuthorityCode::Allowed) {
             auto executing = saved->second; executing.ownerGeneration = held.generation;
@@ -4311,7 +4313,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     pending.uncertain = observation.state == OperationState::Reconciling;
     if(pending.uncertain && pending.relatedGuild)pending.saveBlocked=true;
     if (pending.uncertain && (!request.itemGain.Empty() || !request.mailGain.Empty() || request.kind=="guild_mail_send" ||
-        request.kind=="commission_mail_send")) pending.saveBlocked=true;
+        request.kind=="commission_mail_send" || request.kind=="commission_trade")) pending.saveBlocked=true;
     if (pending.uncertain && !request.itemTransfer.id.empty()) {
         // An uncertain merge may have consumed the old GUID. Protecting that
         // GUID alone is insufficient; stop consumers until native evidence is

@@ -8,7 +8,7 @@
 using namespace LivingActivity;
 struct TestAdapter final : NativeOperationAdapter {
     std::string kind;uint32_t effects=0;NativePersistence persistence=NativePersistence::Inventory;
-    bool consumes=false,gains=false,transfers=false,mail=false,guildMail=false,cast=false;
+    bool consumes=false,gains=false,transfers=false,mail=false,guildMail=false,cast=false,trade=false;
     explicit TestAdapter(const OperationRequest& r):kind(r.kind),effects(r.effects),persistence(r.persistence) {}
     const char* OperationKind()const override{return kind.c_str();}
     uint32_t OperationEffects()const override{return effects;}
@@ -18,13 +18,16 @@ struct TestAdapter final : NativeOperationAdapter {
     bool SupportsItemTransfer()const override{return transfers;}
     bool SupportsMailGain()const override{return mail;}
     bool SupportsGuildMailHandoff()const override{return guildMail;}
+    bool SupportsCommissionTrade()const override{return trade;}
     bool DeferredNativeCast()const override{return cast;}
     bool ValidateNative(Player&,const OperationRequest&,std::string&)override{assert(false);return false;}
     NativeObservation ExecuteNative(Player&,const OperationRequest&)override{assert(false);return {};}
 };
 #include "fixtures/CommissionMail.h"
+#include "fixtures/CommissionTrade.h"
 int main() {
     TestCommissionMail();
+    TestCommissionTradeOperation();
     Task saved; saved.id = saved.root = "637bd562-36d2-5b01-bc01-e2d831c49f38";
     saved.actor = saved.context.actor = 497; saved.source = "service_job"; saved.sourceKey = "497:2881:41";
     saved.context.boot = "ff2efbdf-f0ec-4539-b840-299847970c00";

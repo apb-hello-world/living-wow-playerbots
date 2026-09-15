@@ -48,6 +48,7 @@ namespace LivingActivity {
         virtual bool SupportsMailGain() const { return false; }
         virtual bool SupportsGuildMailHandoff() const { return false; }
         virtual bool SupportsCommissionMailSend() const { return false; }
+        virtual bool SupportsCommissionTrade() const { return false; }
         // Native mail may pay a seller/refund another bidder. Hold their later
         // native saves/mail mutations until this same receipt is acknowledged.
         virtual std::vector<uint32_t> RelatedActors() const {return {};}

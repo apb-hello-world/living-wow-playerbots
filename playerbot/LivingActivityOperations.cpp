@@ -2,6 +2,7 @@
 #include "LivingActivityTransfer.h"
 #include "LivingGuildMailHandoff.h"
 #include "LivingCommissionMail.h"
+#include "LivingCommissionTradeContract.h"
 #include "LivingLootQuote.h"
 #include "LivingGatherQuote.h"
 #include "LivingRepairQuote.h"
@@ -20,6 +21,16 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(request.kind=="commission_trade") {
+                CommissionTradeQuote quote;
+                if(!DecodeCommissionTradeQuote(request.beforeState,quote) ||
+                    !ExactCommissionTradeConsumption(request.transition.task,quote,request.consumption) ||
+                    request.transition.task.checkpoint.step!="commission_trade" ||
+                    request.effects!=(Mask(Effect::Inventory)|Mask(Effect::Money)) ||
+                    request.persistence!=NativePersistence::Inventory || !request.mailGain.Empty() ||
+                    !request.itemGain.Empty() || !request.itemTransfer.id.empty())
+                    throw std::invalid_argument("Exact commission trade and reserved output contract required");
+            }
             if(request.kind=="commission_mail_send") {
                 CommissionMailQuote quote;
                 if(!DecodeCommissionMailQuote(request.beforeState,quote) ||
@@ -118,6 +129,11 @@ namespace LivingActivity {
             return reject("native_mail_gain_adapter_not_supported");
         if(request.kind=="guild_mail_send" && !adapter.SupportsGuildMailHandoff())return reject("native_guild_mail_adapter_required");
         if(request.kind=="commission_mail_send" && !adapter.SupportsCommissionMailSend())return reject("native_commission_mail_adapter_required");
+        if(request.kind=="commission_trade") {
+            if(!adapter.SupportsCommissionTrade() || adapter.DeferredNativeCast())return reject("native_commission_trade_adapter_required");
+            try {NativeBefore(request);}catch(const std::exception&){return reject("invalid_commission_trade_contract");}
+        }
+        if(adapter.SupportsCommissionTrade() && request.kind!="commission_trade")return reject("native_commission_trade_adapter_mismatch");
         blocker.clear();return true;
     }
     bool ValidateOperationRequest(const OperationRequest& request, const Task& saved,
