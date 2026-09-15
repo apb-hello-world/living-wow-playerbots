@@ -16,6 +16,9 @@ namespace LivingActivity {
     public:
         virtual ~NativeReservationAdapter() = default;
         virtual bool ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& blocker) = 0;
+        // Optional compiled predicate rechecked in the reservation transaction.
+        // Never supplied by a player/model or used to execute native effects.
+        virtual std::string PersistedPurposeGuard() const {return {};}
     };
 }
 #endif

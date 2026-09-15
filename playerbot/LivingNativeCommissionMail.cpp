@@ -1,5 +1,6 @@
 #include "botpch.h"
 #include "LivingNativeCommissionMail.h"
+#include "LivingCommissionSettlement.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingNativeMailCollection.h"
@@ -80,6 +81,26 @@ bool PlanNativeCommissionMail(Player& actor,const Task& task,CommissionMailQuote
     if(!ValidCommissionMailQuote(q))return reject("commission_mail_quote_invalid");
     uses.push_back({output,q.quantity});if(!postage.id.empty())uses.push_back({postage,30});
     why.clear();return true;
+}
+bool NativeCommissionReturnReservation::ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& why) {
+    guard=" AND 1=0";
+    const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);
+    ProfessionHistory history;ResourceClaim expected;UnsettledClaimBatch claims;NativeResourceBalance native;
+    if(!saved || saved->revision!=request.transition.expectedRevision || saved->phase!=Phase::Preparing ||
+        request.transition.task.checkpoint.step!="commission_return_collect" || request.changes.size()!=1 ||
+        !sLivingActivityCoordinator.ReadProfessionHistory(actor.GetGUIDLow(),saved->id,saved->revision,history,why) ||
+        !ReturnedCommissionClaim(*saved,history,expected,why) ||
+        !sLivingActivityCoordinator.ReadTaskClaims(actor.GetGUIDLow(),saved->id,saved->revision,claims,why))return false;
+    const auto& change=request.changes.front();
+    if(!claims.complete || !claims.claims.empty() || change.expectedRevision || !SameResourceClaim(change.after,expected) ||
+        !ReadNativeMailBalance(actor,expected,native)) {why="commission_return_attachment_changed";return false;}
+    const auto* mail=actor.GetMail(uint32_t(expected.nativeReference));
+    CommissionDeliveryProof proof;
+    if(!InspectCommissionDelivery(*saved,history,proof,why))return false;
+    if(!mail || mail->COD || mail->money || mail->sender!=proof.quote.receiver ||
+        mail->subject!=CommissionMailSubject(proof.send) || mail->items.size()!=1 ||
+        !(mail->checked&MAIL_CHECK_MASK_RETURNED)) {why="commission_return_envelope_changed";return false;}
+    guard=ReturnedCommissionClaimGuard(*saved,history,expected);why.clear();return true;
 }
 bool NativeCommissionMailReservation::ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& why) {
     const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);

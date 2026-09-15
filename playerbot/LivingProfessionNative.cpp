@@ -149,6 +149,11 @@ namespace LivingActivity {
         if (unavailable) unavailable->clear();
         if (!ReadTaskItemRequirements(task,items,blocker)) return false;
         if (!IsProfessionJob(task)) return true;
+        if(IsCommissionJob(task)) {
+            CommissionJob job;
+            if(!DecodeCommissionJob(task.checkpoint.data,job,blocker))return false;
+            if(job.craftFinishedRevision)return true; // Delivery needs its output, not another crafting tool trip.
+        }
         std::vector<ProfessionReagent> tools;std::string missing;
         if (!ReadNativeProfessionTools(actor,task,tools,missing,blocker)) return false;
         if (unavailable) *unavailable=missing;

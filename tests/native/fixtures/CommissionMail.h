@@ -177,6 +177,14 @@ inline void TestCommissionMail() {
     }
     auto returnedHistory=history;returnedHistory.commissionMail={sendRow,eventRow(returned,"commission_parcel_returned")};
     assert(InspectCommissionDelivery(owner,returnedHistory,delivered,why) && delivered.state==CommissionDeliveryState::Returned);
+    ResourceClaim returnedClaim;
+    assert(ReturnedCommissionClaim(owner,returnedHistory,returnedClaim,why));
+    assert(returnedClaim.id==delivered.returned && returnedClaim.task==owner.id && returnedClaim.actor==owner.actor);
+    assert(returnedClaim.itemGuid==q.item && returnedClaim.itemEntry==q.entry && returnedClaim.quantity==q.quantity);
+    assert(returnedClaim.nativeReference==9834 && returnedClaim.location=="mail" && returnedClaim.state=="held");
+    auto staleReturn=returnedHistory;staleReturn.revision--;
+    assert(!ReturnedCommissionClaim(owner,staleReturn,returnedClaim,why));
+    assert(!ReturnedCommissionClaim(owner,history,returnedClaim,why));
     assert(PrepareCommissionSettlement(owner,owner.context,returnedHistory,claims,2002000,settlement,settled,why));
     assert(settled.task.phase==Phase::Reconciling && settled.task.checkpoint.blocker=="commission_returned_parcel_reconciliation_required");
     claims.claims={item};assert(!PrepareCommissionSettlement(owner,owner.context,history,claims,2002000,settlement,settled,why));

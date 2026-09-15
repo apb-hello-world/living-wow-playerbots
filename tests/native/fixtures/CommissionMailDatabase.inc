@@ -237,4 +237,31 @@ static void CommissionMailDatabase(Connection& db) {
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+SqlValue(task.id)+" AND state='held'")=="2");
     assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="500");
     assert(db.Scalar("SELECT guid FROM character_inventory WHERE item=9981001")=="9981");
+
+    // A supplied later return creates a collection reservation, never bag stock
+    // or delivery completion. Exercise the existing reservation SQL unchanged.
+    auto awaiting=task;awaiting.revision=15;awaiting.phase=Phase::Preparing;awaiting.checkpoint.step="commission_return_collect";
+    assert(db.Execute("UPDATE living_activity_task SET revision=15,phase='preparing',step='commission_return_collect' WHERE task_id="+SqlValue(task.id)));
+    assert(db.Execute("UPDATE living_activity_operation SET task_revision=13,state='verified',native_reference='mail:90031:item:9981001',"
+        "evidence_code='native_commission_parcel_and_postage_observed',after_state="+SqlValue(sentAfter)+" WHERE operation_id="+SqlValue(operation)));
+    assert(db.Execute("UPDATE living_activity_claim SET state='consumed' WHERE task_id="+SqlValue(task.id)));
+    assert(db.Execute("DELETE FROM character_inventory WHERE item=9981001"));
+    assert(db.Execute("INSERT INTO mail(id,messageType,sender,receiver,money,cod,deliver_time,expire_time,subject,checked) VALUES(90033,0,9982,9981,0,0,1120,200000,"+SqlValue(sent.subject)+",2)"));
+    assert(db.Execute("INSERT INTO mail_items VALUES(90033,9981001,2454,9981)"));
+    assert(db.Execute(returnSql));assert(receiptCount(returnId)=="1");
+    const auto returnedRows=readHistory(awaiting);ResourceClaim returnedClaim;
+    assert(ReturnedCommissionClaim(awaiting,returnedRows,returnedClaim,why));
+    auto reserved=awaiting;++reserved.revision;reserved.updatedAtMs=2004000;
+    NativeResourceBalance returnedBalance{9981,9981001,2454,1,0,"mail",90033};
+    auto reservation=ResourceReservationWrite(reserved,15,"769b8ae6-3123-4587-8ad7-fb51b9c01910",{{returnedClaim,0}},{returnedBalance});
+    reservation.statements.at(1)+=ReturnedCommissionClaimGuard(awaiting,returnedRows,returnedClaim);
+    assert(db.Execute("UPDATE mail SET receiver=9982 WHERE id=90033"));assert(!db.Write(reservation));
+    assert(db.Execute("UPDATE mail SET receiver=9981 WHERE id=90033"));
+    assert(db.Execute("UPDATE item_instance SET owner_guid=9982 WHERE guid=9981001"));assert(!db.Write(reservation));
+    assert(db.Execute("UPDATE item_instance SET owner_guid=9981 WHERE guid=9981001"));
+    assert(db.Write(reservation));assert(db.Write(reservation));
+    assert(db.Scalar("SELECT location FROM living_activity_claim WHERE claim_id="+SqlValue(returnedClaim.id))=="mail");
+    assert(db.Scalar("SELECT COUNT(*) FROM character_inventory WHERE item=9981001")=="0");
+    assert(db.Scalar("SELECT COUNT(*) FROM mail_items WHERE item_guid=9981001 AND mail_id=90033")=="1");
+    assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="500");
 }

@@ -2294,6 +2294,55 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     for(const auto& write:state->pending)if(write.task.actor==actor)return stop("commission_delivery_write_pending");
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
     if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld())return stop("commission_delivery_actor_unavailable");
+    // Returned parcels use the existing service executor and claim transfer.
+    // Do not dispatch the original send while this branch owns collection.
+    for(const auto& op:state->operations)if(op.second.request.transition.task.id==id && op.second.request.kind!="commission_mail_send") {
+        const auto service=DispatchPendingItemService(actor,id);
+        return stop(service?service->blocker:"commission_return_operation_requires_reconciliation");
+    }
+    if(saved->phase==Phase::Executing && saved->checkpoint.step=="profession_mail_collect" && saved->context.boot.empty())
+        return stop(RevalidateProfessionPreparation(actor,id,saved->revision,NewId()).blocker);
+    if(saved->phase!=Phase::Executing && saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot)) {
+        ProfessionHistory history;ResourceClaim parcel;
+        if(!ReadProfessionHistory(actor,id,saved->revision,history,why))return stop(why);
+        if(ReturnedCommissionClaim(*saved,history,parcel,why)) {
+            if(DefersNativeSave(actor) || state->operationDispatching)return stop("commission_native_save_pending");
+            UnsettledClaimBatch claims;
+            if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
+            if(!claims.complete)return stop("commission_return_claims_pending");
+            if(saved->phase==Phase::Reconciling || saved->phase==Phase::Paused || saved->phase==Phase::Deferred ||
+                saved->phase==Phase::WaitingExternal || (saved->phase==Phase::Verifying && claims.claims.empty())) {
+                if(NativeSafety(bot))return stop("commission_return_safety_pause");
+                if(saved->retryAtMs>NowMs())return stop("commission_return_retry_wait");
+                TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
+                ++request.task.revision;request.task.phase=Phase::Preparing;request.task.updatedAtMs=NowMs();
+                request.task.checkpoint.step="commission_return_collect";request.task.checkpoint.blocker.clear();
+                request.task.retryAtMs=0;request.receipt=NewId();return stop(SubmitTask(request).blocker);
+            }
+            if(claims.claims.empty()) {
+                if(saved->phase!=Phase::Preparing)return stop("commission_return_preparation_required");
+                const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"commission_return_collect");
+                if(!grant.Permitted())return stop(grant.blocker);
+                ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+                ++request.transition.task.revision;request.transition.task.updatedAtMs=NowMs();request.transition.receipt=NewId();
+                request.transition.task.checkpoint.step="commission_return_collect";
+                request.authorization=grant.action;request.changes.push_back({parcel,0});
+                NativeCommissionReturnReservation adapter;return stop(SubmitResourceReservation(request,adapter).blocker);
+            }
+            for(const auto& claim:claims.claims)if(claim.id==parcel.id) {
+                if(claim.actor!=actor || claim.itemEntry!=parcel.itemEntry || claim.quantity!=parcel.quantity || claim.state!="held")
+                    return stop("commission_return_claim_changed");
+                if(claim.location=="mail" && claim.nativeReference==parcel.nativeReference && claim.itemGuid==parcel.itemGuid)
+                    return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{parcel.itemEntry,uint32_t(parcel.quantity)}).blocker);
+                if(claim.location=="bags" && !claim.nativeReference) {
+                    const auto owned=state->authority.Read(actor);if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+                    return stop("commission_return_collected_closure_pending");
+                }
+                return stop("commission_return_custody_requires_reconciliation");
+            }
+            return stop("commission_return_claim_missing");
+        }
+    }
     if((saved->phase==Phase::Verifying || saved->phase==Phase::WaitingExternal || saved->phase==Phase::Reconciling) &&
         (saved->checkpoint.step=="commission_mail_send" || saved->checkpoint.step=="commission_mail_wait")) {
         if(DefersNativeSave(actor) || state->operationDispatching)return stop("commission_native_save_pending");
@@ -2726,6 +2775,7 @@ AdmissionResult LivingActivityCoordinator::SubmitResourceReservation(const Reser
         for (const auto& change : request.changes) claims.push_back(change.after);
         balances=NativeClaimBalances(*bot,claims);
         auto plan=ResourceReservationWrite(next,request.transition.expectedRevision,request.transition.receipt,request.changes,balances);
+        plan.statements.at(1)+=adapter.PersistedPurposeGuard(); // After actor lock, before claim/outbox writes.
         State::Pending write{next,std::move(plan),request.transition.receipt};
         write.reservation=request.transition.receipt; write.claims=request.changes;
         reservationStarted=true;

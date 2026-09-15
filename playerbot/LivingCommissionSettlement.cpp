@@ -115,7 +115,7 @@ bool InspectCommissionDelivery(const Task& task,const ProfessionHistory& history
                     Number(p,"sender")==q.receiver && Number(p,"receiver")==q.sender && Number(p,"item")==q.item &&
                     Number(p,"entry")==q.entry && Number(p,"quantity")==q.quantity && !copper && !payment,
                     "commission_return_receipt_mismatch");
-                proof.returned=r.id;
+                proof.returned=r.id;proof.returnedMail=uint32_t(eventMail);
             } else throw std::invalid_argument("commission_delivery_unknown_event");
         }
         Require(proof.returned.empty() || (proof.received.empty() && proof.fee.empty()),"commission_conflicting_custody_receipts");
@@ -130,6 +130,35 @@ bool InspectCommissionDelivery(const Task& task,const ProfessionHistory& history
     } catch(const std::invalid_argument& e) {why=e.what();}
       catch(const std::exception&) {why="commission_delivery_receipt_malformed";}
     return false;
+}
+bool ReturnedCommissionClaim(const Task& task,const ProfessionHistory& history,ResourceClaim& result,std::string& why) {
+    result={};CommissionDeliveryProof proof;
+    if(!InspectCommissionDelivery(task,history,proof,why))return false;
+    if(proof.state!=CommissionDeliveryState::Returned || !proof.returnedMail) {why="commission_verified_return_required";return false;}
+    ResourceClaim c;c.id=proof.returned;c.task=task.id;c.actor=task.actor;
+    c.itemGuid=proof.quote.item;c.itemEntry=proof.quote.entry;c.quantity=proof.quote.quantity;
+    c.location="mail";c.nativeReference=proof.returnedMail;c.state="held";
+    if(!ValidResourceClaim(c)){why="commission_return_claim_invalid";return false;}
+    result=std::move(c);why.clear();return true;
+}
+std::string ReturnedCommissionClaimGuard(const Task& task,const ProfessionHistory& history,const ResourceClaim& claim) {
+    ResourceClaim exact;std::string why;
+    if(!ReturnedCommissionClaim(task,history,exact,why) || !SameResourceClaim(exact,claim))return " AND 1=0";
+    CommissionDeliveryProof proof;if(!InspectCommissionDelivery(task,history,proof,why))return " AND 1=0";
+    auto n=[](uint64_t v){return std::to_string(v);};
+    std::string guard=" AND EXISTS(SELECT 1 FROM mail m JOIN mail_items a ON a.mail_id=m.id JOIN item_instance i ON i.guid=a.item_guid"
+        " WHERE m.id="+n(claim.nativeReference)+" AND m.messageType=0 AND m.receiver="+n(task.actor)+
+        " AND m.sender="+n(proof.quote.receiver)+" AND m.money=0 AND m.cod=0 AND (m.checked&2)=2 AND m.subject="+
+        SqlValue(CommissionMailSubject(proof.send))+" AND a.receiver=m.receiver AND a.item_guid="+n(claim.itemGuid)+
+        " AND a.item_template="+n(claim.itemEntry)+" AND i.owner_guid=m.receiver AND i.itemEntry=a.item_template AND i.count="+n(claim.quantity)+')'+
+        " AND (SELECT COUNT(*) FROM mail_items WHERE mail_id="+n(claim.nativeReference)+")=1"
+        " AND NOT EXISTS(SELECT 1 FROM character_inventory WHERE item="+n(claim.itemGuid)+')'+
+        " AND NOT EXISTS(SELECT 1 FROM guild_bank_item WHERE item_guid="+n(claim.itemGuid)+')';
+    for(const auto& row:history.commissionMail)guard+=" AND EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+
+        SqlValue(row.receipt.id)+" AND o.task_id=living_activity_task.task_id AND o.state='verified' AND o.kind="+
+        SqlValue(row.receipt.kind)+" AND o.native_reference="+SqlValue(row.receipt.nativeReference)+
+        " AND o.evidence_code="+SqlValue(row.receipt.evidence)+" AND SHA2(CONCAT(o.before_state,'|',o.after_state),256)="+SqlValue(row.journalDigest)+')';
+    return guard;
 }
 bool DecodeUnsentCommission(const Task& task,const ProfessionHistory& history,const UnsettledClaimBatch& claims,
     CommissionMailQuote& quote,std::string& why) {

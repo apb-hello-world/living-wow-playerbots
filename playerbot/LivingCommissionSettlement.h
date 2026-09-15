@@ -9,9 +9,11 @@ struct CommissionDeliveryProof {
     CommissionDeliveryState state=CommissionDeliveryState::WaitingCustomer;
     CommissionMailQuote quote;
     std::string send,received,fee,returned;
-    uint32_t mail=0,paymentMail=0;
+    uint32_t mail=0,paymentMail=0,returnedMail=0;
 };
 bool InspectCommissionDelivery(const Task&,const ProfessionHistory&,CommissionDeliveryProof&,std::string&);
+bool ReturnedCommissionClaim(const Task&,const ProfessionHistory&,ResourceClaim&,std::string&);
+std::string ReturnedCommissionClaimGuard(const Task&,const ProfessionHistory&,const ResourceClaim&);
 // Receipt-guarded metadata only: no new scheduler, native operation or resource
 // movement. Empty unsettled claims and exact persisted receipts are required.
 bool PrepareCommissionSettlement(const Task&,const WorldContext&,const ProfessionHistory&,
