@@ -5,6 +5,7 @@
 #include <limits>
 #include <stdexcept>
 #include <tuple>
+#include <openssl/sha.h>
 
 namespace LivingActivity
 {
@@ -203,7 +204,16 @@ namespace LivingActivity
         WritePlan plan;
         plan.task = task.id; plan.revision = task.revision;
         const auto id = SqlValue(task.id), rid = SqlValue(receipt);
-        const auto hash = "SHA2(" + SqlValue(fingerprint) + ",256)";
+        // Hash the SAME bytes as MariaDB SHA2(hex_literal,256), once. Expanding
+        // the full checkpoint/operation fingerprint into each claim's receipt
+        // predicate multiplies its size and can exceed native query bounds.
+        // Keep the stored hash and duplicate-request semantics unchanged.
+        unsigned char digest[SHA256_DIGEST_LENGTH];
+        SHA256(reinterpret_cast<const unsigned char*>(fingerprint.data()),fingerprint.size(),digest);
+        static constexpr char hex[]="0123456789abcdef";
+        std::string digestHex;digestHex.reserve(SHA256_DIGEST_LENGTH*2);
+        for(const auto byte:digest){digestHex+=hex[byte>>4];digestHex+=hex[byte&15];}
+        const auto hash = SqlValue(digestHex);
         if (!expected && Terminal(task.phase)) throw std::invalid_argument("New tasks cannot be terminal");
         if (!expected)
             plan.statements.push_back("INSERT INTO living_activity_task (" + columns + ") VALUES (" + values +

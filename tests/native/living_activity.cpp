@@ -227,7 +227,8 @@ int main() {
     assert(plan.statements.size() == 2 && !plan.receiptQuery.empty());
     assert(!ReceiptMatches(plan, "", 0)); // Queued SQL / failed transaction is NOT a receipt.
     assert(!ReceiptMatches(plan, Id, 2)); assert(ReceiptMatches(plan, Id, 1));
-    assert(plan.receiptQuery.find("request_hash=SHA2(") != std::string::npos);
+    assert(plan.receiptQuery.find("request_hash=X'") != std::string::npos);
+    assert(plan.receiptQuery.size()<400); // No repeated checkpoint fingerprint.
     bool rejected = false;
     try { TaskWrite(task, 1, Receipt, "stale"); } catch (const std::invalid_argument&) { rejected = true; }
     assert(rejected);

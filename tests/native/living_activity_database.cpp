@@ -124,6 +124,18 @@ int main() {
     assert(!db.Write(create, true));
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_task") == "0");
     assert(db.Write(create)); assert(db.Write(create));
+    // Compatibility with the exact legacy SHA2 fingerprint, computed by
+    // MariaDB independently. SQL values are hex literals or integers, so the
+    // generated INSERT column/value lists have no embedded commas.
+    const auto& insert=create.statements.front();
+    const auto columnsBegin=insert.find('(')+1,columnsEnd=insert.find(')',columnsBegin);
+    const auto valuesBegin=insert.find("VALUES (")+8,valuesEnd=insert.find(')',valuesBegin);
+    std::istringstream columns(insert.substr(columnsBegin,columnsEnd-columnsBegin));
+    std::istringstream values(insert.substr(valuesBegin,valuesEnd-valuesBegin));
+    std::string column,value,legacyFingerprint="legacy_observed:0:"+SqlValue("");
+    while(std::getline(columns,column,',')){assert(bool(std::getline(values,value,',')));
+        legacyFingerprint+='|'+column+'='+value;}
+    assert(db.Scalar("SELECT request_hash=SHA2("+SqlValue(legacyFingerprint)+",256) FROM living_activity_transition WHERE transition_id="+SqlValue(Receipt))=="1");
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_task") == "1");
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_transition") == "1");
     auto changed = task; changed.checkpoint.data = "{}";

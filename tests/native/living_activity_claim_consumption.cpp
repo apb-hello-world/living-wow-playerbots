@@ -28,6 +28,15 @@ int main() {
     assert(plan.journal.statements.back().find("request_hash=") != std::string::npos);
     auto changed=ConsumedOperationWrite(task,3,result,receipt,"{}",{{item,3},{money,30}});
     assert(changed.journal.receiptQuery != plan.journal.receiptQuery);
+    // Maximum permitted claim batch and a large checkpoint must still fit
+    // native persistence without increasing its 30,000-byte proof bound.
+    auto large=task;large.checkpoint.data="{\"note\":\""+std::string(3800,'x')+"\"}";
+    std::vector<ClaimConsumption> maximum;
+    for(unsigned i=0;i<16;++i){auto c=item;c.id.back()="0123456789abcdef"[i];
+        c.itemGuid+=i;maximum.push_back({c,1});}
+    const auto bounded=ConsumedOperationWrite(large,3,result,receipt,"{}",maximum);
+    assert(bounded.journal.receiptQuery.size()<30000);
+    for(const auto& sql:bounded.journal.statements)assert(sql.size()<32768);
     auto fails=[&](const std::vector<ClaimConsumption>& claims) {
         bool rejected=false; try {ConsumedOperationWrite(task,3,result,receipt,"{}",claims);}
         catch(const std::invalid_argument&){rejected=true;} assert(rejected);

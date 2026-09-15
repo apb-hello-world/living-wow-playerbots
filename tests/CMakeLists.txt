@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
 project(LivingPlayerbotsNativeTests LANGUAGES CXX)
+find_package(OpenSSL REQUIRED)
+# The actual activity journal uses the core's existing SHA-256 dependency.
+link_libraries(OpenSSL::Crypto)
 enable_testing()
 add_executable(living_gather_custody native/living_gather_custody.cpp)
 target_include_directories(living_gather_custody PRIVATE ../playerbot)
