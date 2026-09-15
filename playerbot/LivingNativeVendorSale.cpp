@@ -5,6 +5,7 @@
 #include "LivingNativeMailCollection.h"
 #include "LivingNativeGuildMail.h"
 #include "LivingNativeCommissionMail.h"
+#include "LivingCommissionSettlement.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingProfessionNative.h"
 #include "LivingTaskItemRequirements.h"
@@ -39,6 +40,25 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
         CommissionJob job;
         if(!DecodeCommissionJob(task.checkpoint.data,job,blocker))return false;
         if(job.craftFinishedRevision) {
+            // A verified return needs capacity for collection, not permission
+            // to send the already-sent agreement again. Keep this tied to the
+            // exact native return evidence, never just a checkpoint label.
+            ProfessionHistory history;std::vector<ResourceClaim> returned;
+            if(!sLivingActivityCoordinator.ReadProfessionHistory(task.actor,task.id,task.revision,history,blocker))return false;
+            if(ReturnedCommissionClaims(task,history,returned,blocker)) {
+                for(const auto& parcel:returned) {
+                    const auto held=std::find_if(claims.claims.begin(),claims.claims.end(),[&](const auto& c){return c.id==parcel.id;});
+                    if(held==claims.claims.end() || held->state!="held") {blocker="capacity_return_claim_missing";return false;}
+                    if(held->location=="bags")continue;
+                    NativeResourceBalance balance;
+                    if(held->location!="mail" || held->nativeReference!=parcel.nativeReference ||
+                        held->itemGuid!=parcel.itemGuid || !ReadNativeMailBalance(actor,*held,balance)) {
+                        blocker="capacity_return_requires_reconciliation";return false;
+                    }
+                    if(missing(held->itemEntry,balance.quantity))return true;
+                }
+                blocker="capacity_already_available";return false;
+            }
             CommissionMailQuote parcel;std::vector<ClaimConsumption> uses;std::string why;
             if(!PlanNativeCommissionMail(actor,task,parcel,uses,why) && why=="commission_mail_split_capacity_required") {
                 need={parcel.entry,parcel.count-parcel.quantity};return true;
