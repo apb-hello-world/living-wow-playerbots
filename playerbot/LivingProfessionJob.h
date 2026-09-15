@@ -2,6 +2,7 @@
 #define LIVING_PROFESSION_JOB_H
 #include "LivingActivity.h"
 #include <vector>
+#include <map>
 
 namespace LivingActivity {
     enum class ProfessionOperation { CreateItem, TransformMaterial, EnchantItem, DisenchantItem };
@@ -101,6 +102,7 @@ namespace LivingActivity {
         uint32_t skillBefore = 0, skillAfter = 0;
         bool committed = false, nativeEffectVerified = false;
         std::string journalDigest; // SHA-256 of the acknowledged before/after pair.
+        std::map<uint32_t,uint64_t> gainedItems; // Native GUID -> verified gain; allows conserved claim folding.
     };
     struct ProfessionSnapshot {
         std::string task;

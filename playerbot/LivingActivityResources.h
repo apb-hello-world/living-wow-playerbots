@@ -23,6 +23,15 @@ namespace LivingActivity {
     };
     enum class ClaimInstall { Installed, Duplicate, Invalid, Stale, Capacity, NotReady };
 
+    // Metadata-only folding of fragments already held for the SAME native bag
+    // stack and root. Per-operation acquisition evidence is never rewritten.
+    struct BagClaimCoalescence {
+        std::vector<ResourceClaim> before;
+        std::vector<ClaimReceiptChange> changes;
+    };
+    bool PlanBagClaimCoalescence(const UnsettledClaimBatch& batch, BagClaimCoalescence& plan);
+    bool ValidBagClaimCoalescence(const BagClaimCoalescence& plan);
+
     // Supplied by the compiled native reservation adapter, never model input.
     // A balance is an admission snapshot, not evidence of a purchase/transfer.
     struct NativeResourceBalance {
@@ -45,6 +54,8 @@ namespace LivingActivity {
     WritePlan ResourceReservationWrite(const Task& task, uint64_t expectedRevision,
         const std::string& receipt, std::vector<ClaimReceiptChange> changes,
         std::vector<NativeResourceBalance> balances);
+    WritePlan BagClaimCoalescenceWrite(const Task& task, uint64_t expectedRevision,
+        const std::string& receipt, const BagClaimCoalescence& plan, const NativeResourceBalance& balance);
 
     // Immutable value projection for consumers. It is protection, NOT an
     // execution grant or a copy of native possessions. Only actual native item
@@ -80,6 +91,8 @@ namespace LivingActivity {
         // be reconciled; only the exact committed receipt may settle the batch.
         ClaimInstall ReservePending(const std::string& receipt, const std::vector<ClaimReceiptChange>& changes,
             const std::vector<NativeResourceBalance>& nativeBalances);
+        ClaimInstall ReserveCoalesced(const std::string& receipt, const BagClaimCoalescence& plan,
+            const NativeResourceBalance& balance);
         // Called only after a compiled native whole-stack transfer verifies its
         // surviving identity. Protect both old and new GUIDs until the SAME
         // native-save/claim receipt commits. This never proves the transfer.
@@ -118,6 +131,7 @@ namespace LivingActivity {
         struct PendingReservation {
             bool transferred=false;
             bool mailedHandoff=false;
+            bool coalesced=false;
             std::vector<ClaimReceiptChange> changes;
             std::vector<NativeResourceBalance> balances;
             std::vector<ResourceClaim> additional;

@@ -119,6 +119,63 @@ namespace LivingActivity {
         } else batch.complete=true;
         blocker.clear();return true;
     }
+    bool ValidBagClaimCoalescence(const BagClaimCoalescence& plan) {
+        if(plan.before.size()<2 || plan.before.size()>16 || plan.changes.size()!=plan.before.size()) return false;
+        const auto& first=plan.before.front();uint64_t total=0;std::string prior;
+        for(size_t i=0;i<plan.before.size();++i) {
+            const auto& old=plan.before[i];const auto& change=plan.changes[i];
+            if(!ValidResourceClaim(old) || old.state!="held" || old.location!="bags" || old.nativeReference || old.copper ||
+                old.id<=prior || std::tie(old.task,old.actor,old.itemGuid,old.itemEntry)!=
+                std::tie(first.task,first.actor,first.itemGuid,first.itemEntry) || old.revision>=UINT64_MAX-1) return false;
+            total+=old.quantity;prior=old.id;
+            auto expected=old;++expected.revision;expected.state=i?"released":"held";
+            if(!i) expected.quantity=change.after.quantity; // Checked against exact sum below.
+            if(change.expectedRevision!=old.revision || !SameResourceClaim(expected,change.after)) return false;
+        }
+        return total<=UINT32_MAX && plan.changes.front().after.quantity==total && ValidResourceClaim(plan.changes.front().after);
+    }
+    bool PlanBagClaimCoalescence(const UnsettledClaimBatch& batch,BagClaimCoalescence& plan) {
+        plan={};if(!batch.bookRevision || batch.claims.size()>16) return false;
+        using Key=std::tuple<std::string,uint32_t,uint32_t,uint32_t>;
+        std::map<Key,std::vector<ResourceClaim>> groups;
+        for(const auto& c:batch.claims)
+            if(ValidResourceClaim(c) && c.state=="held" && c.location=="bags" && !c.copper && !c.nativeReference)
+                groups[{c.task,c.actor,c.itemGuid,c.itemEntry}].push_back(c);
+        for(auto& group:groups) if(group.second.size()>1) {
+            plan.before=std::move(group.second);
+            std::sort(plan.before.begin(),plan.before.end(),[](const auto& a,const auto& b){return a.id<b.id;});
+            uint64_t total=0;for(const auto& c:plan.before)total+=c.quantity;
+            for(size_t i=0;i<plan.before.size();++i) {
+                auto after=plan.before[i];++after.revision;after.state=i?"released":"held";if(!i)after.quantity=total;
+                plan.changes.push_back({after,plan.before[i].revision});
+            }
+            if(ValidBagClaimCoalescence(plan))return true;
+            plan={};return false;
+        }
+        return false;
+    }
+    ClaimInstall ResourceClaimBook::ReserveCoalesced(const std::string& receipt,const BagClaimCoalescence& plan,
+        const NativeResourceBalance& balance) {
+        if(!protection.ready)return ClaimInstall::NotReady;
+        if(!IsUuid(receipt) || !ValidBagClaimCoalescence(plan) || !ValidNativeResourceBalance(balance) ||
+            protection.revision==UINT64_MAX)return ClaimInstall::Invalid;
+        const auto& first=plan.before.front();
+        if(balance.actor!=first.actor || balance.itemGuid!=first.itemGuid || balance.itemEntry!=first.itemEntry ||
+            balance.location!="bags" || balance.nativeReference || balance.copper ||
+            protection.ProtectedItem(first.actor,first.itemGuid,first.itemEntry)>balance.quantity)return ClaimInstall::Invalid;
+        if(pending.count(receipt))return ClaimInstall::Stale;
+        if(pending.size()>=32)return ClaimInstall::Capacity;
+        for(const auto& old:plan.before) {
+            const auto* current=Inspect(old.id);if(!current || !SameResourceClaim(*current,old))return ClaimInstall::Stale;
+            for(const auto& hold:pending)for(const auto& change:hold.second.changes)
+                if(change.after.id==old.id)return ClaimInstall::Stale;
+        }
+        PendingReservation hold;hold.coalesced=true;hold.changes=plan.changes;hold.balances={balance};
+        // Keep the old aggregate protected until the atomic receipt installs
+        // the equal replacement. No transient release or double reservation.
+        pending.emplace(receipt,std::move(hold));++protection.revision;publisher.Publish(protection);
+        return ClaimInstall::Installed;
+    }
     bool ResourceClaimBook::AvailableToTask(const std::string& task,const NativeResourceBalance& native,uint32_t& available) const {
         available=0;
         if (!protection.ready || !IsUuid(task) || !ValidNativeResourceBalance(native))
@@ -269,7 +326,7 @@ namespace LivingActivity {
         const auto existing = pending.find(receipt);
         if (existing != pending.end()) {
             const auto& old = existing->second;
-            if (old.mailedHandoff || old.transferred!=transferred || old.changes.size() != changes.size() || old.balances.size() != balances.size()) return ClaimInstall::Invalid;
+            if (old.coalesced || old.mailedHandoff || old.transferred!=transferred || old.changes.size() != changes.size() || old.balances.size() != balances.size()) return ClaimInstall::Invalid;
             for (size_t i=0;i<changes.size();++i) if (old.changes[i].expectedRevision != changes[i].expectedRevision ||
                 !SameResourceClaim(old.changes[i].after,changes[i].after)) return ClaimInstall::Invalid;
             for (size_t i=0;i<balances.size();++i) {

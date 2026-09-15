@@ -17,6 +17,36 @@ static ResourceClaim ItemClaim(const std::string& suffix, uint32_t guid, uint64_
 }
 int main() {
     {
+        ResourceClaimBook book;UnsettledClaimBatch batch;std::string why;
+        auto a=ItemClaim("e1",880,3),b=ItemClaim("e2",880,4),other=ItemClaim("e3",880,2);
+        other.task="637bd562-36d2-5b01-bc01-e2d831c49f39";
+        assert(book.RestoreBatch({a,b,other})==ClaimInstall::Installed && book.FinishRestore());
+        assert(book.ReadUnsettled(a.task,batch,why));BagClaimCoalescence fold;
+        assert(PlanBagClaimCoalescence(batch,fold) && ValidBagClaimCoalescence(fold));
+        assert(fold.changes[0].after.quantity==7 && fold.changes[1].after.state=="released");
+        auto bad=fold;bad.changes[0].after.quantity=8;assert(!ValidBagClaimCoalescence(bad));
+        bad=fold;bad.before[1].task=other.task;assert(!ValidBagClaimCoalescence(bad));
+        bad=fold;bad.before[1].location="mail";assert(!ValidBagClaimCoalescence(bad));
+        bad=fold;bad.before[1].itemGuid=881;assert(!ValidBagClaimCoalescence(bad));
+        const auto receipt=ItemClaim("e4",1,1).id;NativeResourceBalance stock{497,880,2934,10,0,"bags"};
+        auto small=stock;small.quantity=8;
+        assert(book.ReserveCoalesced(receipt,fold,small)==ClaimInstall::Invalid);
+        assert(book.ReserveCoalesced(receipt,fold,stock)==ClaimInstall::Installed);
+        assert(book.Protection().ProtectedItem(497,880,2934)==9);
+        assert(book.Protection().UnreservedItem(497,880,2934,10)==1);
+        assert(!book.ReadUnsettled(a.task,batch,why));
+        assert(book.ReserveCoalesced(receipt,fold,stock)==ClaimInstall::Stale);
+        assert(book.CommitReservation(receipt)==ClaimInstall::Installed);
+        assert(book.ReadUnsettled(a.task,batch,why) && batch.complete && batch.claims.size()==1);
+        assert(batch.claims.front().quantity==7 && book.Protection().ProtectedItem(497,880,2934)==9);
+        assert(book.Inspect(b.id)->state=="released"); // Historical identity retained, no native items changed.
+        ResourceClaimBook restored;
+        assert(restored.RestoreBatch({*book.Inspect(a.id),*book.Inspect(b.id),other})==ClaimInstall::Installed && restored.FinishRestore());
+        assert(restored.Protection().ProtectedItem(497,880,2934)==9);
+        assert(restored.ReadUnsettled(a.task,batch,why) && batch.claims.size()==1);
+        assert(!PlanBagClaimCoalescence(batch,fold));
+    }
+    {
         ResourceClaimBook shared;
         auto first=ItemClaim("41",10800,2),later=ItemClaim("42",10800,3);
         assert(shared.RestoreBatch({first,later})==ClaimInstall::Installed && shared.FinishRestore());

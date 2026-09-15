@@ -49,6 +49,21 @@ inline void TestCommissionCraftWorkflow() {
     std::vector<NativeResourceBalance> balances={{703,103,2454,1,0,"bags"},{703,102,3371,4,0,"bags"}};
     const std::string receipt="d1879146-6e96-4e71-827d-6d12d965edb7";ProfessionSettlement settled;
     auto prepare=[&]{return PrepareProfessionSettlement(task,snapshot,batch,balances,1001,receipt,settled,why);};
+    {
+        // Two actual receipts can contribute to one native stack and one
+        // conserved folded claim. The receipt identities themselves survive.
+        const auto savedSnapshot=snapshot;const auto savedBatch=batch;const auto savedBalances=balances;
+        auto second=proof.attempt;second.receipt.id="2aa768f5-8234-4f22-9553-e4d7dbe2983b";
+        second.receipt.taskRevision=4;snapshot.attempts.push_back(second);
+        batch.claims[0].quantity=2;++batch.claims[0].revision;balances[0].quantity=2;
+        assert(prepare());
+        batch.claims[0].quantity=3;balances[0].quantity=3;
+        assert(!prepare()); // Owned surplus is not another verified craft.
+        batch.claims[0].quantity=2;balances[0].quantity=2;
+        snapshot.attempts[1].gainedItems={{104,1}};
+        assert(!prepare()); // Cannot borrow proof from a different stack.
+        snapshot=savedSnapshot;batch=savedBatch;balances=savedBalances;
+    }
     if(!prepare())throw std::runtime_error("commission craft handoff: "+why);
     assert(settled.task.phase==Phase::Preparing && settled.task.checkpoint.step=="commission_craft_ready");
     assert(settled.claims.size()==1 && settled.claims[0].after.id==spare.id && settled.claims[0].after.state=="released");

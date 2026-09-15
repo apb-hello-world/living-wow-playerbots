@@ -396,6 +396,7 @@ bool DecodeStoredCraftProof(const Task& task,const StoredCraftOperation& row,Sto
         result={};blocker="profession_history_digest_invalid";return false;
     }
     if(!DecodeStoredCraftProofBody(task,row,result,blocker))return false;
+    for(const auto& gain:result.gains)result.attempt.gainedItems[gain.after.guid]+=gain.added;
     result.attempt.journalDigest=row.journalDigest;return true;
 }
 bool IsGatheringRecoveryTask(const Task& task) {

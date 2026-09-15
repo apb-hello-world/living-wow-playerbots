@@ -21,6 +21,49 @@ namespace LivingActivity {
                 " AND c.location=" + SqlValue(claim.location) + " AND c.native_reference=" + Number(claim.nativeReference);
         }
     }
+    WritePlan BagClaimCoalescenceWrite(const Task& task,uint64_t expected,const std::string& receipt,
+        const BagClaimCoalescence& folded,const NativeResourceBalance& balance) {
+        if(!ValidBagClaimCoalescence(folded) || !ValidNativeResourceBalance(balance) || !expected ||
+            task.mode!=Mode::Active || !task.accepted || task.root!=task.id ||
+            (task.phase!=Phase::Preparing && task.phase!=Phase::Traveling && task.phase!=Phase::Verifying))
+            throw std::invalid_argument("Exact nonexecuting bag claim coalescence required");
+        const auto& first=folded.before.front();
+        if(first.task!=task.id || first.actor!=task.actor || balance.actor!=task.actor || balance.itemGuid!=first.itemGuid ||
+            balance.itemEntry!=first.itemEntry || balance.location!="bags" || balance.nativeReference || balance.copper ||
+            balance.quantity<folded.changes.front().after.quantity)
+            throw std::invalid_argument("Coalescence must conserve one owned native stack");
+        std::string fingerprint="balance:"+Number(balance.quantity)+'|';
+        for(const auto& old:folded.before)for(const auto& field:Fields(old))fingerprint+=field.first+'='+field.second+'|';
+        auto plan=TaskWrite(task,expected,receipt,"resource_claims_coalesced",fingerprint);
+        auto& update=plan.statements.front();
+        update+=" AND mode='active' AND phase="+SqlValue(Name(task.phase))+
+            " AND NOT EXISTS (SELECT 1 FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id "
+            "WHERE t.actor_guid="+Number(task.actor)+" AND o.state IN ('intent','reconciling'))";
+        for(const auto& old:folded.before) {
+            std::string exact;for(const auto& f:Fields(old)) {if(!exact.empty())exact+=" AND ";exact+="c."+f.first+'='+f.second;}
+            update+=" AND EXISTS (SELECT 1 FROM living_activity_claim c WHERE "+exact+')';
+        }
+        const auto guid=Number(first.itemGuid),actor=Number(task.actor),entry=Number(first.itemEntry);
+        update+=" AND EXISTS (SELECT 1 FROM item_instance i JOIN character_inventory v ON v.item=i.guid WHERE i.guid="+guid+
+            " AND i.owner_guid="+actor+" AND v.guid="+actor+" AND i.itemEntry="+entry+" AND i.count="+Number(balance.quantity)+
+            " AND ((v.bag=0 AND v.slot BETWEEN 23 AND 38) OR (v.bag<>0 AND EXISTS (SELECT 1 FROM character_inventory b "
+            "WHERE b.item=v.bag AND b.guid="+actor+" AND b.bag=0 AND b.slot BETWEEN 19 AND 22))))"+
+            " AND NOT EXISTS (SELECT 1 FROM mail_items m WHERE m.item_guid="+guid+')'+
+            " AND NOT EXISTS (SELECT 1 FROM guild_bank_item g WHERE g.item_guid="+guid+')'+
+            " AND (SELECT COALESCE(SUM(c.quantity),0) FROM living_activity_claim c WHERE (c.item_guid="+guid+
+            " OR (c.item_guid=0 AND c.actor_guid="+actor+" AND c.item_entry="+entry+")) AND c.state IN ('held','in_transfer','reconciling'))<="+Number(balance.quantity);
+        plan.statements.insert(plan.statements.begin(),"UPDATE living_activity_task SET actor_guid=actor_guid WHERE actor_guid="+actor);
+        const auto accepted=plan.receiptQuery;
+        for(const auto& change:folded.changes) {
+            const auto& c=change.after;std::string exact;
+            for(const auto& f:Fields(c)){if(!exact.empty())exact+=" AND ";exact+="c."+f.first+'='+f.second;}
+            plan.statements.push_back("UPDATE living_activity_claim c SET c.quantity="+Number(c.quantity)+",c.state="+SqlValue(c.state)+
+                ",c.revision="+Number(c.revision)+",c.updated_at_ms="+Number(task.updatedAtMs)+" WHERE c.claim_id="+SqlValue(c.id)+
+                " AND c.revision="+Number(change.expectedRevision)+" AND EXISTS ("+accepted+')');
+            plan.receiptQuery+=" AND EXISTS (SELECT 1 FROM living_activity_claim c WHERE "+exact+')';
+        }
+        return plan;
+    }
     WritePlan ResourceReservationWrite(const Task& task, uint64_t expected, const std::string& receipt,
         std::vector<ClaimReceiptChange> changes, std::vector<NativeResourceBalance> balances) {
         if (!expected || task.mode != Mode::Active || task.phase != Phase::Preparing ||

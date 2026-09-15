@@ -91,9 +91,9 @@ namespace LivingActivity {
         // from the acknowledged root with the identical immutable checkpoint.
         const auto saved=sLivingActivityCoordinator.ReadSavedTask(task.id);
         UnsettledClaimBatch claims;
-        if (!saved || saved->actor!=task.actor || saved->checkpoint.data!=task.checkpoint.data ||
-            !sLivingActivityCoordinator.ReadTaskClaims(saved->actor,saved->id,saved->revision,claims,blocker))
+        if (!saved || saved->actor!=task.actor || saved->checkpoint.data!=task.checkpoint.data)
             return reject("profession_tool_claim_snapshot_required");
+        if(!sLivingActivityCoordinator.ReadTaskClaims(saved->actor,saved->id,saved->revision,claims,blocker))return false;
         std::set<uint32_t> selected;
         for (const auto entry:spell->Totem) if (entry) {
             if (!sObjectMgr.GetItemPrototype(entry)) return reject("profession_tool_native_item_unavailable");

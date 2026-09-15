@@ -2623,6 +2623,39 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return advance(Phase::Reconciling);
     }
     if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
+    // A batch may craft many times into the same native stack. Retain each
+    // operation receipt, but fold redundant held reservations before the
+    // bounded snapshot fills. This also resumes already-fragmented saved jobs.
+    UnsettledClaimBatch fragments;std::string claimWhy;
+    if(!state->resources.ReadUnsettled(id,fragments,claimWhy))return stop(claimWhy);
+    if(!fragments.complete || fragments.claims.size()>=12) {
+        BagClaimCoalescence folded;
+        if(PlanBagClaimCoalescence(fragments,folded)) {
+            if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+                return stop("resource_coalescence_backpressure");
+            bool started=false;
+            try {
+                const auto balances=NativeClaimBalances(*bot,{folded.before.front()},false);
+                if(balances.size()!=1)return stop("resource_coalescence_native_stack_unavailable");
+                auto next=*saved;++next.revision;next.updatedAtMs=NowMs();const auto receipt=NewId();
+                auto plan=BagClaimCoalescenceWrite(next,saved->revision,receipt,folded,balances.front());
+                State::Pending write{next,std::move(plan),receipt};write.reservation=receipt;write.claims=folded.changes;
+                started=true;
+                if(state->resources.ReserveCoalesced(receipt,folded,balances.front())!=ClaimInstall::Installed)
+                    return stop("resource_coalescence_claims_changed");
+                state->pending.push_back(std::move(write));
+                ReleaseTaskLease(state->authority.Read(actor).lease);state->nextWork=0;
+                return stop("resource_claims_coalescing");
+            } catch(const std::exception&) {
+                if(started) {
+                    state->resources.BlockProjection();state->claimRestoreFailed=true;
+                    state->claimBlocker="resource_coalescence_requires_reconciliation";
+                }
+                return stop("resource_coalescence_requires_reconciliation");
+            }
+        }
+        if(!fragments.complete)return stop("resource_claim_snapshot_bound_no_compatible_fragments");
+    }
     ProfessionSnapshot snapshot;std::string blocker;
     if (!ReadProfessionSnapshot(actor,id,saved->revision,snapshot,blocker)) return stop(blocker);
     const auto next=NextProfessionStep(*saved,snapshot);

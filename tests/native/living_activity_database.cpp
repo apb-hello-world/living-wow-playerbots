@@ -738,5 +738,46 @@ int main() {
     GuildCancellationDatabase(db);
     CommissionMailDatabase(db);
     CommissionParcelDatabase(db);
+    {
+        auto foldedTask=owner;foldedTask.id=foldedTask.root="ce06cbd9-09ac-41a2-9107-ab1b5ed30d01";
+        foldedTask.actor=foldedTask.context.actor=9991;foldedTask.revision=1;foldedTask.phase=Phase::Queued;
+        foldedTask.sourceKey="coalescence_fixture:9991";
+        const auto rid=[](unsigned i){return "ce06cbd9-09ac-41a2-9107-ab1b5ed30d0"+std::to_string(i);};
+        assert(db.Write(TaskWrite(foldedTask,0,rid(2),"coalescence_fixture")));
+        assert(db.Execute("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES(9991001,2454,9991,8)"));
+        assert(db.Execute("INSERT INTO character_inventory(guid,item,bag,slot) VALUES(9991,9991001,0,23)"));
+        ResourceClaim first;first.id=rid(3);first.task=foldedTask.id;first.actor=9991;first.itemGuid=9991001;
+        first.itemEntry=2454;first.quantity=3;first.state="held";first.location="bags";
+        auto second=first;second.id=rid(4);second.quantity=4;
+        NativeResourceBalance stock{9991,9991001,2454,8,0,"bags"};
+        ++foldedTask.revision;foldedTask.phase=Phase::Preparing;
+        assert(db.Write(ResourceReservationWrite(foldedTask,1,rid(5),{{first,0},{second,0}},{stock})));
+        UnsettledClaimBatch batch;batch.bookRevision=1;batch.complete=true;batch.claims={first,second};BagClaimCoalescence folded;
+        assert(PlanBagClaimCoalescence(batch,folded));++foldedTask.revision;
+        const auto write=BagClaimCoalescenceWrite(foldedTask,2,rid(6),folded,stock);
+        assert(!db.Write(write,true)); // Entire metadata transaction rolls back.
+        const auto quantities="SELECT GROUP_CONCAT(CONCAT(quantity,':',state,':',revision) ORDER BY claim_id) FROM living_activity_claim WHERE task_id="+SqlValue(foldedTask.id);
+        assert(db.Scalar(quantities)=="3:held:1,4:held:1");
+        assert(db.Execute("UPDATE item_instance SET count=7 WHERE guid=9991001"));
+        assert(!db.Write(write));
+        assert(db.Execute("UPDATE item_instance SET count=8,owner_guid=9992 WHERE guid=9991001"));
+        assert(!db.Write(write));
+        assert(db.Execute("UPDATE item_instance SET owner_guid=9991 WHERE guid=9991001"));
+        assert(db.Execute("UPDATE living_activity_claim SET quantity=2 WHERE claim_id="+SqlValue(first.id)));
+        assert(!db.Write(write));
+        assert(db.Execute("UPDATE living_activity_claim SET quantity=3 WHERE claim_id="+SqlValue(first.id)));
+        assert(db.Execute("UPDATE character_inventory SET slot=39 WHERE item=9991001"));
+        assert(!db.Write(write)); // Banked items cannot masquerade as carried fragments.
+        assert(db.Execute("UPDATE character_inventory SET slot=23 WHERE item=9991001"));
+        assert(db.Execute("INSERT INTO living_activity_operation(operation_id,task_id,task_revision,kind,request_hash,state,before_state,after_state,created_at_ms,updated_at_ms) VALUES("+
+            SqlValue(rid(7))+','+SqlValue(foldedTask.id)+",2,'profession_craft',REPEAT('a',64),'intent','{}','{}',1000,1000)"));
+        assert(!db.Write(write)); // An unacknowledged native effect must reconcile first.
+        assert(db.Execute("UPDATE living_activity_operation SET state='rejected' WHERE operation_id="+SqlValue(rid(7))));
+        assert(db.Write(write) && db.Write(write));
+        Connection restarted;assert(restarted.ReceiptPresent(write));
+        assert(restarted.Scalar(quantities)=="7:held:2,4:released:2");
+        assert(restarted.Scalar("SELECT count FROM item_instance WHERE guid=9991001")=="8");
+        assert(restarted.Scalar("SELECT COUNT(*) FROM living_activity_transition WHERE task_id="+SqlValue(foldedTask.id)+" AND code='resource_claims_coalesced'")=="1");
+    }
     std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history, skill-job settlement and exact-row legacy handoff; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

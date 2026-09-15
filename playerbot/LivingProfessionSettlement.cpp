@@ -96,6 +96,18 @@ namespace {
             if(attempt.recipe==job.recipe && attempt.nativeEffectVerified && attempt.receipt.state==OperationState::Verified)
                 proofs.emplace(attempt.receipt.id,&attempt);
         }
+        std::map<uint32_t,uint64_t> producedByItem,claimedByItem;
+        bool nativeIdentities=!proofs.empty();
+        for(const auto& row:proofs) {
+            const auto& proof=*row.second;uint64_t produced=0,gained=0;
+            for(const auto& output:proof.produced)if(output.entry==entry)produced+=output.perAttempt;
+            if(proof.gainedItems.empty()){nativeIdentities=false;continue;}
+            for(const auto& gain:proof.gainedItems) {
+                if(!gain.first || !gain.second)return reject("guild_craft_handoff_native_gain_invalid");
+                gained+=gain.second;producedByItem[gain.first]+=gain.second;
+            }
+            if(gained!=produced)return reject("guild_craft_handoff_native_gain_quantity_mismatch");
+        }
         uint64_t carried=0;std::map<std::string,uint64_t> perOperation;
         PersonalResourceSettlement personal;UnsettledClaimBatch personalBatch;
         personalBatch.bookRevision=batch.bookRevision;personalBatch.complete=false;
@@ -110,6 +122,12 @@ namespace {
             const ProfessionCraftProof* proof=nullptr;
             for(const auto& row:proofs)if(c.id==ItemGainClaimId(row.first,c.itemGuid)){proof=row.second;break;}
             if(!proof)return reject("guild_craft_handoff_native_output_claim_required");
+            if(nativeIdentities) {
+                claimedByItem[c.itemGuid]+=c.quantity;
+                if(claimedByItem[c.itemGuid]>producedByItem[c.itemGuid])
+                    return reject("guild_craft_handoff_output_exceeds_native_gains");
+                carried+=c.quantity;outputItems.insert(c.itemGuid);continue;
+            }
             uint64_t produced=0;for(const auto& output:proof->produced)if(output.entry==entry)produced+=output.perAttempt;
             auto& credited=perOperation[proof->receipt.id];credited+=c.quantity;
             if(credited>produced)return reject("guild_craft_handoff_output_exceeds_receipt");
