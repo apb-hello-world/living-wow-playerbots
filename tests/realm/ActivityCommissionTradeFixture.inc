@@ -1,0 +1,156 @@
+// Isolated accepted-order integration. The fixture supplies recorded missing
+// reagents and customer UI consent only. The ordinary due queue must craft,
+// journal the exchange and settle the order. No output, fee or receipt grants.
+namespace {
+template<class FixtureState>
+void RunIsolatedCommissionTradeFixture(FixtureState& state) {
+    struct Fixture {
+        uint32_t actor=0,customer=0;
+        bool actorLogin=false,customerLogin=false,setup=false,admitted=false,offered=false;
+        uint64_t deadline=0,nextReport=0;
+        TaskRequest request;
+        boost::property_tree::ptree input;
+    };
+    static Fixture f;
+    if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
+    state.fixtureNext=NowMs()+500;
+    auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
+    auto write=[&](const std::string& name,const boost::property_tree::ptree& data) {
+        std::ofstream out("/isolated/evidence/"+name);out<<Json(data);out.close();
+        require(bool(out),"commission_trade_fixture_evidence_failed");
+    };
+    auto report=f.input;report.put("suite","activity-commission-trade-v1");report.put("boot",state.boot);
+    report.put("test_only",true);report.put("independent_audit_required",true);
+    try {
+        if(!f.actor) {
+            auto id=[&](const char* name) {
+                const auto* raw=std::getenv(name);const std::string value=raw?raw:"";
+                require(!value.empty() && value.size()<=9 && value.find_first_not_of("0123456789")==std::string::npos,
+                    "explicit_commission_trade_actors_required");return uint32_t(std::stoul(value));
+            };
+            f.actor=id("LIVING_WOW_NATIVE_FIXTURE_ACTOR");f.customer=id("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
+            require(f.actor && f.customer && f.actor!=f.customer,"distinct_commission_trade_actors_required");
+            require(!std::ifstream("/isolated/evidence/commission-trade-input-v1.json"),
+                "existing_commission_trade_requires_reconciliation_not_fixture_replay");
+            state.gameplayFixtureActor.store(f.actor,std::memory_order_release);
+            state.professionCohortActors[0].store(f.customer,std::memory_order_release);
+            f.deadline=NowMs()+900000;
+        }
+        if(sWorld.GetActiveAndQueuedSessionCount() || !state.loaded || state.ioPending || !state.pending.empty() ||
+            !state.incoming.empty() || !state.resources.Protection().ready)return;
+        require(NowMs()<f.deadline,"commission_trade_fixture_deadline_task_preserved");
+        auto* actor=sRandomPlayerbotMgr.GetPlayerBot(f.actor);auto* customer=sRandomPlayerbotMgr.GetPlayerBot(f.customer);
+        auto login=[&](Player* bot,uint32_t guid,bool& requested) {
+            if(!bot && !requested && sRandomPlayerbotMgr.GetAllBots().size()<49) {
+                requested=true;sRandomPlayerbotMgr.AddRandomBot(guid);
+            }
+        };
+        login(actor,f.actor,f.actorLogin);login(customer,f.customer,f.customerLogin);
+        if(!actor || !customer)return;
+        for(auto* bot:{actor,customer}) {
+            require(bot->GetPlayerbotAI() && !bot->GetPlayerbotAI()->IsRealPlayer() && bot->GetSession() &&
+                sPlayerbotAIConfig.IsInRandomAccountList(bot->GetSession()->GetAccountId()),"copied_bot_customer_required");
+            if(!bot->IsInWorld() || !bot->GetMap() || NativeSafety(bot) || bot->GetGroup() || bot->GetMap()->IsDungeon() ||
+                sLivingActivityCoordinator.DefersNativeSave(bot->GetGUIDLow()))return;
+        }
+        state.enforceEffects.store(true,std::memory_order_release);
+        if(!f.setup) {
+            require(!actor->GetTradeData() && !customer->GetTradeData() && actor->GetTeam()==customer->GetTeam() &&
+                actor->GetMapId()==customer->GetMapId() && customer->GetMoney()>=60,"native_customer_availability_required");
+            for(const auto& row:state.cache)if((row.second.actor==f.actor || row.second.actor==f.customer) &&
+                row.second.accepted && !Terminal(row.second.phase))require(false,"prior_actor_commitment_preserved");
+            require(!state.resources.Protection().actorClaims.count(f.actor) &&
+                !state.resources.Protection().actorClaims.count(f.customer),"prior_actor_claims_preserved");
+            ProfessionJob recipe;std::string why;
+            require(BuildNativeRequestedItemJob(*actor,2329,2454,1,recipe,why),"native_commission_recipe:"+why);
+            require(actor->GetItemCount(2454,true)==0,"empty_output_precondition_no_output_removal");
+            CommissionJob job;job.agreement={"lwc-"+std::to_string(NowMs()),"isolated-direct-v1","direct",
+                EncodeProfessionJob(recipe),f.actor,f.customer,60,NowMs()};job.craft=job.agreement.recipe;
+            job.agreement.transaction="isolated-direct-"+job.agreement.id;
+            auto& task=f.request.task;task.source="commission_job";task.sourceKey=job.agreement.id;
+            task.id=task.root=SourceId(task.source,task.sourceKey);task.actor=f.actor;task.kind=Kind::Commission;
+            task.mode=Mode::Active;task.accepted=true;task.phase=Phase::Queued;task.priority=Priority::Human;
+            task.context=ReadNativeContext(*actor,state.policyRevision,state.boot);task.createdAtMs=task.updatedAtMs=NowMs();
+            task.checkpoint.step="profession_prepare";task.checkpoint.data=EncodeCommissionJob(job);f.request.receipt=NewId();
+            require(ValidateNativeProfessionTask(*actor,task,why),"native_fixture_task:"+why);
+            f.input.put("task",task.id);f.input.put("commission",job.agreement.id);f.input.put("actor",f.actor);
+            f.input.put("recipient",f.customer);f.input.put("agreement",EncodeCommissionContract(job.agreement));
+            f.input.put("setup_boot",state.boot);f.input.put("actor_money_before",actor->GetMoney());
+            f.input.put("recipient_money_before",customer->GetMoney());f.input.put("recipient_items_before",customer->GetItemCount(2454,true));
+            f.input.put("actor_items_before",0);f.input.put("output_grants",0);f.input.put("money_grants",0);
+            f.input.put("skill_grants",0);f.input.put("recipe_grants",0);f.input.put("fixture_consent",true);
+            f.input.put("autonomous_travel_proof",false);f.input.put("broker_admission_proof",false);
+            f.input.add_child("inventory_before",GuildMailFixtureInventory(*actor));
+            boost::property_tree::ptree grants;
+            for(uint32_t entry:{765u,2449u,3371u})if(!actor->GetItemCount(entry,true)) {
+                ItemPosCountVec positions;require(actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,entry,1)==EQUIP_ERR_OK,
+                    "fixture_material_capacity_required");boost::property_tree::ptree row;row.put("entry",entry);row.put("quantity",1);
+                grants.push_back({"",row});
+            }
+            f.input.add_child("material_grants",grants);
+            f.input.put("recipient_original_x",customer->GetPositionX());f.input.put("recipient_original_y",customer->GetPositionY());
+            f.input.put("recipient_original_z",customer->GetPositionZ());f.input.put("recipient_original_map",customer->GetMapId());
+            write("commission-trade-input-v1.json",f.input);
+            for(const auto& row:grants) {
+                const auto entry=row.second.template get<uint32_t>("entry");ItemPosCountVec positions;
+                require(!actor->GetItemCount(entry,true) && actor->CanStoreNewItem(NULL_BAG,NULL_SLOT,positions,entry,1)==EQUIP_ERR_OK,
+                    "fixture_material_changed");
+                require(actor->StoreNewItem(positions,entry,true) && actor->GetItemCount(entry,true)==1,"fixture_material_grant_failed");
+            }
+            actor->SaveToDB();actor->GetMotionMaster()->Clear();actor->StopMoving();
+            customer->GetMotionMaster()->Clear();customer->StopMoving();
+            customer->NearTeleportTo(actor->GetPositionX(),actor->GetPositionY(),actor->GetPositionZ(),actor->GetOrientation());
+            f.setup=true;return;
+        }
+        if(!f.admitted) {
+            const auto result=sLivingActivityCoordinator.SubmitTask(f.request);
+            require(result.code==AdmissionCode::Pending,"native_commission_admission:"+result.blocker);
+            f.admitted=true;return;
+        }
+        const auto saved=sLivingActivityCoordinator.ReadSavedTask(f.request.task.id);
+        if(!saved)return;
+        report=f.input;report.put("suite","activity-commission-trade-v1");report.put("boot",state.boot);
+        report.put("test_only",true);report.put("independent_audit_required",true);
+        report.put("activity_json",sLivingActivityCoordinator.ActorJson(f.actor));
+        if(NowMs()>=f.nextReport) {f.nextReport=NowMs()+30000;write("commission-trade-progress.json",report);}
+        CommissionJob job;std::string why;
+        require(DecodeCommissionJob(saved->checkpoint.data,job,why),"saved_commission_job_required");
+        if(saved->phase==Phase::Completed) {
+            require(f.offered && actor->GetItemCount(2454,true)==0 &&
+                customer->GetItemCount(2454,true)==f.input.template get<uint32_t>("recipient_items_before")+1 &&
+                actor->GetMoney()==f.input.template get<uint32_t>("actor_money_before")+60 &&
+                customer->GetMoney()+60==f.input.template get<uint32_t>("recipient_money_before"),"native_commission_conservation_required");
+            report.put("outcome","passed");report.put("actor_money_after",actor->GetMoney());
+            report.put("recipient_money_after",customer->GetMoney());report.put("revision",saved->revision);
+            report.put("craft_finished_revision",job.craftFinishedRevision);
+            write("activity-commission-trade-"+state.boot+".json",report);state.fixtureFinished=true;return;
+        }
+        require(!Terminal(saved->phase),"commission_trade_unexpected_terminal");
+        if(!job.craftFinishedRevision || f.offered || saved->phase==Phase::Executing)return;
+        require(actor->IsWithinDistInMap(customer,TRADE_DISTANCE,false),"fixture_customer_arrival_required");
+        require(!actor->GetTradeData() && !customer->GetTradeData(),"fresh_customer_trade_required");
+        UnsettledClaimBatch claims;if(!sLivingActivityCoordinator.ReadTaskClaims(f.actor,saved->id,saved->revision,claims,why))return;
+        require(claims.complete && claims.claims.size()==1,"exact_crafted_output_claim_required");
+        const auto& claim=claims.claims.front();auto* item=actor->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,claim.itemGuid));
+        require(claim.location=="bags" && claim.itemEntry==2454 && claim.quantity==1 && item && item->GetCount()==1,
+            "exact_native_crafted_stack_required");
+        WorldPacket initiate(CMSG_INITIATE_TRADE,8);initiate<<customer->GetObjectGuid();
+        actor->GetSession()->HandleInitiateTradeOpcode(initiate);
+        require(actor->GetTradeData() && customer->GetTradeData(),"native_trade_window_required");
+        WorldPacket begin;customer->GetSession()->HandleBeginTradeOpcode(begin);
+        WorldPacket offered(CMSG_SET_TRADE_ITEM,3);offered<<uint8_t(0)<<item->GetBagSlot()<<item->GetSlot();
+        actor->GetSession()->HandleSetTradeItemOpcode(offered);
+        WorldPacket fee(CMSG_SET_TRADE_GOLD,4);fee<<uint32_t(60);customer->GetSession()->HandleSetTradeGoldOpcode(fee);
+        require(actor->GetTradeData()->GetItem(TradeSlots(0))==item && customer->GetTradeData()->GetMoney()==60,
+            "native_claimed_offer_required");
+        // ONLY the customer's acceptance. The coordinator owns the crafter's
+        // final native acceptance, operation journal and verified settlement.
+        WorldPacket accept(CMSG_ACCEPT_TRADE,4);accept<<uint32_t(0);customer->GetSession()->HandleAcceptTradeOpcode(accept);
+        require(customer->GetTradeData() && customer->GetTradeData()->IsAccepted() && !actor->GetTradeData()->IsAccepted(),
+            "customer_only_native_acceptance_required");f.offered=true;
+    }catch(const std::exception& error) {
+        report.put("outcome","failed");report.put("failure",error.what());report.put("task",f.request.task.id);
+        write("activity-commission-trade-"+state.boot+".json",report);state.fixtureFinished=true;
+    }
+}
+}

@@ -183,6 +183,7 @@ private:
     ProfessionProgress AdvanceItemPreparation(uint32_t actor,const std::string& task,
         LivingActivity::ProfessionStep step,const LivingActivity::ProfessionReagent& need={});
     ProfessionProgress AdvanceCommissionDelivery(uint32_t actor,const std::string& task);
+    ProfessionProgress AdvanceCommissionTrade(uint32_t actor,const std::string& task);
     LivingActivity::DispatchResult FinalizeNativeOperation(const std::string& operation,Player& actor,
         LivingActivity::NativeObservation observation,std::vector<LivingActivity::VerifiedItemGain> gains,
         bool nativeTransactionOpen,bool executed,const LivingActivity::NativeOperationAdapter* adapter=nullptr);
