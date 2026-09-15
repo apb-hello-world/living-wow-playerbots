@@ -45,6 +45,59 @@ inline void TestCommissionTradeOperation() {
         assert(ValidateOperationResources(partition,book,before,why));
         assert(VerifyConsumedNativeResources(partition,before,after,why,surplus));
         assert(book.Inspect(item.id)->state=="held" && SameResourceClaim(*book.Inspect(item.id),item));
+        {
+            auto saved=partition.transition.task;saved.context={};saved.context.actor=task.actor;
+            StoredCraftOperation row;row.acknowledged=true;row.journalDigest=std::string(64,'b');
+            row.receipt={};row.receipt.id=partition.transition.receipt;row.receipt.task=task.id;
+            row.receipt.taskRevision=saved.revision;row.receipt.kind="commission_output_partition";row.receipt.state=OperationState::Intent;
+            row.beforeState="{\"effects\":4,\"persistence\":1,\"native\":"+encoded+'}';row.afterState="{}";
+            ProfessionHistory history;history.task=task.id;history.revision=saved.revision;history.complete=true;
+            history.unresolvedOperation=true;history.attempts.emplace_back();history.commissionPartitions={row};
+            UnsettledClaimBatch claims;claims.complete=true;claims.bookRevision=1;claims.claims={item};
+            CommissionPartitionRestoreState physical;physical.money=100;physical.destinationEmpty=true;
+            physical.source={703,103,2454,3,0,23};
+            ProfessionPreparation restored;
+            const std::string receipt="ff2efbdf-f0ec-4539-b840-299847970c09";
+            assert(PrepareInterruptedCommissionPartition(saved,task.context,history,claims,before,physical,2000,receipt,restored,why));
+            assert(restored.task.phase==Phase::Verifying && restored.task.checkpoint.data==saved.checkpoint.data);
+            assert(restored.plan.receiptQuery.find(SqlValue("commission_partition_unchanged_on_restart"))!=std::string::npos);
+            for(const auto& sql:restored.plan.statements)assert(sql.find("UPDATE item_instance")==std::string::npos &&
+                sql.find("UPDATE living_activity_claim")==std::string::npos && sql.find("SET money")==std::string::npos);
+            for(unsigned i=0;i<12;++i) {
+                auto t=saved;auto h=history;auto c=claims;auto p=physical;auto b=before;
+                if(i==0)t.context=task.context;
+                if(i==1)p.money++;
+                if(i==2)p.destinationEmpty=false;
+                if(i==3)p.source.count=1;
+                if(i==4)p.source.guid++;
+                if(i==5)c.claims.front().revision++;
+                if(i==6)h.commissionPartitions.front().receipt.state=OperationState::Verified;
+                if(i==7)h.commissionPartitions.push_back(row);
+                if(i==8)h.unresolvedOperation=false;
+                if(i==9)b.front().quantity=1;
+                if(i==10)p.destinationBag=999;
+                if(i==11)h.attempts.clear();
+                assert(!PrepareInterruptedCommissionPartition(t,task.context,h,c,b,p,2000,receipt,restored,why));
+            }
+            row.receipt.state=OperationState::Verified;row.receipt.nativeReference="item:103:surplus:104";
+            row.receipt.evidence="native_commission_partition_observed";
+            row.afterState="{\"claimed_item\":103,\"claimed_count\":1,\"surplus_item\":104,\"surplus_count\":2,\"money\":100,\"claims_unchanged\":true}";
+            ++saved.revision;saved.phase=Phase::Verifying;history.revision=saved.revision;
+            history.commissionPartitions={row};history.unresolvedOperation=false;
+            uint32_t surplusGuid=0;CommissionPartitionQuote proof;
+            assert(DecodeStoredCommissionPartition(saved,row,proof,surplusGuid,why) && surplusGuid==104);
+            assert(PrepareCommissionTradeReadyRestore(saved,task.context,history,claims,{after.front()},2000,receipt,restored,why));
+            assert(restored.plan.statements.front().find("commission_output_partition")!=std::string::npos);
+            for(unsigned i=0;i<5;++i) {
+                auto h=history;
+                if(i==0)h.commissionPartitions.clear();
+                if(i==1)h.commissionPartitions.front().afterState="{}";
+                if(i==2)h.commissionPartitions.front().receipt.nativeReference="item:103:surplus:999";
+                if(i==3)h.commissionPartitions.front().receipt.state=OperationState::Intent;
+                if(i==4)h.commissionPartitions.front().journalDigest="";
+                assert(!PrepareCommissionTradeReadyRestore(saved,task.context,h,claims,{after.front()},2000,receipt,restored,why));
+            }
+        }
         const auto plan=OperationRequestWrite(partition);
         for(const auto& sql:plan.statements)assert(sql.find("UPDATE living_activity_claim")==std::string::npos);
         for(unsigned i=0;i<10;++i) {

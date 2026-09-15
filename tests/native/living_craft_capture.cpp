@@ -97,6 +97,11 @@ namespace {
             assert(cursor.Begin(commission,{trade},blocker) && cursor.Advance(blocker));
             assert(cursor.Result().unresolvedOperation && cursor.Result().interruptedCommissionOffer &&
                 cursor.Result().commissionTrade.empty() && cursor.Result().commissionMail.empty());
+            trade[6]="commission_output_partition";
+            assert(ProfessionHistoryQuery(commission).find("'commission_output_partition'")!=std::string::npos);
+            assert(cursor.Begin(commission,{trade},blocker) && cursor.Advance(blocker));
+            assert(cursor.Result().unresolvedOperation && cursor.Result().commissionPartitions.size()==1 &&
+                !cursor.Result().interruptedCommissionOffer && cursor.Result().commissionMail.empty());
         }
     }
     void StoredEvidence(const ProfessionJob& job,const CraftFrame& before,const CraftFrame& after) {

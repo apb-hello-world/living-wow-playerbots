@@ -2617,6 +2617,12 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(!row.second.ready || row.second.dispatched)return stop("commission_trade_receipt_pending");
         if(!(saved->context==current))return stop("commission_trade_intent_reconciliation_required");
         if(row.second.request.kind=="commission_output_partition") {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+            const auto* fixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+            if(fixture && std::string(fixture)=="activity-commission-direct-broker-v1" &&
+                std::ifstream("/isolated/evidence/commission-partition-pause-before-dispatch"))
+                return stop("isolated_commission_partition_pause");
+#endif
             CommissionPartitionQuote quote;
             if(!DecodeCommissionPartition(row.second.request.beforeState,quote))return stop("commission_partition_quote_invalid");
             NativeCommissionPartition adapter(quote);
@@ -2646,7 +2652,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     ProfessionHistory history;
     if(!ReadProfessionHistory(actor,id,saved->revision,history,why))return stop(why);
     if(history.unresolvedOperation) {
-        if(!history.interruptedCommissionOffer)return stop("commission_trade_native_reconciliation_required");
+        const auto partition=std::find_if(history.commissionPartitions.begin(),history.commissionPartitions.end(),
+            [](const auto& row){return row.receipt.state==OperationState::Intent || row.receipt.state==OperationState::Reconciling;});
+        if(!history.interruptedCommissionOffer && partition==history.commissionPartitions.end())return stop("commission_trade_native_reconciliation_required");
         if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || bot->GetTradeData())return stop("commission_offer_restore_safety_pause");
         const std::string party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
         if(!party.empty())return stop(party);
@@ -2654,12 +2662,24 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             return stop("commission_settlement_backpressure");
         UnsettledClaimBatch claims;if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
         ProfessionPreparation restored;const auto receipt=NewId();
-        if(!PrepareInterruptedCommissionOffer(*saved,current,history,claims,NativeClaimBalances(*bot,claims.claims,false),
+        if(partition!=history.commissionPartitions.end()) {
+            CommissionPartitionQuote q;if(!DecodeInterruptedCommissionPartition(*saved,*partition,q))return stop("commission_partition_restore_quote_invalid");
+            CommissionPartitionRestoreState physical;physical.money=bot->GetMoney();
+            if(const auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,q.item)))
+                physical.source={item->GetOwnerGuid().GetCounter(),item->GetGUIDLow(),item->GetEntry(),item->GetCount(),
+                    item->GetContainer()?item->GetContainer()->GetGUIDLow():0,item->GetSlot()};
+            physical.destinationEmpty=!bot->GetItemByPos(q.destination);
+            const auto* bag=bot->GetItemByPos(INVENTORY_SLOT_BAG_0,uint8_t(q.destination>>8));
+            physical.destinationBag=(q.destination>>8)==INVENTORY_SLOT_BAG_0?0:bag?bag->GetGUIDLow():0;
+            if(!PrepareInterruptedCommissionPartition(*saved,current,history,claims,NativeClaimBalances(*bot,claims.claims,false),
+                physical,NowMs(),receipt,restored,why))return stop(why);
+        } else if(!PrepareInterruptedCommissionOffer(*saved,current,history,claims,NativeClaimBalances(*bot,claims.claims,false),
             NowMs(),receipt,restored,why))return stop(why);
         State::Pending write;write.task=std::move(restored.task);write.plan=std::move(restored.plan);
         write.admissionReceipt=receipt;write.closureRefreshRevision=saved->revision;
         write.closureRefreshPhase=saved->phase;
-        state->pending.push_back(std::move(write));state->nextWork=0;return stop("commission_offer_restore_pending");
+        state->pending.push_back(std::move(write));state->nextWork=0;
+        return stop(partition!=history.commissionPartitions.end()?"commission_partition_restore_pending":"commission_offer_restore_pending");
     }
     if(!history.commissionTrade.empty()) {
         UnsettledClaimBatch claims;
@@ -2693,6 +2713,16 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         (saved->phase==Phase::Reconciling && saved->checkpoint.step!="commission_trade_wait") || !(saved->context==current))
         return stop("commission_trade_restart_reconciliation_required");
     if(saved->retryAtMs>NowMs())return stop("commission_trade_waiting_for_customer");
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    if(saved->phase==Phase::Verifying && saved->checkpoint.step=="commission_output_partition") {
+        const auto* fixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+        if(fixture && std::string(fixture)=="activity-commission-direct-broker-v1" &&
+            std::ifstream("/isolated/evidence/commission-partition-pause-after-save") &&
+            std::any_of(history.commissionPartitions.begin(),history.commissionPartitions.end(),
+                [](const auto& row){return row.receipt.state==OperationState::Verified;}))
+            return stop("isolated_commission_partition_saved_pause");
+    }
+#endif
     if(saved->phase==Phase::Verifying && saved->checkpoint.step=="commission_trade_offer") {
         TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
         request.task.phase=Phase::WaitingExternal;request.task.checkpoint.step="commission_trade_wait";

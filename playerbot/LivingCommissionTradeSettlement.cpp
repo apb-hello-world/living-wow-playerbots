@@ -1,6 +1,7 @@
 #include "LivingCommissionTradeSettlement.h"
 #include "LivingActivityOperations.h"
 #include "LivingActivityJournal.h"
+#include "LivingActivityTransfer.h"
 
 namespace LivingActivity {
 namespace {
@@ -16,6 +17,43 @@ uint64_t Number(const Tree& p,const char* key) {
         s.find_first_not_of("0123456789")==std::string::npos,"commission_trade_receipt_number");
     return std::stoull(s);
 }
+bool ReadPartition(const Task& task,const StoredCraftOperation& row,CommissionPartitionQuote& q) {
+    CommissionJob job;std::string why;const auto& op=row.receipt;
+    if(!row.acknowledged || !DecodeCommissionJob(task.checkpoint.data,job,why) ||
+        row.journalDigest.size()!=64 || row.journalDigest.find_first_not_of("0123456789abcdef")!=std::string::npos ||
+        !IsUuid(op.id) || op.task!=task.id || op.kind!="commission_output_partition" ||
+        op.taskRevision<=job.craftFinishedRevision || op.taskRevision>task.revision)return false;
+    const auto p=Parse(row.beforeState);EnchantCodec::Object(p,{"effects","persistence","native"});
+    return Number(p,"effects")==Mask(Effect::Inventory) && Number(p,"persistence")==unsigned(NativePersistence::Inventory) &&
+        DecodeCommissionPartition(EnchantCodec::Json(p.get_child("native")),q) && MatchesCommissionPartition(task,q);
+}
+std::string PartitionJournalGuard(const StoredCraftOperation& row) {
+    const auto& op=row.receipt;
+    return " AND EXISTS(SELECT 1 FROM living_activity_operation p WHERE p.operation_id="+SqlValue(op.id)+
+        " AND p.task_id=living_activity_task.task_id AND p.task_revision="+std::to_string(op.taskRevision)+
+        " AND p.kind='commission_output_partition' AND p.state="+SqlValue(op.state==OperationState::Verified?"verified":op.state==OperationState::Intent?"intent":"reconciling")+
+        " AND SHA2(CONCAT(p.before_state,'|',p.after_state),256)="+SqlValue(row.journalDigest)+')';
+}
+}
+bool DecodeInterruptedCommissionPartition(const Task& task,const StoredCraftOperation& row,CommissionPartitionQuote& q) {
+    q={};try {return (row.receipt.state==OperationState::Intent || row.receipt.state==OperationState::Reconciling) && ReadPartition(task,row,q);}
+    catch(const std::exception&){return false;}
+}
+bool DecodeStoredCommissionPartition(const Task& task,const StoredCraftOperation& row,CommissionPartitionQuote& q,
+    uint32_t& surplus,std::string& why) {
+    q={};surplus=0;why="commission_partition_saved_proof_required";
+    try {
+        if(!ReadPartition(task,row,q) || row.receipt.state!=OperationState::Verified ||
+            row.receipt.taskRevision>=task.revision || row.receipt.evidence!="native_commission_partition_observed")return false;
+        const auto after=Parse(row.afterState);
+        EnchantCodec::Object(after,{"claimed_item","claimed_count","surplus_item","surplus_count","money","claims_unchanged"});
+        const auto extra=Number(after,"surplus_item");
+        if(!extra || extra>UINT32_MAX || extra==q.item || Number(after,"claimed_item")!=q.item ||
+            Number(after,"claimed_count")!=q.quantity || Number(after,"surplus_count")!=q.count-q.quantity ||
+            Number(after,"money")!=q.money || after.get<std::string>("claims_unchanged")!="true" ||
+            row.receipt.nativeReference!="item:"+std::to_string(q.item)+":surplus:"+std::to_string(extra))return false;
+        surplus=uint32_t(extra);why.clear();return true;
+    }catch(const std::exception&){why="commission_partition_saved_proof_malformed";return false;}
 }
 bool DecodeStoredCommissionTrade(const Task& task,const StoredCraftOperation& row,CommissionTradeQuote& result,std::string& why) {
     result={};why.clear();
@@ -72,9 +110,10 @@ bool PrepareCommissionTradeReadyRestore(const Task& saved,const WorldContext& cu
     if(!Validate(saved,why) || !IsCommissionJob(saved) || !ValidateCommissionTask(saved,why) ||
         !DecodeCommissionJob(saved.checkpoint.data,job,why) || !DecodeProfessionIntent(job.craft,recipe,why) ||
         !job.craftFinishedRevision || job.agreement.delivery=="mail" || !saved.accepted || saved.mode!=Mode::Active ||
-        (saved.phase!=Phase::Preparing && saved.phase!=Phase::WaitingExternal && saved.phase!=Phase::Reconciling) ||
+        (saved.phase!=Phase::Preparing && saved.phase!=Phase::WaitingExternal && saved.phase!=Phase::Reconciling &&
+            !(saved.phase==Phase::Verifying && saved.checkpoint.step=="commission_output_partition")) ||
         (saved.checkpoint.step!="commission_craft_ready" && saved.checkpoint.step!="commission_trade_prepare" &&
-            saved.checkpoint.step!="commission_trade_wait") ||
+            saved.checkpoint.step!="commission_trade_wait" && saved.checkpoint.step!="commission_output_partition") ||
         saved.context==current || current.actor!=saved.actor || !IsUuid(current.boot) ||
         !current.actorGeneration || !current.mapGeneration || !current.policyRevision ||
         current.session.size()>120 || current.session.empty()!=(current.sessionRevision==0) ||
@@ -82,6 +121,15 @@ bool PrepareCommissionTradeReadyRestore(const Task& saved,const WorldContext& cu
         !history.commissionMail.empty() || !history.commissionTrade.empty() || history.attempts.empty() ||
         !claims.complete || !claims.bookRevision || claims.claims.empty() || claims.claims.size()>16 ||
         native.empty() || native.size()>16 || now<saved.updatedAtMs || !IsUuid(receipt) || saved.revision>=UINT64_MAX-1)return false;
+    std::string partitionGuard;
+    for(const auto& row:history.commissionPartitions) {
+        CommissionPartitionQuote q;uint32_t surplus=0;
+        if(!DecodeStoredCommissionPartition(saved,row,q,surplus,why))return false;
+        for(const auto& c:q.claims)if(std::none_of(claims.claims.begin(),claims.claims.end(),
+            [&](const auto& held){return SameResourceClaim(c,held);}))return false;
+        partitionGuard+=PartitionJournalGuard(row);
+    }
+    if(saved.checkpoint.step=="commission_output_partition" && history.commissionPartitions.empty())return false;
     std::vector<ClaimConsumption> coverage;std::map<uint32_t,uint64_t> quantities;
     for(const auto& c:claims.claims) {
         if(c.quantity>UINT32_MAX || c.itemEntry!=recipe.outputEntry)return false;
@@ -97,13 +145,13 @@ bool PrepareCommissionTradeReadyRestore(const Task& saved,const WorldContext& cu
     for(const auto& balance:native) {
         if(balance.actor!=saved.actor || balance.itemEntry!=recipe.outputEntry || balance.location!="bags" ||
             balance.copper || balance.nativeReference || !seen.insert(balance.itemGuid).second ||
-            !quantities.count(balance.itemGuid) || quantities.at(balance.itemGuid)!=balance.quantity)return false;
+            !quantities.count(balance.itemGuid) || quantities.at(balance.itemGuid)>balance.quantity)return false;
     }
     auto next=saved;next.context=current;++next.revision;next.updatedAtMs=now;
     next.phase=Phase::Preparing;next.checkpoint.step="commission_trade_prepare";next.checkpoint.blocker.clear();next.retryAtMs=0;
     auto plan=Detail::TaskTransitionWrite(next,saved.revision,receipt,"commission_trade_ready_restored",job.agreement.id);
     auto& sql=plan.statements.front();
-    sql+=" AND checkpoint="+SqlValue(saved.checkpoint.data)+
+    sql+=partitionGuard+" AND checkpoint="+SqlValue(saved.checkpoint.data)+
         " AND NOT EXISTS(SELECT 1 FROM living_activity_operation o JOIN living_activity_task a ON a.task_id=o.task_id"
         " WHERE a.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))"
         " AND NOT EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id"
@@ -122,6 +170,83 @@ bool PrepareCommissionTradeReadyRestore(const Task& saved,const WorldContext& cu
         " WHERE i.guid="+std::to_string(balance.itemGuid)+" AND i.owner_guid="+std::to_string(saved.actor)+
         " AND v.guid=i.owner_guid AND i.itemEntry="+std::to_string(balance.itemEntry)+" AND i.count="+std::to_string(balance.quantity)+")";
     result.task=std::move(next);result.plan=std::move(plan);why.clear();return true;
+}
+bool PrepareInterruptedCommissionPartition(const Task& saved,const WorldContext& current,const ProfessionHistory& history,
+    const UnsettledClaimBatch& claims,const std::vector<NativeResourceBalance>& native,const CommissionPartitionRestoreState& physical,
+    uint64_t now,const std::string& receipt,ProfessionPreparation& result,std::string& why) {
+    result={};why="commission_partition_restart_proof_required";
+    try {
+        CommissionJob job;std::string reason;
+        Require(Validate(saved,reason) && ValidateCommissionTask(saved,reason) && DecodeCommissionJob(saved.checkpoint.data,job,reason) &&
+            saved.accepted && saved.mode==Mode::Active && job.craftFinishedRevision && saved.context.boot.empty() &&
+            !saved.context.actorGeneration && !saved.context.mapGeneration &&
+            (saved.phase==Phase::Executing || saved.phase==Phase::Reconciling) && saved.checkpoint.step=="commission_output_partition" &&
+            current.actor==saved.actor && IsUuid(current.boot) && current.actorGeneration && current.mapGeneration && current.policyRevision &&
+            current.session.size()<=120 && current.session.empty()==(current.sessionRevision==0) &&
+            now>=saved.updatedAtMs && saved.revision<UINT64_MAX-1 && IsUuid(receipt),"commission_partition_restored_context_required");
+        Require(history.complete && history.task==saved.id && history.revision==saved.revision && history.unresolvedOperation &&
+            !history.attempts.empty() && history.commissionMail.empty() && history.commissionTrade.empty() &&
+            !history.interruptedCommissionOffer && !history.commissionPartitions.empty(),"commission_partition_restart_history_required");
+        const StoredCraftOperation* pending=nullptr;
+        for(const auto& row:history.commissionPartitions) {
+            CommissionPartitionQuote q;uint32_t surplus=0;
+            if(row.receipt.state==OperationState::Verified) {
+                Require(DecodeStoredCommissionPartition(saved,row,q,surplus,reason),"commission_partition_prior_proof_invalid");continue;
+            }
+            Require(!pending,"commission_partition_multiple_pending");pending=&row;
+        }
+        Require(pending,"commission_partition_pending_receipt_required");const auto& op=pending->receipt;CommissionPartitionQuote q;
+        Require(ReadPartition(saved,*pending,q) && (op.state==OperationState::Intent || op.state==OperationState::Reconciling) &&
+            saved.revision-op.taskRevision<=1,"commission_partition_restart_intent_required");
+        const auto& source=physical.source;
+        Require(physical.money==q.money && physical.destinationEmpty && physical.destinationBag==q.destinationBag &&
+            source.actor==q.actor && source.guid==q.item && source.entry==q.entry && source.count==q.count &&
+            source.bagGuid==q.sourceBag && source.slot==(q.position&255),"commission_partition_original_native_state_required");
+        Require(claims.complete && claims.bookRevision && !claims.claims.empty() && claims.claims.size()<=16 &&
+            !native.empty() && native.size()<=16,"commission_partition_restart_claims_required");
+        for(const auto& expected:q.claims)Require(std::any_of(claims.claims.begin(),claims.claims.end(),
+            [&](const auto& held){return SameResourceClaim(expected,held);}),"commission_partition_restart_claim_changed");
+        std::map<uint32_t,uint64_t> quantities;std::vector<ClaimConsumption> coverage;
+        for(const auto& c:claims.claims) {
+            Require(c.quantity<=UINT32_MAX,"commission_partition_claim_quantity");coverage.push_back({c,uint32_t(c.quantity)});
+            quantities[c.itemGuid]+=c.quantity;
+        }
+        CommissionTradeQuote output{q.actor,q.recipient,q.entry,job.agreement.feeCopper,0,job.agreement.feeCopper,{}};
+        for(const auto& item:quantities) {Require(item.second<=UINT32_MAX,"commission_partition_claim_quantity");output.items.push_back({item.first,uint32_t(item.second)});}
+        Require(ExactCommissionTradeConsumption(saved,output,coverage) && native.size()==quantities.size(),"commission_partition_complete_output_required");
+        std::set<uint32_t> seen;std::string guard;
+        for(const auto& b:native) {
+            Require(ValidNativeResourceBalance(b) && b.actor==q.actor && b.itemEntry==q.entry && b.location=="bags" &&
+                !b.copper && !b.nativeReference && seen.insert(b.itemGuid).second && quantities.count(b.itemGuid) &&
+                b.quantity>=quantities.at(b.itemGuid) && (b.itemGuid!=q.item || b.quantity==q.count),"commission_partition_output_custody_changed");
+            guard+=" AND EXISTS(SELECT 1 FROM item_instance i JOIN character_inventory v ON v.item=i.guid WHERE i.guid="+
+                std::to_string(b.itemGuid)+" AND i.owner_guid="+std::to_string(q.actor)+" AND v.guid=i.owner_guid AND i.itemEntry="+
+                std::to_string(q.entry)+" AND i.count="+std::to_string(b.quantity)+')';
+        }
+        auto n=[](uint64_t value){return std::to_string(value);};
+        guard+=" AND EXISTS(SELECT 1 FROM characters a WHERE a.guid="+n(q.actor)+" AND a.money="+n(q.money)+')'+
+            " AND EXISTS(SELECT 1 FROM character_inventory v WHERE v.guid="+n(q.actor)+" AND v.item="+n(q.item)+
+            " AND v.bag="+n(q.sourceBag)+" AND v.slot="+n(q.position&255)+')'+
+            " AND NOT EXISTS(SELECT 1 FROM character_inventory v WHERE v.guid="+n(q.actor)+" AND v.bag="+n(q.destinationBag)+" AND v.slot="+n(q.destination&255)+')'+
+            " AND (SELECT COUNT(*) FROM character_inventory v WHERE v.item="+n(q.item)+")=1"+
+            " AND NOT EXISTS(SELECT 1 FROM mail_items m WHERE m.item_guid="+n(q.item)+')'+
+            " AND NOT EXISTS(SELECT 1 FROM guild_bank_item g WHERE g.item_guid="+n(q.item)+')'+
+            " AND NOT EXISTS(SELECT 1 FROM auction a WHERE a.itemguid="+n(q.item)+')';
+        for(const auto& c:claims.claims)guard+=" AND EXISTS(SELECT 1 FROM living_activity_claim c WHERE "+TransferClaimPredicate(c)+')';
+        guard+=" AND (SELECT COUNT(*) FROM living_activity_claim c WHERE c.actor_guid="+n(q.actor)+" AND c.item_guid="+n(q.item)+" AND c.state='held')="+n(q.claims.size());
+        auto next=saved;next.context=current;++next.revision;next.updatedAtMs=now;next.phase=Phase::Verifying;
+        next.checkpoint.blocker.clear();next.retryAtMs=0;
+        auto outcome=op;outcome.state=OperationState::Rejected;outcome.evidence="commission_partition_unchanged_on_restart";
+        auto plan=OperationOutcomeWrite(next,saved.revision,outcome,receipt,EncodeCommissionPartition(q));
+        plan.statements.front()+=" AND phase="+SqlValue(Name(saved.phase))+" AND checkpoint="+SqlValue(saved.checkpoint.data)+
+            PartitionJournalGuard(*pending)+guard+
+            " AND (SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))=1"
+            " AND (SELECT COUNT(*) FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id AND c.state NOT IN ('consumed','released'))="+n(claims.claims.size())+
+            " AND EXISTS(SELECT 1 FROM living_activity_transition t WHERE t.task_id=living_activity_task.task_id AND t.task_revision="+n(job.craftFinishedRevision)+" AND t.code='commission_craft_verified')";
+        result.task=std::move(next);result.plan=std::move(plan);why.clear();return true;
+    }catch(const std::invalid_argument& error){why=error.what();}
+     catch(const std::exception&){why="commission_partition_restart_receipt_malformed";}
+    return false;
 }
 bool PrepareInterruptedCommissionOffer(const Task& saved,const WorldContext& current,const ProfessionHistory& history,
     const UnsettledClaimBatch& claims,const std::vector<NativeResourceBalance>& native,
