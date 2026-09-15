@@ -241,4 +241,30 @@ inline void TestCommissionMail() {
         assert(!PrepareUnsentCommission(t,owner.context,h,c,native,0,2002000,settlement,settled,why));
         assert(!why.empty());
     }
+    auto uncertain=unsent;uncertain.phase=Phase::Reconciling;++uncertain.revision;
+    auto capturedHistory=interrupted;capturedHistory.revision=uncertain.revision;
+    auto& capture=capturedHistory.commissionMail.front();capture.receipt.state=OperationState::Reconciling;
+    capture.receipt.evidence="native_save_capture_requires_reconciliation";capture.receipt.nativeReference=sendRow.receipt.nativeReference;
+    capture.afterState="{\"mail\":9832,\"item\":103,\"receiver\":9,\"cod\":120,\"delivered_at\":1100,\"expires_at\":3000,\"postage\":30,\"customer_received\":false,\"fee_paid\":false}";
+    AuctionMail captured;CommissionSendRecovery recovered;
+    assert(DecodeInterruptedCommission(uncertain,capturedHistory,claims,decoded,captured,why) && captured.id==9832);
+    assert(PrepareCapturedCommissionSend(uncertain,owner.context,capturedHistory,claims,2002000,settlement,recovered,why));
+    assert(recovered.task.phase==Phase::Verifying && recovered.task.id==owner.id && recovered.claims.size()==2);
+    for(const auto& c:recovered.claims)assert(c.after.state=="consumed");
+    assert(PrepareUnsentCommission(uncertain,owner.context,capturedHistory,claims,q,0,2002000,settlement,settled,why));
+    const auto preserved=SqlValue("{\"recovery\":\"atomic_send_absent\",\"unchanged\":"+EncodeCommissionMailQuote(q)+
+        ",\"prior_observation\":"+capture.afterState+'}');
+    assert(std::any_of(settled.plan.statements.begin(),settled.plan.statements.end(),[&](const std::string& sql){return sql.find(preserved)!=std::string::npos;}));
+    for(unsigned i=0;i<5;++i) {
+        auto bad=capturedHistory;
+        if(i==0)bad.commissionMail.front().receipt.evidence="unknown_failure";
+        if(i==1)bad.commissionMail.front().receipt.nativeReference="mail:9999:item:103";
+        if(i==2)bad.commissionMail.front().afterState="{\"mail\":9832}";
+        if(i==3)bad.commissionMail.front().receipt.taskRevision--;
+        if(i==4)bad.commissionMail.push_back(receivedRow);
+        assert(!PrepareCapturedCommissionSend(uncertain,owner.context,bad,claims,2002000,settlement,recovered,why));
+    }
+    capture.afterState="{}";capture.receipt.nativeReference.clear();
+    assert(PrepareUnsentCommission(uncertain,owner.context,capturedHistory,claims,q,0,2002000,settlement,settled,why));
+    assert(!PrepareCapturedCommissionSend(uncertain,owner.context,capturedHistory,claims,2002000,settlement,recovered,why));
 }

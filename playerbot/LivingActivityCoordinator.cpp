@@ -2389,6 +2389,27 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         RefreshPermission(actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
         const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
         const auto receipt=NewId();
+        if(saved->phase==Phase::Reconciling && restoredDelivery && saved->checkpoint.step=="commission_mail_send" && history.unresolvedOperation) {
+            CommissionMailQuote quote;AuctionMail captured;
+            if(!DecodeInterruptedCommission(*saved,history,claims,quote,captured,why))return stop(why);
+            auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item));
+            State::Pending write;
+            if(item && item->GetOwnerGuid()==bot->GetObjectGuid() && Player::IsInventoryPos(item->GetPos()) &&
+                item->GetEntry()==quote.entry && item->GetCount()==quote.count && item->GetPos()==quote.position && bot->GetMoney()==quote.moneyBefore) {
+                if(!PrepareUnsentCommission(*saved,current,history,claims,quote,item->GetContainer()?item->GetContainer()->GetGUIDLow():0,
+                    NowMs(),receipt,prepared,why))return stop(why);
+                write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
+            } else {
+                if(item || bot->GetMoney()!=quote.moneyBefore-quote.postage)return stop("commission_interrupted_native_custody_changed");
+                CommissionSendRecovery recovered;
+                if(!PrepareCapturedCommissionSend(*saved,current,history,claims,NowMs(),receipt,recovered,why))return stop(why);
+                write.task=std::move(recovered.task);write.plan=std::move(recovered.plan);write.claims=std::move(recovered.claims);
+            }
+            write.admissionReceipt=receipt;write.closureRefreshRevision=saved->revision;
+            state->pending.push_back(std::move(write));state->nextWork=0;
+            if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+            return stop("commission_interrupted_send_reconciliation_pending");
+        }
         if(!PrepareCommissionSettlement(*saved,current,history,claims,NowMs(),receipt,prepared,why))return stop(why);
         State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);write.admissionReceipt=receipt;
         state->pending.push_back(std::move(write));

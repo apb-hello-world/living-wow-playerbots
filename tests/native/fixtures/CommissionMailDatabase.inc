@@ -327,4 +327,63 @@ static void CommissionMailDatabase(Connection& db) {
     assert(db.Scalar("SELECT count FROM item_instance WHERE guid=9981002")=="4");
     assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="500");
     assert(db.Scalar("SELECT money FROM characters WHERE guid=9982")=="880");
+
+    // Separate supplied capture-failure snapshots: native transaction either
+    // rolled back or committed. Recovery itself must never transfer anything.
+    const std::string captureAfter="{\"mail\":90041,\"item\":9981001,\"receiver\":9982,\"cod\":120,\"delivered_at\":1120,\"expires_at\":200000,\"postage\":30,\"customer_received\":false,\"fee_paid\":false}";
+    for(bool committed:{false,true}) {
+        auto interrupted=task;interrupted.phase=Phase::Reconciling;interrupted.revision=committed?26:22;
+        interrupted.checkpoint.step="commission_mail_send";interrupted.context.boot.clear();
+        interrupted.context.actorGeneration=interrupted.context.mapGeneration=0;
+        assert(db.Execute("UPDATE living_activity_task SET revision="+std::to_string(interrupted.revision)+
+            ",phase='reconciling',step='commission_mail_send' WHERE task_id="+SqlValue(task.id)));
+        assert(db.Execute("DELETE FROM living_activity_operation WHERE task_id="+SqlValue(task.id)+" AND operation_id<>"+SqlValue(operation)));
+        assert(db.Execute("UPDATE living_activity_operation SET task_revision="+std::to_string(interrupted.revision-1)+
+            ",state='reconciling',evidence_code='native_save_capture_requires_reconciliation',native_reference='mail:90041:item:9981001',after_state="+
+            SqlValue(captureAfter)+" WHERE operation_id="+SqlValue(operation)));
+        assert(db.Execute("UPDATE organic_economy_commission SET state='traveling',failure_reason='' WHERE commission_id='lwc-987'"));
+        for(const auto& c:{parcel,postage})assert(db.Execute("UPDATE living_activity_claim SET state='held',revision=1 WHERE claim_id="+SqlValue(c.id)));
+        assert(db.Execute("DELETE FROM mail WHERE subject="+SqlValue(sent.subject)));
+        assert(db.Execute("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES(9981001,2454,9981,1) ON DUPLICATE KEY UPDATE owner_guid=9981,count=1"));
+        assert(db.Execute("UPDATE characters SET money=500 WHERE guid=9981"));
+        if(!committed)assert(db.Execute("INSERT INTO character_inventory(guid,bag,slot,item,item_template) VALUES(9981,0,24,9981001,2454)"));
+        else {
+            assert(db.Execute("DELETE FROM character_inventory WHERE item=9981001"));
+            assert(db.Execute("UPDATE characters SET money=470 WHERE guid=9981"));
+            assert(db.Execute("UPDATE item_instance SET owner_guid=9982 WHERE guid=9981001"));
+            assert(db.Execute("INSERT INTO mail(id,messageType,sender,receiver,money,cod,deliver_time,expire_time,subject) VALUES(90041,0,9981,9982,0,120,1120,200000,"+SqlValue(sent.subject)+')'));
+            assert(db.Execute("INSERT INTO mail_items VALUES(90041,9981001,2454,9982)"));
+        }
+        auto read=readHistory(interrupted);claims.claims={parcel,postage};CommissionSendRecovery recovered;
+        const auto recoveryReceipt=committed?"769b8ae6-3123-4587-8ad7-fb51b9c01915":"769b8ae6-3123-4587-8ad7-fb51b9c01914";
+        WritePlan recoveryPlan;
+        if(committed) {
+            assert(PrepareCapturedCommissionSend(interrupted,task.context,read,claims,2008000,recoveryReceipt,recovered,why));
+            recoveryPlan=recovered.plan;
+            assert(db.Execute("UPDATE mail SET cod=121 WHERE id=90041"));assert(!db.Write(recoveryPlan));
+            assert(db.Execute("UPDATE mail SET cod=120 WHERE id=90041"));
+            assert(db.Execute("UPDATE item_instance SET owner_guid=9981 WHERE guid=9981001"));assert(!db.Write(recoveryPlan));
+            assert(db.Execute("UPDATE item_instance SET owner_guid=9982 WHERE guid=9981001"));
+            assert(db.Execute("UPDATE characters SET money=469 WHERE guid=9981"));assert(!db.Write(recoveryPlan));
+            assert(db.Execute("UPDATE characters SET money=470 WHERE guid=9981"));
+            assert(db.Execute("INSERT INTO mail(id,subject) VALUES(90042,"+SqlValue(sent.subject)+')'));assert(!db.Write(recoveryPlan));
+            assert(db.Execute("DELETE FROM mail WHERE id=90042"));
+            assert(db.Execute("UPDATE living_activity_claim SET quantity=2 WHERE claim_id="+SqlValue(parcel.id)));assert(!db.Write(recoveryPlan));
+            assert(db.Execute("UPDATE living_activity_claim SET quantity=1 WHERE claim_id="+SqlValue(parcel.id)));
+        } else {
+            assert(PrepareUnsentCommission(interrupted,task.context,read,claims,quote,0,2008000,recoveryReceipt,recovery,why));
+            recoveryPlan=recovery.plan;
+            assert(!db.Write(recoveryPlan)); // Original slot is 23, not 24.
+            assert(db.Execute("UPDATE character_inventory SET slot=23 WHERE item=9981001"));
+        }
+        assert(db.Execute("UPDATE living_activity_operation SET evidence_code='changed' WHERE operation_id="+SqlValue(operation)));
+        assert(!db.Write(recoveryPlan));
+        assert(db.Execute("UPDATE living_activity_operation SET evidence_code='native_save_capture_requires_reconciliation' WHERE operation_id="+SqlValue(operation)));
+        assert(db.Write(recoveryPlan));assert(db.Write(recoveryPlan));
+        assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+SqlValue(operation))==(committed?"verified":"rejected"));
+        assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(parcel.id))==(committed?"consumed":"held"));
+        assert(db.Scalar("SELECT state FROM organic_economy_commission WHERE commission_id='lwc-987'")=="traveling");
+        assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")== (committed?"470":"500"));
+        assert(db.Scalar("SELECT count FROM item_instance WHERE guid=9981001")=="1");
+    }
 }

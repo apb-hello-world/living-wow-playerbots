@@ -36,6 +36,15 @@ bool PrepareCommissionSettlement(const Task&,const WorldContext&,const Professio
 // item, money and claims unchanged and that no matching envelope exists.
 bool DecodeUnsentCommission(const Task&,const ProfessionHistory&,const UnsettledClaimBatch&,
     CommissionMailQuote&,std::string&);
+bool DecodeInterruptedCommission(const Task&,const ProfessionHistory&,const UnsettledClaimBatch&,
+    CommissionMailQuote&,AuctionMail&,std::string&);
+struct CommissionSendRecovery {
+    Task task;
+    WritePlan plan;
+    std::vector<ClaimReceiptChange> claims;
+};
+bool PrepareCapturedCommissionSend(const Task&,const WorldContext&,const ProfessionHistory&,
+    const UnsettledClaimBatch&,uint64_t,const std::string&,CommissionSendRecovery&,std::string&);
 bool PrepareUnsentCommission(const Task&,const WorldContext&,const ProfessionHistory&,
     const UnsettledClaimBatch&,const CommissionMailQuote&,uint32_t,uint64_t,const std::string&,
     ProfessionPreparation&,std::string&);
