@@ -12,6 +12,8 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
         ChatDirectorEvent brokerEvent;
         ChatDirectorActionProposal brokerProposal;
         bool brokerAccepted=false,partialStock=false,capacity=false,capacityPrepared=false;
+        bool cancelFirstOffer=false,cancelled=false;
+        uint64_t cancelledAt=0;
         boost::property_tree::ptree input;
     };
     static Fixture f;
@@ -34,6 +36,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             f.actor=id("LIVING_WOW_NATIVE_FIXTURE_ACTOR");f.customer=id("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
             f.partialStock=brokerCase && bool(std::ifstream("/isolated/evidence/commission-partition-existing-stock"));
             f.capacity=brokerCase && bool(std::ifstream("/isolated/evidence/commission-capacity-full-bags"));
+            f.cancelFirstOffer=automaticOffer && bool(std::ifstream("/isolated/evidence/commission-cancel-first-offer"));
             require(!f.capacity || f.partialStock,"capacity_fixture_requires_existing_stock");
             require(f.actor && f.customer && f.actor!=f.customer,"distinct_commission_trade_actors_required");
             std::ifstream prior("/isolated/evidence/commission-trade-input-v1.json",std::ios::ate);
@@ -162,6 +165,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             f.input.put("automatic_offer",automaticOffer);
             f.input.put("broker_case",brokerCase);
             f.input.put("capacity_test",f.capacity);
+            f.input.put("cancel_first_offer",f.cancelFirstOffer);
             if(brokerCase)f.input.put("broker_event_id",f.brokerEvent.eventId);
             // Disclosed OLD-stock fixture, not a grant of the ordered output:
             // the verified craft must add one, and this original one must remain.
@@ -279,7 +283,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
                 require(!conflict.created && conflict.reasonCode=="commission_agreement_conflict","direct_broker_completed_contract_immutable");
                 report.put("broker_completed_replay",true);report.put("broker_completed_conflict_rejected",true);
             }
-            require(f.offered && actor->GetItemCount(2454,true)==(f.partialStock?1u:0u) &&
+            require(f.offered && (!f.cancelFirstOffer || f.cancelled) && actor->GetItemCount(2454,true)==(f.partialStock?1u:0u) &&
                 customer->GetItemCount(2454,true)==f.input.template get<uint32_t>("recipient_items_before")+1 &&
                 (f.capacity || actor->GetMoney()==f.input.template get<uint32_t>("actor_money_before")+60) &&
                 customer->GetMoney()+60==f.input.template get<uint32_t>("recipient_money_before"),"native_commission_conservation_required");
@@ -321,6 +325,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             }
         }
         require(actor->IsWithinDistInMap(customer,TRADE_DISTANCE,false),"fixture_customer_arrival_required");
+        if(f.cancelled && NowMs()<f.cancelledAt+2500)return;
         if(automaticOffer && !f.windowOpened) {
             require(!actor->GetTradeData() && !customer->GetTradeData(),"fresh_customer_trade_required");
             WorldPacket initiate(CMSG_INITIATE_TRADE,8);initiate<<actor->GetObjectGuid();
@@ -348,6 +353,22 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
         }
         require(actor->GetTradeData()->GetItem(TradeSlots(0))==item && customer->GetTradeData()->GetMoney()==60,
             "native_claimed_offer_required");
+        if(f.cancelFirstOffer && !f.cancelled) {
+            const auto actorMoney=actor->GetMoney(),customerMoney=customer->GetMoney();
+            const auto outputCount=actor->GetItemCount(2454,true),customerCount=customer->GetItemCount(2454,true);
+            require(!actor->GetTradeData()->IsAccepted() && !customer->GetTradeData()->IsAccepted(),"cancel_unaccepted_window_only");
+            WorldPacket cancel(CMSG_CANCEL_TRADE);customer->GetSession()->HandleCancelTradeOpcode(cancel);
+            require(!actor->GetTradeData() && !customer->GetTradeData() && actor->GetMoney()==actorMoney &&
+                customer->GetMoney()==customerMoney && actor->GetItemCount(2454,true)==outputCount &&
+                customer->GetItemCount(2454,true)==customerCount && actor->GetItemByGuid(item->GetObjectGuid())==item,
+                "cancel_window_preserves_native_goods_and_money");
+            f.cancelled=true;f.cancelledAt=NowMs();f.windowOpened=false;
+            f.input.put("cancelled_offer_revision",saved->revision);f.input.put("cancelled_offer_claim",claim.id);
+            f.input.put("cancelled_offer_claim_revision",claim.revision);f.input.put("cancelled_offer_item",claim.itemGuid);
+            f.input.put("cancelled_offer_actor_money",actorMoney);f.input.put("cancelled_offer_recipient_money",customerMoney);
+            f.input.put("cancelled_offer_preserved",true);
+            write("commission-trade-input-v1.json",f.input);write("commission-cancelled-offer-checkpoint.json",f.input);return;
+        }
         // ONLY the customer's acceptance. The coordinator owns the crafter's
         // final native acceptance, operation journal and verified settlement.
         WorldPacket accept(CMSG_ACCEPT_TRADE,4);accept<<uint32_t(0);customer->GetSession()->HandleAcceptTradeOpcode(accept);
