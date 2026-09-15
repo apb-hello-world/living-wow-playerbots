@@ -8,8 +8,11 @@ inline WritePlan CommissionAdmissionWrite(const Task& task,const std::string& re
     CommissionJob job;ProfessionJob recipe;std::string why;
     if(!ValidateCommissionTask(task,why) || !DecodeCommissionJob(task.checkpoint.data,job,why) ||
         !DecodeProfessionJob(job.craft,recipe,why) || task.revision!=1 || task.phase!=Phase::Queued ||
-        !task.accepted || task.mode!=Mode::Active || job.craftFinishedRevision || job.agreement.delivery!="mail")
-        throw std::invalid_argument("new_mail_commission_required");
+        !task.accepted || task.mode!=Mode::Active || job.craftFinishedRevision)
+        throw std::invalid_argument("new_validated_commission_required");
+    // Contract validation above allows only supported delivery types. This
+    // shared atomic writer does not decide which channels expose admission;
+    // SubmitMailCommission and the public broker retain their mail-only gate.
     const auto& c=job.agreement;
     const auto payload=EncodeCommissionContract(c),id=SqlValue(c.id);
     auto n=[](uint64_t value){return std::to_string(value);};

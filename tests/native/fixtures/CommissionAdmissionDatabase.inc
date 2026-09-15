@@ -34,4 +34,20 @@ static void CommissionAdmissionDatabase(Connection& db) {
     assert(db.Scalar("SELECT service_fee_copper FROM organic_economy_commission WHERE commission_id='lwc-9988001'")=="60");
     assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id="+SqlValue(task.id))=="queued");
     assert(db.Scalar("SELECT COUNT(*) FROM living_activity_operation WHERE task_id="+SqlValue(task.id))=="0");
+    for(const auto* delivery:{"direct","meeting"}) {
+        auto agreed=job;auto admitted=task;
+        const bool direct=std::string(delivery)=="direct";
+        agreed.agreement.delivery=delivery;agreed.agreement.id=direct?"lwc-9988002":"lwc-9988003";
+        agreed.agreement.transaction=std::string("wow-tx-native-")+delivery;
+        admitted.sourceKey=agreed.agreement.id;
+        admitted.id=admitted.root=direct?"ef8c546c-25c2-50b6-a7f6-60d87a379634":"ef8c546c-25c2-50b6-a7f6-60d87a379635";
+        admitted.checkpoint.data=EncodeCommissionJob(agreed);
+        const auto acknowledged=direct?"ef8c546c-25c2-50b6-a7f6-60d87a379636":"ef8c546c-25c2-50b6-a7f6-60d87a379637";
+        const auto write=CommissionAdmissionWrite(admitted,acknowledged);
+        assert(!db.Write(write,true));assert(db.Write(write));assert(db.Write(write));
+        assert(db.Scalar("SELECT COUNT(*) FROM living_activity_transition WHERE task_id="+SqlValue(admitted.id))=="1");
+        auto changed=agreed;changed.agreement.delivery="mail";
+        admitted.checkpoint.data=EncodeCommissionJob(changed);
+        assert(!db.Write(CommissionAdmissionWrite(admitted,acknowledged)));
+    }
 }
