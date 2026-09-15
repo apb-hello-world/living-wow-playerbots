@@ -752,9 +752,16 @@ int main() {
         NativeResourceBalance stock{9991,9991001,2454,8,0,"bags"};
         ++foldedTask.revision;foldedTask.phase=Phase::Preparing;
         assert(db.Write(ResourceReservationWrite(foldedTask,1,rid(5),{{first,0},{second,0}},{stock})));
+        ++foldedTask.revision;foldedTask.context.boot.clear();
+        foldedTask.context.actorGeneration=foldedTask.context.mapGeneration=0;
+        assert(db.Write(TaskWrite(foldedTask,2,rid(8),"restored_fragment_fixture")));
+        // Supplied database fixture: represent the already-verified predecessor,
+        // never use an ordinary task request to fabricate an execution outcome.
+        assert(db.Execute("UPDATE living_activity_task SET phase='verifying' WHERE task_id="+SqlValue(foldedTask.id)));
+        foldedTask.phase=Phase::Verifying;
         UnsettledClaimBatch batch;batch.bookRevision=1;batch.complete=true;batch.claims={first,second};BagClaimCoalescence folded;
         assert(PlanBagClaimCoalescence(batch,folded));++foldedTask.revision;
-        const auto write=BagClaimCoalescenceWrite(foldedTask,2,rid(6),folded,stock);
+        const auto write=BagClaimCoalescenceWrite(foldedTask,3,rid(6),folded,stock);
         assert(!db.Write(write,true)); // Entire metadata transaction rolls back.
         const auto quantities="SELECT GROUP_CONCAT(CONCAT(quantity,':',state,':',revision) ORDER BY claim_id) FROM living_activity_claim WHERE task_id="+SqlValue(foldedTask.id);
         assert(db.Scalar(quantities)=="3:held:1,4:held:1");

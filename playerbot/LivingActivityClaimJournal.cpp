@@ -1,4 +1,5 @@
 #include "LivingActivityResources.h"
+#include "LivingActivityJournal.h"
 #include <algorithm>
 #include <set>
 #include <stdexcept>
@@ -25,7 +26,7 @@ namespace LivingActivity {
         const BagClaimCoalescence& folded,const NativeResourceBalance& balance) {
         if(!ValidBagClaimCoalescence(folded) || !ValidNativeResourceBalance(balance) || !expected ||
             task.mode!=Mode::Active || !task.accepted || task.root!=task.id ||
-            (task.phase!=Phase::Preparing && task.phase!=Phase::Traveling && task.phase!=Phase::Verifying))
+            (task.phase!=Phase::Preparing && task.phase!=Phase::Traveling && task.phase!=Phase::Verifying && task.phase!=Phase::Reconciling))
             throw std::invalid_argument("Exact nonexecuting bag claim coalescence required");
         const auto& first=folded.before.front();
         if(first.task!=task.id || first.actor!=task.actor || balance.actor!=task.actor || balance.itemGuid!=first.itemGuid ||
@@ -34,7 +35,9 @@ namespace LivingActivity {
             throw std::invalid_argument("Coalescence must conserve one owned native stack");
         std::string fingerprint="balance:"+Number(balance.quantity)+'|';
         for(const auto& old:folded.before)for(const auto& field:Fields(old))fingerprint+=field.first+'='+field.second+'|';
-        auto plan=TaskWrite(task,expected,receipt,"resource_claims_coalesced",fingerprint);
+        // Preserve an existing verification/reconciliation phase; the SQL
+        // below requires that exact predecessor phase and no unresolved effect.
+        auto plan=Detail::TaskTransitionWrite(task,expected,receipt,"resource_claims_coalesced",fingerprint);
         auto& update=plan.statements.front();
         update+=" AND mode='active' AND phase="+SqlValue(Name(task.phase))+
             " AND NOT EXISTS (SELECT 1 FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id "

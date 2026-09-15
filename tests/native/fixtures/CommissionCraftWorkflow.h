@@ -52,17 +52,18 @@ inline void TestCommissionCraftWorkflow() {
     {
         // Two actual receipts can contribute to one native stack and one
         // conserved folded claim. The receipt identities themselves survive.
-        const auto savedSnapshot=snapshot;const auto savedBatch=batch;const auto savedBalances=balances;
+        const auto savedTask=task;const auto savedSnapshot=snapshot;const auto savedBatch=batch;const auto savedBalances=balances;
         auto second=proof.attempt;second.receipt.id="2aa768f5-8234-4f22-9553-e4d7dbe2983b";
-        second.receipt.taskRevision=4;snapshot.attempts.push_back(second);
+        second.receipt.taskRevision=7;second.receipt.nativeReference="spell:2329:operation:"+second.receipt.id;
+        task.revision=snapshot.revision=8;snapshot.attempts.push_back(second);
         batch.claims[0].quantity=2;++batch.claims[0].revision;balances[0].quantity=2;
-        assert(prepare());
+        if(!prepare())throw std::runtime_error("folded commission craft handoff: "+why);
         batch.claims[0].quantity=3;balances[0].quantity=3;
         assert(!prepare()); // Owned surplus is not another verified craft.
         batch.claims[0].quantity=2;balances[0].quantity=2;
         snapshot.attempts[1].gainedItems={{104,1}};
         assert(!prepare()); // Cannot borrow proof from a different stack.
-        snapshot=savedSnapshot;batch=savedBatch;balances=savedBalances;
+        task=savedTask;snapshot=savedSnapshot;batch=savedBatch;balances=savedBalances;
     }
     if(!prepare())throw std::runtime_error("commission craft handoff: "+why);
     assert(settled.task.phase==Phase::Preparing && settled.task.checkpoint.step=="commission_craft_ready");

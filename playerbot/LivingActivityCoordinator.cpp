@@ -2598,37 +2598,15 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     }
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
     if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) return stop("profession_native_actor_unavailable");
-    const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
-    if (!(current==saved->context))
-        return stop(RevalidateProfessionPreparation(actor,id,saved->revision,NewId()).blocker);
-    auto advance=[&](Phase phase) {
-        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
-        ++request.task.revision;request.task.phase=phase;request.task.updatedAtMs=NowMs();request.receipt=NewId();
-        if(phase==Phase::Preparing || phase==Phase::Traveling) {
-            request.task.checkpoint.blocker.clear();request.task.retryAtMs=0;
-        }
-        return stop(SubmitTask(request).blocker);
-    };
-    if (saved->phase==Phase::Queued) return advance(Phase::Preparing);
-    if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal) {
-        // Waiting does not require another market/claim snapshot. In particular
-        // an unchanged legacy reservation must not prevent eventual revalidation.
-        const auto safety=ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR));
-        if(safety)return stop(NativeSafetyReason(safety));
-        if(!bot->GetMap())return stop("native_map_unavailable");
-        if(bot->GetMap()->IsDungeon())return stop("native_dungeon_commitment");
-        if(LivingServiceExecution::Busy(bot))return stop(LivingServiceExecution::Blocker(bot));
-        if(saved->retryAtMs>NowMs())return stop(saved->checkpoint.blocker.empty() ?
-            "profession_retry_not_due" : saved->checkpoint.blocker);
-        return advance(Phase::Reconciling);
-    }
-    if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
     // A batch may craft many times into the same native stack. Retain each
     // operation receipt, but fold redundant held reservations before the
-    // bounded snapshot fills. This also resumes already-fragmented saved jobs.
+    // bounded snapshot fills. Fold BEFORE context revalidation, whose material
+    // snapshot otherwise deadlocks on an already-fragmented restored job.
+    // Preserve the saved context/phase: folding cannot grant an execution lease.
     UnsettledClaimBatch fragments;std::string claimWhy;
     if(!state->resources.ReadUnsettled(id,fragments,claimWhy))return stop(claimWhy);
-    if(!fragments.complete || fragments.claims.size()>=12) {
+    if((saved->phase==Phase::Preparing || saved->phase==Phase::Traveling || saved->phase==Phase::Verifying ||
+        saved->phase==Phase::Reconciling) && (!fragments.complete || fragments.claims.size()>=12)) {
         BagClaimCoalescence folded;
         if(PlanBagClaimCoalescence(fragments,folded)) {
             if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
@@ -2656,6 +2634,31 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         }
         if(!fragments.complete)return stop("resource_claim_snapshot_bound_no_compatible_fragments");
     }
+    const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    if (!(current==saved->context))
+        return stop(RevalidateProfessionPreparation(actor,id,saved->revision,NewId()).blocker);
+    auto advance=[&](Phase phase) {
+        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
+        ++request.task.revision;request.task.phase=phase;request.task.updatedAtMs=NowMs();request.receipt=NewId();
+        if(phase==Phase::Preparing || phase==Phase::Traveling) {
+            request.task.checkpoint.blocker.clear();request.task.retryAtMs=0;
+        }
+        return stop(SubmitTask(request).blocker);
+    };
+    if (saved->phase==Phase::Queued) return advance(Phase::Preparing);
+    if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal) {
+        // Waiting does not require another market/claim snapshot. In particular
+        // an unchanged legacy reservation must not prevent eventual revalidation.
+        const auto safety=ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR));
+        if(safety)return stop(NativeSafetyReason(safety));
+        if(!bot->GetMap())return stop("native_map_unavailable");
+        if(bot->GetMap()->IsDungeon())return stop("native_dungeon_commitment");
+        if(LivingServiceExecution::Busy(bot))return stop(LivingServiceExecution::Blocker(bot));
+        if(saved->retryAtMs>NowMs())return stop(saved->checkpoint.blocker.empty() ?
+            "profession_retry_not_due" : saved->checkpoint.blocker);
+        return advance(Phase::Reconciling);
+    }
+    if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
     ProfessionSnapshot snapshot;std::string blocker;
     if (!ReadProfessionSnapshot(actor,id,saved->revision,snapshot,blocker)) return stop(blocker);
     const auto next=NextProfessionStep(*saved,snapshot);
