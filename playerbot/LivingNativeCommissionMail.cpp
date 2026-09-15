@@ -155,12 +155,16 @@ NativeObservation NativeCommissionMail::ExecuteNative(Player& actor,const Operat
         ",\"postage\":"+std::to_string(quote.postage)+",\"customer_received\":false,\"fee_paid\":false}";
     return out;
 }
-std::string NativeCommissionMail::PersistedNativeProof(Player&,const OperationRequest&,const Task& task) const {
+std::string NativeCommissionMail::PersistedNativeProof(Player& actor,const OperationRequest&,const Task& task) const {
     if(sent.id)return CommissionMailSentProof(task,quote,sent,operation);
+    // character_inventory.bag stores a container ITEM GUID, not the packed
+    // inventory-position bag index. Rejected sends must verify either location.
+    const auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item));
+    const auto bag=item && item->GetContainer()?item->GetContainer()->GetGUIDLow():0;
     return "SELECT "+SqlValue(task.id)+','+std::to_string(task.revision)+" FROM characters c JOIN character_inventory v ON v.guid=c.guid"
         " JOIN item_instance i ON i.guid=v.item WHERE c.guid="+std::to_string(quote.sender)+" AND c.money="+std::to_string(quote.moneyBefore)+
         " AND i.guid="+std::to_string(quote.item)+" AND i.owner_guid=c.guid AND i.itemEntry="+std::to_string(quote.entry)+
-        " AND i.count="+std::to_string(quote.count)+" AND v.bag="+std::to_string(quote.position>>8)+" AND v.slot="+
+        " AND i.count="+std::to_string(quote.count)+" AND v.bag="+std::to_string(bag)+" AND v.slot="+
         std::to_string(quote.position&255)+" AND NOT EXISTS (SELECT 1 FROM mail_items a WHERE a.item_guid=i.guid)";
 }
 }
