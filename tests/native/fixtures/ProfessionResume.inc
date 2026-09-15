@@ -86,5 +86,49 @@ void TestProfessionResumption() {
     auto ready=f;ready.view.retryReady=true;ready.view.stock={{765,1},{2449,1},{3371,5}};
     assert(prepare(ready)); // Still only rebinds; native execution is a separate admission.
     assert(f.batch.claims[0].state=="held" && f.batch.claims[0].revision==1);
+    {
+        auto saved=f.task;saved.phase=Phase::Executing;saved.checkpoint.step="profession_capacity_sale";
+        ResourceClaim c=f.batch.claims[0];c.itemEntry=7073;c.quantity=5;c.location="bags";c.nativeReference=0;
+        UnsettledClaimBatch batch;batch.complete=true;batch.bookRevision=8;batch.claims={c};
+        std::vector<NativeResourceBalance> balances={{704,c.itemGuid,7073,5,0,"bags"}};
+        const NativeItemStack item{704,c.itemGuid,7073,5,0,24};
+        StoredCraftOperation row;row.acknowledged=true;row.journalDigest=std::string(64,'a');
+        row.receipt={"aa2efbdf-f0ec-4539-b840-299847977003",saved.id,"capacity_vendor_sale","","",saved.revision,OperationState::Intent};
+        const std::string quote="{\"actor\":704,\"guid\":110,\"entry\":7073,\"quantity\":5,\"unit_copper\":6,\"money\":100,\"copper\":30,\"count_before\":5,\"vendor\":12,\"vendor_entry\":13,\"from\":65304,\"capacity_entry\":2454,\"capacity_quantity\":1}";
+        row.beforeState="{\"effects\":12,\"persistence\":1,\"native\":"+ClaimedNativeState(quote,{{c,5}})+"}";row.afterState="{}";
+        ProfessionHistory history;history.task=saved.id;history.revision=saved.revision;history.complete=true;
+        history.unresolvedOperation=true;history.interruptedCapacitySale=row;
+        InterruptedCapacitySale decoded;
+        assert(DecodeInterruptedCapacitySale(saved,row,decoded,blocker));
+        assert(decoded.position==65304 && SameResourceClaim(decoded.claim,c));
+        auto recover=[&](const Task& task,const ProfessionHistory& h,const UnsettledClaimBatch& b,
+            const NativeItemStack& physical,uint32_t wallet=100) {
+            return PrepareInterruptedCapacitySale(task,f.current,h,b,balances,physical,65304,wallet,5,1200,f.receipt,result,blocker);
+        };
+        assert(recover(saved,history,batch,item));
+        assert(result.task.phase==Phase::Verifying && result.task.checkpoint.step=="profession_prepare" && result.task.id==saved.id);
+        assert(result.plan.statements.size()==4 && result.plan.statements[1].find("SHA2")!=std::string::npos);
+        for(const auto& sql:result.plan.statements)assert(sql.find("UPDATE living_activity_claim")==std::string::npos &&
+            sql.find("DELETE FROM item_instance")==std::string::npos && sql.find("SET money")==std::string::npos);
+        auto wrong=saved;wrong.context=f.current;assert(!recover(wrong,history,batch,item));
+        auto changed=item;++changed.count;assert(!recover(saved,history,batch,changed));
+        assert(!recover(saved,history,batch,item,130));
+        auto changedClaims=batch;++changedClaims.claims[0].revision;assert(!recover(saved,history,changedClaims,item));
+        for(unsigned fault=0;fault<7;++fault) {
+            auto bad=row;
+            if(fault==0)bad.afterState="{\"money\":130}";
+            if(fault==1)bad.receipt.state=OperationState::Verified;
+            if(fault==2)bad.receipt.evidence="native_save_capture_requires_reconciliation";
+            if(fault==3)bad.receipt.taskRevision--;
+            if(fault==4)bad.acknowledged=false;
+            if(fault==5)bad.journalDigest.clear();
+            if(fault==6)bad.beforeState="{}";
+            assert(!DecodeInterruptedCapacitySale(saved,bad,decoded,blocker));
+        }
+        ProfessionHistoryRow dbrow={"704",std::to_string(saved.revision),"1",row.receipt.id,saved.id,
+            std::to_string(saved.revision),"capacity_vendor_sale","intent","",row.beforeState,"{}","",row.journalDigest};
+        ProfessionHistoryCursor cursor;assert(cursor.Begin(saved,{dbrow},blocker));assert(cursor.Advance(blocker));
+        assert(cursor.Result().complete && cursor.Result().interruptedCapacitySale && !cursor.Result().interruptedCraft);
+    }
 }
 }

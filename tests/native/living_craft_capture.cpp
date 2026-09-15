@@ -71,7 +71,8 @@ namespace {
         bool threw=false;try {(void)ProfessionHistoryQuery(changedTask);}catch (const std::invalid_argument&) {threw=true;}
         assert(threw);
         const auto query=ProfessionHistoryQuery(task);
-        assert(query.find("LEFT JOIN")!=std::string::npos && query.find("LIMIT 7")!=std::string::npos);
+        assert(query.find("LEFT JOIN")!=std::string::npos && query.find("LIMIT 8")!=std::string::npos);
+        assert(query.find("'capacity_vendor_sale'")!=std::string::npos);
         assert(query.find("owner.actor_guid=t.actor_guid")!=std::string::npos);
         {
             auto commission=task;ProfessionJob recipe;

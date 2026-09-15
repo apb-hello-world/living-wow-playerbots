@@ -406,6 +406,37 @@ bool IsGatheringRecoveryTask(const Task& task) {
         task.checkpoint.blocker=="native_gather_outcome_uncertain" &&
         DecodeGuildProcurementJob(task.checkpoint.data,job,why) && job.craft.empty();
 }
+bool DecodeInterruptedCapacitySale(const Task& task,const StoredCraftOperation& row,InterruptedCapacitySale& out,std::string& why) {
+    out={};why="capacity_restart_exact_intent_required";
+    try {
+        const auto& r=row.receipt;
+        Require(IsProfessionJob(task) && task.accepted && task.mode==Mode::Active && task.root==task.id &&
+            task.phase==Phase::Executing && task.checkpoint.step=="profession_capacity_sale" &&
+            row.acknowledged && IsUuid(r.id) && r.task==task.id && r.taskRevision==task.revision &&
+            r.kind=="capacity_vendor_sale" && r.state==OperationState::Intent && r.evidence.empty() &&
+            r.nativeReference.empty() && row.afterState=="{}" && row.journalDigest.size()==64 &&
+            row.journalDigest.find_first_not_of("0123456789abcdef")==std::string::npos,
+            "capacity_restart_exact_intent_required");
+        const auto before=Parse(row.beforeState);
+        Object(before,{"effects","persistence","native"});Object(before.get_child("native"),{"native","claimed_consumption"});
+        Require(Number(before.get_child("effects"))==(Mask(Effect::Inventory)|Mask(Effect::Money)) &&
+            Number(before.get_child("persistence"))==unsigned(NativePersistence::Inventory),"capacity_restart_atomic_save_required");
+        const auto uses=Inputs(task,before.get_child("native.claimed_consumption"));
+        Require(uses.size()==1 && uses[0].used==uses[0].before.quantity,"capacity_restart_whole_claim_required");
+        const auto& q=before.get_child("native.native");
+        Object(q,{"actor","guid","entry","quantity","unit_copper","money","copper","count_before","vendor","vendor_entry","from","capacity_entry","capacity_quantity"});
+        const auto& c=uses[0].before;
+        const uint64_t price=uint64_t(Number(q.get_child("unit_copper")))*Number(q.get_child("quantity"));
+        out.claim=c;out.money=Number(q.get_child("money"));out.entryCount=Number(q.get_child("count_before"));
+        out.position=Number<uint16_t>(q.get_child("from"));
+        Require(Number(q.get_child("actor"))==task.actor && Number(q.get_child("guid"))==c.itemGuid &&
+            Number(q.get_child("entry"))==c.itemEntry && Number(q.get_child("quantity"))==c.quantity &&
+            price && price==Number(q.get_child("copper")) && price+out.money<=uint64_t(INT32_MAX) &&
+            out.entryCount>=c.quantity && Number<uint64_t>(q.get_child("vendor")) && Number(q.get_child("vendor_entry")) &&
+            Number(q.get_child("capacity_entry")) && Number(q.get_child("capacity_quantity")),"capacity_restart_quote_invalid");
+        why.clear();return true;
+    } catch(const std::exception& e){out={};why=e.what();return false;}
+}
 std::string ProfessionHistoryQuery(const Task& task) {
     ProfessionJob job;std::string blocker;
     const bool gathering=IsGatheringRecoveryTask(task);
@@ -424,9 +455,9 @@ std::string ProfessionHistoryQuery(const Task& task) {
         "LEFT JOIN (SELECT operation_id,task_id,task_revision,kind,state,native_reference,before_state,after_state,evidence_code "
         "FROM living_activity_operation WHERE task_id="+id+" AND "+
         (gathering ? "kind='gather_open' AND state IN ('intent','reconciling') " :
-            std::string("(kind='profession_craft' OR (kind='mail_collect' AND state IN ('intent','reconciling'))")+
+            std::string("(kind='profession_craft' OR (kind IN ('mail_collect','capacity_vendor_sale') AND state IN ('intent','reconciling'))")+
             (IsCommissionJob(task)?" OR (kind IN ('commission_mail_send','commission_trade','commission_output_partition') AND state<>'rejected') OR (kind='commission_trade_offer' AND state IN ('intent','reconciling')) OR kind IN ('commission_customer_received','commission_fee_collected','commission_parcel_returned')":"")+") ")+
-        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(gathering?2:ProfessionWorkflowAttemptLimit(task.checkpoint.data)+(IsCommissionJob(task)?17:2))+") o ON o.task_id=t.task_id "
+        "ORDER BY task_revision,operation_id LIMIT "+std::to_string(gathering?2:ProfessionWorkflowAttemptLimit(task.checkpoint.data)+(IsCommissionJob(task)?18:3))+") o ON o.task_id=t.task_id "
         "WHERE t.task_id="+id+" AND t.actor_guid="+std::to_string(task.actor)+" AND t.revision="+
         std::to_string(task.revision)+" AND t.root_task_id=t.task_id AND t.mode='active' "
         "AND t.accepted=1 AND t.source="+SqlValue(task.source)+" AND t.kind="+SqlValue(Name(task.kind))+" ORDER BY o.task_revision,o.operation_id";
@@ -441,9 +472,9 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
         Require(gathering || DecodeProfessionJob(owner.checkpoint.data,job,why),"profession_history_task_invalid");
         Require(!rows.empty(),"profession_history_task_changed_or_missing");
         const auto limit=gathering?0u:ProfessionWorkflowAttemptLimit(owner.checkpoint.data);
-        Require(rows.size()<=limit+(IsCommissionJob(owner)?16:1),"profession_history_attempt_limit_exceeded");
+        Require(rows.size()<=limit+(IsCommissionJob(owner)?17:2),"profession_history_attempt_limit_exceeded");
         bool first=true,unresolved=false;uint64_t previous=0;std::set<std::string> ids,commissionKinds;
-        unsigned crafts=0,mails=0;
+        unsigned crafts=0,mails=0,capacity=0;
         for (const auto& fields : rows) {
             auto number=[&](size_t i){Tree scalar;scalar.data()=fields[i];return Number<uint64_t>(scalar);};
             Require(number(0)==owner.actor && number(1)==owner.revision,"profession_history_read_identity_changed");
@@ -461,13 +492,15 @@ bool ProfessionHistoryCursor::Begin(const Task& owner,const std::vector<Professi
                 receipt.kind=="commission_customer_received" || receipt.kind=="commission_fee_collected" || receipt.kind=="commission_parcel_returned");
             Require(IsUuid(receipt.id) && ids.insert(receipt.id).second && receipt.task==owner.id &&
                 receipt.taskRevision && (receipt.taskRevision>previous || (commission && receipt.taskRevision==previous)) && receipt.taskRevision<=owner.revision &&
-                (gathering ? receipt.kind=="gather_open" : (commission || receipt.kind=="profession_craft" || receipt.kind=="mail_collect")),
+                (gathering ? receipt.kind=="gather_open" : (commission || receipt.kind=="profession_craft" || receipt.kind=="mail_collect" || receipt.kind=="capacity_vendor_sale")),
                 "profession_history_operation_identity_invalid");
             if(gathering) Require(++crafts==1 && owner.revision>1 && receipt.taskRevision==owner.revision-1 &&
                 fields[7]=="reconciling","gather_history_operation_identity_invalid");
             else if(commission) Require((commissionKinds.insert(receipt.kind).second || receipt.kind=="commission_customer_received" || receipt.kind=="commission_output_partition") &&
                 (receipt.kind=="commission_mail_send" || receipt.kind=="commission_trade" || receipt.kind=="commission_trade_offer" || receipt.kind=="commission_output_partition" || fields[7]=="verified"),"commission_history_duplicate_or_unverified_receipt");
             else if(receipt.kind=="profession_craft") Require(++crafts<=limit,"profession_history_attempt_limit_exceeded");
+            else if(receipt.kind=="capacity_vendor_sale") Require(++capacity==1 && receipt.taskRevision==owner.revision &&
+                (fields[7]=="intent" || fields[7]=="reconciling"),"capacity_history_operation_identity_invalid");
             else Require(++mails==1 && receipt.taskRevision==owner.revision &&
                 (fields[7]=="intent" || fields[7]=="reconciling"),"profession_history_mail_identity_invalid");
             previous=receipt.taskRevision;
@@ -511,6 +544,7 @@ bool ProfessionHistoryCursor::Advance(std::string& blocker) {
         else if(row.receipt.state==OperationState::Intent && row.receipt.taskRevision==task.revision &&
             task.phase==Phase::Executing) {
             if(row.receipt.kind=="mail_collect") history.interruptedMail=row;
+            else if(row.receipt.kind=="capacity_vendor_sale") history.interruptedCapacitySale=row;
             else history.interruptedCraft=row;
         } else if(row.receipt.kind=="profession_craft" && task.phase==Phase::Reconciling) {
             InterruptedCraftIntent intent;std::string reason;

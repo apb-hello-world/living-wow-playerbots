@@ -1969,6 +1969,12 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
             return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
         }
         if (row.second.request.kind=="capacity_vendor_sale") {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+            const auto* fixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+            if (fixture && std::string(fixture)=="activity-commission-direct-broker-v1" &&
+                std::ifstream("/isolated/evidence/commission-capacity-pause-before-dispatch"))
+                return stop("isolated_capacity_intent_checkpoint");
+#endif
             NativeSaleQuote quote;
             if(!DecodeNativeSaleQuote(row.second.request.beforeState,quote))return stop("capacity_saved_intent_invalid");
             const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory)|Mask(Effect::Money),60000,"profession_capacity_sale");
@@ -3328,6 +3334,27 @@ AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint3
     if (!owned.operation.empty()) return reject(AdmissionCode::ReconciliationRequired,"atomic_operation_pending");
     ProfessionHistory history;ProfessionSnapshot snapshot;UnsettledClaimBatch batch;std::string blocker;
     if (!ReadProfessionHistory(actor,id,expectedRevision,history,blocker)) return reject(AdmissionCode::NotReady,blocker);
+    if(history.interruptedCapacitySale && saved->second.phase==Phase::Executing) {
+        if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || LivingServiceExecution::Busy(bot))
+            return reject(AdmissionCode::NotReady,"capacity_restart_safety_pause");
+        const auto party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+        if(*party)return reject(AdmissionCode::NotReady,party);
+        InterruptedCapacitySale before;ProfessionPreparation prepared;
+        if(!DecodeInterruptedCapacitySale(saved->second,*history.interruptedCapacitySale,before,blocker) ||
+            !state->resources.ReadUnsettled(id,batch,blocker))return reject(AdmissionCode::ReconciliationRequired,blocker);
+        auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,before.claim.itemGuid));
+        if(!item || item->GetOwnerGuid()!=bot->GetObjectGuid() || !Player::IsInventoryPos(item->GetPos()))
+            return reject(AdmissionCode::ReconciliationRequired,"capacity_restart_source_missing");
+        NativeItemStack original{actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),
+            item->GetContainer()?item->GetContainer()->GetGUIDLow():0,item->GetSlot()};
+        if(!PrepareInterruptedCapacitySale(saved->second,current,history,batch,NativeClaimBalances(*bot,batch.claims,false),original,
+            item->GetPos(),bot->GetMoney(),bot->GetItemCount(item->GetEntry(),false),NowMs(),receipt,prepared,blocker))
+            return reject(AdmissionCode::ReconciliationRequired,blocker);
+        State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
+        write.admissionReceipt=receipt;state->pending.push_back(std::move(write));
+        if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+        state->nextWork=0;return reject(AdmissionCode::Pending);
+    }
     if(history.interruptedMail && saved->second.phase==Phase::Executing) {
         const auto partyBlocker=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
         if(*partyBlocker) return reject(AdmissionCode::NotReady,partyBlocker);

@@ -21,4 +21,8 @@ bool PrepareInterruptedProfession(const Task& saved,const WorldContext& current,
     uint64_t nowMs,const std::string& receipt,ProfessionPreparation&,std::string& blocker,
     const std::vector<NativeItemStack>& preservedBank={},const EnchantSubject* subject=nullptr,
     const std::vector<NativeItemStack>& preservedBags={});
+bool PrepareInterruptedCapacitySale(const Task&,const WorldContext&,const ProfessionHistory&,
+    const UnsettledClaimBatch&,const std::vector<NativeResourceBalance>&,const NativeItemStack&,
+    uint16_t position,uint32_t money,uint32_t entryCount,uint64_t now,const std::string& receipt,
+    ProfessionPreparation&,std::string&);
 }
