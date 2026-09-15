@@ -81,4 +81,50 @@ inline void TestCommissionMail() {
     assert(!ValidateOperationAdapter(request,adapter,why) && why=="native_commission_mail_adapter_required");
     // No sent receipt claims completion or moves the customer's money.
     auto complete=task;complete.phase=Phase::Completed;assert(!ValidateCommissionTask(complete,why));
+    assert(CommissionMailOperationFromSubject(sent.subject)==operation);
+    assert(CommissionMailOperationFromSubject(sent.subject+" ").empty());
+    assert(CommissionMailOperationFromSubject("Commission delivery not-an-operation").empty());
+    CommissionMailObservation received;received.sendOperation=operation;received.mail=sent.id;
+    received.sender=q.sender;received.receiver=q.receiver;received.item=q.item;received.entry=q.entry;received.quantity=1;
+    received.copper=q.cod;received.moneyBefore=1000;received.moneyAfter=880;
+    received.inventoryBefore=4;received.inventoryAfter=5;received.atMs=2000000;
+    auto& payment=received.generated;payment.id=9833;payment.sender=q.receiver;payment.receiver=q.sender;
+    payment.money=q.cod;payment.subject=sent.subject;payment.deliveredAt=2000;payment.expiresAt=3000;
+    const auto receiptSql=CommissionMailObservationWrite(received);assert(!receiptSql.empty());
+    assert(receiptSql.find(SqlValue("commission_customer_received"))!=std::string::npos);
+    assert(receiptSql.find("ON DUPLICATE KEY UPDATE operation_id=VALUES(operation_id)")!=std::string::npos);
+    for(unsigned i=0;i<10;++i) {
+        auto bad=received;
+        if(i==0)bad.moneyAfter=1000;
+        if(i==1)bad.inventoryAfter=4;
+        if(i==2)bad.generated.money=119;
+        if(i==3)bad.generated.sender=10;
+        if(i==4)bad.generated.receiver=10;
+        if(i==5)bad.generated.attachments=1;
+        if(i==6)bad.generated.subject="forged";
+        if(i==7)bad.quantity=2;
+        if(i==8)bad.generated.id=0;
+        if(i==9)bad.sendOperation="not-an-operation";
+        assert(CommissionMailObservationWrite(bad).empty());
+    }
+    auto free=received;free.copper=0;free.moneyAfter=free.moneyBefore;free.generated={};
+    assert(!CommissionMailObservationWrite(free).empty());
+    CommissionMailObservation paid;paid.event=CommissionMailEvent::FeeCollected;paid.sendOperation=operation;
+    paid.mail=payment.id;paid.sender=q.receiver;paid.receiver=q.sender;paid.copper=q.cod;
+    paid.moneyBefore=70;paid.moneyAfter=190;paid.atMs=2000010;
+    assert(!CommissionMailObservationWrite(paid).empty());
+    auto overflow=paid;overflow.moneyBefore=UINT32_MAX-10;overflow.moneyAfter=109;
+    assert(CommissionMailObservationWrite(overflow).empty());
+    auto noFee=paid;noFee.copper=0;assert(CommissionMailObservationWrite(noFee).empty());
+    CommissionMailObservation returned;returned.event=CommissionMailEvent::ParcelReturned;
+    returned.sendOperation=operation;returned.mail=9834;returned.sender=q.receiver;returned.receiver=q.sender;
+    returned.item=q.item;returned.entry=q.entry;returned.quantity=1;returned.atMs=2000000;
+    returned.generated=sent;returned.generated.id=returned.mail;returned.generated.sender=q.receiver;
+    returned.generated.receiver=q.sender;returned.generated.cod=0;
+    assert(!CommissionMailObservationWrite(returned).empty());
+    auto badReturn=returned;badReturn.generated.itemGuid=104;assert(CommissionMailObservationWrite(badReturn).empty());
+    const auto receiveId=CommissionMailReceiptId(operation,CommissionMailEvent::CustomerReceived);
+    assert(IsUuid(receiveId) && receiveId==CommissionMailReceiptId(operation,CommissionMailEvent::CustomerReceived));
+    assert(receiveId!=CommissionMailReceiptId(operation,CommissionMailEvent::FeeCollected));
+    assert(receiveId!=CommissionMailReceiptId(operation,CommissionMailEvent::ParcelReturned));
 }
