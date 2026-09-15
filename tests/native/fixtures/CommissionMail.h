@@ -9,6 +9,9 @@ inline void TestCommissionMail() {
     Task task;task.id=task.root="637bd562-36d2-5b01-bc01-e2d831c49f92";task.actor=task.context.actor=703;
     task.source="commission_job";task.sourceKey=job.agreement.id;task.kind=Kind::Commission;
     task.mode=Mode::Active;task.phase=Phase::Preparing;task.revision=5;task.checkpoint.data=EncodeCommissionJob(job);
+    task.createdAtMs=task.updatedAtMs=1000;task.accepted=true;
+    task.context.boot="ff2efbdf-f0ec-4539-b840-299847970c00";
+    task.context.actorGeneration=task.context.mapGeneration=task.context.policyRevision=1;
     CommissionMailQuote q{"lwc-123",703,9,103,2454,1,1,100,30,120,120,23,123456789};
     assert(ValidCommissionMailQuote(q));const auto encoded=EncodeCommissionMailQuote(q);CommissionMailQuote decoded;
     assert(DecodeCommissionMailQuote(encoded,decoded) && EncodeCommissionMailQuote(decoded)==encoded);
@@ -66,10 +69,15 @@ inline void TestCommissionMail() {
     request.transition.task.phase=Phase::Executing;request.transition.expectedRevision=task.revision;
     request.transition.receipt=operation;request.kind="commission_mail_send";request.beforeState=encoded;
     request.persistence=NativePersistence::Inventory;request.effects=Mask(Effect::Inventory)|Mask(Effect::Money);request.consumption=uses;
+    request.authorization.task=request.authorization.rootTask=task.id;request.authorization.world=task.context;
+    request.authorization.revision=task.revision;request.authorization.ownerGeneration=7;
+    request.authorization.origin="commission_mail_send";request.authorization.permittedEffects=request.effects;
+    std::string why;
+    assert(ValidateOperationRequest(request,task,task.context,nullptr,1000,why));
     auto plan=OperationRequestWrite(request);assert(!plan.statements.empty());
     auto bad=request;bad.effects|=Mask(Effect::Guild);bool rejected=false;
     try{OperationRequestWrite(bad);}catch(const std::invalid_argument&){rejected=true;}assert(rejected);
-    TestAdapter adapter(request);adapter.consumes=true;std::string why;
+    TestAdapter adapter(request);adapter.consumes=true;
     assert(!ValidateOperationAdapter(request,adapter,why) && why=="native_commission_mail_adapter_required");
     // No sent receipt claims completion or moves the customer's money.
     auto complete=task;complete.phase=Phase::Completed;assert(!ValidateCommissionTask(complete,why));
