@@ -19,11 +19,23 @@ bool DeliverCommissionProjection(uint64_t now) {
     }
     if(now<projectionDue || projectionSend.valid())return false;
     projectionDue=now+10000;ioPending=true;
+    std::string fixtureScope;
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    // Historical copied fixtures deliberately reused a transaction label.
+    // Select the explicit modern broker case without editing those receipts.
+    // This filter does not exist in a production binary.
+    const char* requested=std::getenv("LIVING_WOW_NATIVE_FIXTURE_TASK");
+    const char* fixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(requested && *requested && fixture && std::string(fixture)=="activity-commission-replay-v1") {
+        if(!IsUuid(requested)){ioPending=false;projectionBlocker="invalid_isolated_projection_task";return false;}
+        fixtureScope=" AND q.task_id="+SqlValue(requested);
+    }
+#endif
     // Current task projection can be newer than this transition. Event identity
     // stays immutable while the status consumer rejects stale task revisions.
     const auto query="SELECT * FROM (SELECT q.transition_id,q.task_id,q.task_revision,q.actor_guid,q.phase,q.code,q.occurred_at_ms,"
         "(SELECT "+PersistedTaskProjection()+" FROM living_activity_task WHERE task_id=q.task_id) payload "
-        "FROM living_activity_transition q WHERE q.delivered_at_ms=0 AND EXISTS(SELECT 1 FROM living_activity_task t "
+        "FROM living_activity_transition q WHERE q.delivered_at_ms=0"+fixtureScope+" AND EXISTS(SELECT 1 FROM living_activity_task t "
         "WHERE t.task_id=q.task_id AND t.source='commission_job' AND t.mode='active' "
         "AND JSON_UNQUOTE(JSON_EXTRACT(t.checkpoint,'$.agreement.delivery'))='mail') ORDER BY q.sequence_id LIMIT 8) limited "
         "UNION ALL SELECT '','',0,0,'','',0,'{}'";
