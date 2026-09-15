@@ -39,6 +39,7 @@ namespace {
 #include "ActivityToolFixture.inc"
 #include "ActivityGuildDepositFixture.inc"
 #include "ActivityGuildMailFixture.inc"
+#include "ActivityCommissionMailFixture.inc"
 #include "ActivityGuildAdmissionFixture.inc"
 #include "ActivitySkinningSourceFixture.inc"
 #include "ActivityServicesObservation.inc"
@@ -46,6 +47,9 @@ namespace {
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(requested && std::string(requested)=="activity-commission-mail-v1") {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedCommissionMailFixture(*state);return;
+    }
     if(requested && std::string(requested)=="activity-services-observe-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedServicesObservation(*state);return;
     }
