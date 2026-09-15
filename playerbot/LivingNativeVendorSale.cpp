@@ -4,6 +4,7 @@
 #include "LivingActivityNativeContext.h"
 #include "LivingNativeMailCollection.h"
 #include "LivingNativeGuildMail.h"
+#include "LivingNativeCommissionMail.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingProfessionNative.h"
 #include "LivingTaskItemRequirements.h"
@@ -34,6 +35,17 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
     };
     std::vector<ProfessionReagent> requirements;
     if (!ReadNativeTaskItemRequirements(actor,task,requirements,blocker)) return false;
+    if(IsCommissionJob(task)) {
+        CommissionJob job;
+        if(!DecodeCommissionJob(task.checkpoint.data,job,blocker))return false;
+        if(job.craftFinishedRevision) {
+            CommissionMailQuote parcel;std::vector<ClaimConsumption> uses;std::string why;
+            if(!PlanNativeCommissionMail(actor,task,parcel,uses,why) && why=="commission_mail_split_capacity_required") {
+                need={parcel.entry,parcel.count-parcel.quantity};return true;
+            }
+            blocker=why.empty()?"capacity_already_available":why;return false;
+        }
+    }
     if(IsManagedGuildDelivery(task)) {
         GuildMailQuote parcel;std::vector<ClaimConsumption> uses;std::string why;
         if(!PlanNativeGuildMail(actor,task,parcel,uses,why) && why=="guild_mail_split_capacity_required") {

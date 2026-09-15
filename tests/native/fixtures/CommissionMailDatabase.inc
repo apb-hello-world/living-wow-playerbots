@@ -488,4 +488,40 @@ static void CommissionMailDatabase(Connection& db) {
         assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")== (scenario==2?"470":"500"));
         assert(db.Scalar("SELECT state FROM organic_economy_commission WHERE commission_id='lwc-987'")=="traveling");
     }
+    // Banking unrelated personal material to free a parcel slot must not leave
+    // a permanent extra claim on the order. Release only after native proof.
+    auto preparedTask=batchTask;preparedTask.context=task.context;preparedTask.revision=50;preparedTask.phase=Phase::Preparing;
+    ResourceClaim auxiliary=partA;auxiliary.id="769b8ae6-3123-4587-8ad7-fb51b9c01940";
+    auxiliary.itemGuid=9981004;auxiliary.itemEntry=765;auxiliary.quantity=7;auxiliary.location="bank";auxiliary.revision=2;
+    assert(db.Execute("UPDATE living_activity_task SET revision=50,phase='preparing' WHERE task_id="+SqlValue(task.id)));
+    assert(db.Execute("DELETE FROM living_activity_operation WHERE task_id="+SqlValue(task.id)));
+    assert(db.Execute("DELETE FROM mail_items WHERE item_guid=9981001"));
+    assert(db.Execute("UPDATE item_instance SET owner_guid=9981,count=8 WHERE guid=9981001"));
+    assert(db.Execute("INSERT INTO character_inventory(guid,bag,slot,item,item_template) VALUES(9981,0,23,9981001,2454)"));
+    assert(db.Execute("UPDATE characters SET money=500 WHERE guid=9981"));
+    for(const auto& c:{partA,partB,postage})assert(db.Execute("UPDATE living_activity_claim SET state='held',revision=1 WHERE claim_id="+SqlValue(c.id)));
+    assert(db.Execute("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES(9981004,765,9981,7)"));
+    assert(db.Execute("INSERT INTO character_inventory(guid,bag,slot,item,item_template) VALUES(9981,0,39,9981004,765)"));
+    assert(db.Execute("INSERT INTO living_activity_claim(claim_id,task_id,actor_guid,item_guid,item_entry,quantity,copper,location,state,revision,updated_at_ms) VALUES("+
+        SqlValue(auxiliary.id)+','+SqlValue(task.id)+",9981,9981004,765,7,0,'bank','held',2,2016000)"));
+    claims.claims={partA,partB,postage,auxiliary};
+    const std::vector<NativeResourceBalance> balances={{9981,9981001,2454,8,0,"bags"},{9981,0,0,0,500,"money"},{9981,9981004,765,7,0,"bank"}};
+    CommissionReturnClosure prepared;
+    assert(PrepareCommissionParcelClaims(preparedTask,task.context,claims,balances,2017000,
+        "769b8ae6-3123-4587-8ad7-fb51b9c01941",prepared,why));
+    assert(!db.Write(prepared.plan)); // The bank receipt is not optional.
+    const auto bankBefore="{\"native\":{\"native\":{\"guid\":9981004,\"entry\":765,\"quantity\":7}}}";
+    assert(db.Execute("INSERT INTO living_activity_operation(operation_id,task_id,task_revision,kind,state,request_hash,before_state,after_state,evidence_code,native_reference,created_at_ms,updated_at_ms) VALUES("+
+        SqlValue("769b8ae6-3123-4587-8ad7-fb51b9c01942")+','+SqlValue(task.id)+",49,'bank_deposit','verified',"+SqlValue(std::string(64,'d'))+','+
+        SqlValue(bankBefore)+",'{}','native_bank_stack_deposited','item:9981004',2016000,2016001)"));
+    assert(db.Execute("UPDATE item_instance SET owner_guid=9982 WHERE guid=9981004"));assert(!db.Write(prepared.plan));
+    assert(db.Execute("UPDATE item_instance SET owner_guid=9981 WHERE guid=9981004"));
+    assert(db.Execute("UPDATE living_activity_claim SET quantity=4 WHERE claim_id="+SqlValue(partB.id)));assert(!db.Write(prepared.plan));
+    assert(db.Execute("UPDATE living_activity_claim SET quantity=3 WHERE claim_id="+SqlValue(partB.id)));
+    assert(db.Write(prepared.plan));assert(db.Write(prepared.plan));
+    assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(auxiliary.id))=="released");
+    for(const auto& c:{partA,partB,postage})assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(c.id))=="held");
+    assert(db.Scalar("SELECT count FROM item_instance WHERE guid=9981001")=="8");
+    assert(db.Scalar("SELECT count FROM item_instance WHERE guid=9981004")=="7");
+    assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="500");
 }

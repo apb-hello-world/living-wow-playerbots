@@ -54,7 +54,7 @@ bool PlanNativeCommissionMail(Player& actor,const Task& task,CommissionMailQuote
     UnsettledClaimBatch claims;
     if(!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,why))return false;
     if(!claims.complete)return reject("commission_mail_claims_incomplete");
-    ResourceClaim output,postage;uint64_t outputQuantity=0;
+    ResourceClaim output,postage;uint64_t outputQuantity=0;bool auxiliary=false;
     for(const auto& c:claims.claims) {
         if(c.state!="held" || c.nativeReference)return reject("commission_mail_claim_requires_reconciliation");
         if(c.location=="bags" && c.itemEntry==recipe.outputEntry && c.quantity && c.quantity<=recipe.outputQuantity) {
@@ -62,6 +62,8 @@ bool PlanNativeCommissionMail(Player& actor,const Task& task,CommissionMailQuote
             output=c;outputQuantity+=c.quantity;uses.push_back({c,uint32_t(c.quantity)});
         }
         else if(c.location=="money" && c.copper==30 && postage.id.empty())postage=c;
+        else if((c.location=="bags" || c.location=="bank") && c.itemEntry!=recipe.outputEntry && c.quantity && !c.copper)
+            auxiliary=true; // Capacity demand may still exist; never mail with these outstanding.
         else return reject("commission_mail_exact_parcel_preparation_required");
     }
     if(outputQuantity!=recipe.outputQuantity || uses.size()>15)return reject("commission_mail_exact_output_claims_required");
@@ -88,6 +90,7 @@ bool PlanNativeCommissionMail(Player& actor,const Task& task,CommissionMailQuote
             q.splitBagGuid=bag->GetGUIDLow();
         }
     }
+    if(auxiliary)return reject("commission_mail_preparation_claims_pending");
     if(!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,{task.actor,0,0,0,actor.GetMoney(),"money"},available,why))return false;
     if(available<30)return reject("commission_mail_postage_unavailable");
     const auto mailbox=NativeNearbyMailbox(actor);if(!mailbox)return reject("commission_mailbox_travel_required");

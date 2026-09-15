@@ -2300,7 +2300,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         const auto service=DispatchPendingItemService(actor,id);
         return stop(service?service->blocker:"commission_return_operation_requires_reconciliation");
     }
-    if(saved->phase==Phase::Executing && saved->checkpoint.step=="profession_mail_collect" && saved->context.boot.empty())
+    if(saved->phase==Phase::Executing && (saved->checkpoint.step=="profession_mail_collect" ||
+        saved->checkpoint.step=="profession_capacity_bank" || saved->checkpoint.step=="profession_capacity_sale") && saved->context.boot.empty())
         return stop(RevalidateProfessionPreparation(actor,id,saved->revision,NewId()).blocker);
     const auto deliveryContext=ReadNativeContext(*bot,state->policyRevision,state->boot);
     const bool restoredDelivery=saved->context.boot.empty() && !saved->context.actorGeneration && !saved->context.mapGeneration;
@@ -2441,6 +2442,26 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
         state->nextWork=0;return stop("commission_unsent_reconciliation_pending");
     }
+    auto reconcileParcelClaims=[&]() {
+        if(NativeSafety(bot) || DefersNativeSave(actor) || state->operationDispatching)return stop("commission_preparation_safety_pause");
+        for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)return stop("commission_native_operation_pending");
+        const auto owned=state->authority.Read(actor);
+        if(!owned.operation.empty())return stop("commission_native_operation_pending");
+        if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)return stop("commission_settlement_backpressure");
+        UnsettledClaimBatch claims;
+        if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
+        RefreshPermission(actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
+        const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);const auto receipt=NewId();
+        CommissionReturnClosure prepared;
+        if(!PrepareCommissionParcelClaims(*saved,current,claims,NativeClaimBalances(*bot,claims.claims,false),NowMs(),receipt,prepared,why))return stop(why);
+        State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);
+        write.claims=std::move(prepared.claims);write.admissionReceipt=receipt;write.closureRefreshRevision=saved->revision;
+        state->pending.push_back(std::move(write));state->nextWork=0;
+        if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+        return stop("commission_preparation_claims_persistence_pending");
+    };
+    if(restoredDelivery && saved->phase!=Phase::Executing && saved->phase!=Phase::Reconciling && !Terminal(saved->phase))
+        return reconcileParcelClaims();
     // No retry is admitted merely because the callback or old process vanished.
     // A pre-send interruption still requires reconciliation, not a fresh send.
     if(!(saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot)))
@@ -2460,7 +2481,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(saved->retryAtMs>NowMs())return stop("commission_delivery_retry_wait");
     if(DefersNativeSave(actor))return stop("native_save_pending");
     if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal ||
-        (saved->phase==Phase::Verifying && saved->checkpoint.step=="commission_mail_prepare")) {
+        (saved->phase==Phase::Verifying && (saved->checkpoint.step=="commission_mail_prepare" ||
+         saved->checkpoint.step=="profession_capacity_bank" || saved->checkpoint.step=="profession_capacity_sale"))) {
         if(NativeSafety(bot))return stop("commission_delivery_safety_pause");
         TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
         request.task.phase=Phase::Preparing;request.task.updatedAtMs=NowMs();request.task.retryAtMs=0;
@@ -2469,8 +2491,13 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     }
     if(saved->phase==Phase::Traveling) {
         ServiceDestination service;
-        if(!ParseServiceStep(saved->checkpoint.step,service) || service!=ServiceDestination::Mailbox)
+        if(!ParseServiceStep(saved->checkpoint.step,service))
             return stop("commission_delivery_route_requires_reconciliation");
+        if(service==ServiceDestination::Vendor || service==ServiceDestination::PersonalBank) {
+            ProfessionJob recipe;if(!DecodeProfessionIntent(job.craft,recipe,why))return stop(why);
+            return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,{recipe.outputEntry,recipe.outputQuantity}).blocker);
+        }
+        if(service!=ServiceDestination::Mailbox)return stop("commission_delivery_route_requires_reconciliation");
         const auto route=sPlayerbotOrganicEconomy.ReachSavedService(actor,id,saved->revision,service);
         Task next;
         if(CheckpointServiceTravel(*saved,route,NowMs(),"commission_mail_prepare",next)) {
@@ -2482,6 +2509,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(saved->phase!=Phase::Preparing)return stop("commission_delivery_preparation_required");
     CommissionMailQuote quote;std::vector<ClaimConsumption> uses;
     if(!PlanNativeCommissionMail(*bot,*saved,quote,uses,why)) {
+        if(why=="commission_mail_preparation_claims_pending")return reconcileParcelClaims();
+        if(why=="commission_mail_split_capacity_required")
+            return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,{quote.entry,quote.count-quote.quantity}).blocker);
         if(why=="commission_mailbox_travel_required" || why=="commission_mail_sender_moving") {
             TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
             request.task.phase=Phase::Traveling;request.task.updatedAtMs=NowMs();request.receipt=NewId();

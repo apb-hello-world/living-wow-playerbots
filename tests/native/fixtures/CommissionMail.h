@@ -25,6 +25,33 @@ inline void TestCommissionMail() {
     money.copper=30;money.state="held";money.location="money";
     const std::vector<ClaimConsumption> uses={{item,1},{money,30}};
     assert(ExactCommissionMailConsumption(task,q,uses));
+    {
+        auto stored=item;stored.id="d1879146-6e96-4e71-827d-6d12d965ed10";
+        stored.itemGuid=104;stored.itemEntry=765;stored.quantity=7;stored.location="bank";stored.revision=2;
+        UnsettledClaimBatch claims;claims.complete=true;claims.bookRevision=1;claims.claims={item,money,stored};
+        std::vector<NativeResourceBalance> stock={{703,103,2454,3,0,"bags"},{703,0,0,0,100,"money"},{703,104,765,7,0,"bank"}};
+        CommissionReturnClosure ready;std::string why;
+        const std::string receipt="d1879146-6e96-4e71-827d-6d12d965ed11";
+        assert(PrepareCommissionParcelClaims(task,task.context,claims,stock,2000,receipt,ready,why));
+        assert(ready.claims.size()==1 && ready.claims.front().after.id==stored.id && ready.claims.front().after.state=="released");
+        assert(ready.task.phase==Phase::Preparing && ready.task.checkpoint.step=="commission_mail_prepare");
+        assert(ready.plan.statements[1].find("native_bank_stack_deposited")!=std::string::npos);
+        for(unsigned i=0;i<5;++i) {
+            auto bad=claims;auto native=stock;
+            if(i==0)bad.claims[0].quantity=2;
+            if(i==1)native.pop_back();
+            if(i==2)bad.claims[2].location="mail";
+            if(i==3)bad.complete=false;
+            if(i==4)bad.claims[1].copper=31;
+            assert(!PrepareCommissionParcelClaims(task,task.context,bad,native,2000,receipt,ready,why));
+        }
+        claims.claims.pop_back();stock.pop_back();
+        assert(!PrepareCommissionParcelClaims(task,task.context,claims,stock,2000,receipt,ready,why));
+        auto restored=task;restored.context.boot.clear();restored.context.actorGeneration=restored.context.mapGeneration=0;
+        restored.phase=Phase::Traveling;restored.retryAtMs=5000;
+        assert(PrepareCommissionParcelClaims(restored,task.context,claims,stock,2000,receipt,ready,why));
+        assert(ready.claims.empty() && ready.task.context==task.context && ready.task.retryAtMs==5000);
+    }
     for(unsigned i=0;i<8;++i) {
         auto changed=q;auto c=uses;auto t=task;
         if(i==0)changed.receiver=10;

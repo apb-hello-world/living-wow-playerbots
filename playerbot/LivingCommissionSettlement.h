@@ -20,6 +20,11 @@ struct CommissionReturnClosure {
     WritePlan plan;
     std::vector<ClaimReceiptChange> claims;
 };
+// Shared personal-claim bookkeeping before delivery. Ordered output and its
+// postage stay reserved; safely owned auxiliary stock is released, not sold or
+// moved. Also rebinds a restored pre-send task after native custody checks.
+bool PrepareCommissionParcelClaims(const Task&,const WorldContext&,const UnsettledClaimBatch&,
+    const std::vector<NativeResourceBalance>&,uint64_t,const std::string&,CommissionReturnClosure&,std::string&);
 // Closes unsuccessful delivery only after a native collection receipt and
 // current personal custody agree. Releases reservations, never possessions.
 bool PrepareCommissionReturnClosure(const Task&,const WorldContext&,const ProfessionHistory&,
