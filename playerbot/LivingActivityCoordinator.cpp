@@ -2302,7 +2302,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     }
     if(saved->phase==Phase::Executing && saved->checkpoint.step=="profession_mail_collect" && saved->context.boot.empty())
         return stop(RevalidateProfessionPreparation(actor,id,saved->revision,NewId()).blocker);
-    if(saved->phase!=Phase::Executing && saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot)) {
+    const auto deliveryContext=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    const bool restoredDelivery=saved->context.boot.empty() && !saved->context.actorGeneration && !saved->context.mapGeneration;
+    if(saved->phase!=Phase::Executing && (saved->context==deliveryContext || restoredDelivery)) {
         ProfessionHistory history;ResourceClaim parcel;
         if(!ReadProfessionHistory(actor,id,saved->revision,history,why))return stop(why);
         if(ReturnedCommissionClaim(*saved,history,parcel,why)) {
@@ -2310,10 +2312,32 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             UnsettledClaimBatch claims;
             if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
             if(!claims.complete)return stop("commission_return_claims_pending");
-            if(saved->phase==Phase::Reconciling || saved->phase==Phase::Paused || saved->phase==Phase::Deferred ||
-                saved->phase==Phase::WaitingExternal || (saved->phase==Phase::Verifying && claims.claims.empty())) {
+            const auto owned=state->authority.Read(actor);
+            if(!owned.operation.empty())return stop("commission_native_operation_pending");
+            for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)
+                return stop("commission_native_operation_pending");
+            const bool alreadyCollected=std::any_of(claims.claims.begin(),claims.claims.end(),[&](const ResourceClaim& c){
+                return c.id==parcel.id && c.location=="bags" && !c.nativeReference;
+            });
+            if(restoredDelivery && !alreadyCollected) {
                 if(NativeSafety(bot))return stop("commission_return_safety_pause");
-                if(saved->retryAtMs>NowMs())return stop("commission_return_retry_wait");
+                if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+                    return stop("commission_settlement_backpressure");
+                NativeResourceBalance native;
+                if(!ReadNativeMailBalance(*bot,parcel,native))return stop("commission_return_native_attachment_missing");
+                const auto balances=NativeClaimBalances(*bot,claims.claims,false);
+                ProfessionPreparation resumed;const auto receipt=NewId();
+                if(!PrepareCommissionReturnResume(*saved,deliveryContext,history,claims,balances,NowMs(),receipt,resumed,why))return stop(why);
+                State::Pending write;write.task=std::move(resumed.task);write.plan=std::move(resumed.plan);
+                write.admissionReceipt=receipt;write.closureRefreshRevision=saved->revision;
+                state->pending.push_back(std::move(write));state->nextWork=0;
+                if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+                return stop("commission_return_resume_persistence_pending");
+            }
+            if(!alreadyCollected && saved->retryAtMs>NowMs())return stop("commission_return_retry_wait");
+            if(!alreadyCollected && (saved->phase==Phase::Reconciling || saved->phase==Phase::Paused || saved->phase==Phase::Deferred ||
+                saved->phase==Phase::WaitingExternal || (saved->phase==Phase::Verifying && claims.claims.empty()))) {
+                if(NativeSafety(bot))return stop("commission_return_safety_pause");
                 TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;
                 ++request.task.revision;request.task.phase=Phase::Preparing;request.task.updatedAtMs=NowMs();
                 request.task.checkpoint.step="commission_return_collect";request.task.checkpoint.blocker.clear();
@@ -2335,8 +2359,16 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                 if(claim.location=="mail" && claim.nativeReference==parcel.nativeReference && claim.itemGuid==parcel.itemGuid)
                     return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{parcel.itemEntry,uint32_t(parcel.quantity)}).blocker);
                 if(claim.location=="bags" && !claim.nativeReference) {
-                    const auto owned=state->authority.Read(actor);if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
-                    return stop("commission_return_collected_closure_pending");
+                    if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+                        return stop("commission_settlement_backpressure");
+                    const auto balances=NativeClaimBalances(*bot,claims.claims,false);
+                    CommissionReturnClosure closed;const auto receipt=NewId();
+                    if(!PrepareCommissionReturnClosure(*saved,deliveryContext,history,claims,balances,NowMs(),receipt,closed,why))return stop(why);
+                    State::Pending write;write.task=std::move(closed.task);write.plan=std::move(closed.plan);
+                    write.claims=std::move(closed.claims);write.closureRefreshRevision=saved->revision;
+                    write.admissionReceipt=receipt;state->pending.push_back(std::move(write));state->nextWork=0;
+                    if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+                    return stop("commission_return_closure_persistence_pending");
                 }
                 return stop("commission_return_custody_requires_reconciliation");
             }

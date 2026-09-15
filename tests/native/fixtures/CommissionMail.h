@@ -179,6 +179,37 @@ inline void TestCommissionMail() {
     assert(InspectCommissionDelivery(owner,returnedHistory,delivered,why) && delivered.state==CommissionDeliveryState::Returned);
     ResourceClaim returnedClaim;
     assert(ReturnedCommissionClaim(owner,returnedHistory,returnedClaim,why));
+    {
+        const auto mailClaim=returnedClaim;
+        auto travelling=restarted;travelling.phase=Phase::Traveling;travelling.retryAtMs=2100000;
+        UnsettledClaimBatch resumeClaims;resumeClaims.complete=true;resumeClaims.bookRevision=2;resumeClaims.claims={mailClaim};
+        ProfessionPreparation resumed;
+        assert(PrepareCommissionReturnResume(travelling,owner.context,returnedHistory,resumeClaims,{},2002000,settlement,resumed,why));
+        assert(resumed.task.id==owner.id && resumed.task.phase==Phase::Preparing && resumed.task.retryAtMs==2100000);
+        assert(resumed.task.context==owner.context && resumed.task.checkpoint.data==owner.checkpoint.data);
+        assert(!PrepareCommissionReturnResume(owner,owner.context,returnedHistory,resumeClaims,{},2002000,settlement,resumed,why));
+        auto pendingHistory=returnedHistory;pendingHistory.unresolvedOperation=true;
+        assert(!PrepareCommissionReturnResume(travelling,owner.context,pendingHistory,resumeClaims,{},2002000,settlement,resumed,why));
+        auto held=mailClaim;held.location="bags";held.nativeReference=0;++held.revision;
+        UnsettledClaimBatch returnedClaims;returnedClaims.complete=true;returnedClaims.bookRevision=2;returnedClaims.claims={held};
+        std::vector<NativeResourceBalance> stock={{held.actor,held.itemGuid,held.itemEntry,uint32_t(held.quantity),0,"bags"}};
+        CommissionReturnClosure closed;
+        assert(PrepareCommissionReturnClosure(owner,owner.context,returnedHistory,returnedClaims,stock,2002000,settlement,closed,why));
+        assert(closed.task.phase==Phase::Failed && closed.task.checkpoint.step=="commission_returned");
+        assert(closed.claims.size()==1 && closed.claims[0].after.state=="released");
+        assert(closed.plan.statements[1].find("native_mail_attachment_collected")!=std::string::npos);
+        assert(PrepareCommissionReturnClosure(restarted,owner.context,returnedHistory,returnedClaims,stock,2002000,settlement,closed,why));
+        // A merged stack retains the exact claim quantity, not the whole stack.
+        returnedClaims.claims[0].itemGuid=999;stock[0].itemGuid=999;stock[0].quantity=4;
+        assert(PrepareCommissionReturnClosure(owner,owner.context,returnedHistory,returnedClaims,stock,2002000,settlement,closed,why));
+        assert(closed.claims[0].after.quantity==held.quantity);
+        returnedClaims.claims={mailClaim};
+        assert(!PrepareCommissionReturnClosure(owner,owner.context,returnedHistory,returnedClaims,stock,2002000,settlement,closed,why));
+        returnedClaims.claims={held};returnedClaims.complete=false;
+        assert(!PrepareCommissionReturnClosure(owner,owner.context,returnedHistory,returnedClaims,stock,2002000,settlement,closed,why));
+        returnedClaims.complete=true;
+        assert(!PrepareCommissionReturnClosure(owner,owner.context,returnedHistory,returnedClaims,{},2002000,settlement,closed,why));
+    }
     assert(returnedClaim.id==delivered.returned && returnedClaim.task==owner.id && returnedClaim.actor==owner.actor);
     assert(returnedClaim.itemGuid==q.item && returnedClaim.itemEntry==q.entry && returnedClaim.quantity==q.quantity);
     assert(returnedClaim.nativeReference==9834 && returnedClaim.location=="mail" && returnedClaim.state=="held");

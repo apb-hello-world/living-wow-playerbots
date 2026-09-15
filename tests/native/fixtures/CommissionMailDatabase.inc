@@ -264,4 +264,67 @@ static void CommissionMailDatabase(Connection& db) {
     assert(db.Scalar("SELECT COUNT(*) FROM character_inventory WHERE item=9981001")=="0");
     assert(db.Scalar("SELECT COUNT(*) FROM mail_items WHERE item_guid=9981001 AND mail_id=90033")=="1");
     assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="500");
+
+    // Supplied native post-collection rows, including a whole-stack merge.
+    // Bag presence without the exact collection receipt must not close work.
+    auto travelReturn=reserved;travelReturn.phase=Phase::Traveling;travelReturn.context.boot.clear();
+    travelReturn.context.actorGeneration=travelReturn.context.mapGeneration=0;
+    assert(db.Execute("UPDATE living_activity_task SET phase='traveling' WHERE task_id="+SqlValue(task.id)));
+    UnsettledClaimBatch resumeClaims;resumeClaims.complete=true;resumeClaims.bookRevision=2;resumeClaims.claims={returnedClaim};
+    ProfessionPreparation resumed;
+    assert(PrepareCommissionReturnResume(travelReturn,reserved.context,readHistory(travelReturn),resumeClaims,{},2004500,
+        "769b8ae6-3123-4587-8ad7-fb51b9c01913",resumed,why));
+    assert(db.Execute("UPDATE mail SET receiver=9982 WHERE id=90033"));assert(!db.Write(resumed.plan));
+    assert(db.Execute("UPDATE mail SET receiver=9981 WHERE id=90033"));
+    assert(db.Write(resumed.plan));assert(db.Write(resumed.plan));
+    assert(db.Scalar("SELECT location FROM living_activity_claim WHERE claim_id="+SqlValue(returnedClaim.id))=="mail");
+    assert(db.Scalar("SELECT COUNT(*) FROM mail_items WHERE mail_id=90033")=="1");
+    assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="500");
+    auto collected=reserved;collected.revision=19;collected.phase=Phase::Verifying;
+    collected.checkpoint.step="profession_mail_collect";collected.updatedAtMs=2005000;
+    assert(db.Execute("UPDATE living_activity_task SET revision=19,phase='verifying',step='profession_mail_collect' WHERE task_id="+SqlValue(task.id)));
+    assert(db.Execute("DELETE FROM mail_items WHERE mail_id=90033"));
+    assert(db.Execute("DELETE FROM item_instance WHERE guid=9981001"));
+    assert(db.Execute("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES(9981002,2454,9981,4)"));
+    assert(db.Execute("INSERT INTO character_inventory(guid,bag,slot,item,item_template) VALUES(9981,0,23,9981002,2454)"));
+    auto heldReturn=returnedClaim;heldReturn.itemGuid=9981002;heldReturn.location="bags";heldReturn.nativeReference=0;heldReturn.revision=2;
+    assert(db.Execute("UPDATE living_activity_claim SET item_guid=9981002,location='bags',native_reference=0,revision=2 WHERE claim_id="+SqlValue(heldReturn.id)));
+    UnsettledClaimBatch returnedClaims;returnedClaims.complete=true;returnedClaims.bookRevision=3;returnedClaims.claims={heldReturn};
+    const std::vector<NativeResourceBalance> returnedStock={{9981,9981002,2454,4,0,"bags"}};
+    auto collectedHistory=readHistory(collected);CommissionReturnClosure closed;
+    const std::string closureId="769b8ae6-3123-4587-8ad7-fb51b9c01911",collectionId="769b8ae6-3123-4587-8ad7-fb51b9c01912";
+    auto restartedReturn=collected;restartedReturn.context.boot.clear();restartedReturn.context.actorGeneration=restartedReturn.context.mapGeneration=0;
+    assert(PrepareCommissionReturnClosure(restartedReturn,collected.context,collectedHistory,returnedClaims,returnedStock,2006000,closureId,closed,why));
+    assert(!db.Write(closed.plan));
+    assert(db.Execute("INSERT INTO living_activity_operation(operation_id,task_id,task_revision,kind,request_hash,state,before_state,after_state,evidence_code,native_reference,created_at_ms,updated_at_ms) VALUES("+
+        SqlValue(collectionId)+','+SqlValue(task.id)+",18,'mail_collect',REPEAT('d',64),'verified',"
+        "'{\"native\":{\"native\":{\"actor\":9981,\"mail\":90033,\"guid\":9981001,\"entry\":2454,\"quantity\":1}}}',"
+        "'{\"native\":{\"mail\":90033,\"guid\":9981001,\"surviving_guid\":9981002}}',"
+        "'native_mail_attachment_collected','mail:90033:item:9981001',2005000,2005000)"));
+    const std::vector<std::pair<std::string,std::string>> invalidClosure={
+        {"UPDATE item_instance SET owner_guid=9982 WHERE guid=9981002","UPDATE item_instance SET owner_guid=9981 WHERE guid=9981002"},
+        {"UPDATE item_instance SET count=3 WHERE guid=9981002","UPDATE item_instance SET count=4 WHERE guid=9981002"},
+        {"UPDATE living_activity_operation SET evidence_code='not_verified' WHERE operation_id="+SqlValue(collectionId),
+         "UPDATE living_activity_operation SET evidence_code='native_mail_attachment_collected' WHERE operation_id="+SqlValue(collectionId)},
+        {"UPDATE living_activity_operation SET native_reference='mail:90034:item:9981001' WHERE operation_id="+SqlValue(collectionId),
+         "UPDATE living_activity_operation SET native_reference='mail:90033:item:9981001' WHERE operation_id="+SqlValue(collectionId)},
+        {"UPDATE living_activity_operation SET state='reconciling' WHERE operation_id="+SqlValue(collectionId),
+         "UPDATE living_activity_operation SET state='verified' WHERE operation_id="+SqlValue(collectionId)},
+        {"UPDATE organic_economy_commission SET state='cancelled' WHERE commission_id='lwc-987'",
+         "UPDATE organic_economy_commission SET state='traveling' WHERE commission_id='lwc-987'"},
+        {"INSERT INTO mail_items VALUES(90033,9981001,2454,9981)","DELETE FROM mail_items WHERE mail_id=90033"}
+    };
+    for(const auto& mutation:invalidClosure) {
+        assert(db.Execute(mutation.first));assert(!db.Write(closed.plan));assert(db.Execute(mutation.second));
+        assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(heldReturn.id))=="held");
+        assert(db.Scalar("SELECT state FROM organic_economy_commission WHERE commission_id='lwc-987'")=="traveling");
+    }
+    assert(db.Write(closed.plan));assert(db.Write(closed.plan));
+    assert(db.Scalar("SELECT state FROM organic_economy_commission WHERE commission_id='lwc-987'")=="failed");
+    assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id="+SqlValue(task.id))=="failed");
+    assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(heldReturn.id))=="released");
+    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+SqlValue(task.id)+" AND state NOT IN ('released','consumed')")=="0");
+    assert(db.Scalar("SELECT count FROM item_instance WHERE guid=9981002")=="4");
+    assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="500");
+    assert(db.Scalar("SELECT money FROM characters WHERE guid=9982")=="880");
 }
