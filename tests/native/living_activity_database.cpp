@@ -17,6 +17,7 @@
 #include "LivingGuildDeliverySettlement.h"
 #include "LivingGuildDeliveryCancellation.h"
 #include "LivingGuildDeposit.h"
+#include "LivingCommissionMail.h"
 #include "fixtures/CraftEvidence.h"
 #include <mysql.h>
 #include <cassert>
@@ -110,6 +111,7 @@ public:
 #include "fixtures/GuildMailDatabase.inc"
 #include "fixtures/GuildCancellationDatabase.inc"
 #include "fixtures/GuildMailHandoffDatabase.inc"
+#include "fixtures/CommissionMailDatabase.inc"
 int main() {
     Connection db;
     Task task; task.id = task.root = Id; task.actor = task.context.actor = 497;
@@ -732,5 +734,6 @@ int main() {
     GuildMailHandoffDatabase(db);
     GuildMailRollbackDatabase(db);
     GuildCancellationDatabase(db);
+    CommissionMailDatabase(db);
     std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history, skill-job settlement and exact-row legacy handoff; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }
