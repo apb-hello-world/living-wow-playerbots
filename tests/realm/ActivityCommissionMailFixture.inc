@@ -172,7 +172,7 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
     struct Fixture {
         uint32_t actor=0,recipient=0;
         uint64_t deadline=0,nextDiagnostic=0;
-        bool senderLogin=false,customerLogin=false,positioned=false;
+        bool senderLogin=false,customerLogin=false,positioned=false,customerRevived=false;
         bool collected=false,paid=false;
         std::string task,blocker,lastDiagnostic;
         boost::property_tree::ptree input;
@@ -201,6 +201,8 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
         report.put("boot",state.boot);report.put("task",f.task);report.put("actor",f.actor);report.put("recipient",f.recipient);
         report.put("blocker",f.blocker);report.put("same_task_restart",state.boot!=f.input.template get<std::string>("setup_boot",state.boot));
         report.put("fixture_customer_positioning",f.positioned);report.put("independent_audit_required",true);
+        report.put("fixture_sender_positioning",f.positioned);report.put("fixture_customer_resurrection",f.customerRevived);
+        report.put("autonomous_recovery_or_travel_proof",false);
         report.put("new_item_grants",0);report.put("money_grants",0);report.put("ordinary_receipt_settlement",true);
         if(sender)report.put("sender_money",sender->GetMoney());
         if(customer){report.put("customer_money",customer->GetMoney());report.put("customer_output",customer->GetItemCount(2454,true));}
@@ -261,7 +263,11 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
         for(auto* actor:{sender,customer}) {
             require(actor->GetPlayerbotAI() && !actor->GetPlayerbotAI()->IsRealPlayer() && actor->GetSession() &&
                 sPlayerbotAIConfig.IsInRandomAccountList(actor->GetSession()->GetAccountId()),"native_fixture_bot_required");
-            if(!actor->IsInWorld() || !actor->GetMap() || NativeSafety(actor) || actor->GetGroup() ||
+            // The replay holds customer AI, so a copied dead customer cannot
+            // perform autonomous recovery. Explicit setup below is not proof
+            // of death recovery. Never clear combat/transport/transfer safety.
+            const auto allowedSetup=actor==customer && !f.positioned ? uint32_t(Safety::Death) : 0u;
+            if(!actor->IsInWorld() || !actor->GetMap() || (NativeSafety(actor)&~allowedSetup) || actor->GetGroup() ||
                 actor->GetTradeData() || actor->GetMap()->IsDungeon()){f.blocker="commission_collection_safety_wait";return;}
         }
         for(const auto& row:state.cache)if(row.second.actor==f.recipient && row.second.mode==Mode::Active && !Terminal(row.second.phase))
@@ -280,13 +286,35 @@ void RunIsolatedCommissionCollectionFixture(FixtureState& state) {
                 customer->GetMoney()==f.input.template get<uint32_t>("customer_money_before")-60,"native_commission_money_conservation");
             emit(true,"",sender,customer);return;
         }
-        const auto mailbox=NativeNearbyMailbox(*sender);
-        if(!mailbox){f.blocker="commission_sender_mailbox_unavailable";return;}
         if(!f.positioned) {
             require(customer->GetMapId()==sender->GetMapId(),"same_map_copied_customer_required");
-            customer->NearTeleportTo(sender->GetPositionX(),sender->GetPositionY(),sender->GetPositionZ(),sender->GetOrientation());
-            f.positioned=true;return; // Explicit fixture positioning, not travel proof.
+            const ObjectGuid originalMailbox(proof.quote.mailbox);
+            require(originalMailbox.IsGameObject(),"original_native_mailbox_guid_required");
+            const auto* spawn=sObjectMgr.GetGOData(originalMailbox.GetCounter());
+            const auto* info=spawn?sObjectMgr.GetGameObjectInfo(spawn->id):nullptr;
+            require(spawn && spawn->mapid==sender->GetMapId() && info && info->type==GAMEOBJECT_TYPE_MAILBOX,
+                "original_same_map_mailbox_spawn_required");
+            require(!LivingServiceExecution::Busy(sender) && !LivingServiceExecution::Busy(customer) &&
+                !sLivingActivityCoordinator.DefersNativeSave(f.actor) && !sLivingActivityCoordinator.DefersNativeSave(f.recipient),
+                "fixture_setup_native_operation_must_finish");
+            const auto path="/isolated/evidence/commission-collection-setup-"+state.boot+".json";
+            require(!std::ifstream(path),"fixture_setup_intent_must_not_repeat");
+            boost::property_tree::ptree setup;setup.put("task",f.task);setup.put("boot",state.boot);
+            setup.put("original_mailbox",proof.quote.mailbox);setup.put("test_only",true);
+            setup.put("sender_positioning",true);setup.put("customer_positioning",true);
+            setup.put("customer_resurrection",!customer->IsAlive());setup.put("autonomous_recovery_or_travel_proof",false);
+            setup.put("sender_money",sender->GetMoney());setup.put("customer_money",customer->GetMoney());
+            std::ofstream out(path);out<<Json(setup);out.close();require(bool(out),"fixture_setup_intent_saved");
+            f.customerRevived=!customer->IsAlive();
+            if(f.customerRevived){customer->ResurrectPlayer(1.0f,false);customer->SpawnCorpseBones();}
+            for(auto* actor:{sender,customer}) {
+                actor->GetMotionMaster()->Clear();actor->StopMoving();
+                actor->NearTeleportTo(spawn->posX,spawn->posY,spawn->posZ,spawn->orientation);
+            }
+            f.positioned=true;f.blocker="fixture_mailbox_positioning_pending";return;
         }
+        const auto mailbox=NativeNearbyMailbox(*sender);
+        if(!mailbox){f.blocker="commission_sender_mailbox_unavailable";return;}
         if(NativeNearbyMailbox(*customer)!=mailbox){f.blocker="commission_customer_mailbox_arrival_pending";return;}
         if(proof.received.empty()) {
             if(f.collected){f.blocker="native_customer_receipt_pending";return;}
