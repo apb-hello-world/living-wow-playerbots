@@ -386,4 +386,48 @@ static void CommissionMailDatabase(Connection& db) {
         assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")== (committed?"470":"500"));
         assert(db.Scalar("SELECT count FROM item_instance WHERE guid=9981001")=="1");
     }
+    // Five-item order backed by two native craft claims on one shared stack.
+    // Restore a captured send, then verify collection uses the full quantity
+    // while charging the customer's agreed COD once, not once per claim.
+    auto batchRecipe=recipe;batchRecipe.outputQuantity=5;
+    auto batchJob=job;batchJob.agreement.recipe=EncodeProfessionJob(batchRecipe);batchJob.craft=batchJob.agreement.recipe;
+    auto batchTask=task;batchTask.revision=30;batchTask.phase=Phase::Reconciling;batchTask.checkpoint.data=EncodeCommissionJob(batchJob);
+    batchTask.context.boot.clear();batchTask.context.actorGeneration=batchTask.context.mapGeneration=0;
+    auto batchQuote=quote;batchQuote.quantity=batchQuote.count=5;
+    auto partA=parcel;partA.quantity=2;
+    auto partB=parcel;partB.id="769b8ae6-3123-4587-8ad7-fb51b9c01921";partB.quantity=3;
+    std::vector<ClaimConsumption> batchUses={{partA,2},{partB,3},{postage,30}};
+    const auto batchBefore="{\"effects\":12,\"persistence\":1,\"native\":"+ClaimedNativeState(EncodeCommissionMailQuote(batchQuote),batchUses,8192)+'}';
+    assert(db.Execute("UPDATE living_activity_task SET revision=30,phase='reconciling',checkpoint="+SqlValue(batchTask.checkpoint.data)+" WHERE task_id="+SqlValue(task.id)));
+    assert(db.Execute("UPDATE organic_economy_commission SET authoritative_payload="+SqlValue(EncodeCommissionContract(batchJob.agreement))+" WHERE commission_id='lwc-987'"));
+    assert(db.Execute("UPDATE living_activity_operation SET task_revision=29,state='reconciling',before_state="+SqlValue(batchBefore)+
+        ",after_state="+SqlValue(captureAfter)+",evidence_code='native_save_capture_requires_reconciliation' WHERE operation_id="+SqlValue(operation)));
+    assert(db.Execute("UPDATE living_activity_claim SET state='held',revision=1,quantity=2 WHERE claim_id="+SqlValue(partA.id)));
+    assert(db.Execute("UPDATE living_activity_claim SET state='held',revision=1 WHERE claim_id="+SqlValue(postage.id)));
+    assert(db.Execute("INSERT INTO living_activity_claim(claim_id,task_id,actor_guid,item_guid,item_entry,quantity,copper,location,state,revision,updated_at_ms) VALUES("+
+        SqlValue(partB.id)+','+SqlValue(task.id)+",9981,9981001,2454,3,0,'bags','held',1,2009000)"));
+    assert(db.Execute("UPDATE item_instance SET count=5 WHERE guid=9981001"));
+    claims.claims={partB,postage,partA};auto batchHistory=readHistory(batchTask);CommissionSendRecovery batchRecovered;
+    assert(PrepareCapturedCommissionSend(batchTask,task.context,batchHistory,claims,2010000,
+        "769b8ae6-3123-4587-8ad7-fb51b9c01922",batchRecovered,why));
+    assert(db.Execute("UPDATE item_instance SET count=4 WHERE guid=9981001"));assert(!db.Write(batchRecovered.plan));
+    assert(db.Execute("UPDATE item_instance SET count=5 WHERE guid=9981001"));
+    assert(db.Write(batchRecovered.plan));assert(db.Write(batchRecovered.plan));
+    assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(partA.id))=="consumed");
+    assert(db.Scalar("SELECT state FROM living_activity_claim WHERE claim_id="+SqlValue(partB.id))=="consumed");
+    assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="470");
+    auto batchReceived=received;batchReceived.mail=90041;batchReceived.quantity=5;batchReceived.inventoryBefore=4;batchReceived.inventoryAfter=9;
+    batchReceived.generated.id=90043;batchReceived.generated.subject=sent.subject;
+    assert(db.Execute("UPDATE mail SET cod=0 WHERE id=90041"));
+    assert(db.Execute("DELETE FROM mail_items WHERE mail_id=90041"));
+    assert(db.Execute("INSERT INTO character_inventory(guid,bag,slot,item,item_template) VALUES(9982,0,23,9981001,2454)"));
+    assert(db.Execute("INSERT INTO mail(id,messageType,sender,receiver,money,cod,deliver_time,expire_time,subject,checked) VALUES(90043,0,9982,9981,120,0,"+
+        std::to_string(batchReceived.generated.deliveredAt)+','+std::to_string(batchReceived.generated.expiresAt)+','+SqlValue(sent.subject)+",8)"));
+    auto shortReceipt=batchReceived;shortReceipt.quantity=4;shortReceipt.inventoryAfter=8;
+    assert(db.Execute(CommissionMailObservationWrite(shortReceipt)));assert(receiptCount(receiveId)=="0");
+    assert(db.Execute(CommissionMailObservationWrite(batchReceived)));assert(receiptCount(receiveId)=="1");
+    auto collectedBatch=readHistory(batchRecovered.task);
+    assert(InspectCommissionDelivery(batchRecovered.task,collectedBatch,delivery,why) && delivery.state==CommissionDeliveryState::WaitingFee);
+    assert(db.Scalar("SELECT money FROM characters WHERE guid=9982")=="880");
+    assert(db.Scalar("SELECT count FROM item_instance WHERE guid=9981001")=="5");
 }

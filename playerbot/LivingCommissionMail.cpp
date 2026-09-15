@@ -7,7 +7,7 @@ namespace LivingActivity {
 bool ValidCommissionMailQuote(const CommissionMailQuote& q) {
     return q.commission.size()>=5 && q.commission.size()<=36 && q.commission.compare(0,4,"lwc-")==0 &&
         q.commission.find_first_not_of("0123456789",4)==std::string::npos && q.sender && q.receiver &&
-        q.sender!=q.receiver && q.item && q.entry && q.quantity==1 && q.count==q.quantity &&
+        q.sender!=q.receiver && q.item && q.entry && q.quantity && q.quantity<=10000 && q.count==q.quantity &&
         q.postage==30 && q.moneyBefore>=q.postage && q.mailbox && q.delay<=30u*86400u;
 }
 std::string EncodeCommissionMailQuote(const CommissionMailQuote& q) {
@@ -37,19 +37,21 @@ bool ExactCommissionMailConsumption(const Task& task,const CommissionMailQuote& 
         !DecodeCommissionJob(task.checkpoint.data,job,why) || !job.craftFinishedRevision ||
         !DecodeProfessionIntent(job.craft,recipe,why) || task.actor!=q.sender || job.agreement.id!=q.commission ||
         job.agreement.recipient!=q.receiver || job.agreement.delivery!="mail" || job.agreement.feeCopper!=q.cod ||
-        recipe.outputEntry!=q.entry || recipe.outputQuantity!=q.quantity || uses.size()!=2)return false;
-    bool item=false,money=false;std::set<std::string> ids;
+        recipe.outputEntry!=q.entry || recipe.outputQuantity!=q.quantity || uses.size()<2 || uses.size()>16)return false;
+    uint64_t items=0;bool money=false;std::set<std::string> ids;
     for(const auto& use:uses) {
         const auto& c=use.before;
         if(!ValidResourceClaim(c) || c.task!=task.id || c.actor!=q.sender || c.state!="held" ||
             c.nativeReference || !ids.insert(c.id).second)return false;
         if(c.location=="bags" && c.itemGuid==q.item && c.itemEntry==q.entry && !c.copper &&
-            c.quantity==q.quantity && use.used==q.quantity && !item)item=true;
+            c.quantity && c.quantity<=q.quantity && use.used==c.quantity) {
+            items+=c.quantity;if(items>q.quantity)return false;
+        }
         else if(c.location=="money" && !c.itemGuid && !c.itemEntry && !c.quantity &&
             c.copper==q.postage && use.used==q.postage && !money)money=true;
         else return false;
     }
-    return item && money;
+    return items==q.quantity && money;
 }
 std::string CommissionMailSubject(const std::string& operation) {
     if(!IsUuid(operation))throw std::invalid_argument("commission_mail_operation_required");
@@ -115,7 +117,7 @@ std::string CommissionMailObservationWrite(const CommissionMailObservation& e) {
     std::string nativeGuard;
     const auto& m=e.generated;
     if(e.event==CommissionMailEvent::CustomerReceived) {
-        if(!e.item || !e.entry || e.quantity!=1 || e.moneyBefore<e.copper || e.moneyAfter!=e.moneyBefore-e.copper ||
+        if(!e.item || !e.entry || !e.quantity || e.quantity>10000 || e.moneyBefore<e.copper || e.moneyAfter!=e.moneyBefore-e.copper ||
             uint64_t(e.inventoryBefore)+e.quantity!=e.inventoryAfter)return {};
         if(e.copper ? !m.id || m.sender!=e.receiver || m.receiver!=e.sender || m.money!=e.copper || m.cod ||
             m.attachments || m.itemGuid || m.itemEntry || m.quantity || m.subject!=subject ||
@@ -146,7 +148,7 @@ std::string CommissionMailObservationWrite(const CommissionMailObservation& e) {
             n(e.sender)+" AND a.receiver="+n(e.receiver)+" AND a.money=0 AND a.cod=0 AND (a.checked & 8)=8 AND a.subject="+
             SqlValue(subject)+") AND EXISTS(SELECT 1 FROM characters c WHERE c.guid="+n(e.receiver)+" AND c.money="+n(e.moneyAfter)+')';
     } else {
-        if(!e.item || !e.entry || e.quantity!=1 || e.copper || m.id!=e.mail || m.sender!=e.sender || m.receiver!=e.receiver ||
+        if(!e.item || !e.entry || !e.quantity || e.quantity>10000 || e.copper || m.id!=e.mail || m.sender!=e.sender || m.receiver!=e.receiver ||
             m.money || m.cod || m.attachments!=1 || m.itemGuid!=e.item || m.itemEntry!=e.entry ||
             m.quantity!=e.quantity || m.subject!=subject || !m.deliveredAt || m.expiresAt<=m.deliveredAt)return {};
         guard+=" AND "+value("sender")+'='+n(e.receiver)+" AND "+value("receiver")+'='+n(e.sender)+

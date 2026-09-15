@@ -2491,7 +2491,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     const auto effects=Mask(Effect::Inventory)|Mask(Effect::Money);
     const auto grant=AcquireSavedTask(id,saved->revision,effects,60000,"commission_mail_prepare");
     if(!grant.Permitted())return stop(grant.blocker);
-    if(uses.size()==1) {
+    if(std::none_of(uses.begin(),uses.end(),[](const ClaimConsumption& use){return use.before.copper!=0;})) {
         ResourceClaim postage;postage.id=NewId();postage.task=id;postage.actor=actor;postage.location="money";
         postage.copper=30;postage.state="held";
         ReservationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;

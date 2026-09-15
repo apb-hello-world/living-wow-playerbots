@@ -267,4 +267,51 @@ inline void TestCommissionMail() {
     capture.afterState="{}";capture.receipt.nativeReference.clear();
     assert(PrepareUnsentCommission(uncertain,owner.context,capturedHistory,claims,q,0,2002000,settlement,settled,why));
     assert(!PrepareCapturedCommissionSend(uncertain,owner.context,capturedHistory,claims,2002000,settlement,recovered,why));
+    {
+        // Two actual craft receipts may reserve parts of the same five-item
+        // stack. The one postage claim and agreed fee apply to the order once.
+        auto batchRecipe=recipe;batchRecipe.outputQuantity=5;
+        auto batchJob=job;batchJob.agreement.recipe=EncodeProfessionJob(batchRecipe);batchJob.craft=batchJob.agreement.recipe;
+        auto batchTask=owner;batchTask.checkpoint.data=EncodeCommissionJob(batchJob);
+        auto batchQuote=q;batchQuote.quantity=batchQuote.count=5;
+        auto first=item;first.quantity=2;
+        auto second=item;second.id="d1879146-6e96-4e71-827d-6d12d965edb9";second.quantity=3;
+        const std::vector<ClaimConsumption> batchUses={{first,2},{second,3},{money,30}};
+        assert(ExactCommissionMailConsumption(batchTask,batchQuote,batchUses));
+        for(unsigned i=0;i<5;++i) {
+            auto bad=batchUses;
+            if(i==0)bad[1].before.id=first.id;
+            if(i==1)bad[1].before.itemGuid++;
+            if(i==2)bad[1].used=2;
+            if(i==3){bad[1].before.quantity=4;bad[1].used=4;}
+            if(i==4)bad.pop_back();
+            assert(!ExactCommissionMailConsumption(batchTask,batchQuote,bad));
+        }
+        auto batchSent=sent;batchSent.quantity=5;
+        assert(VerifyCommissionMailSent(batchQuote,batchSent,operation));
+        auto batchHistory=history;
+        auto& batchSend=batchHistory.commissionMail.front();
+        batchSend.beforeState="{\"effects\":12,\"persistence\":1,\"native\":"+ClaimedNativeState(EncodeCommissionMailQuote(batchQuote),batchUses,8192)+'}';
+        const std::string native="{\"mail\":9832,\"item\":103,\"receiver\":9,\"cod\":120,\"delivered_at\":1100,\"expires_at\":3000,\"postage\":30,\"customer_received\":false,\"fee_paid\":false}";
+        batchSend.afterState=ClaimedNativeState(native,batchUses,8192);
+        auto batchReceived=received;batchReceived.quantity=5;batchReceived.inventoryAfter=batchReceived.inventoryBefore+5;
+        batchHistory.commissionMail[1]=eventRow(batchReceived,"commission_customer_received");
+        assert(!CommissionMailObservationWrite(batchReceived).empty());
+        assert(InspectCommissionDelivery(batchTask,batchHistory,delivered,why) && delivered.state==CommissionDeliveryState::Complete);
+        auto batchReturn=returned;batchReturn.quantity=batchReturn.generated.quantity=5;
+        assert(!CommissionMailObservationWrite(batchReturn).empty());
+        batchHistory.commissionMail={batchSend,eventRow(batchReturn,"commission_parcel_returned")};
+        ResourceClaim batchReturned;
+        assert(ReturnedCommissionClaim(batchTask,batchHistory,batchReturned,why) && batchReturned.quantity==5);
+        auto batchInterrupted=batchTask;batchInterrupted.phase=Phase::Reconciling;++batchInterrupted.revision;
+        batchInterrupted.context.boot.clear();batchInterrupted.context.actorGeneration=batchInterrupted.context.mapGeneration=0;
+        batchHistory.revision=batchInterrupted.revision;batchHistory.unresolvedOperation=true;batchHistory.commissionMail.resize(1);
+        auto& partial=batchHistory.commissionMail.front();partial.receipt.taskRevision=batchTask.revision;
+        partial.receipt.state=OperationState::Reconciling;partial.receipt.evidence="native_save_capture_requires_reconciliation";
+        partial.afterState=native;
+        UnsettledClaimBatch batchClaims;batchClaims.complete=true;batchClaims.bookRevision=1;batchClaims.claims={money,second,first};
+        assert(PrepareCapturedCommissionSend(batchInterrupted,batchTask.context,batchHistory,batchClaims,2002000,settlement,recovered,why));
+        assert(recovered.claims.size()==3);
+        for(const auto& c:recovered.claims)assert(c.after.state=="consumed");
+    }
 }

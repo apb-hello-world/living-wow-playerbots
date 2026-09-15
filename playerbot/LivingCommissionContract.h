@@ -27,7 +27,7 @@ inline bool ValidCommissionContract(const CommissionContract& c,std::string& why
     ProfessionWorkflow flow;
     if(!DecodeProfessionWorkflow(c.recipe,flow,why) || !flow.tools.empty() ||
         flow.intent.operation!=ProfessionOperation::CreateItem ||
-        flow.intent.purpose!=ProfessionPurpose::RequestedItem || flow.intent.outputQuantity!=1 ||
+        flow.intent.purpose!=ProfessionPurpose::RequestedItem || !flow.intent.outputQuantity || flow.intent.outputQuantity>10000 ||
         flow.intent.reagents.empty())return reject();
     why.clear();return true;
 }

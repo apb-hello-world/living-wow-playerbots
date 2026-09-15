@@ -53,13 +53,17 @@ bool PlanNativeCommissionMail(Player& actor,const Task& task,CommissionMailQuote
     UnsettledClaimBatch claims;
     if(!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,why))return false;
     if(!claims.complete)return reject("commission_mail_claims_incomplete");
-    ResourceClaim output,postage;
+    ResourceClaim output,postage;uint64_t outputQuantity=0;
     for(const auto& c:claims.claims) {
         if(c.state!="held" || c.nativeReference)return reject("commission_mail_claim_requires_reconciliation");
-        if(c.location=="bags" && c.itemEntry==recipe.outputEntry && c.quantity==recipe.outputQuantity && output.id.empty())output=c;
+        if(c.location=="bags" && c.itemEntry==recipe.outputEntry && c.quantity && c.quantity<=recipe.outputQuantity) {
+            if(!output.id.empty() && output.itemGuid!=c.itemGuid)return reject("commission_mail_multiple_stacks_preparation_required");
+            output=c;outputQuantity+=c.quantity;uses.push_back({c,uint32_t(c.quantity)});
+        }
         else if(c.location=="money" && c.copper==30 && postage.id.empty())postage=c;
         else return reject("commission_mail_exact_parcel_preparation_required");
     }
+    if(outputQuantity!=recipe.outputQuantity || uses.size()>15)return reject("commission_mail_exact_output_claims_required");
     auto* item=output.id.empty()?nullptr:actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,output.itemGuid));
     const auto privateItems=sPlayerbotActionBroker.ReservedItemsView();
     if(!item || item->GetOwnerGuid()!=actor.GetObjectGuid() || !Player::IsInventoryPos(item->GetPos()) ||
@@ -79,7 +83,7 @@ bool PlanNativeCommissionMail(Player& actor,const Task& task,CommissionMailQuote
     q.moneyBefore=actor.GetMoney();q.postage=30;q.position=item->GetPos();q.mailbox=mailbox;
     q.delay=actor.GetSession()->GetAccountId()==customer->Fetch()[1].GetUInt32()?0:sWorld.getConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY);
     if(!ValidCommissionMailQuote(q))return reject("commission_mail_quote_invalid");
-    uses.push_back({output,q.quantity});if(!postage.id.empty())uses.push_back({postage,30});
+    if(!postage.id.empty())uses.push_back({postage,30});
     why.clear();return true;
 }
 bool NativeCommissionReturnReservation::ValidatePurpose(Player& actor,const ReservationRequest& request,std::string& why) {
@@ -106,7 +110,8 @@ bool NativeCommissionMailReservation::ValidatePurpose(Player& actor,const Reserv
     const auto saved=sLivingActivityCoordinator.ReadSavedTask(request.transition.task.id);
     CommissionMailQuote q;std::vector<ClaimConsumption> uses;
     if(!saved || saved->revision!=request.transition.expectedRevision || request.changes.size()!=1 ||
-        !PlanNativeCommissionMail(actor,*saved,q,uses,why) || uses.size()!=1)return false;
+        !PlanNativeCommissionMail(actor,*saved,q,uses,why) || uses.empty() || uses.size()>15 ||
+        std::any_of(uses.begin(),uses.end(),[](const ClaimConsumption& use){return use.before.copper!=0;}))return false;
     const auto& change=request.changes.front();
     if(change.expectedRevision || change.after.revision!=1){why="commission_mail_new_postage_claim_required";return false;}
     uses.push_back({change.after,30});

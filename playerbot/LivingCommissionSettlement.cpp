@@ -58,7 +58,7 @@ bool InspectCommissionDelivery(const Task& task,const ProfessionHistory& history
         const auto& q=proof.quote;
         std::vector<ClaimConsumption> uses;
         const auto& inputs=before.get_child("native.claimed_consumption");
-        Require(inputs.data().empty() && inputs.size()==2 &&
+        Require(inputs.data().empty() && inputs.size()>=2 && inputs.size()<=16 &&
             EnchantCodec::Json(inputs)==EnchantCodec::Json(after.get_child("claimed_consumption")),"commission_send_claims_changed");
         for(const auto& field:inputs) {
             Require(field.first.empty(),"commission_send_claim_array_invalid");
@@ -315,7 +315,7 @@ bool DecodeUnsentCommission(const Task& task,const ProfessionHistory& history,co
         if(!ValidateCommissionTask(task,validation) || !IsCommissionJob(task) || !task.accepted || task.mode!=Mode::Active ||
             task.phase!=Phase::Executing || task.checkpoint.step!="commission_mail_send" ||
             !history.complete || history.task!=task.id || history.revision!=task.revision || !history.unresolvedOperation ||
-            history.commissionMail.size()!=1 || !claims.complete || !claims.bookRevision || claims.claims.size()!=2)return false;
+            history.commissionMail.size()!=1 || !claims.complete || !claims.bookRevision || claims.claims.size()<2 || claims.claims.size()>16)return false;
         const auto& row=history.commissionMail.front();const auto& r=row.receipt;
         if(!row.acknowledged || !Digest(row.journalDigest) || !IsUuid(r.id) || r.task!=task.id || r.taskRevision!=task.revision ||
             r.kind!="commission_mail_send" || r.state!=OperationState::Intent || !r.evidence.empty() ||
@@ -323,7 +323,7 @@ bool DecodeUnsentCommission(const Task& task,const ProfessionHistory& history,co
         const auto before=Parse(row.beforeState);
         if(!DecodeCommissionMailQuote(EnchantCodec::Json(before.get_child("native.native")),quote))return false;
         std::vector<ClaimConsumption> uses;
-        for(const auto& c:claims.claims)uses.push_back({c,c.copper?30u:quote.quantity});
+        for(const auto& c:claims.claims)uses.push_back({c,c.copper?30u:uint32_t(c.quantity)});
         if(!ExactCommissionMailConsumption(task,quote,uses))return false;
         // The shared encoder canonicalizes claim ordering before comparison.
         if(row.beforeState!="{\"effects\":12,\"persistence\":1,\"native\":"+
@@ -356,7 +356,7 @@ bool DecodeInterruptedCommission(const Task& saved,const ProfessionHistory& hist
         auto verified=history;verified.unresolvedOperation=false;
         auto& sent=verified.commissionMail.front();sent.receipt.state=OperationState::Verified;
         sent.receipt.evidence="native_commission_parcel_and_postage_observed";
-        std::vector<ClaimConsumption> uses;for(const auto& c:claims.claims)uses.push_back({c,c.copper?30u:q.quantity});
+        std::vector<ClaimConsumption> uses;for(const auto& c:claims.claims)uses.push_back({c,c.copper?30u:uint32_t(c.quantity)});
         sent.afterState=ClaimedNativeState(row.afterState,uses,8192);
         CommissionDeliveryProof proof;
         if(!InspectCommissionDelivery(saved,verified,proof,why))return false;
@@ -368,7 +368,7 @@ bool DecodeInterruptedCommission(const Task& saved,const ProfessionHistory& hist
     } catch(const std::exception&) {why="commission_interrupted_observation_malformed";return false;}
 }
 namespace {
-std::string InterruptedCommissionGuard(const Task& saved,const ProfessionHistory& history) {
+std::string InterruptedCommissionGuard(const Task& saved,const ProfessionHistory& history,size_t claimCount) {
     const auto& row=history.commissionMail.front();const auto& r=row.receipt;
     CommissionJob job;std::string why;DecodeCommissionJob(saved.checkpoint.data,job,why);
     const auto n=[](uint64_t v){return std::to_string(v);};
@@ -383,7 +383,7 @@ std::string InterruptedCommissionGuard(const Task& saved,const ProfessionHistory
         " WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))=1"
         " AND (SELECT COUNT(*) FROM living_activity_operation o WHERE o.task_id=living_activity_task.task_id AND "
         "((o.kind='commission_mail_send' AND o.state<>'rejected') OR o.kind IN ('commission_customer_received','commission_fee_collected','commission_parcel_returned')))=1"
-        " AND (SELECT COUNT(*) FROM living_activity_claim WHERE task_id=living_activity_task.task_id AND state NOT IN ('consumed','released'))=2"
+        " AND (SELECT COUNT(*) FROM living_activity_claim WHERE task_id=living_activity_task.task_id AND state NOT IN ('consumed','released'))="+n(claimCount)+
         " AND EXISTS(SELECT 1 FROM living_activity_transition WHERE task_id=living_activity_task.task_id AND task_revision="+
         n(job.craftFinishedRevision)+" AND code='commission_craft_verified')"
         " AND EXISTS(SELECT 1 FROM organic_economy_commission WHERE commission_id="+SqlValue(job.agreement.id)+
@@ -406,9 +406,9 @@ bool PrepareCapturedCommissionSend(const Task& saved,const WorldContext& current
     next.checkpoint.step="commission_mail_send";next.checkpoint.blocker.clear();next.retryAtMs=0;
     const auto& row=history.commissionMail.front();auto outcome=row.receipt;outcome.state=OperationState::Verified;
     outcome.evidence="native_commission_parcel_and_postage_observed";
-    std::vector<ClaimConsumption> uses;for(const auto& c:claims.claims)uses.push_back({c,c.copper?30u:q.quantity});
+    std::vector<ClaimConsumption> uses;for(const auto& c:claims.claims)uses.push_back({c,c.copper?30u:uint32_t(c.quantity)});
     auto consumed=ConsumedOperationWrite(next,saved.revision,outcome,receipt,row.afterState,uses);
-    consumed.journal.statements.front()+=InterruptedCommissionGuard(saved,history)+
+    consumed.journal.statements.front()+=InterruptedCommissionGuard(saved,history,claims.claims.size())+
         " AND EXISTS("+CommissionMailSentProof(next,q,captured,outcome.id)+')'+
         " AND (SELECT COUNT(*) FROM mail WHERE subject="+SqlValue(captured.subject)+")=1";
     consumed.journal.statements.insert(consumed.journal.statements.begin(),
@@ -427,7 +427,7 @@ bool PrepareUnsentCommission(const Task& saved,const WorldContext& current,const
         why="commission_unsent_native_state_changed";return false;
     }
     const auto& row=history.commissionMail.front();auto n=[](uint64_t value){return std::to_string(value);};
-    std::string guard=InterruptedCommissionGuard(saved,history)+
+    std::string guard=InterruptedCommissionGuard(saved,history,claims.claims.size())+
         " AND NOT EXISTS(SELECT 1 FROM mail WHERE subject="+SqlValue(CommissionMailSubject(row.receipt.id))+')'+
         " AND NOT EXISTS(SELECT 1 FROM mail_items WHERE item_guid="+n(q.item)+')'+
         " AND NOT EXISTS(SELECT 1 FROM guild_bank_item WHERE item_guid="+n(q.item)+')'+
@@ -435,7 +435,7 @@ bool PrepareUnsentCommission(const Task& saved,const WorldContext& current,const
         " WHERE c.guid="+n(q.sender)+" AND c.money="+n(q.moneyBefore)+" AND i.guid="+n(q.item)+
         " AND i.owner_guid=c.guid AND i.itemEntry="+n(q.entry)+" AND i.count="+n(q.count)+
         " AND v.bag="+n(bagGuid)+" AND v.slot="+n(uint8_t(q.position))+')'+
-        " AND (SELECT COUNT(*) FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id AND c.state NOT IN ('consumed','released'))=2";
+        " AND (SELECT COUNT(*) FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id AND c.state NOT IN ('consumed','released'))="+n(claims.claims.size());
     for(const auto& c:claims.claims)guard+=" AND EXISTS(SELECT 1 FROM living_activity_claim c WHERE "+ConsumptionClaimPredicate(c)+')';
     auto next=saved;next.context=current;++next.revision;next.phase=Phase::Verifying;next.updatedAtMs=now;
     next.checkpoint.step="commission_mail_prepare";next.checkpoint.blocker.clear();next.retryAtMs=0;
