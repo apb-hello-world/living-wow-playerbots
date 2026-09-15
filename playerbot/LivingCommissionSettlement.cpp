@@ -131,6 +131,73 @@ bool InspectCommissionDelivery(const Task& task,const ProfessionHistory& history
       catch(const std::exception&) {why="commission_delivery_receipt_malformed";}
     return false;
 }
+bool DecodeUnsentCommission(const Task& task,const ProfessionHistory& history,const UnsettledClaimBatch& claims,
+    CommissionMailQuote& quote,std::string& why) {
+    quote={};why="commission_unsent_exact_intent_required";
+    try {
+        std::string validation;
+        if(!ValidateCommissionTask(task,validation) || !IsCommissionJob(task) || !task.accepted || task.mode!=Mode::Active ||
+            task.phase!=Phase::Executing || task.checkpoint.step!="commission_mail_send" ||
+            !history.complete || history.task!=task.id || history.revision!=task.revision || !history.unresolvedOperation ||
+            history.commissionMail.size()!=1 || !claims.complete || !claims.bookRevision || claims.claims.size()!=2)return false;
+        const auto& row=history.commissionMail.front();const auto& r=row.receipt;
+        if(!row.acknowledged || !Digest(row.journalDigest) || !IsUuid(r.id) || r.task!=task.id || r.taskRevision!=task.revision ||
+            r.kind!="commission_mail_send" || r.state!=OperationState::Intent || !r.evidence.empty() ||
+            !r.nativeReference.empty() || row.afterState!="{}")return false;
+        const auto before=Parse(row.beforeState);
+        if(!DecodeCommissionMailQuote(EnchantCodec::Json(before.get_child("native.native")),quote))return false;
+        std::vector<ClaimConsumption> uses;
+        for(const auto& c:claims.claims)uses.push_back({c,c.copper?30u:quote.quantity});
+        if(!ExactCommissionMailConsumption(task,quote,uses))return false;
+        // The shared encoder canonicalizes claim ordering before comparison.
+        if(row.beforeState!="{\"effects\":12,\"persistence\":1,\"native\":"+
+            ClaimedNativeState(EncodeCommissionMailQuote(quote),uses,8192)+'}')return false;
+        why.clear();return true;
+    } catch(const std::exception&) {why="commission_unsent_intent_malformed";return false;}
+}
+bool PrepareUnsentCommission(const Task& saved,const WorldContext& current,const ProfessionHistory& history,
+    const UnsettledClaimBatch& claims,const CommissionMailQuote& native,uint32_t bagGuid,uint64_t now,
+    const std::string& receipt,ProfessionPreparation& result,std::string& why) {
+    result={};CommissionMailQuote q;
+    if(!DecodeUnsentCommission(saved,history,claims,q,why))return false;
+    why="commission_unsent_restored_context_required";
+    if(!saved.context.boot.empty() || saved.context.actorGeneration || saved.context.mapGeneration ||
+        current.actor!=saved.actor || !IsUuid(current.boot) || !current.actorGeneration || !current.mapGeneration ||
+        !current.policyRevision || current.session.size()>120 || current.session.empty()!=(current.sessionRevision==0) ||
+        !IsUuid(receipt) || now<saved.updatedAtMs || saved.revision>=UINT64_MAX-1)return false;
+    if(!ValidCommissionMailQuote(native) || EncodeCommissionMailQuote(native)!=EncodeCommissionMailQuote(q)) {
+        why="commission_unsent_native_state_changed";return false;
+    }
+    const auto& row=history.commissionMail.front();auto n=[](uint64_t value){return std::to_string(value);};
+    std::string guard=" AND phase='executing' AND accepted=1 AND mode='active' AND checkpoint="+SqlValue(saved.checkpoint.data)+
+        " AND EXISTS(SELECT 1 FROM living_activity_operation o WHERE o.operation_id="+SqlValue(row.receipt.id)+
+        " AND o.task_id=living_activity_task.task_id AND o.task_revision="+n(saved.revision)+
+        " AND o.kind='commission_mail_send' AND o.state='intent' AND o.before_state="+SqlValue(row.beforeState)+
+        " AND o.after_state='{}' AND o.evidence_code='' AND o.native_reference='')"
+        " AND (SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
+        " WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))=1"
+        " AND NOT EXISTS(SELECT 1 FROM mail WHERE subject="+SqlValue(CommissionMailSubject(row.receipt.id))+')'+
+        " AND NOT EXISTS(SELECT 1 FROM mail_items WHERE item_guid="+n(q.item)+')'+
+        " AND NOT EXISTS(SELECT 1 FROM guild_bank_item WHERE item_guid="+n(q.item)+')'+
+        " AND EXISTS(SELECT 1 FROM characters c JOIN character_inventory v ON v.guid=c.guid JOIN item_instance i ON i.guid=v.item"
+        " WHERE c.guid="+n(q.sender)+" AND c.money="+n(q.moneyBefore)+" AND i.guid="+n(q.item)+
+        " AND i.owner_guid=c.guid AND i.itemEntry="+n(q.entry)+" AND i.count="+n(q.count)+
+        " AND v.bag="+n(bagGuid)+" AND v.slot="+n(uint8_t(q.position))+')'+
+        " AND (SELECT COUNT(*) FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id AND c.state NOT IN ('consumed','released'))=2";
+    for(const auto& c:claims.claims)guard+=" AND EXISTS(SELECT 1 FROM living_activity_claim c WHERE "+ConsumptionClaimPredicate(c)+')';
+    CommissionJob job;DecodeCommissionJob(saved.checkpoint.data,job,why);
+    guard+=" AND EXISTS(SELECT 1 FROM organic_economy_commission c WHERE c.commission_id="+SqlValue(job.agreement.id)+
+        " AND c.bot_guid=living_activity_task.actor_guid AND c.player_guid="+n(job.agreement.recipient)+
+        " AND c.authoritative_payload="+SqlValue(EncodeCommissionContract(job.agreement))+" AND c.state IN ('crafting','ready','traveling'))";
+    auto next=saved;next.context=current;++next.revision;next.phase=Phase::Verifying;next.updatedAtMs=now;
+    next.checkpoint.step="commission_mail_prepare";next.checkpoint.blocker.clear();next.retryAtMs=0;
+    auto outcome=row.receipt;outcome.state=OperationState::Rejected;outcome.evidence="native_commission_send_not_committed";
+    outcome.nativeReference="item:"+n(q.item);
+    auto plan=OperationOutcomeWrite(next,saved.revision,outcome,receipt,"{\"recovery\":\"atomic_send_absent\",\"unchanged\":"+EncodeCommissionMailQuote(q)+'}');
+    plan.statements.front()+=guard;
+    plan.statements.insert(plan.statements.begin(),"UPDATE living_activity_task SET actor_guid=actor_guid WHERE actor_guid="+n(saved.actor));
+    result.task=std::move(next);result.plan=std::move(plan);why.clear();return true;
+}
 bool PrepareCommissionSettlement(const Task& saved,const WorldContext& current,const ProfessionHistory& history,
     const UnsettledClaimBatch& claims,uint64_t now,const std::string& receipt,ProfessionPreparation& result,std::string& why) {
     result={};CommissionDeliveryProof proof;

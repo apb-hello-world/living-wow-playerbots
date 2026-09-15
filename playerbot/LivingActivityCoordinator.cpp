@@ -1388,7 +1388,8 @@ void LivingActivityCoordinator::Update() {
                     Turn(std::string& value,const std::string& task):current(value){current=task;}
                     ~Turn(){current.clear();}
                 } turn(state->executingTask,id);
-                const bool receiptOnly=IsCommissionJob(saved->second) && saved->second.phase!=Phase::Executing &&
+                const bool receiptOnly=IsCommissionJob(saved->second) &&
+                    (saved->second.phase!=Phase::Executing || saved->second.context.boot.empty()) &&
                     (saved->second.checkpoint.step=="commission_mail_send" || saved->second.checkpoint.step=="commission_mail_wait");
                 const auto preparation=receiptOnly?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
                 auto progress=preparation ? *preparation : IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
@@ -2313,6 +2314,29 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
         state->nextWork=0;return stop("commission_settlement_persistence_pending");
     }
+    if(saved->phase==Phase::Executing && saved->checkpoint.step=="commission_mail_send" && saved->context.boot.empty()) {
+        if(DefersNativeSave(actor) || state->operationDispatching)return stop("commission_native_save_pending");
+        for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)return stop("commission_native_operation_pending");
+        const auto owned=state->authority.Read(actor);
+        if(!owned.operation.empty())return stop("commission_native_operation_pending");
+        if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+            return stop("commission_settlement_backpressure");
+        ProfessionHistory history;UnsettledClaimBatch claims;CommissionMailQuote quote;ProfessionPreparation prepared;
+        if(!ReadProfessionHistory(actor,id,saved->revision,history,why) || !state->resources.ReadUnsettled(id,claims,why) ||
+            !DecodeUnsentCommission(*saved,history,claims,quote,why))return stop(why);
+        auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item));
+        if(!item || item->GetOwnerGuid()!=bot->GetObjectGuid() || !Player::IsInventoryPos(item->GetPos()) ||
+            item->GetEntry()!=quote.entry || item->GetCount()!=quote.count || item->GetPos()!=quote.position || bot->GetMoney()!=quote.moneyBefore)
+            return stop("commission_unsent_native_state_changed");
+        RefreshPermission(actor,bot->GetPlayerbotAI()->GetActivityActorEpoch());
+        const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);const auto receipt=NewId();
+        if(!PrepareUnsentCommission(*saved,current,history,claims,quote,item->GetContainer()?item->GetContainer()->GetGUIDLow():0,
+            NowMs(),receipt,prepared,why))return stop(why);
+        State::Pending write;write.task=std::move(prepared.task);write.plan=std::move(prepared.plan);write.admissionReceipt=receipt;
+        state->pending.push_back(std::move(write));
+        if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+        state->nextWork=0;return stop("commission_unsent_reconciliation_pending");
+    }
     // No retry is admitted merely because the callback or old process vanished.
     // A pre-send interruption still requires reconciliation, not a fresh send.
     if(!(saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot)))
@@ -2331,7 +2355,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(saved->phase==Phase::Reconciling || Terminal(saved->phase))return stop("commission_delivery_reconciliation_required");
     if(saved->retryAtMs>NowMs())return stop("commission_delivery_retry_wait");
     if(DefersNativeSave(actor))return stop("native_save_pending");
-    if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal) {
+    if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal ||
+        (saved->phase==Phase::Verifying && saved->checkpoint.step=="commission_mail_prepare")) {
         if(NativeSafety(bot))return stop("commission_delivery_safety_pause");
         TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
         request.task.phase=Phase::Preparing;request.task.updatedAtMs=NowMs();request.task.retryAtMs=0;

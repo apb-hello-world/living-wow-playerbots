@@ -16,4 +16,11 @@ bool InspectCommissionDelivery(const Task&,const ProfessionHistory&,CommissionDe
 // movement. Empty unsettled claims and exact persisted receipts are required.
 bool PrepareCommissionSettlement(const Task&,const WorldContext&,const ProfessionHistory&,
     const UnsettledClaimBatch&,uint64_t,const std::string&,ProfessionPreparation&,std::string&);
+// A persisted atomic-send intent may be retried only after proving its original
+// item, money and claims unchanged and that no matching envelope exists.
+bool DecodeUnsentCommission(const Task&,const ProfessionHistory&,const UnsettledClaimBatch&,
+    CommissionMailQuote&,std::string&);
+bool PrepareUnsentCommission(const Task&,const WorldContext&,const ProfessionHistory&,
+    const UnsettledClaimBatch&,const CommissionMailQuote&,uint32_t,uint64_t,const std::string&,
+    ProfessionPreparation&,std::string&);
 }

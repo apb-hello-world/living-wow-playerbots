@@ -180,4 +180,26 @@ inline void TestCommissionMail() {
     assert(PrepareCommissionSettlement(owner,owner.context,returnedHistory,claims,2002000,settlement,settled,why));
     assert(settled.task.phase==Phase::Reconciling && settled.task.checkpoint.blocker=="commission_returned_parcel_reconciliation_required");
     claims.claims={item};assert(!PrepareCommissionSettlement(owner,owner.context,history,claims,2002000,settlement,settled,why));
+    auto unsent=restarted;unsent.phase=Phase::Executing;
+    auto interrupted=history;interrupted.commissionMail={sendRow};interrupted.unresolvedOperation=true;
+    auto& intent=interrupted.commissionMail.front();intent.receipt.taskRevision=unsent.revision;
+    intent.receipt.state=OperationState::Intent;intent.receipt.evidence.clear();intent.receipt.nativeReference.clear();intent.afterState="{}";
+    claims.claims={money,item}; // Claim reader order is not intent order.
+    assert(DecodeUnsentCommission(unsent,interrupted,claims,decoded,why));
+    assert(PrepareUnsentCommission(unsent,owner.context,interrupted,claims,q,0,2002000,settlement,settled,why));
+    assert(settled.task.phase==Phase::Verifying && settled.task.id==unsent.id && settled.task.checkpoint.step=="commission_mail_prepare");
+    for(unsigned i=0;i<9;++i) {
+        auto h=interrupted;auto c=claims;auto t=unsent;auto native=q;
+        if(i==0)h.commissionMail.front().receipt.state=OperationState::Reconciling;
+        if(i==1)h.commissionMail.front().afterState="{\"partial\":true}";
+        if(i==2)h.commissionMail.push_back(receivedRow);
+        if(i==3)c.claims.front().copper=31;
+        if(i==4)t.context=owner.context;
+        if(i==5)native.moneyBefore=99;
+        if(i==6)h.unresolvedOperation=false;
+        if(i==7)h.commissionMail.front().receipt.taskRevision--;
+        if(i==8)c.claims.clear();
+        assert(!PrepareUnsentCommission(t,owner.context,h,c,native,0,2002000,settlement,settled,why));
+        assert(!why.empty());
+    }
 }

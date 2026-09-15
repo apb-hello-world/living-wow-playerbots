@@ -200,4 +200,41 @@ static void CommissionMailDatabase(Connection& db) {
     assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id="+SqlValue(task.id))=="completed");
     assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="590");
     assert(db.Scalar("SELECT money FROM characters WHERE guid=9982")=="880");
+
+    // Separate supplied crash-before-commit state. No mail handler is invoked.
+    auto unsent=restored;unsent.phase=Phase::Executing;unsent.revision=11;
+    assert(db.Execute("UPDATE living_activity_task SET revision=11,phase='executing',step='commission_mail_send' WHERE task_id="+SqlValue(task.id)));
+    assert(db.Execute("DELETE FROM living_activity_operation WHERE operation_id IN ("+SqlValue(receiveId)+','+SqlValue(feeId)+')'));
+    assert(db.Execute("UPDATE living_activity_operation SET task_revision=11,state='intent',native_reference='',evidence_code='',after_state='{}' WHERE operation_id="+SqlValue(operation)));
+    assert(db.Execute("UPDATE organic_economy_commission SET state='traveling' WHERE commission_id='lwc-987'"));
+    assert(db.Execute("UPDATE characters SET money=500 WHERE guid=9981"));
+    assert(db.Execute("UPDATE item_instance SET owner_guid=9981 WHERE guid=9981001"));
+    assert(db.Execute("UPDATE character_inventory SET guid=9981,bag=0,slot=23 WHERE item=9981001"));
+    for(const auto& c:{parcel,postage})assert(db.Execute(
+        "INSERT INTO living_activity_claim(claim_id,task_id,actor_guid,item_guid,item_entry,quantity,copper,location,state,revision,updated_at_ms) VALUES("+
+        SqlValue(c.id)+','+SqlValue(c.task)+",9981,"+std::to_string(c.itemGuid)+','+std::to_string(c.itemEntry)+','+
+        std::to_string(c.quantity)+','+std::to_string(c.copper)+','+SqlValue(c.location)+",'held',1,1000)"));
+    claims.claims={postage,parcel};auto pendingSend=readHistory(unsent);CommissionMailQuote decoded;
+    assert(DecodeUnsentCommission(unsent,pendingSend,claims,decoded,why));
+    const std::string recoveryId="769b8ae6-3123-4587-8ad7-fb51b9c01909";
+    ProfessionPreparation recovery;
+    assert(PrepareUnsentCommission(unsent,task.context,pendingSend,claims,quote,0,2003000,recoveryId,recovery,why));
+    const std::vector<std::pair<std::string,std::string>> altered={
+        {"UPDATE characters SET money=470 WHERE guid=9981","UPDATE characters SET money=500 WHERE guid=9981"},
+        {"UPDATE item_instance SET owner_guid=9982 WHERE guid=9981001","UPDATE item_instance SET owner_guid=9981 WHERE guid=9981001"},
+        {"UPDATE living_activity_claim SET quantity=2 WHERE claim_id="+SqlValue(parcel.id),"UPDATE living_activity_claim SET quantity=1 WHERE claim_id="+SqlValue(parcel.id)},
+        {"INSERT INTO mail(id,subject) VALUES(90039,"+SqlValue(sent.subject)+')',"DELETE FROM mail WHERE id=90039"},
+        {"UPDATE living_activity_operation SET state='reconciling' WHERE operation_id="+SqlValue(operation),"UPDATE living_activity_operation SET state='intent' WHERE operation_id="+SqlValue(operation)},
+        {"UPDATE organic_economy_commission SET state='cancelled' WHERE commission_id='lwc-987'","UPDATE organic_economy_commission SET state='traveling' WHERE commission_id='lwc-987'"}
+    };
+    for(const auto& change:altered) {
+        assert(db.Execute(change.first));assert(!db.Write(recovery.plan));assert(db.Execute(change.second));
+        assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+SqlValue(operation))=="intent");
+    }
+    assert(db.Write(recovery.plan));assert(db.Write(recovery.plan));
+    assert(db.Scalar("SELECT state FROM living_activity_operation WHERE operation_id="+SqlValue(operation))=="rejected");
+    assert(db.Scalar("SELECT phase FROM living_activity_task WHERE task_id="+SqlValue(task.id))=="verifying");
+    assert(db.Scalar("SELECT COUNT(*) FROM living_activity_claim WHERE task_id="+SqlValue(task.id)+" AND state='held'")=="2");
+    assert(db.Scalar("SELECT money FROM characters WHERE guid=9981")=="500");
+    assert(db.Scalar("SELECT guid FROM character_inventory WHERE item=9981001")=="9981");
 }
