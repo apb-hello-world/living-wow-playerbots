@@ -8,6 +8,9 @@ namespace LivingActivity {
 // recipient remain separate saved steps; this adapter never edits consent.
 bool PlanNativeCommissionTrade(Player&,const Task&,CommissionTradeQuote&,
     std::vector<ClaimConsumption>&,std::string&);
+// Only populate an existing, unaccepted customer window. No initiation, stack
+// mutation, fee selection, acceptance or completion is performed here.
+bool PrepareNativeCommissionTradeOffer(Player&,const Task&,const ActionContext&,std::string&);
 class NativeCommissionTrade final : public NativeOperationAdapter {
 public:
     explicit NativeCommissionTrade(CommissionTradeQuote quote):quote(std::move(quote)) {}

@@ -665,6 +665,7 @@ struct LivingActivityCoordinator::State {
             std::string(mode)!="activity-commission-mail-v1" &&
             std::string(mode)!="activity-commission-broker-v1" &&
             std::string(mode)!="activity-commission-trade-v1" &&
+            std::string(mode)!="activity-commission-offer-v1" &&
             std::string(mode)!="activity-commission-parcel-v2" &&
             std::string(mode)!="activity-commission-capacity-v1" &&
             std::string(mode)!="activity-commission-collect-v1" &&
@@ -2634,9 +2635,15 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(saved->phase==Phase::Executing || saved->phase==Phase::Reconciling || !(saved->context==current))
         return stop("commission_trade_restart_reconciliation_required");
     if(saved->retryAtMs>NowMs())return stop("commission_trade_waiting_for_customer");
-    if(saved->phase==Phase::WaitingExternal && (!bot->GetTradeData() || !bot->GetTrader() ||
-        bot->GetTrader()->GetGUIDLow()!=job.agreement.recipient || !bot->GetTrader()->GetTradeData() ||
-        !bot->GetTrader()->GetTradeData()->IsAccepted()))return stop("commission_trade_waiting_for_customer");
+    if(saved->phase==Phase::WaitingExternal) {
+        if(!bot->GetTradeData() || !bot->GetTrader() ||
+            bot->GetTrader()->GetGUIDLow()!=job.agreement.recipient || !bot->GetTrader()->GetTradeData())
+            return stop("commission_trade_waiting_for_customer");
+        if(!bot->GetTrader()->GetTradeData()->IsAccepted()) {
+            for(uint8_t slot=0;slot<TRADE_SLOT_COUNT;++slot)
+                if(bot->GetTradeData()->GetItem(TradeSlots(slot)))return stop("commission_trade_waiting_for_customer");
+        }
+    }
     if(saved->phase==Phase::Verifying || saved->phase==Phase::WaitingExternal) {
         // A rejected/cancelled exchange cannot consume output or erase the
         // order. Retry only a fresh offer, with a fresh customer acceptance.
@@ -2648,6 +2655,13 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(saved->phase!=Phase::Preparing)return stop("commission_trade_preparation_required");
     CommissionTradeQuote quote;std::vector<ClaimConsumption> uses;
     if(!PlanNativeCommissionTrade(*bot,*saved,quote,uses,why)) {
+        if(why=="commission_trade_customer_acceptance_required") {
+            const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"commission_trade_offer");
+            if(!grant.Permitted())return stop(grant.blocker);
+            ExecutionScope scope(grant.task,grant.action);
+            if(!PrepareNativeCommissionTradeOffer(*bot,*saved,grant.action,why))return stop(why);
+            why="commission_trade_customer_acceptance_required";
+        }
         if(why=="commission_trade_recipient_window_required" || why=="commission_trade_customer_acceptance_required") {
             TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
             request.task.phase=Phase::WaitingExternal;request.task.checkpoint.step="commission_trade_wait";

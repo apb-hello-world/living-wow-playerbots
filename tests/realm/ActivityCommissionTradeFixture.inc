@@ -3,10 +3,10 @@
 // journal the exchange and settle the order. No output, fee or receipt grants.
 namespace {
 template<class FixtureState>
-void RunIsolatedCommissionTradeFixture(FixtureState& state) {
+void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=false) {
     struct Fixture {
         uint32_t actor=0,customer=0;
-        bool actorLogin=false,customerLogin=false,setup=false,admitted=false,offered=false,queuedRestart=false;
+        bool actorLogin=false,customerLogin=false,setup=false,admitted=false,offered=false,queuedRestart=false,windowOpened=false;
         uint64_t deadline=0,nextReport=0;
         TaskRequest request;
         boost::property_tree::ptree input;
@@ -102,6 +102,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state) {
             f.input.put("actor_items_before",0);f.input.put("output_grants",0);f.input.put("money_grants",0);
             f.input.put("skill_grants",0);f.input.put("recipe_grants",0);f.input.put("fixture_consent",true);
             f.input.put("autonomous_travel_proof",false);f.input.put("broker_admission_proof",false);
+            f.input.put("automatic_offer",automaticOffer);
             f.input.add_child("inventory_before",GuildMailFixtureInventory(*actor));
             boost::property_tree::ptree grants;
             for(uint32_t entry:{765u,2449u,3371u})if(!actor->GetItemCount(entry,true)) {
@@ -150,12 +151,23 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state) {
         require(!Terminal(saved->phase),"commission_trade_unexpected_terminal");
         if(!job.craftFinishedRevision || f.offered || saved->phase==Phase::Executing)return;
         require(actor->IsWithinDistInMap(customer,TRADE_DISTANCE,false),"fixture_customer_arrival_required");
-        require(!actor->GetTradeData() && !customer->GetTradeData(),"fresh_customer_trade_required");
+        if(automaticOffer && !f.windowOpened) {
+            require(!actor->GetTradeData() && !customer->GetTradeData(),"fresh_customer_trade_required");
+            WorldPacket initiate(CMSG_INITIATE_TRADE,8);initiate<<actor->GetObjectGuid();
+            customer->GetSession()->HandleInitiateTradeOpcode(initiate);
+            require(actor->GetTradeData() && customer->GetTradeData(),"native_trade_window_required");
+            WorldPacket begin;actor->GetSession()->HandleBeginTradeOpcode(begin);
+            WorldPacket fee(CMSG_SET_TRADE_GOLD,4);fee<<uint32_t(60);customer->GetSession()->HandleSetTradeGoldOpcode(fee);
+            f.windowOpened=true;return;
+        }
+        if(automaticOffer && (!actor->GetTradeData() || !actor->GetTradeData()->GetItem(TradeSlots(0))))return;
         UnsettledClaimBatch claims;if(!sLivingActivityCoordinator.ReadTaskClaims(f.actor,saved->id,saved->revision,claims,why))return;
         require(claims.complete && claims.claims.size()==1,"exact_crafted_output_claim_required");
         const auto& claim=claims.claims.front();auto* item=actor->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,claim.itemGuid));
         require(claim.location=="bags" && claim.itemEntry==2454 && claim.quantity==1 && item && item->GetCount()==1,
             "exact_native_crafted_stack_required");
+        if(!automaticOffer) {
+        require(!actor->GetTradeData() && !customer->GetTradeData(),"fresh_customer_trade_required");
         WorldPacket initiate(CMSG_INITIATE_TRADE,8);initiate<<customer->GetObjectGuid();
         actor->GetSession()->HandleInitiateTradeOpcode(initiate);
         require(actor->GetTradeData() && customer->GetTradeData(),"native_trade_window_required");
@@ -163,6 +175,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state) {
         WorldPacket offered(CMSG_SET_TRADE_ITEM,3);offered<<uint8_t(0)<<item->GetBagSlot()<<item->GetSlot();
         actor->GetSession()->HandleSetTradeItemOpcode(offered);
         WorldPacket fee(CMSG_SET_TRADE_GOLD,4);fee<<uint32_t(60);customer->GetSession()->HandleSetTradeGoldOpcode(fee);
+        }
         require(actor->GetTradeData()->GetItem(TradeSlots(0))==item && customer->GetTradeData()->GetMoney()==60,
             "native_claimed_offer_required");
         // ONLY the customer's acceptance. The coordinator owns the crafter's

@@ -1,12 +1,73 @@
 #include "botpch.h"
 #include "LivingNativeCommissionTrade.h"
 #include "LivingActivityCoordinator.h"
+#include "LivingActivityScope.h"
 #include "LivingActivityNativeContext.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
 #include "strategy/values/ItemUsageValue.h"
 
 namespace LivingActivity {
+bool PrepareNativeCommissionTradeOffer(Player& actor,const Task& task,const ActionContext& action,std::string& why) {
+    auto reject=[&](const char* code){why=code;return false;};
+    const auto saved=sLivingActivityCoordinator.ReadSavedTask(task.id);
+    CommissionJob job;ProfessionJob recipe;
+    if(!sLivingActivityCoordinator.OnWorldThread() || !saved || saved->revision!=task.revision ||
+        saved->actor!=actor.GetGUIDLow() || saved->phase!=Phase::Preparing || !saved->accepted || saved->mode!=Mode::Active ||
+        !ValidateCommissionTask(*saved,why) || !DecodeCommissionJob(saved->checkpoint.data,job,why) ||
+        !job.craftFinishedRevision || job.agreement.delivery=="mail" || !DecodeProfessionIntent(job.craft,recipe,why) ||
+        !ExecutionScope::Matches(task,action) || !actor.GetPlayerbotAI() ||
+        !sLivingActivityCoordinator.PermitEffects(*actor.GetPlayerbotAI(),{Mask(Effect::Inventory),Lane::Managed,true},
+            "commission trade offer"))return reject("commission_trade_offer_authority_required");
+    auto* customer=actor.GetTrader();auto* offered=actor.GetTradeData();
+    if(!customer || customer->GetGUIDLow()!=job.agreement.recipient || customer->GetTrader()!=&actor ||
+        !offered || !customer->GetTradeData())return reject("commission_trade_recipient_window_required");
+    if(offered->IsAccepted() || customer->GetTradeData()->IsAccepted())
+        return reject("commission_trade_accepted_offer_immutable");
+    for(auto* person:{&actor,customer}) {
+        if(!person->IsInWorld() || !person->GetSession() || !person->GetMap() || person->GetMap()->IsDungeon() ||
+            ReadNativeSafety(*person,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) || !person->IsStopped() ||
+            person->IsNonMeleeSpellCasted(false))return reject("commission_trade_offer_safety_pause");
+    }
+    if(actor.GetTeam()!=customer->GetTeam() || !actor.IsWithinDistInMap(customer,TRADE_DISTANCE,false))
+        return reject("commission_trade_recipient_out_of_reach");
+    if(offered->GetMoney() || offered->GetSpell() || customer->GetTradeData()->GetSpell())
+        return reject("commission_trade_existing_offer_preserved");
+    for(uint8_t slot=0;slot<TRADE_SLOT_COUNT;++slot)
+        if(offered->GetItem(TradeSlots(slot)) || customer->GetTradeData()->GetItem(TradeSlots(slot)))
+            return reject("commission_trade_existing_offer_preserved");
+    UnsettledClaimBatch claims;
+    if(!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,why))return false;
+    if(!claims.complete || claims.claims.empty() || claims.claims.size()>16)return reject("commission_trade_claims_incomplete");
+    CommissionTradeQuote quote{task.actor,job.agreement.recipient,recipe.outputEntry,job.agreement.feeCopper,
+        actor.GetMoney(),customer->GetMoney(),{}};
+    std::vector<ClaimConsumption> uses;std::map<uint32_t,Item*> items;
+    const auto privateItems=sPlayerbotActionBroker.ReservedItemsView();
+    for(const auto& claim:claims.claims) {
+        if(claim.quantity>UINT32_MAX)return reject("commission_trade_claim_quantity_invalid");
+        uses.push_back({claim,uint32_t(claim.quantity)});
+        auto* item=actor.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,claim.itemGuid));
+        if(!item || item->GetOwnerGuid()!=actor.GetObjectGuid() || !Player::IsInventoryPos(item->GetPos()) ||
+            item->GetEntry()!=recipe.outputEntry || !item->CanBeTraded() || item->IsInTrade() || item->HasGeneratedLoot() ||
+            item->IsConjuredConsumable() || item->GetUInt32Value(ITEM_FIELD_DURATION) ||
+            sGuildSupplies.Reserved(item->GetGUIDLow()) || !privateItems || privateItems->Item(item->GetGUIDLow()) ||
+            ai::ItemUsageValue::IsNeededForQuest(&actor,item->GetEntry(),true))
+            return reject("commission_trade_claimed_output_unavailable");
+        uint32_t available=0;
+        if(!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,
+            {task.actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,"bags"},available,why))return false;
+        if(available!=item->GetCount())return reject("commission_trade_output_reserved_elsewhere");
+        items.emplace(item->GetGUIDLow(),item);
+    }
+    for(const auto& item:items)quote.items.push_back({item.first,item.second->GetCount()});
+    if(!ExactCommissionTradeConsumption(task,quote,uses))return reject("commission_trade_exact_output_preparation_required");
+    // All validation precedes the first transient offer change. No stack is
+    // split and no item or money leaves either character until native accept.
+    uint8_t slot=0;
+    for(const auto& item:items)offered->SetItem(TradeSlots(slot++),item.second);
+    customer->GetSession()->SendUpdateTrade(true);
+    why="commission_trade_waiting_for_customer";return true;
+}
 bool PlanNativeCommissionTrade(Player& actor,const Task& task,CommissionTradeQuote& q,
     std::vector<ClaimConsumption>& uses,std::string& why) {
     q={};uses.clear();auto reject=[&](const char* code){why=code;return false;};
