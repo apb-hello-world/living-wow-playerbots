@@ -23,6 +23,7 @@ struct PartyMailSessionFixture {
     template<class State> bool Prepare(State& state,Player* bot) {
         if(!leaderId) {
             for(const auto& row:state.bindings) {
+                if(row.first!=std::stoul(std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT")))continue;
                 auto* other=sRandomPlayerbotMgr.GetPlayerBot(row.first);
                 if(!other || other==bot || !other->IsInWorld() || NativeSafety(other) ||
                     other->GetGroup() || other->GetMapId()!=bot->GetMapId() ||

@@ -58,6 +58,16 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const bool automatic=paid || resumed || serviceTravel || capacityMail;
     const bool settling=suite=="activity-profession-settlement-v1" || paid || banked || mailed;
     const bool supplied=suite=="activity-craft-supplied-v1" || interrupted || settling;
+    if(partyMail) {
+        static bool requested=false;
+        if(!requested) {
+            const auto* actor=std::getenv("LIVING_WOW_NATIVE_FIXTURE_ACTOR");
+            const auto* leader=std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
+            if(!actor || !leader)throw std::runtime_error("explicit_party_fixture_pair_required");
+            sRandomPlayerbotMgr.AddRandomBot(std::stoul(actor));
+            sRandomPlayerbotMgr.AddRandomBot(std::stoul(leader));requested=true;return;
+        }
+    }
     if (!fixture.deadline) fixture.deadline=NowMs()+(partyMail ? 240000 : (serviceTravel || capacityMail) ? 180000 : 120000);
     auto emit=[&](bool passed,const std::string& failure) {
         if(partyMail) {PartyMailFixture().Close();state->professionCohortActors.back().store(0);}
@@ -298,6 +308,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             fixture.selection.clear();Player* selected=nullptr;ProfessionJob job;unsigned bestMissing=10000;
             auto skipped=[&](const char* reason){fixture.selection.put(reason,fixture.selection.get<unsigned>(reason,0)+1);};
             for (const auto& binding : state->bindings) {
+                if(partyMail && binding.first!=std::stoul(std::getenv("LIVING_WOW_NATIVE_FIXTURE_ACTOR")))continue;
                 auto* candidate=sRandomPlayerbotMgr.GetPlayerBot(binding.first);
                 if (!candidate || !candidate->GetPlayerbotAI() || !candidate->IsInWorld() || NativeSafety(candidate) ||
                     candidate->GetMap()->IsDungeon() || candidate->IsNonMeleeSpellCasted(false,true,true)) {skipped("native_safety");continue;}
