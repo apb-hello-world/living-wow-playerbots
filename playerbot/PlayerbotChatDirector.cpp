@@ -2056,7 +2056,7 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
                             break;
                         }
                     }
-                    if (groupHasRealPlayer)
+                    if (protectedRoster)
                         state.nearbyRerouteResult = "skipped_human_group";
                     else if (botOnlyGroupFollower)
                         state.nearbyRerouteResult = "skipped_ai_group_follower";
@@ -2078,7 +2078,7 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
                     }
                 }
             }
-            else if (terminalStep == 7 && !groupHasRealPlayer && !botOnlyGroupFollower)
+            else if (terminalStep == 7 && !protectedRoster && !botOnlyGroupFollower)
             {
                 // Some starter-area and exhausted objective partitions have
                 // no valid grind destination. A failed async grind lookup used
