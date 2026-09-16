@@ -1993,12 +1993,14 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
             (!globalRecovery || recoveryCanary || recoverySweepMember);
         TravelTarget* inFlightRecoveryTarget = observedTravelTarget;
         TravelStatus inFlightRecoveryStatus = observedTravelStatus;
+        const auto recoveryClockNow = state.recoveryPause.paused ?
+            std::chrono::steady_clock::time_point(std::chrono::milliseconds(state.recoveryPause.since)) : now;
         long recoveryAgeSeconds = state.recoveryStartedAt.time_since_epoch().count() == 0 ? 0 :
-            std::chrono::duration_cast<std::chrono::seconds>(now - state.recoveryStartedAt).count();
+            std::chrono::duration_cast<std::chrono::seconds>(recoveryClockNow - state.recoveryStartedAt).count();
         long travelAdvanceAgeSeconds = state.lastTravelAdvance.time_since_epoch().count() == 0 ?
             recoveryAgeSeconds : std::chrono::duration_cast<std::chrono::seconds>(
-                now - state.lastTravelAdvance).count();
-        bool recoveryPrepareTimedOut = state.recoveryStep > 0 &&
+                recoveryClockNow - state.lastTravelAdvance).count();
+        bool recoveryPrepareTimedOut = !excluded && state.recoveryStep > 0 &&
             inFlightRecoveryStatus == TravelStatus::TRAVEL_STATUS_PREPARE &&
             recoveryAgeSeconds >= 2 * (long)sPlayerbotAIConfig.chatDirectorMovementStuckSeconds;
         bool recoveryMovementTimedOut = state.recoveryStep > 0 && observedTravelActive && !excluded &&
