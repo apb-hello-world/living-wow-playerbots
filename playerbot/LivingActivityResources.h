@@ -47,6 +47,17 @@ namespace LivingActivity {
              ((b.location=="bags" || b.location=="bank") && !b.nativeReference) ||
              (b.location=="equipment" && b.quantity==1 && !b.nativeReference));
     }
+    // Observation of one surviving, whole personal stack. This is NOT a
+    // transfer receipt: no owner, identity, quantity or native item is changed.
+    struct PersonalClaimLocation {
+        ResourceClaim before;
+        NativeResourceBalance native;
+        uint32_t bagGuid=0;
+        uint8_t slot=0,bagSlot=255;
+    };
+    bool ValidPersonalClaimLocation(const PersonalClaimLocation& location);
+    WritePlan PersonalClaimLocationWrite(const Task& next,uint64_t expectedRevision,
+        const std::string& receipt,const PersonalClaimLocation& location);
     // Preparation-only reservation/release. No transfer, consumption, native
     // effect or completion can be written through this path. The coordinator
     // must validate actual possession and protect pending quantities before
@@ -98,6 +109,9 @@ namespace LivingActivity {
         // native-save/claim receipt commits. This never proves the transfer.
         ClaimInstall ReserveTransferred(const std::string& receipt,const ClaimReceiptChange& change,
             const NativeResourceBalance& destination);
+        // Same-GUID bags/bank metadata reconciliation only. The SQL writer
+        // independently checks exclusive physical custody and no pending effect.
+        ClaimInstall ReserveLocationReconciled(const std::string& receipt,const PersonalClaimLocation& location);
         // Exact cross-actor native mail handoff. The old claim already
         // protects the physical GUID globally; do not double-count it as a new
         // acquisition. A verified split protects its new GUID too. Source

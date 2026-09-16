@@ -17,6 +17,37 @@ static ResourceClaim ItemClaim(const std::string& suffix, uint32_t guid, uint64_
 }
 int main() {
     {
+        const auto claim=ItemClaim("d1",871,20);const auto receipt=ItemClaim("d2",1,1).id;
+        PersonalClaimLocation observed{claim,{497,871,2934,20,0,"bank"},0,49,255};
+        assert(ValidPersonalClaimLocation(observed));
+        auto bad=observed;bad.native.quantity=19;assert(!ValidPersonalClaimLocation(bad));
+        bad=observed;bad.native.itemGuid=872;assert(!ValidPersonalClaimLocation(bad));
+        bad=observed;bad.native.actor=498;assert(!ValidPersonalClaimLocation(bad));
+        bad=observed;bad.before.state="in_transfer";assert(!ValidPersonalClaimLocation(bad));
+        bad=observed;bad.native.location="mail";assert(!ValidPersonalClaimLocation(bad));
+        bad=observed;bad.slot=23;assert(!ValidPersonalClaimLocation(bad));
+        bad=observed;bad.bagGuid=900;bad.bagSlot=67;bad.slot=3;assert(ValidPersonalClaimLocation(bad));
+        bad.bagSlot=19;assert(!ValidPersonalClaimLocation(bad));
+        ResourceClaimBook book;assert(book.RestoreBatch({claim})==ClaimInstall::Installed && book.FinishRestore());
+        assert(book.ReserveLocationReconciled(receipt,observed)==ClaimInstall::Installed);
+        assert(book.ReserveLocationReconciled(receipt,observed)==ClaimInstall::Duplicate);
+        assert(book.Protection().ProtectedItem(497,871,2934)==20);
+        assert(book.Protection().UnreservedItem(497,871,2934,20)==0);
+        assert(book.Inspect(claim.id)->location=="bags"); // Not acknowledged yet.
+        assert(book.CommitReservation(receipt)==ClaimInstall::Installed);
+        assert(book.Inspect(claim.id)->location=="bank" && book.Inspect(claim.id)->revision==2);
+        assert(book.ReserveLocationReconciled(receipt,observed)==ClaimInstall::Stale);
+        ResourceClaimBook restarted;assert(restarted.RestoreBatch({*book.Inspect(claim.id)})==ClaimInstall::Installed && restarted.FinishRestore());
+        observed.before=*book.Inspect(claim.id);observed.native.location="bags";observed.slot=23;
+        assert(restarted.ReserveLocationReconciled(receipt,observed)==ClaimInstall::Installed);
+        assert(restarted.CommitReservation(receipt)==ClaimInstall::Installed);
+        assert(restarted.Inspect(claim.id)->location=="bags" && restarted.Protection().ProtectedItem(497,871,2934)==20);
+        ResourceClaimBook competing;auto other=claim;other.id=ItemClaim("d3",1,1).id;other.quantity=1;
+        assert(competing.RestoreBatch({claim,other})==ClaimInstall::Installed && competing.FinishRestore());
+        observed.before=claim;observed.native.location="bank";observed.slot=49;
+        assert(competing.ReserveLocationReconciled(receipt,observed)==ClaimInstall::Invalid);
+    }
+    {
         ResourceClaimBook book;UnsettledClaimBatch batch;std::string why;
         auto a=ItemClaim("e1",880,3),b=ItemClaim("e2",880,4),other=ItemClaim("e3",880,2);
         other.task="637bd562-36d2-5b01-bc01-e2d831c49f39";

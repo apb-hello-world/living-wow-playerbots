@@ -801,5 +801,47 @@ int main() {
         assert(restarted.Scalar("SELECT count FROM item_instance WHERE guid=9991001")=="8");
         assert(restarted.Scalar("SELECT COUNT(*) FROM living_activity_transition WHERE task_id="+SqlValue(foldedTask.id)+" AND code='resource_claims_coalesced'")=="1");
     }
+    {
+        auto task=owner;task.id=task.root="ce06cbd9-09ac-41a2-9107-ab1b5ed31d01";
+        task.actor=task.context.actor=9993;task.revision=1;task.phase=Phase::Queued;
+        task.sourceKey="location_fixture:9993";
+        assert(db.Execute("CREATE TABLE auction (id INT UNSIGNED PRIMARY KEY,itemguid INT UNSIGNED NOT NULL)"));
+        const auto rid=[](unsigned i){return "ce06cbd9-09ac-41a2-9107-ab1b5ed31d0"+std::to_string(i);};
+        assert(db.Write(TaskWrite(task,0,rid(2),"location_fixture")));
+        assert(db.Execute("INSERT INTO item_instance(guid,itemEntry,owner_guid,count) VALUES(9993001,3371,9993,20)"));
+        assert(db.Execute("INSERT INTO character_inventory(guid,item,bag,slot) VALUES(9993,9993001,0,23)"));
+        ResourceClaim claim;claim.id=rid(3);claim.task=task.id;claim.actor=9993;claim.itemGuid=9993001;
+        claim.itemEntry=3371;claim.quantity=20;claim.state="held";claim.location="bags";
+        NativeResourceBalance stock{9993,9993001,3371,20,0,"bags"};
+        ++task.revision;task.phase=Phase::Preparing;
+        assert(db.Write(ResourceReservationWrite(task,1,rid(4),{{claim,0}},{stock})));
+        // Fixture recreates the historical mismatch; the production writer is
+        // strictly metadata-only and cannot perform this native movement.
+        assert(db.Execute("UPDATE character_inventory SET slot=49 WHERE item=9993001"));
+        PersonalClaimLocation observed{claim,{9993,9993001,3371,20,0,"bank"},0,49,255};
+        ++task.revision;const auto write=PersonalClaimLocationWrite(task,2,rid(5),observed);
+        const auto saved="SELECT CONCAT(location,':',quantity,':',state,':',revision) FROM living_activity_claim WHERE claim_id="+SqlValue(claim.id);
+        assert(!db.Write(write,true));assert(db.Scalar(saved)=="bags:20:held:1");
+        assert(db.Execute("UPDATE item_instance SET count=19 WHERE guid=9993001"));assert(!db.Write(write));
+        assert(db.Execute("UPDATE item_instance SET count=20,owner_guid=9994 WHERE guid=9993001"));assert(!db.Write(write));
+        assert(db.Execute("UPDATE item_instance SET owner_guid=9993 WHERE guid=9993001"));
+        assert(db.Execute("INSERT INTO living_activity_claim(claim_id,task_id,actor_guid,item_guid,item_entry,quantity,copper,location,native_reference,state,revision,updated_at_ms) SELECT "+
+            SqlValue(rid(7))+",task_id,actor_guid,item_guid,item_entry,1,0,location,0,state,1,1000 FROM living_activity_claim WHERE claim_id="+SqlValue(claim.id)));
+        assert(!db.Write(write));
+        assert(db.Execute("UPDATE living_activity_claim SET state='released' WHERE claim_id="+SqlValue(rid(7))));
+        assert(db.Execute("UPDATE character_inventory SET slot=48 WHERE item=9993001"));assert(!db.Write(write));
+        assert(db.Execute("UPDATE character_inventory SET slot=49 WHERE item=9993001"));
+        assert(db.Execute("INSERT INTO auction(id,itemguid) VALUES(9993,9993001)"));assert(!db.Write(write));
+        assert(db.Execute("DELETE FROM auction WHERE id=9993"));
+        assert(db.Execute("INSERT INTO living_activity_operation(operation_id,task_id,task_revision,kind,request_hash,state,before_state,after_state,created_at_ms,updated_at_ms) VALUES("+
+            SqlValue(rid(6))+','+SqlValue(task.id)+",2,'bank_withdraw',REPEAT('a',64),'intent','{}','{}',1000,1000)"));
+        assert(!db.Write(write));
+        assert(db.Execute("UPDATE living_activity_operation SET state='rejected' WHERE operation_id="+SqlValue(rid(6))));
+        assert(db.Write(write) && db.Write(write));
+        Connection restarted;assert(restarted.ReceiptPresent(write));assert(restarted.Scalar(saved)=="bank:20:held:2");
+        assert(restarted.Scalar("SELECT CONCAT(i.owner_guid,':',i.count,':',v.bag,':',v.slot) FROM item_instance i JOIN character_inventory v ON v.item=i.guid WHERE i.guid=9993001")=="9993:20:0:49");
+        assert(restarted.Scalar("SELECT COUNT(*) FROM living_activity_transition WHERE task_id="+SqlValue(task.id)+" AND code='resource_claim_location_reconciled'")=="1");
+        assert(restarted.Scalar("SELECT COUNT(*) FROM living_activity_operation WHERE task_id="+SqlValue(task.id))=="1"); // Only the supplied rejected intent.
+    }
     std::cout << "PASS: real MariaDB task/outbox, consumed/acquired claims, shared vendor/AH budget, bounded profession history, skill-job settlement and exact-row legacy handoff; atomic rollback, stale/changed retry rejection, conservation, uncertain holds and receipt isolation (fixture metadata, NOT native gameplay proof)\n";
 }

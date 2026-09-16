@@ -181,6 +181,7 @@ private:
     bool CollectNativeCraft();
     std::optional<ProfessionProgress> DispatchPendingItemService(uint32_t actor,const std::string& task);
     std::optional<ProfessionProgress> AdvanceCriticalPreparation(uint32_t actor,const std::string& task);
+    std::optional<ProfessionProgress> ReconcilePersonalClaimLocation(uint32_t actor,const std::string& task);
     ProfessionProgress AdvanceItemPreparation(uint32_t actor,const std::string& task,
         LivingActivity::ProfessionStep step,const LivingActivity::ProfessionReagent& need={});
     ProfessionProgress AdvanceCommissionDelivery(uint32_t actor,const std::string& task);

@@ -252,6 +252,26 @@ namespace LivingActivity {
         const NativeResourceBalance& destination) {
         return ReservePendingImpl(receipt,{change},{destination},true);
     }
+    bool ValidPersonalClaimLocation(const PersonalClaimLocation& observed) {
+        const auto& c=observed.before;const auto& n=observed.native;
+        if(!ValidResourceClaim(c) || c.state!="held" || c.copper || c.nativeReference || c.revision>=UINT64_MAX-1 ||
+            !ValidNativeResourceBalance(n) || n.copper || n.nativeReference ||
+            c.actor!=n.actor || c.itemGuid!=n.itemGuid || c.itemEntry!=n.itemEntry || c.quantity!=n.quantity ||
+            !((c.location=="bags" && n.location=="bank") || (c.location=="bank" && n.location=="bags")))return false;
+        if(!observed.bagGuid)
+            return observed.bagSlot==255 && (n.location=="bags" ? observed.slot>=23 && observed.slot<39 : observed.slot>=39 && observed.slot<67);
+        return observed.slot<36 && observed.bagGuid!=c.itemGuid &&
+            (n.location=="bags" ? observed.bagSlot>=19 && observed.bagSlot<23 : observed.bagSlot>=67 && observed.bagSlot<74);
+    }
+    ClaimInstall ResourceClaimBook::ReserveLocationReconciled(const std::string& receipt,const PersonalClaimLocation& observed) {
+        if(!ValidPersonalClaimLocation(observed))return ClaimInstall::Invalid;
+        const auto* old=Inspect(observed.before.id);
+        if(!old || !SameResourceClaim(*old,observed.before))return ClaimInstall::Stale;
+        auto after=*old;++after.revision;after.location=observed.native.location;
+        // Reuse the atomic reservation/acknowledgement machinery; same GUID
+        // means no extra protection or transient release is introduced.
+        return ReservePendingImpl(receipt,{{after,old->revision}},{observed.native},true);
+    }
     ClaimInstall ResourceClaimBook::ReserveMailedHandoff(const std::string& receipt,
         const std::vector<ClaimReceiptChange>& changes,const NativeResourceBalance& attachment) {
         if(!protection.ready)return ClaimInstall::NotReady;

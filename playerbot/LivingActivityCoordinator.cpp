@@ -1425,7 +1425,8 @@ void LivingActivityCoordinator::Update() {
                 const bool receiptOnly=IsCommissionJob(saved->second) &&
                     (saved->second.phase!=Phase::Executing || saved->second.context.boot.empty()) &&
                     (saved->second.checkpoint.step=="commission_mail_send" || saved->second.checkpoint.step=="commission_mail_wait");
-                const auto preparation=receiptOnly?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
+                const auto location=receiptOnly?std::optional<ProfessionProgress>{}:ReconcilePersonalClaimLocation(saved->second.actor,id);
+                const auto preparation=location ? location : receiptOnly?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
                 auto progress=preparation ? *preparation : IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
                     IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
                     IsGuildProcurementTask(saved->second) ? AdvanceGuildProcurement(saved->second.actor,id) :
@@ -2851,6 +2852,65 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     }
     NativeCommissionTrade adapter(quote);
     return submit(adapter,EncodeCommissionTradeQuote(quote),std::move(uses));
+}
+
+std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoordinator::ReconcilePersonalClaimLocation(
+    uint32_t actor,const std::string& id) {
+    // Shared due-queue maintenance, before domain snapshots. Never synthesize a
+    // transfer or use a replacement stack to explain a missing reservation.
+    if(!OnWorldThread() || !EffectEnforcementEnabled() || !state->schemaReady || !state->loaded ||
+        !state->incoming.empty() || !state->resources.Protection().ready)return {};
+    const auto saved=ReadSavedTask(id);
+    if(!saved || saved->actor!=actor || saved->root!=id || !saved->parent.empty() ||
+        saved->mode!=Mode::Active || !saved->accepted || Terminal(saved->phase) || saved->phase==Phase::Executing)return {};
+    UnsettledClaimBatch batch;std::string why;
+    if(!state->resources.ReadUnsettled(id,batch,why) || !batch.complete)return {};
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld())return {};
+    auto stop=[](const std::string& why)->std::optional<ProfessionProgress> {ProfessionProgress p;p.blocker=why;return p;};
+    for(const auto& claim:batch.claims) {
+        if(claim.state!="held" || !claim.itemGuid || claim.copper || claim.nativeReference ||
+            (claim.location!="bags" && claim.location!="bank"))continue;
+        const auto* item=bot->GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,claim.itemGuid));
+        if(!item || item->GetOwnerGuid()!=bot->GetObjectGuid() || item->GetEntry()!=claim.itemEntry ||
+            item->GetCount()!=claim.quantity)continue;
+        const bool bank=Player::IsBankPos(item->GetPos());
+        if(!bank && !Player::IsInventoryPos(item->GetPos()))continue;
+        PersonalClaimLocation observed;observed.before=claim;
+        observed.native={actor,item->GetGUIDLow(),item->GetEntry(),item->GetCount(),0,bank?"bank":"bags"};
+        observed.bagGuid=item->GetContainer()?item->GetContainer()->GetGUIDLow():0;
+        observed.slot=item->GetSlot();observed.bagSlot=observed.bagGuid?item->GetBagSlot():255;
+        if(!ValidPersonalClaimLocation(observed))continue;
+        if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || LivingServiceExecution::Busy(bot))
+            return stop("resource_location_safety_pause");
+        const auto party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+        if(*party)return stop(party);
+        if(DefersNativeSave(actor) || state->operationDispatching)return stop("resource_location_native_save_pending");
+        for(const auto& pending:state->pending)if(pending.task.actor==actor)return stop("resource_location_transition_pending");
+        for(const auto& operation:state->operations)if(operation.second.request.transition.task.actor==actor)
+            return stop("resource_location_operation_pending");
+        const auto owned=state->authority.Read(actor);
+        if(!owned.operation.empty())return stop("resource_location_operation_pending");
+        if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)
+            return stop("resource_location_backpressure");
+        bool reserved=false;
+        try {
+            auto next=*saved;++next.revision;next.updatedAtMs=NowMs();const auto receipt=NewId();
+            auto plan=PersonalClaimLocationWrite(next,saved->revision,receipt,observed);
+            auto after=claim;++after.revision;after.location=observed.native.location;
+            State::Pending write{next,std::move(plan),receipt};write.reservation=receipt;write.claims={{after,claim.revision}};
+            if(state->resources.ReserveLocationReconciled(receipt,observed)!=ClaimInstall::Installed)
+                return stop("resource_location_claims_changed");
+            reserved=true;state->pending.push_back(std::move(write));
+            if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+            state->nextWork=0;return stop("resource_claim_location_reconciling");
+        } catch(const std::exception&) {
+            if(reserved) {state->resources.BlockProjection();state->claimRestoreFailed=true;
+                state->claimBlocker="resource_location_requires_reconciliation";}
+            return stop("resource_location_requires_reconciliation");
+        }
+    }
+    return {};
 }
 
 LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceProfessionJob(uint32_t actor,const std::string& id) {
