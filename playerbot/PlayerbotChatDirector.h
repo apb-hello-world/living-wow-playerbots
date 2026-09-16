@@ -228,8 +228,6 @@ private:
     {
         LivingActivity::RecoveryPauseClock recoveryPause;
         std::chrono::steady_clock::time_point recoveryAvailableSince;
-        uint64 recoveryGroupIdentity = 0, recoveryGroupRevision = 0;
-        bool recoveryGroupHasHuman = false;
         float x = 0.0f;
         float y = 0.0f;
         std::chrono::steady_clock::time_point lastMoved;

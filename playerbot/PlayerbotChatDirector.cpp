@@ -1,6 +1,7 @@
 #include "botpch.h"
 #include "PlayerbotServiceTracking.h"
 #include "LivingActivityCoordinator.h"
+#include "LivingActivityCommitments.h"
 #include "PlayerbotChatDirector.h"
 #include "PlayerbotGuildGovernance.h"
 #include "PlayerbotGuildSupplies.h"
@@ -1788,33 +1789,18 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         MovementFlags movementFlags = bot->m_movementInfo.GetMovementFlags();
         bool playerStay = lowered.find("stay") != std::string::npos || lowered.find("wait") != std::string::npos;
         Group* healthGroup = bot->GetGroup();
-        bool groupHasRealPlayer = false;
-        if (healthGroup)
-        {
-            const auto identity=healthGroup->GetLivingActivityIdentity();
-            const auto revision=healthGroup->GetLivingActivityRevision();
-            // Offline account lookup uses native SQL. Cache only the roster
-            // verdict, keyed by native lifetime + membership revision, rather
-            // than querying every absent member on every health sample.
-            if (state.recoveryGroupIdentity!=identity || state.recoveryGroupRevision!=revision)
-            {
-                state.recoveryGroupIdentity=identity;state.recoveryGroupRevision=revision;
-                state.recoveryGroupHasHuman=false;
-                for (const auto& member : healthGroup->GetMemberSlots())
-                {
-                    if (!sRandomPlayerbotMgr.IsRandomBot(member.guid.GetCounter()))
-                    {
-                        state.recoveryGroupHasHuman=true;
-                        break;
-                    }
-                }
-            }
-            groupHasRealPlayer=state.recoveryGroupHasHuman;
-        }
-        else {state.recoveryGroupIdentity=state.recoveryGroupRevision=0;state.recoveryGroupHasHuman=false;}
-        const bool botOnlyGroupFollower = healthGroup && !groupHasRealPlayer &&
+        // Reuse the same native account-bearing roster as task admission.
+        // Offline/unknown members stay protected, without per-sample SQL or
+        // another identity cache that can disagree with shared authority.
+        const auto partyProtection = healthGroup ? LivingActivity::ReadPartyProtection(healthGroup->GetMemberSlots(),
+            [](uint32 account){return sPlayerbotAIConfig.IsInRandomAccountList(account);},
+            [](ObjectGuid guid){auto* member=sObjectMgr.GetPlayer(guid);return member && member->isRealPlayer();}) :
+            LivingActivity::PartyProtection::None;
+        const bool protectedRoster = partyProtection==LivingActivity::PartyProtection::Human ||
+            partyProtection==LivingActivity::PartyProtection::Unresolved;
+        const bool botOnlyGroupFollower = healthGroup && !protectedRoster &&
             healthGroup->GetLeaderGuid() != bot->GetObjectGuid();
-        const bool humanDirectedGroup = groupHasRealPlayer ||
+        const bool humanDirectedGroup = protectedRoster ||
             bot->GetPlayerbotAI()->HasRealPlayerMaster();
         bool airborne = movementFlags & (MOVEFLAG_FALLING | MOVEFLAG_FALLINGFAR | MOVEFLAG_FLYING |
             MOVEFLAG_LEVITATING | MOVEFLAG_HOVER | MOVEFLAG_SWIMMING);
