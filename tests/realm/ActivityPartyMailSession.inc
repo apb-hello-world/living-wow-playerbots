@@ -46,6 +46,9 @@ struct PartyMailSessionFixture {
             socket=std::make_shared<WorldSocket>(*io);
             humanSession=std::make_unique<WorldSession>(original->GetAccountId(),socket.get(),SEC_PLAYER,
                 1,0,LOCALE_enUS,"isolated_party_leader",0,0,false);
+            // Match native bot-session initialization before SetPlayer invokes
+            // its anticheat hook. This explicit input is isolated-only.
+            humanSession->SetNoAnticheat();
             humanSession->SetPlayer(leader,leaderId);leader->SetSession(humanSession.get());
             if(!leader->isRealPlayer())throw std::runtime_error("headless_native_human_session_required");
             group=new Group();
