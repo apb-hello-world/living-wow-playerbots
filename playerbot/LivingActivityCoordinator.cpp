@@ -3251,8 +3251,12 @@ std::optional<PartyServiceBinding> LivingActivityCoordinator::SelectPartyMailSer
     for(const auto& write:state->pending)if(write.task.actor==actor)return {};
     for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)return {};
     const Task* chosen=nullptr;ResourceClaim parcel;
-    for(const auto& row:state->cache) {
-        const auto& task=row.second;
+    const auto indexed=state->cachedByActor.find(actor);
+    if(indexed==state->cachedByActor.end())return {};
+    for(const auto& id:indexed->second) {
+        const auto found=state->cache.find(id);
+        if(found==state->cache.end())continue;
+        const auto& task=found->second;
         if(task.actor!=actor || task.id!=task.root || task.kind!=Kind::Profession ||
             !task.accepted || task.mode!=Mode::Active || Terminal(task.phase) ||
             !IsProfessionJob(task))continue;
