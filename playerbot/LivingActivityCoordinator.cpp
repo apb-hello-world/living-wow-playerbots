@@ -4245,7 +4245,7 @@ AdmissionResult LivingActivityCoordinator::SubmitCommission(const CommissionCont
     auto reject=[&](AdmissionCode code,const std::string& why){return AdmissionResult{code,id,why,0};};
     std::string why;
     if(!OnWorldThread() || !EffectEnforcementEnabled())return reject(AdmissionCode::Disabled,"execution_disabled");
-    if((agreement.delivery!="mail" && agreement.delivery!="direct") || !ValidCommissionContract(agreement,why))
+    if((agreement.delivery!="mail" && agreement.delivery!="direct" && agreement.delivery!="meeting") || !ValidCommissionContract(agreement,why))
         return reject(AdmissionCode::InvalidRequest,"supported_commission_delivery_required");
     if(auto saved=ReadSavedTask(id)) {
         CommissionJob existing;auto comparison=agreement;
@@ -4267,7 +4267,7 @@ AdmissionResult LivingActivityCoordinator::SubmitCommission(const CommissionCont
     if(!actor || !actor->GetPlayerbotAI() || !actor->IsInWorld())return reject(AdmissionCode::NotReady,"actor_not_available");
     TaskRequest request;auto& task=request.task;
     task.id=task.root=id;task.source="commission_job";task.sourceKey=agreement.id;
-    task.actor=agreement.actor;task.kind=Kind::Commission;task.priority=agreement.delivery=="direct"?Priority::Human:Priority::Delivery;
+    task.actor=agreement.actor;task.kind=Kind::Commission;task.priority=agreement.delivery=="mail"?Priority::Delivery:Priority::Human;
     task.mode=Mode::Active;task.accepted=true;task.phase=Phase::Queued;task.revision=1;
     task.context=ReadNativeContext(*actor,state->policyRevision,state->boot);
     task.createdAtMs=task.updatedAtMs=agreement.acceptedAtMs;
