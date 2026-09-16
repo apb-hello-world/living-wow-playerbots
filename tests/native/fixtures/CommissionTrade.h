@@ -148,6 +148,21 @@ inline void TestCommissionTradeOperation() {
         assert(restored.plan.statements.front().find("commission_craft_verified")!=std::string::npos);
         for(const auto& sql:restored.plan.statements)
             assert(sql.find("UPDATE living_activity_claim")==std::string::npos && sql.find("SET money")==std::string::npos);
+        // A meeting restart retains its route backoff and the exact output
+        // claims. It refreshes authority, never manufactures arrival/payment.
+        auto meeting=ready;CommissionJob meetingJob;
+        assert(DecodeCommissionJob(meeting.checkpoint.data,meetingJob,why));
+        meetingJob.agreement.delivery="meeting";meetingJob.meeting=CommissionMeetingState{};
+        meetingJob.meeting->attempts=2;meetingJob.meeting->noProgressMs=30000;
+        meeting.checkpoint.data=EncodeCommissionJob(meetingJob);meeting.checkpoint.step="commission_meeting";
+        meeting.retryAtMs=302000;
+        for(const auto phase:{Phase::Traveling,Phase::Paused,Phase::Deferred,Phase::WaitingExternal,Phase::Reconciling}) {
+            meeting.phase=phase;
+            assert(PrepareCommissionTradeReadyRestore(meeting,current,history,claims,native,2000,
+                request.transition.receipt,restored,why));
+            assert(restored.task.retryAtMs==302000 && restored.task.checkpoint.data==meeting.checkpoint.data &&
+                restored.task.phase==Phase::Preparing && restored.task.context==current);
+        }
         for(unsigned i=0;i<8;++i) {
             auto t=ready;auto h=history;auto c=claims;auto n=native;
             if(i==0)h.unresolvedOperation=true;

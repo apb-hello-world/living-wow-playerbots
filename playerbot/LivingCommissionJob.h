@@ -1,5 +1,7 @@
 #pragma once
 #include "LivingCommissionContract.h"
+#include "LivingCommissionMeetingState.h"
+#include <optional>
 
 namespace LivingActivity {
 // The agreement is immutable; tool preparation and crafting progress belong to
@@ -8,6 +10,7 @@ struct CommissionJob {
     CommissionContract agreement;
     std::string craft;
     uint64_t craftFinishedRevision=0;
+    std::optional<CommissionMeetingState> meeting;
 };
 inline bool IsCommissionJob(const Task& task) {return task.source=="commission_job";}
 inline bool DecodeCommissionJob(const std::string& data,CommissionJob& result,std::string& why) {
@@ -17,7 +20,8 @@ inline bool DecodeCommissionJob(const std::string& data,CommissionJob& result,st
         boost::property_tree::ptree p;std::istringstream input(data);boost::property_tree::read_json(input,p);
         const std::set<std::string> fields{"workflow","agreement","craft","craft_finished_revision"};
         std::set<std::string> seen;
-        for(const auto& f:p)if(!fields.count(f.first) || !seen.insert(f.first).second)return false;
+        for(const auto& f:p)if((!fields.count(f.first) && f.first!="meeting") || !seen.insert(f.first).second)return false;
+        seen.erase("meeting");
         if(seen!=fields || !p.get_child("workflow").empty() || p.get<std::string>("workflow")!="commission_job_v1")return false;
         auto json=[](const boost::property_tree::ptree& tree){std::ostringstream out;boost::property_tree::write_json(out,tree,false);return out.str();};
         CommissionJob job;
@@ -33,6 +37,11 @@ inline bool DecodeCommissionJob(const std::string& data,CommissionJob& result,st
         if(!revision.empty() || value.empty() || value.size()>20 || value.find_first_not_of("0123456789")!=std::string::npos ||
             (value.size()>1 && value[0]=='0'))return false;
         job.craftFinishedRevision=std::stoull(value);
+        if(const auto meeting=p.get_child_optional("meeting")) {
+            CommissionMeetingState state;
+            if(job.agreement.delivery!="meeting" || !job.craftFinishedRevision || !DecodeCommissionMeetingState(*meeting,state))return false;
+            job.meeting=state;
+        }
         result=std::move(job);why.clear();return true;
     } catch(const std::exception&) {return false;}
 }
@@ -42,6 +51,7 @@ inline std::string EncodeCommissionJob(const CommissionJob& job) {
     boost::property_tree::read_json(a,agreement);boost::property_tree::read_json(c,craft);
     p.put("workflow","commission_job_v1");p.add_child("agreement",agreement);p.add_child("craft",craft);
     p.put("craft_finished_revision",job.craftFinishedRevision);
+    if(job.meeting)p.add_child("meeting",EncodeCommissionMeetingState(*job.meeting));
     std::ostringstream out;boost::property_tree::write_json(out,p,false);
     CommissionJob checked;std::string why;
     if(!DecodeCommissionJob(out.str(),checked,why))throw std::invalid_argument(why);

@@ -111,9 +111,12 @@ bool PrepareCommissionTradeReadyRestore(const Task& saved,const WorldContext& cu
         !DecodeCommissionJob(saved.checkpoint.data,job,why) || !DecodeProfessionIntent(job.craft,recipe,why) ||
         !job.craftFinishedRevision || job.agreement.delivery=="mail" || !saved.accepted || saved.mode!=Mode::Active ||
         (saved.phase!=Phase::Preparing && saved.phase!=Phase::WaitingExternal && saved.phase!=Phase::Reconciling &&
+            !(job.agreement.delivery=="meeting" && saved.checkpoint.step=="commission_meeting" &&
+                (saved.phase==Phase::Traveling || saved.phase==Phase::Paused || saved.phase==Phase::Deferred)) &&
             !(saved.phase==Phase::Verifying && saved.checkpoint.step=="commission_output_partition")) ||
         (saved.checkpoint.step!="commission_craft_ready" && saved.checkpoint.step!="commission_trade_prepare" &&
-            saved.checkpoint.step!="commission_trade_wait" && saved.checkpoint.step!="commission_output_partition") ||
+            saved.checkpoint.step!="commission_trade_wait" && saved.checkpoint.step!="commission_output_partition" &&
+            !(job.agreement.delivery=="meeting" && saved.checkpoint.step=="commission_meeting")) ||
         saved.context==current || current.actor!=saved.actor || !IsUuid(current.boot) ||
         !current.actorGeneration || !current.mapGeneration || !current.policyRevision ||
         current.session.size()>120 || current.session.empty()!=(current.sessionRevision==0) ||
@@ -148,7 +151,9 @@ bool PrepareCommissionTradeReadyRestore(const Task& saved,const WorldContext& cu
             !quantities.count(balance.itemGuid) || quantities.at(balance.itemGuid)>balance.quantity)return false;
     }
     auto next=saved;next.context=current;++next.revision;next.updatedAtMs=now;
-    next.phase=Phase::Preparing;next.checkpoint.step="commission_trade_prepare";next.checkpoint.blocker.clear();next.retryAtMs=0;
+    next.phase=Phase::Preparing;next.checkpoint.step="commission_trade_prepare";next.checkpoint.blocker.clear();
+    // A restart refreshes native authority, not a route's promised backoff.
+    if(job.agreement.delivery!="meeting" || saved.checkpoint.step!="commission_meeting")next.retryAtMs=0;
     auto plan=Detail::TaskTransitionWrite(next,saved.revision,receipt,"commission_trade_ready_restored",job.agreement.id);
     auto& sql=plan.statements.front();
     sql+=partitionGuard+" AND checkpoint="+SqlValue(saved.checkpoint.data)+

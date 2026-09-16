@@ -63,6 +63,7 @@
 #include "LivingGuildProcurementProjection.h"
 #include "LivingCommissionContract.h"
 #include "LivingCommissionJob.h"
+#include "LivingCommissionMeeting.h"
 #include "LivingNativeCommissionMail.h"
 #include "LivingNativeCommissionTrade.h"
 #include "LivingNativeParcelSlot.h"
@@ -2618,6 +2619,90 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     return stop(SubmitOperationIntent(request,adapter).blocker);
 }
 
+std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoordinator::AdvanceCommissionMeeting(
+    uint32_t actor,const std::string& id) {
+    auto stop=[](const std::string& why)->std::optional<ProfessionProgress>{return ProfessionProgress{false,why};};
+    const auto saved=ReadSavedTask(id);CommissionJob job;std::string why;
+    if(!OnWorldThread() || !EffectEnforcementEnabled() || !saved || saved->actor!=actor ||
+        !DecodeCommissionJob(saved->checkpoint.data,job,why) || job.agreement.delivery!="meeting")return stop("commission_meeting_invalid");
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() ||
+        !(saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot)))return stop("commission_meeting_context_changed");
+    if(saved->retryAtMs>NowMs())return stop(saved->checkpoint.blocker);
+    auto* customer=sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER,job.agreement.recipient));
+    CommissionMeetingObservation observation;observation.recipient=job.agreement.recipient;
+    const auto safety=NativeSafety(bot);
+    const std::string party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+    const bool inRange=customer && customer->IsInWorld() && bot->IsWithinDistInMap(customer,INTERACTION_DISTANCE);
+    const bool agreedWindow=customer && bot->GetTrader()==customer && customer->GetTrader()==bot &&
+        bot->GetTradeData() && customer->GetTradeData();
+    if(safety || !bot->GetMap() || bot->GetMap()->IsDungeon() || bot->IsNonMeleeSpellCasted(false) ||
+        (bot->GetTradeData() && !agreedWindow) || (!party.empty() && !inRange)) {
+        observation.safety=true;observation.blocker=!party.empty() && !inRange?party:safety?NativeSafetyReason(safety):"commission_meeting_actor_busy";
+    } else if(!customer || !customer->GetSession() || !customer->IsInWorld() || !customer->GetMap())
+        observation.blocker="commission_meeting_recipient_offline";
+    else if(NativeSafety(customer) || customer->GetMap()->IsDungeon() || customer->IsNonMeleeSpellCasted(false) ||
+        (customer->GetTradeData() && !agreedWindow))
+        observation.blocker="commission_meeting_recipient_busy";
+    else if(customer->GetTeam()!=bot->GetTeam())observation.blocker="commission_meeting_faction_changed";
+    else if(customer->GetMap()!=bot->GetMap())observation.blocker="commission_meeting_same_map_required";
+    else {
+        observation.map=customer->GetMapId();observation.instance=customer->GetInstanceId();
+        observation.x=customer->GetPositionX();observation.y=customer->GetPositionY();observation.z=customer->GetPositionZ();
+        observation.distance=bot->GetDistance(customer);observation.arrived=bot->IsWithinDistInMap(customer,INTERACTION_DISTANCE);
+    }
+    const auto effects=Mask(Effect::Movement)|Mask(Effect::TravelTarget);
+    auto stopFollow=[&] {
+        // Never cancel combat, another controller's movement, or an unrelated follow.
+        const auto owned=state->authority.Read(actor);
+        if(owned.lease.rootTask!=id || !owned.operation.empty() || safety || !customer ||
+            bot->GetMotionMaster()->GetCurrentMovementGeneratorType()!=FOLLOW_MOTION_TYPE ||
+            bot->GetMotionMaster()->GetCurrent()->GetCurrentTarget()!=customer)return;
+        const auto grant=AcquireSavedTask(id,saved->revision,effects,60000,"commission_meeting");
+        if(!grant.Permitted())return;
+        ExecutionScope scope(grant.task,grant.action);
+        if(PermitEffects(*bot->GetPlayerbotAI(),{effects,Lane::Managed,true},"commission meeting stop")) {
+            bot->GetMotionMaster()->Clear();bot->GetPlayerbotAI()->StopMoving();
+        }
+    };
+    if(observation.arrived && saved->phase==Phase::Preparing && !IsCommissionMeetingStep(saved->checkpoint.step)) {
+        stopFollow();return {}; // The existing native trade adapter still requires customer consent.
+    }
+    Task next;
+    if(PrepareCommissionMeeting(*saved,observation,NowMs(),next,why)) {
+        if(next.phase!=Phase::Traveling)stopFollow();
+        TaskRequest request;request.task=std::move(next);request.expectedRevision=saved->revision;request.receipt=NewId();
+        const auto admitted=SubmitTask(request);
+        const auto owned=state->authority.Read(actor);
+        if((admitted.code==AdmissionCode::Pending || admitted.code==AdmissionCode::Saved) &&
+            request.task.phase!=Phase::Traveling && owned.lease.rootTask==id && owned.operation.empty())ReleaseTaskLease(owned.lease);
+        return stop(admitted.blocker);
+    }
+    if(why!="commission_meeting_traveling")return stop(why.empty()?"commission_meeting_checkpoint_rejected":why);
+    const auto grant=AcquireSavedTask(id,saved->revision,effects,60000,"commission_meeting");
+    if(!grant.Permitted())return stop(grant.blocker);
+    ExecutionScope scope(grant.task,grant.action);
+    if(!PermitEffects(*bot->GetPlayerbotAI(),{effects,Lane::Managed,true},"commission meeting approach"))
+        return stop("commission_meeting_authority_changed");
+    // Reuse the existing same-map rendezvous geometry and shared relocation
+    // budget, without registering a second session or a five-minute expiry.
+    const auto threshold=7.0f*std::max<uint32_t>(10,std::min<uint32_t>(300,sPlayerbotAIConfig.chatDirectorRendezvousTriggerSeconds));
+    if(sPlayerbotAIConfig.chatDirectorRendezvousCatchup && observation.distance>threshold) {
+        float x=0,y=0,z=0;
+        if(sPlayerbotRendezvousManager.FindSafeStagingPoint(bot,customer,x,y,z) &&
+            sPlayerbotRendezvousManager.CanRelocateUnobserved(bot,customer->GetMap(),x,y,z) &&
+            sPlayerbotRendezvousManager.ClaimRelocationSlot()) {
+            bot->GetPlayerbotAI()->StopMoving();
+            bot->NearTeleportTo(x,y,z+0.1f,bot->GetOrientation());
+            return stop("commission_meeting_staging_revalidation");
+        }
+    }
+    if(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()!=FOLLOW_MOTION_TYPE ||
+        bot->GetMotionMaster()->GetCurrent()->GetCurrentTarget()!=customer)
+        bot->GetMotionMaster()->MoveFollow(customer,2.0f,0.0f,true,false);
+    return stop("commission_meeting_traveling");
+}
+
 LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceCommissionTrade(uint32_t actor,const std::string& id) {
     auto stop=[](const std::string& why){return ProfessionProgress{false,why};};
     if(!OnWorldThread() || !EffectEnforcementEnabled())return stop("execution_disabled");
@@ -2753,14 +2838,20 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         state->pending.push_back(std::move(write));state->nextWork=0;return stop("commission_trade_restore_pending");
     }
     if(saved->phase==Phase::Executing ||
-        (saved->phase==Phase::Reconciling && saved->checkpoint.step!="commission_trade_wait") || !(saved->context==current))
+        (saved->phase==Phase::Reconciling && saved->checkpoint.step!="commission_trade_wait" &&
+            !(job.agreement.delivery=="meeting" && IsCommissionMeetingStep(saved->checkpoint.step))) || !(saved->context==current))
         return stop("commission_trade_restart_reconciliation_required");
-    if(saved->retryAtMs>NowMs())return stop("commission_trade_waiting_for_customer");
+    if(saved->retryAtMs>NowMs())return stop(job.agreement.delivery=="meeting" && !saved->checkpoint.blocker.empty()?
+        saved->checkpoint.blocker:"commission_trade_waiting_for_customer");
     if(serviceStep) {
         if(preparationService!=ServiceDestination::Vendor && preparationService!=ServiceDestination::PersonalBank)
             return stop("commission_capacity_service_invalid");
         ProfessionJob recipe;if(!DecodeProfessionIntent(job.craft,recipe,why))return stop(why);
         return stop(AdvanceItemPreparation(actor,id,ProfessionStep::PrepareCapacity,{recipe.outputEntry,recipe.outputQuantity}).blocker);
+    }
+    if(job.agreement.delivery=="meeting" && (IsCommissionMeetingStep(saved->checkpoint.step) ||
+        saved->checkpoint.step=="commission_craft_ready" || saved->checkpoint.step=="commission_trade_prepare")) {
+        if(const auto progress=AdvanceCommissionMeeting(actor,id))return *progress;
     }
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     if(saved->phase==Phase::Verifying && saved->checkpoint.step=="commission_output_partition") {
