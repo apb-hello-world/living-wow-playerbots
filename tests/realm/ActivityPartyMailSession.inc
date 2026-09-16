@@ -10,7 +10,6 @@ struct PartyMailSessionFixture {
     Group* group=nullptr;
     float x=0,y=0,z=0,o=0;
     bool bound=false,done=false;
-    bool removedFixtureAI=false;
     bool recallInjected=false,reauthorized=false;
     std::string recalledOperation;
     void Close() {
@@ -19,7 +18,6 @@ struct PartyMailSessionFixture {
         if(leader && original) {
             leader->SetSession(original);
             humanSession->SetPlayer(nullptr,0);
-            if(removedFixtureAI) {leader->CreatePlayerbotAI();removedFixtureAI=false;}
             leader->NearTeleportTo(x,y,z,o);
         }
         humanSession.reset();socket.reset();io.reset();original=nullptr;bound=false;done=true;
@@ -51,15 +49,14 @@ struct PartyMailSessionFixture {
             // Match native bot-session initialization before SetPlayer invokes
             // its anticheat hook. This explicit input is isolated-only.
             humanSession->SetNoAnticheat();
-            // A human input must not simultaneously execute bot follow/errands
-            // on itself through the global rendezvous observer.
-            leader->RemovePlayerbotAI();removedFixtureAI=true;
             humanSession->SetPlayer(leader,leaderId);leader->SetSession(humanSession.get());
             if(!leader->isRealPlayer())throw std::runtime_error("headless_native_human_session_required");
             group=new Group();
             if(!group->Create(leader->GetObjectGuid(),leader->GetName()))throw std::runtime_error("fixture_group_create");
             sObjectMgr.AddGroup(group);
             if(!group->AddMember(bot->GetObjectGuid(),bot->GetName()))throw std::runtime_error("fixture_group_add");
+            if(sPlayerbotRendezvousManager.RegisterPartyAssist(leader,leader))
+                throw std::runtime_error("human_cannot_create_self_follow_session");
         }
         if(!bound) {
             sLivingActivityCoordinator.ReleaseTaskLease(state.authority.Read(bot->GetGUIDLow()).lease);

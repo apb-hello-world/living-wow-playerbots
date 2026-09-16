@@ -1282,7 +1282,7 @@ void PlayerbotRendezvousManager::ReleasePartyActivityLease(const LivingActivity:
 
 bool PlayerbotRendezvousManager::RegisterPartyAssist(Player* bot, Player* inviter, bool recovered)
 {
-    if (!bot || !inviter || !bot->GetPlayerbotAI() || !bot->IsInWorld() || !inviter->IsInWorld() ||
+    if (!bot || !inviter || bot==inviter || !bot->GetPlayerbotAI() || !bot->IsInWorld() || !inviter->IsInWorld() ||
         !inviter->isRealPlayer() || bot->GetTeam() != inviter->GetTeam() || !bot->GetGroup() ||
         bot->GetGroup() != inviter->GetGroup() || bot->InBattleGround() || inviter->InBattleGround() ||
         !bot->GetMap() || !inviter->GetMap())
