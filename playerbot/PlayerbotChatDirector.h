@@ -190,7 +190,7 @@ public:
     bool HandleGuildAddonMessage(Player* receiverBot, Player* sender, const std::string& message);
     void Update();
     // Implemented only in the isolated fixture binary; never a chat capability.
-    std::string IsolatedRecoveryProbe(Player* bot);
+    std::string IsolatedRecoveryProbe(Player* bot, bool disabled = false);
 
 private:
     struct ActiveRequest

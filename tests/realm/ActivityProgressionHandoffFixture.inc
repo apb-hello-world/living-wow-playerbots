@@ -75,8 +75,8 @@ void RunIsolatedProgressionHandoff(FixtureState& state) {
         require(grant.Permitted(),"saved_service_lease_acquired:"+grant.blocker);
         Restore release{[&]{coordinator.ReleaseTaskLease(grant.authority.lease);}};
         require(coordinator.MovementCommitmentBlocksRecovery(f.actor),"saved_owner_visible_to_watchdog");
-        auto probe=[&](const std::string& name,bool yield=true){
-            boost::property_tree::ptree data;std::istringstream input(sPlayerbotChatDirector.IsolatedRecoveryProbe(bot));
+        auto probe=[&](const std::string& name,bool yield=true,bool disabled=false){
+            boost::property_tree::ptree data;std::istringstream input(sPlayerbotChatDirector.IsolatedRecoveryProbe(bot,disabled));
             boost::property_tree::read_json(input,data);
             require(yield ? data.get<unsigned>("step")==0 && data.get<std::string>("result")=="yielded_to_activity_owner" :
                 data.get<unsigned>("step")==7 && data.get<bool>("paused"),name+"_correct_recovery_handoff");
@@ -96,6 +96,7 @@ void RunIsolatedProgressionHandoff(FixtureState& state) {
             // before map updates. This is not a simulated successful journey.
             target->SetStatus(ai::TravelStatus::TRAVEL_STATUS_PREPARE);
             require(target->GetStatus()==ai::TravelStatus::TRAVEL_STATUS_PREPARE,"native_prepare_timeout_fixture");
+            probe("disabled_recovery_policy",false,true);
             bot->m_movementInfo.AddMovementFlag(MOVEFLAG_FALLING);
             probe("falling_safety",false);
         }

@@ -2653,7 +2653,7 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
 }
 
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
-std::string PlayerbotChatDirector::IsolatedRecoveryProbe(Player* bot)
+std::string PlayerbotChatDirector::IsolatedRecoveryProbe(Player* bot, bool disabled)
 {
     const char* environment = std::getenv("LIVING_WOW_TEST_ENVIRONMENT");
     std::ifstream marker("/isolated/ENVIRONMENT"); std::string value; std::getline(marker,value);
@@ -2679,7 +2679,7 @@ std::string PlayerbotChatDirector::IsolatedRecoveryProbe(Player* bot)
     health.recoveryStep=7;health.recoveryStartedAt=now-std::chrono::hours(1);
     health.lastTravelAdvance=health.recoveryStartedAt;
     nextHealthSample={};isolatedRecoveryProbeActor=guid;
-    sPlayerbotAIConfig.chatDirectorBotRecoveryMode=1;
+    sPlayerbotAIConfig.chatDirectorBotRecoveryMode=disabled ? 0 : 1;
     sPlayerbotAIConfig.chatDirectorRecoveryCanaryBotGuids={guid};
     auto* target=bot->GetPlayerbotAI()->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get();
     const auto route=target->GetRouteRevision();
