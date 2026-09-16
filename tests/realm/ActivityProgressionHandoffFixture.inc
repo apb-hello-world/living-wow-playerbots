@@ -41,19 +41,24 @@ void RunIsolatedProgressionHandoff(FixtureState& state) {
         if(!bot || !bot->IsInWorld() || !bot->GetPlayerbotAI() || NativeSafety(bot))return;
         if(!state.bindings.count(f.actor))return;
         auto& coordinator=sLivingActivityCoordinator;
+        auto admit=[&](const std::string& name){
+            const auto result=coordinator.SubmitTask(f.request);
+            require(result.code==AdmissionCode::Pending,name+":"+Name(result.code)+":"+result.blocker);
+        };
         const bool oldEnforcement=state.enforceEffects.exchange(true);
         struct Restore { std::function<void()> fn;~Restore(){fn();} } restore{[&]{state.enforceEffects.store(oldEnforcement);}};
         if(f.stage==0) {
             require(!bot->GetGroup(),"actor_initially_ungrouped");
             require(!state.authority.Read(f.actor).lease.actor,"actor_initially_unowned");
             state.gameplayFixtureActor.store(f.actor);
-            auto& task=f.request.task;task.id=task.root=NewId();task.actor=f.actor;
+            auto& task=f.request.task;task.actor=f.actor;
             task.source="isolated_progression_fixture";task.sourceKey=state.boot;
+            task.id=task.root=SourceId(task.source,task.sourceKey);
             task.context=ReadNativeContext(*bot,state.policyRevision,state.boot);
             task.createdAtMs=task.updatedAtMs=NowMs();task.kind=Kind::Maintenance;
             task.priority=Priority::Delivery;task.mode=Mode::Active;task.phase=Phase::Queued;
             task.checkpoint.step="progression_handoff_probe";f.request.receipt=NewId();
-            require(coordinator.SubmitTask(f.request).code==AdmissionCode::Pending,"durable_fixture_queued");
+            admit("durable_fixture_queued");
             f.stage=1;return;
         }
         const auto saved=coordinator.ReadSavedTask(f.request.task.id);
@@ -61,13 +66,13 @@ void RunIsolatedProgressionHandoff(FixtureState& state) {
         if(f.stage==1) {
             f.request.task=*saved;f.request.expectedRevision=saved->revision;++f.request.task.revision;
             f.request.task.phase=Phase::Preparing;f.request.task.updatedAtMs=NowMs();f.request.receipt=NewId();
-            require(coordinator.SubmitTask(f.request).code==AdmissionCode::Pending,"durable_preparation_queued");
+            admit("durable_preparation_queued");
             f.stage=2;return;
         }
         if(f.stage==3){require(saved->phase==Phase::Cancelled,"fixture_cancel_acknowledged");finish(true,"");return;}
         const auto grant=coordinator.AcquireSavedTask(saved->id,saved->revision,
             Mask(Effect::Movement)|Mask(Effect::TravelTarget),60000,"isolated_progression_fixture");
-        require(grant.Permitted(),"saved_service_lease_acquired");
+        require(grant.Permitted(),"saved_service_lease_acquired:"+grant.blocker);
         Restore release{[&]{coordinator.ReleaseTaskLease(grant.authority.lease);}};
         require(coordinator.MovementCommitmentBlocksRecovery(f.actor),"saved_owner_visible_to_watchdog");
         auto probe=[&](const std::string& name){
