@@ -75,11 +75,11 @@ void RunIsolatedProgressionHandoff(FixtureState& state) {
         require(grant.Permitted(),"saved_service_lease_acquired:"+grant.blocker);
         Restore release{[&]{coordinator.ReleaseTaskLease(grant.authority.lease);}};
         require(coordinator.MovementCommitmentBlocksRecovery(f.actor),"saved_owner_visible_to_watchdog");
-        auto probe=[&](const std::string& name){
+        auto probe=[&](const std::string& name,bool yield=true){
             boost::property_tree::ptree data;std::istringstream input(sPlayerbotChatDirector.IsolatedRecoveryProbe(bot));
             boost::property_tree::read_json(input,data);
-            require(data.get<unsigned>("step")==0 && data.get<std::string>("result")=="yielded_to_activity_owner",
-                name+"_yields_recovery");
+            require(yield ? data.get<unsigned>("step")==0 && data.get<std::string>("result")=="yielded_to_activity_owner" :
+                data.get<unsigned>("step")==7 && data.get<bool>("paused"),name+"_correct_recovery_handoff");
             require(!data.get<unsigned>("failure_streak") && !data.get<unsigned>("objective_failures") &&
                 !data.get<unsigned>("attempts"),name+"_no_false_failure");
             require(data.get<uint64_t>("route_before")==data.get<uint64_t>("route_after"),name+"_native_route_unchanged");
@@ -87,6 +87,22 @@ void RunIsolatedProgressionHandoff(FixtureState& state) {
         probe("saved_service");
         require(coordinator.ReleaseTaskLease(grant.authority.lease).code==AuthorityCode::Released,"service_released");
         require(!coordinator.MovementCommitmentBlocksRecovery(f.actor),"unowned_progression_available");
+        auto* target=bot->GetPlayerbotAI()->GetAiObjectContext()->GetValue<ai::TravelTarget*>("travel target")->Get();
+        const auto originalStatus=target->GetStatus();
+        const auto originalFlags=bot->m_movementInfo.GetMovementFlags();
+        {
+            Restore safety{[&]{bot->m_movementInfo.SetMovementFlags(originalFlags);target->SetStatus(originalStatus);}};
+            // One synchronous, explicitly injected native safety flag; restored
+            // before map updates. This is not a simulated successful journey.
+            target->SetStatus(ai::TravelStatus::TRAVEL_STATUS_PREPARE);
+            require(target->GetStatus()==ai::TravelStatus::TRAVEL_STATUS_PREPARE,"native_prepare_timeout_fixture");
+            bot->m_movementInfo.AddMovementFlag(MOVEFLAG_FALLING);
+            probe("falling_safety",false);
+        }
+        const auto relevance=target->GetRelevance();
+        target->SetRelevance(relevance==1?2:1);
+        require(target->GetRelevance()!=(relevance),"released_owner_allows_native_route_mutation");
+        target->SetRelevance(relevance);
         ObjectGuid human(HIGHGUID_PLAYER,f.human);std::string name;
         require(!sRandomPlayerbotMgr.IsRandomBot(f.human) && !sObjectMgr.GetPlayer(human) &&
             sObjectMgr.GetPlayerNameByGUID(human,name),"existing_offline_human");
