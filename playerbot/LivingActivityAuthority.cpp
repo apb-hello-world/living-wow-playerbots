@@ -69,6 +69,7 @@ namespace LivingActivity {
     AuthorityResult ExecutionAuthority::Drop(Actor& a, AuthorityCode code) {
         AuthorityResult result; result.code = code; result.displaced = a.lease;
         a.lease = {}; a.root = {}; a.step = {}; a.expires = 0; a.effects = 0; a.operation.clear(); a.invalidated = false;
+        a.admissionPriority=Priority::Progression;
         a.operationDispatched = a.operationExecuting = false;
         a.compatibility=false;a.compatibilityPhase.clear();a.compatibilityReason.clear();
         return result;
@@ -95,10 +96,17 @@ namespace LivingActivity {
         return {safety ? AuthorityCode::SafetyPaused : AuthorityCode::Allowed, a.lease, {}};
     }
     AuthorityResult ExecutionAuthority::Acquire(const Task& root, uint32_t effects, uint64_t now, uint64_t duration) {
-        return AcquireImpl(root,effects,now,duration,false);
+        return AcquireImpl(root,effects,now,duration,false,root.priority);
+    }
+    AuthorityResult ExecutionAuthority::AcquirePrioritized(const Task& root,uint32_t effects,uint64_t now,
+        uint64_t duration,Priority priority) {
+        if(priority!=Priority::Human && priority!=Priority::Preparation && priority!=Priority::Scheduled &&
+            priority!=Priority::Delivery && priority!=Priority::Progression && priority!=Priority::Optional)
+            return {AuthorityCode::InvalidRequest,{},{}};
+        return AcquireImpl(root,effects,now,duration,false,priority);
     }
     AuthorityResult ExecutionAuthority::AcquireCompatibility(const Task& root,uint64_t now,uint64_t duration) {
-        return AcquireImpl(root,Mask(Effect::Movement)|Mask(Effect::TravelTarget),now,duration,true);
+        return AcquireImpl(root,Mask(Effect::Movement)|Mask(Effect::TravelTarget),now,duration,true,root.priority);
     }
     bool ExecutionAuthority::DescribeCompatibility(const ActivityLease& lease,const std::string& phase,const std::string& reason) {
         const auto found=actors.find(lease.actor);
@@ -107,7 +115,7 @@ namespace LivingActivity {
         found->second.compatibilityPhase=phase;found->second.compatibilityReason=reason;
         return true;
     }
-    AuthorityResult ExecutionAuthority::AcquireImpl(const Task& root,uint32_t effects,uint64_t now,uint64_t duration,bool compatibility) {
+    AuthorityResult ExecutionAuthority::AcquireImpl(const Task& root,uint32_t effects,uint64_t now,uint64_t duration,bool compatibility,Priority priority) {
         std::string error;
         if (!Validate(root, error) || !Executable(root) || !root.parent.empty() || root.root != root.id ||
             !effects || (effects & ~AllEffects) || !duration || duration > 600000 ||
@@ -124,7 +132,7 @@ namespace LivingActivity {
             return {AuthorityCode::StaleRevision, a.lease, {}};
         if (held && root.id == a.root.id && root.revision == a.root.revision) {
             // An existing revision cannot silently change its authority/priority.
-            if (effects != a.effects || compatibility != a.compatibility || !SameDefinition(root, a.root))
+            if (effects != a.effects || compatibility != a.compatibility || priority != a.admissionPriority || !SameDefinition(root, a.root))
                 return {AuthorityCode::StaleRevision, a.lease, {}};
             if (now < a.expires) {
                 a.expires = now + duration;
@@ -132,13 +140,16 @@ namespace LivingActivity {
             }
         }
         if (!a.operation.empty()) return {AuthorityCode::AtomicPending, a.lease, {}};
-        if (held && now < a.expires && root.id != a.root.id && !Before(root, a.root))
-            return {AuthorityCode::PriorityDenied, a.lease, {}};
+        if (held && now < a.expires && root.id != a.root.id) {
+            auto candidate=root,incumbent=a.root;
+            candidate.priority=priority;incumbent.priority=a.admissionPriority;
+            if(!Before(candidate,incumbent))return {AuthorityCode::PriorityDenied, a.lease, {}};
+        }
         generation = std::max(generation, root.ownerGeneration);
         if (generation == std::numeric_limits<uint64_t>::max())
             return {AuthorityCode::GenerationExhausted, a.lease, {}};
         AuthorityResult result; result.displaced = a.lease;
-        a.root = root; a.step = {}; a.effects = effects; a.expires = now + duration;
+        a.root = root; a.admissionPriority=priority; a.step = {}; a.effects = effects; a.expires = now + duration;
         a.compatibility=compatibility;a.compatibilityPhase.clear();a.compatibilityReason.clear();
         a.lease = {root.actor, root.id, ++generation, root.context};
         result.lease = a.lease; result.code = held ? AuthorityCode::Preempted : AuthorityCode::Granted;

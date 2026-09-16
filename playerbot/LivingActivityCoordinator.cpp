@@ -4527,9 +4527,9 @@ LivingActivityCoordinator::TaskGrant LivingActivityCoordinator::AcquireSavedTask
     RefreshPermission(saved->second.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
     const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-    auto admitted=saved->second;
-    if(sPlayerbotRendezvousManager.ReadPartyService(bot,admitted,effects)) admitted.priority=Priority::Human;
-    result.authority = state->authority.Acquire(admitted, effects, monotonic, durationMs);
+    const bool partyService=bool(sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second,effects));
+    result.authority = partyService ? state->authority.AcquirePrioritized(saved->second,effects,monotonic,durationMs,Priority::Human) :
+        state->authority.Acquire(saved->second,effects,monotonic,durationMs);
     if (!result.authority.Granted()) { result.blocker = Name(result.authority.code); return result; }
     state->compatibilityActors.erase(saved->second.actor);
     result.task = saved->second; result.task.ownerGeneration = result.authority.lease.generation;

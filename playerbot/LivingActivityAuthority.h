@@ -22,6 +22,8 @@ namespace LivingActivity {
         WorldContext current;
         uint32_t safety = 0, effects = 0;
         Task root;
+        // Volatile arbitration only; never rewrites the saved task definition.
+        Priority admissionPriority = Priority::Progression;
         // One world-approved finite child step. Merely knowing a root lease
         // must not let a stale/unregistered child impersonate its preparation.
         Task step;
@@ -46,6 +48,8 @@ namespace LivingActivity {
         explicit ExecutionAuthority(size_t actorLimit = 20000) : limit(actorLimit) {}
         AuthorityResult Observe(const WorldContext& current, uint32_t safety);
         AuthorityResult Acquire(const Task& root, uint32_t effects, uint64_t now, uint64_t duration);
+        AuthorityResult AcquirePrioritized(const Task& root, uint32_t effects, uint64_t now,
+            uint64_t duration, Priority priority);
         AuthorityResult AcquireCompatibility(const Task& root, uint64_t now, uint64_t duration);
         bool DescribeCompatibility(const ActivityLease& lease,const std::string& phase,const std::string& reason);
         AuthorityResult Release(const ActivityLease& lease);
@@ -77,7 +81,7 @@ namespace LivingActivity {
         static bool SameDefinition(const Task& left, const Task& right);
         static uint32_t LaneEffects(Lane lane);
         static AuthorityResult Drop(Actor& actor, AuthorityCode code);
-        AuthorityResult AcquireImpl(const Task& root,uint32_t effects,uint64_t now,uint64_t duration,bool compatibility);
+        AuthorityResult AcquireImpl(const Task& root,uint32_t effects,uint64_t now,uint64_t duration,bool compatibility,Priority priority);
         std::map<uint32_t, Actor> actors;
         size_t limit;
         uint64_t generation = 0;

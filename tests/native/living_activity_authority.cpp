@@ -25,6 +25,22 @@ ActionContext Action(Task& task, const ActivityLease& lease) {
 }
 int main() {
     {
+        // Party authorization changes arbitration, not the journalled identity.
+        ExecutionAuthority authority;auto task=Root();task.phase=Phase::Preparing;
+        authority.Observe(task.context,0);
+        const auto grant=authority.AcquirePrioritized(task,Movement,1000,60000,Priority::Human);
+        assert(grant.Granted());auto action=Action(task,grant.lease);
+        assert(authority.Read(task.actor).root.priority==Priority::Delivery);
+        assert(authority.Read(task.actor).admissionPriority==Priority::Human);
+        assert(authority.Authorize({0,Lane::Managed,true},task.context,1001,&task,&action)==AuthorityCode::Allowed);
+        assert(authority.Acquire(Root(B,Priority::Preparation),Movement,1002,60000).code==AuthorityCode::PriorityDenied);
+        assert(authority.Acquire(task,Movement,1002,60000).code==AuthorityCode::StaleRevision);
+        auto forged=task;forged.priority=Priority::Human;
+        assert(authority.Authorize({0,Lane::Managed,true},task.context,1003,&forged,&action)==AuthorityCode::StaleRevision);
+        assert(authority.Release(grant.lease).code==AuthorityCode::Released);
+        assert(authority.Acquire(task,Movement,1004,60000).Granted());
+    }
+    {
         // Intent persistence must retain exclusion without granting its effect.
         ExecutionAuthority intent;
         auto preparing=Root();preparing.phase=Phase::Preparing;

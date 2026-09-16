@@ -70,6 +70,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     }
     if (!fixture.deadline) fixture.deadline=NowMs()+(partyMail ? 240000 : (serviceTravel || capacityMail) ? 180000 : 120000);
     auto emit=[&](bool passed,const std::string& failure) {
+        const auto actorDiagnostic=request.task.actor ? ActorJson(request.task.actor) : std::string();
         if(partyMail) {PartyMailFixture().Close();state->professionCohortActors.back().store(0);}
         if (passed) fixture.blocker.clear();
         boost::property_tree::ptree report;
@@ -170,7 +171,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         report.put("general_execution_enabled",false);report.add_child("fixture_material_grants",fixture.grants);
         report.add_child("selection_rejections",fixture.selection);report.add_child("checks",fixture.checks);
         report.add_child("native_snapshot",fixture.snapshot);
-        if (request.task.actor) report.put("actor_diagnostic",ActorJson(request.task.actor));
+        if (request.task.actor) report.put("actor_diagnostic",actorDiagnostic);
         std::ofstream evidence("/isolated/evidence/activity-craft-"+state->boot+".json");evidence<<Json(report);evidence.close();
         if (!evidence) sLog.outError("Living isolated craft evidence write failed");
         sLog.outString("Living isolated fixture: %s",Json(report).c_str());
