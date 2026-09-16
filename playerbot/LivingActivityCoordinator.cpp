@@ -3255,7 +3255,7 @@ std::optional<PartyServiceBinding> LivingActivityCoordinator::SelectPartyMailSer
         const auto& task=row.second;
         if(task.actor!=actor || task.id!=task.root || task.kind!=Kind::Profession ||
             !task.accepted || task.mode!=Mode::Active || Terminal(task.phase) ||
-            task.phase==Phase::Executing || !IsProfessionJob(task))continue;
+            !IsProfessionJob(task))continue;
         UnsettledClaimBatch claims;std::string why;
         if(!state->resources.ReadUnsettled(task.id,claims,why) || !claims.complete)continue;
         for(const auto& claim:claims.claims) {
@@ -3281,8 +3281,27 @@ bool LivingActivityCoordinator::YieldPartyService(uint32_t actor,const std::stri
     for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor && op.second.dispatched)return false;
     const auto owned=state->authority.Read(actor);
     if(!owned.operation.empty())return false;
-    // An acknowledged but undispatched intent remains on the SAME saved job;
-    // recalling the bot never erases it or invents a rejected native effect.
+    // We KNOW a fresh in-memory intent was never dispatched. Close that intent
+    // with explicit no-effect evidence before a group/map context change can
+    // strand it. This is not reconciliation of an uncertain post-crash effect.
+    for(auto& row:state->operations) {
+        auto& operation=row.second;
+        const auto& intended=operation.request.transition.task;
+        if(intended.actor!=actor)continue;
+        if(intended.id!=root || !operation.ready || operation.uncertain || operation.saveBlocked)return false;
+        const auto saved=ReadSavedTask(root);
+        if(!saved || saved->revision!=intended.revision || saved->phase!=Phase::Executing ||
+            state->pending.size()>=state->batch)return false;
+        auto after=*saved;++after.revision;after.phase=Phase::Verifying;after.updatedAtMs=NowMs();
+        after.checkpoint.blocker="party_recall_before_dispatch";
+        OperationResult proof;proof.id=row.first;proof.task=root;proof.taskRevision=intended.revision;
+        proof.kind=operation.request.kind;proof.state=OperationState::Rejected;proof.evidence=after.checkpoint.blocker;
+        const auto receipt=NewId();
+        auto plan=OperationOutcomeWrite(after,saved->revision,proof,receipt,"{\"dispatched\":false}");
+        operation.ready=false;operation.outcome=OperationState::Rejected;operation.held=owned.lease;
+        state->pending.push_back({after,std::move(plan),"",row.first,true});state->nextWork=0;
+        return false;
+    }
     sPlayerbotOrganicEconomy.ReleaseSavedService(actor,root);
     if(owned.lease.rootTask==root)ReleaseTaskLease(owned.lease);
     return true;

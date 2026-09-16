@@ -10,6 +10,8 @@ struct PartyMailSessionFixture {
     Group* group=nullptr;
     float x=0,y=0,z=0,o=0;
     bool bound=false,done=false;
+    bool recallInjected=false,reauthorized=false;
+    std::string recalledOperation;
     void Close() {
         auto* leader=sRandomPlayerbotMgr.GetPlayerBot(leaderId);
         if(group) {group->Disband(true);sObjectMgr.RemoveGroup(group);delete group;group=nullptr;}

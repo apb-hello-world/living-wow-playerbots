@@ -75,6 +75,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         boost::property_tree::ptree report;
         report.put("suite",suite);report.put("boot",state->boot);
         if(partyMail)report.put("explicit_headless_human_session_fixture",true);
+        if(partyMail)report.put("recalled_operation",PartyMailFixture().recalledOperation);
         report.put("expected_operation_outcome",interrupted ? "rejected_without_effect" : "verified");
         report.put("test_only",true);report.put("outcome",passed ? (checkpoint ? "checkpoint" : "passed") : "failed");report.put("failure",failure);
         report.put("step",fixture.step);report.put("blocker",fixture.blocker);report.put("actor",request.task.actor);
@@ -639,6 +640,32 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 require(!sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow()),
                     "shared_mail_does_not_install_competing_legacy_errand_route");
             }
+            if(partyMail && PartyMailFixture().recallInjected && !PartyMailFixture().reauthorized) {
+                if(!state->operations.empty()){fixture.blocker="party_recall_receipt_pending";return;}
+                require(saved->second.phase==Phase::Verifying && saved->second.checkpoint.blocker=="party_recall_before_dispatch",
+                    "recall_closes_only_undispatched_intent_with_no_effect_evidence");
+                const auto* claim=state->resources.Inspect(fixture.mailClaim);
+                require(claim && claim->location=="mail" && bot->GetMItem(fixture.mailGuid),
+                    "recall_preserves_original_parcel_and_claim");
+                auto* leader=sRandomPlayerbotMgr.GetPlayerBot(PartyMailFixture().leaderId);
+                if(!sPlayerbotRendezvousManager.BeginPartyFreeTime(bot,leader,"isolated_party_mail_resume")) {
+                    fixture.blocker="party_recall_return_pending";return;
+                }
+                require(bool(sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second)),
+                    "fresh_party_window_reauthorizes_same_obligation");
+                PartyMailFixture().reauthorized=true;
+            }
+            if(partyMail && !PartyMailFixture().recallInjected) {
+                for(const auto& row:state->operations)if(row.second.request.transition.task.id==request.task.id &&
+                    row.second.request.kind=="mail_collect" && row.second.ready && !row.second.dispatched) {
+                    auto* leader=sRandomPlayerbotMgr.GetPlayerBot(PartyMailFixture().leaderId);
+                    require(sPlayerbotRendezvousManager.ResumePartyAssist(bot,leader,"isolated_recall_before_dispatch"),
+                        "native_human_recall_accepted");
+                    require(!sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second),
+                        "recall_revokes_service_before_native_dispatch");
+                    PartyMailFixture().recalledOperation=row.first;PartyMailFixture().recallInjected=true;return;
+                }
+            }
             if(capacityMail && !fixture.capacityFilled) {
                 fixture.capacityMoneyBefore=bot->GetMoney();
                 const auto* proto=sObjectMgr.GetItemPrototype(7074);
@@ -788,6 +815,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 require(!DispatchSavedOperation(fixture.mailOperation,{},adapter).executed && state->nativeDispatches==count,
                     "duplicate_mail_dispatch_does_not_collect_again");
                 if(partyMail) {
+                    require(PartyMailFixture().reauthorized && fixture.mailOperation!=PartyMailFixture().recalledOperation,
+                        "fresh_native_collection_not_replay_of_recalled_intent");
                     const auto status=sPlayerbotRendezvousManager.PartyServiceStatus(bot->GetGUIDLow());
                     // The manager may already have consumed the receipt and
                     // returned; retained status, if present, must be exact.
