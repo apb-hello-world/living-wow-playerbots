@@ -94,7 +94,11 @@ void RunIsolatedProgressionHandoff(FixtureState& state) {
         f.request.task=*saved;f.request.expectedRevision=saved->revision;++f.request.task.revision;
         f.request.task.phase=Phase::Cancelled;f.request.task.updatedAtMs=NowMs();f.request.receipt=NewId();
         f.request.task.checkpoint.blocker="isolated_probe_finished";
-        require(coordinator.SubmitTask(f.request).code==AdmissionCode::Pending,"fixture_cancel_queued");
+        // This isolated ownership probe acquired no goods and dispatched no
+        // operation. Use the existing guarded cleanup write; normal admission
+        // correctly refuses callers manufacturing terminal outcomes.
+        state.Queue(f.request.task,f.request.expectedRevision,"isolated_fixture_cleanup");
+        state.nextWork=0;
         f.stage=3;
     } catch(const std::exception& error){finish(false,error.what());}
 }
