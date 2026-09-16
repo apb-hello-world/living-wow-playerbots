@@ -1791,16 +1791,27 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         bool groupHasRealPlayer = false;
         if (healthGroup)
         {
-            for (const auto& member : healthGroup->GetMemberSlots())
+            const auto identity=healthGroup->GetLivingActivityIdentity();
+            const auto revision=healthGroup->GetLivingActivityRevision();
+            // Offline account lookup uses native SQL. Cache only the roster
+            // verdict, keyed by native lifetime + membership revision, rather
+            // than querying every absent member on every health sample.
+            if (state.recoveryGroupIdentity!=identity || state.recoveryGroupRevision!=revision)
             {
-                // Offline human roster slots still protect their party.
-                if (!sRandomPlayerbotMgr.IsRandomBot(member.guid.GetCounter()))
+                state.recoveryGroupIdentity=identity;state.recoveryGroupRevision=revision;
+                state.recoveryGroupHasHuman=false;
+                for (const auto& member : healthGroup->GetMemberSlots())
                 {
-                    groupHasRealPlayer = true;
-                    break;
+                    if (!sRandomPlayerbotMgr.IsRandomBot(member.guid.GetCounter()))
+                    {
+                        state.recoveryGroupHasHuman=true;
+                        break;
+                    }
                 }
             }
+            groupHasRealPlayer=state.recoveryGroupHasHuman;
         }
+        else {state.recoveryGroupIdentity=state.recoveryGroupRevision=0;state.recoveryGroupHasHuman=false;}
         const bool botOnlyGroupFollower = healthGroup && !groupHasRealPlayer &&
             healthGroup->GetLeaderGuid() != bot->GetObjectGuid();
         const bool humanDirectedGroup = groupHasRealPlayer ||
