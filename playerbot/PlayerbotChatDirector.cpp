@@ -1812,7 +1812,10 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
             activityOwned;
         const auto pauseStart = state.recoveryPause.since;
         const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-        const auto pausedMs = LivingActivity::UpdateRecoveryPause(state.recoveryPause, nowMs, excluded);
+        const bool recoveryPolicyEnabled = globalRecovery ||
+            (sPlayerbotAIConfig.chatDirectorBotRecoveryMode == 1 && recoveryCanary);
+        const auto pausedMs = LivingActivity::UpdateRecoveryPause(state.recoveryPause, nowMs,
+            excluded || !recoveryPolicyEnabled);
         if (pausedMs)
         {
             // Only the watchdog clock is rebased. Actual gameplay timestamps,
@@ -1973,8 +1976,7 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         // recovery step on the world thread. Resetting the travel target makes
         // normal quest/travel strategies choose again without teleporting or
         // modifying authoritative quest state.
-        const bool recoveryExecutionScope = !excluded && (globalRecovery ||
-            (sPlayerbotAIConfig.chatDirectorBotRecoveryMode == 1 && recoveryCanary));
+        const bool recoveryExecutionScope = !excluded && recoveryPolicyEnabled;
         const bool recoveryAttemptEligible = recoveryExecutionScope &&
             (!globalRecovery || recoveryCanary || recoverySweepMember);
         TravelTarget* inFlightRecoveryTarget = observedTravelTarget;
@@ -1995,7 +1997,7 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         bool recoveryGameplayTimedOut = state.recoveryStep == 7 && !excluded &&
             recoveryAgeSeconds >= (long)sPlayerbotAIConfig.chatDirectorRecoveryNoProgressSeconds &&
             state.lastGameplayProgress < state.recoveryStartedAt;
-        bool recoveryRouteTerminal = LivingActivity::RecoveryMayEndRoute(excluded, state.recoveryStep > 0,
+        bool recoveryRouteTerminal = LivingActivity::RecoveryMayEndRoute(!recoveryExecutionScope, state.recoveryStep > 0,
             inFlightRecoveryStatus == TravelStatus::TRAVEL_STATUS_NONE ||
              inFlightRecoveryStatus == TravelStatus::TRAVEL_STATUS_COOLDOWN ||
              inFlightRecoveryStatus == TravelStatus::TRAVEL_STATUS_EXPIRED,
