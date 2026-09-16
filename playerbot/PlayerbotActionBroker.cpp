@@ -191,7 +191,7 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
     if (proposal.botGuid == 0 || proposal.targetGuid != event.speakerGuid || proposal.quantity == 0)
         return reject("malformed_proposal", "That trade request was incomplete.");
     const std::string transactionId = "wow-tx-" + event.eventId + "-" + proposal.proposalId;
-    if(proposal.type=="craft_commission" && (proposal.delivery=="mail" || proposal.delivery=="direct") &&
+    if(proposal.type=="craft_commission" && (proposal.delivery=="mail" || proposal.delivery=="direct" || proposal.delivery=="meeting") &&
         sLivingActivityCoordinator.EffectEnforcementEnabled()) {
         const auto id="lwc-"+std::to_string(std::hash<std::string>{}(transactionId));
         bool readable=false;
@@ -433,7 +433,7 @@ PlayerbotActionResult PlayerbotActionBroker::Create(const ChatDirectorActionProp
 
     std::string commissionId,commissionPayload;
     LivingActivity::AdmissionResult managedAdmission;
-    const bool managedCommission=crafting && (proposal.delivery=="mail" || proposal.delivery=="direct") && sLivingActivityCoordinator.EffectEnforcementEnabled();
+    const bool managedCommission=crafting && (proposal.delivery=="mail" || proposal.delivery=="direct" || proposal.delivery=="meeting") && sLivingActivityCoordinator.EffectEnforcementEnabled();
     if(crafting)
     {
         // Persist the accepted native recipe, fee and delivery target instead

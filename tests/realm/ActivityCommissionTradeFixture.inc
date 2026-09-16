@@ -13,6 +13,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
         ChatDirectorActionProposal brokerProposal;
         bool brokerAccepted=false,partialStock=false,capacity=false,capacityPrepared=false,bankCapacity=false;
         bool cancelFirstOffer=false,cancelled=false;
+        bool meeting=false,meetingPositioned=false;
         uint64_t cancelledAt=0;
         boost::property_tree::ptree input;
     };
@@ -38,6 +39,8 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             f.bankCapacity=brokerCase && bool(std::ifstream("/isolated/evidence/commission-bank-full-bags"));
             f.capacity=f.bankCapacity || (brokerCase && bool(std::ifstream("/isolated/evidence/commission-capacity-full-bags")));
             f.cancelFirstOffer=automaticOffer && bool(std::ifstream("/isolated/evidence/commission-cancel-first-offer"));
+            f.meeting=brokerCase && bool(std::ifstream("/isolated/evidence/commission-meeting-delivery"));
+            require(!f.meeting || (!f.capacity && !f.partialStock && !f.cancelFirstOffer),"separate_meeting_journey_fixture_required");
             require(!f.capacity || f.partialStock,"capacity_fixture_requires_existing_stock");
             require(f.actor && f.customer && f.actor!=f.customer,"distinct_commission_trade_actors_required");
             std::ifstream prior("/isolated/evidence/commission-trade-input-v1.json",std::ios::ate);
@@ -48,6 +51,8 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
                     f.input.template get<uint32_t>("actor")==f.actor && f.input.template get<uint32_t>("recipient")==f.customer &&
                     IsUuid(f.input.template get<std::string>("task")),"original_commission_fixture_actors_required");
                 f.request.task.id=f.input.template get<std::string>("task");
+                f.meetingPositioned=f.input.template get<bool>("meeting_positioned",false);
+                require(f.meeting==f.input.template get<bool>("meeting_case",false),"same_meeting_fixture_required");
                 f.setup=f.admitted=f.queuedRestart=true;
             }
             else require(!brokerCase || !std::ifstream("/isolated/evidence/commission-trade-proposal-v1.json"),
@@ -94,17 +99,19 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
                 prior->checkpoint.step=="commission_output_partition";
             const bool capacityRestart=automaticOffer && f.capacity && f.input.template get<bool>("capacity_restart_test",false) &&
                 job.craftFinishedRevision && prior->phase==Phase::Executing && prior->checkpoint.step==(f.bankCapacity?"profession_capacity_bank":"profession_capacity_sale");
-            require(crafted || interruptedOffer || partitionRestart || capacityRestart || (prior->phase==Phase::Queued && !job.craftFinishedRevision),"only_queued_or_verified_craft_resume");
+            const bool meetingRestart=f.meeting && f.meetingPositioned && job.craftFinishedRevision &&
+                (prior->phase==Phase::Traveling || prior->phase==Phase::Reconciling) && prior->checkpoint.step=="commission_meeting";
+            require(crafted || interruptedOffer || partitionRestart || capacityRestart || meetingRestart || (prior->phase==Phase::Queued && !job.craftFinishedRevision),"only_queued_or_verified_craft_resume");
             auto operations=CharacterDatabase.PQuery("SELECT COUNT(*),SUM(kind='profession_craft' AND state='verified'),SUM(kind='commission_trade_offer' AND state='intent'),SUM(kind='commission_output_partition' AND state='intent'),SUM(kind='commission_output_partition' AND state='verified'),SUM(kind='commission_output_partition' AND state='rejected'),SUM(kind IN ('capacity_vendor_sale','bank_deposit') AND state='intent') FROM living_activity_operation WHERE task_id='%s'",
                 prior->id.c_str());
             const bool partitionIntent=partitionRestart && operations && operations->Fetch()[3].GetUInt32()==1;
             const bool partitionSaved=partitionRestart && operations && operations->Fetch()[4].GetUInt32()==1;
-            require(operations && operations->Fetch()[0].GetUInt32()==(capacityRestart?2u:partitionIntent?2u:partitionSaved?3u:interruptedOffer?2u:crafted?1u:0u) &&
-                (!(crafted || interruptedOffer || partitionRestart || capacityRestart) || operations->Fetch()[1].GetUInt32()==1) &&
+            require(operations && operations->Fetch()[0].GetUInt32()==(capacityRestart?2u:partitionIntent?2u:partitionSaved?3u:interruptedOffer?2u:(crafted || meetingRestart)?1u:0u) &&
+                (!(crafted || interruptedOffer || partitionRestart || capacityRestart || meetingRestart) || operations->Fetch()[1].GetUInt32()==1) &&
                 (!capacityRestart || operations->Fetch()[6].GetUInt32()==1) &&
                 (!partitionRestart || (partitionIntent!=partitionSaved && operations->Fetch()[5].GetUInt32()==(partitionSaved?1u:0u))) &&
                 (!interruptedOffer || operations->Fetch()[2].GetUInt32()==1),"queued_fixture_cannot_replay_native_effects");
-            if(crafted || interruptedOffer || partitionRestart || capacityRestart) {
+            if(crafted || interruptedOffer || partitionRestart || capacityRestart || meetingRestart) {
                 require(actor->GetItemCount(2454,true)==(f.partialStock?2u:1u) &&
                     actor->GetMoney()==f.input.template get<uint32_t>("actor_money_before") &&
                     customer->GetMoney()==f.input.template get<uint32_t>("recipient_money_before") &&
@@ -120,6 +127,11 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
                     f.capacityPrepared=true;f.input.put("capacity_intent_restart",true);
                 }
                 f.input.put("verified_craft_restart",true);
+                if(meetingRestart) {
+                    require(claims.claims.front().id==f.input.template get<std::string>("meeting_claim") &&
+                        claims.claims.front().itemGuid==f.input.template get<uint32_t>("meeting_item"),"meeting_restart_same_native_output");
+                    f.input.put("meeting_restart",true);
+                }
                 f.input.put("interrupted_offer_restart",interruptedOffer);
                 if(partitionIntent)f.input.put("partition_intent_restart",true);
                 if(partitionSaved)f.input.put("partition_verified_restart",true);
@@ -128,7 +140,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
                 f.request.task=*prior;f.brokerAccepted=true;
                 f.brokerEvent.eventId=f.input.template get<std::string>("broker_event_id");f.brokerEvent.speakerGuid=f.customer;
                 auto& p=f.brokerProposal;p.proposalId="accepted";p.botGuid=f.actor;p.targetGuid=f.customer;
-                p.type="craft_commission";p.capabilityRef="spell:craft:2329:2454";p.delivery="direct";p.quantity=1;p.priceCopper=60;
+                p.type="craft_commission";p.capabilityRef="spell:craft:2329:2454";p.delivery=f.meeting?"meeting":"direct";p.quantity=1;p.priceCopper=60;
                 require(job.agreement.transaction=="wow-tx-"+f.brokerEvent.eventId+'-'+p.proposalId,"original_broker_restart_identity_required");
             }
             write("commission-trade-input-v1.json",f.input);
@@ -144,17 +156,17 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             ProfessionJob recipe;std::string why;
             require(BuildNativeRequestedItemJob(*actor,2329,2454,1,recipe,why),"native_commission_recipe:"+why);
             require(actor->GetItemCount(2454,true)<=(f.partialStock?1u:0u),"bounded_existing_stock_no_output_removal");
-            CommissionJob job;job.agreement={"lwc-"+std::to_string(NowMs()),"isolated-direct-v1","direct",
+            CommissionJob job;job.agreement={"lwc-"+std::to_string(NowMs()),"isolated-direct-v1",f.meeting?"meeting":"direct",
                 EncodeProfessionJob(recipe),f.actor,f.customer,60,NowMs()};job.craft=job.agreement.recipe;
             job.agreement.transaction="isolated-direct-"+job.agreement.id;
             if(brokerCase) {
                 f.brokerEvent.eventId="isolated-direct-"+std::to_string(NowMs());f.brokerEvent.speakerGuid=f.customer;
                 auto& p=f.brokerProposal;p.proposalId="accepted";p.botGuid=f.actor;p.targetGuid=f.customer;
-                p.type="craft_commission";p.capabilityRef="spell:craft:2329:2454";p.delivery="direct";p.quantity=1;p.priceCopper=60;
+                p.type="craft_commission";p.capabilityRef="spell:craft:2329:2454";p.delivery=f.meeting?"meeting":"direct";p.quantity=1;p.priceCopper=60;
                 auto& candidate=f.brokerEvent.candidates[f.actor];candidate.guid=f.actor;
                 ChatDirectorCapability capability;capability.capabilityRef=p.capabilityRef;capability.type=p.type;
                 capability.itemId=2454;capability.minQuantity=capability.maxQuantity=capability.quantity=1;
-                capability.priceCopper=60;capability.deliveries={"direct"};candidate.actionCapabilities.push_back(capability);
+                capability.priceCopper=60;capability.deliveries={p.delivery};candidate.actionCapabilities.push_back(capability);
                 job.agreement.transaction="wow-tx-"+f.brokerEvent.eventId+'-'+p.proposalId;
                 job.agreement.id="lwc-"+std::to_string(std::hash<std::string>{}(job.agreement.transaction));
             }
@@ -173,6 +185,7 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             f.input.put("autonomous_travel_proof",false);f.input.put("broker_admission_proof",false);
             f.input.put("automatic_offer",automaticOffer);
             f.input.put("broker_case",brokerCase);
+            f.input.put("meeting_case",f.meeting);
             f.input.put("capacity_test",f.capacity);
             f.input.put("capacity_bank_test",f.bankCapacity);
             f.input.put("capacity_restart_test",f.capacity && bool(std::ifstream(f.bankCapacity?
@@ -245,6 +258,29 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
         if(NowMs()>=f.nextReport) {f.nextReport=NowMs()+30000;write("commission-trade-progress.json",report);}
         CommissionJob job;std::string why;
         require(DecodeCommissionJob(saved->checkpoint.data,job,why),"saved_commission_job_required");
+        if(f.meeting && job.craftFinishedRevision && !f.meetingPositioned) {
+            UnsettledClaimBatch held;if(!sLivingActivityCoordinator.ReadTaskClaims(f.actor,saved->id,saved->revision,held,why))return;
+            require(held.complete && held.claims.size()==1 && held.claims.front().itemEntry==2454 &&
+                held.claims.front().quantity==1 && held.claims.front().location=="bags","meeting_owned_output_required");
+            float x=0,y=0,z=0;bool found=false;
+            for(const auto offset:{std::pair<float,float>{40,0},{-40,0},{0,40},{0,-40}}) {
+                x=actor->GetPositionX()+offset.first;y=actor->GetPositionY()+offset.second;
+                z=actor->GetMap()->GetHeight(x,y,actor->GetPositionZ()+10.0f);
+                if(std::isfinite(z) && std::abs(z-actor->GetPositionZ())<3.0f) {found=true;break;}
+            }
+            require(found,"meeting_safe_fixture_destination_required");
+            f.input.put("meeting_start_x",actor->GetPositionX());f.input.put("meeting_start_y",actor->GetPositionY());
+            f.input.put("meeting_start_z",actor->GetPositionZ());f.input.put("meeting_map",actor->GetMapId());
+            f.input.put("meeting_target_x",x);f.input.put("meeting_target_y",y);f.input.put("meeting_target_z",z);
+            f.input.put("meeting_claim",held.claims.front().id);f.input.put("meeting_item",held.claims.front().itemGuid);
+            f.input.put("meeting_positioned",true);f.input.put("fixture_customer_placement",true);
+            f.input.put("fixture_actor_relocations",0);
+            // Disclosed fixture placement only. The customer will now remain
+            // here: the real executor must bring the crafter and its output.
+            customer->GetMotionMaster()->Clear();customer->StopMoving();customer->NearTeleportTo(x,y,z,customer->GetOrientation());
+            customer->SaveToDB();actor->SaveToDB();f.meetingPositioned=true;
+            write("commission-trade-input-v1.json",f.input);write("commission-meeting-positioned.json",f.input);return;
+        }
         if(f.capacity && !f.capacityPrepared && job.craftFinishedRevision) {
             require(!actor->GetTradeData() && !customer->GetTradeData(),"capacity_fixture_before_any_trade_window");
             UnsettledClaimBatch held;
@@ -318,9 +354,16 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
             report.put("outcome","passed");report.put("actor_money_after",actor->GetMoney());
             report.put("recipient_money_after",customer->GetMoney());report.put("revision",saved->revision);
             report.put("craft_finished_revision",job.craftFinishedRevision);
+            if(f.meeting) { actor->SaveToDB();customer->SaveToDB(); }
             write("activity-commission-trade-"+state.boot+".json",report);state.fixtureFinished=true;return;
         }
         require(!Terminal(saved->phase),"commission_trade_unexpected_terminal");
+        if(f.meeting && saved->phase==Phase::Traveling && saved->checkpoint.step=="commission_meeting" &&
+            std::ifstream("/isolated/evidence/commission-meeting-pause-before-approach")) {
+            report.put("outcome","awaiting_restart_before_native_approach");
+            report.put("meeting_revision",saved->revision);
+            write("commission-meeting-restart-checkpoint.json",report);return;
+        }
         if(f.capacity && saved->phase==Phase::Executing && saved->checkpoint.step==(f.bankCapacity?"profession_capacity_bank":"profession_capacity_sale") &&
             std::ifstream(f.bankCapacity?"/isolated/evidence/commission-bank-pause-before-dispatch":"/isolated/evidence/commission-capacity-pause-before-dispatch")) {
             report.put("outcome","awaiting_restart_before_capacity_sale");
@@ -345,6 +388,17 @@ void RunIsolatedCommissionTradeFixture(FixtureState& state,bool automaticOffer=f
         // context validation. Recovery runs first, preserving the same order.
         if(!(saved->context==ReadNativeContext(*actor,state.policyRevision,state.boot)))return;
         if(!job.craftFinishedRevision || f.offered || saved->phase==Phase::Executing)return;
+        if(f.meeting) {
+            if(!actor->IsWithinDistInMap(customer,INTERACTION_DISTANCE))return;
+            if(saved->phase!=Phase::Preparing && saved->phase!=Phase::WaitingExternal && saved->phase!=Phase::Verifying)return;
+            const auto tx=f.input.template get<float>("meeting_target_x"),ty=f.input.template get<float>("meeting_target_y");
+            const auto sx=f.input.template get<float>("meeting_start_x"),sy=f.input.template get<float>("meeting_start_y");
+            require(std::hypot(customer->GetPositionX()-tx,customer->GetPositionY()-ty)<1.0f &&
+                std::hypot(actor->GetPositionX()-sx,actor->GetPositionY()-sy)>25.0f,"native_meeting_approach_required");
+            f.input.put("autonomous_travel_proof",true);f.input.put("meeting_arrival_revision",saved->revision);
+            f.input.put("meeting_arrival_x",actor->GetPositionX());f.input.put("meeting_arrival_y",actor->GetPositionY());
+            write("commission-meeting-arrived.json",f.input);
+        }
         if(f.capacity && !f.windowOpened) {
             UnsettledClaimBatch held;if(!sLivingActivityCoordinator.ReadTaskClaims(f.actor,saved->id,saved->revision,held,why))return;
             if(held.claims.size()!=1)return;

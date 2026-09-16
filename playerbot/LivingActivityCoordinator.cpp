@@ -2629,6 +2629,16 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
     if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() ||
         !(saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot)))return stop("commission_meeting_context_changed");
     if(saved->retryAtMs>NowMs())return stop(saved->checkpoint.blocker);
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    const auto* fixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    const bool meetingFixture=fixture && std::string(fixture)=="activity-commission-direct-broker-v1" &&
+        std::ifstream("/isolated/evidence/commission-meeting-delivery");
+    if(meetingFixture && !std::ifstream("/isolated/evidence/commission-meeting-positioned.json"))
+        return stop("isolated_commission_meeting_position_pending");
+    if(meetingFixture && saved->phase==Phase::Traveling &&
+        std::ifstream("/isolated/evidence/commission-meeting-pause-before-approach"))
+        return stop("isolated_commission_meeting_restart_pause");
+#endif
     auto* customer=sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER,job.agreement.recipient));
     CommissionMeetingObservation observation;observation.recipient=job.agreement.recipient;
     const auto safety=NativeSafety(bot);
