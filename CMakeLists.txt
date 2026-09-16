@@ -167,6 +167,7 @@ if(LIVING_ISOLATED_NATIVE_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/LivingActivityNativeCommit.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/LivingProfessionVendor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotAI.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotChatDirector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotGuildSupplies.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotOrganicEconomy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/TravelNode.cpp

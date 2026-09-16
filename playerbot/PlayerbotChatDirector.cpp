@@ -38,6 +38,9 @@
 #include <set>
 #include <sstream>
 #include <thread>
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+namespace { uint32 isolatedRecoveryProbeActor = 0; }
+#endif
 
 struct GuildPolicySnapshot
 {
@@ -1663,6 +1666,9 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
     std::vector<std::string> samples;
     for (uint32 guid : sRandomPlayerbotMgr.GetChatBotGuids())
     {
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+        if (isolatedRecoveryProbeActor && guid != isolatedRecoveryProbeActor) continue;
+#endif
         Player* bot = sRandomPlayerbotMgr.GetPlayerBot(guid);
         if (!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || bot->IsBeingTeleported())
             continue;
@@ -1785,10 +1791,10 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         bool groupHasRealPlayer = false;
         if (healthGroup)
         {
-            for (GroupReference* member = healthGroup->GetFirstMember(); member; member = member->next())
+            for (const auto& member : healthGroup->GetMemberSlots())
             {
-                Player* player = member->getSource();
-                if (player && player->isRealPlayer())
+                // Offline human roster slots still protect their party.
+                if (!sRandomPlayerbotMgr.IsRandomBot(member.guid.GetCounter()))
                 {
                     groupHasRealPlayer = true;
                     break;
@@ -1801,10 +1807,29 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
             bot->GetPlayerbotAI()->HasRealPlayerMaster();
         bool airborne = movementFlags & (MOVEFLAG_FALLING | MOVEFLAG_FALLINGFAR | MOVEFLAG_FLYING |
             MOVEFLAG_LEVITATING | MOVEFLAG_HOVER | MOVEFLAG_SWIMMING);
+        const bool activityOwned = sLivingActivityCoordinator.MovementCommitmentBlocksRecovery(bot->GetGUIDLow()) ||
+            sPlayerbotRendezvousManager.BlocksAutonomousPartyWork(bot->GetGUIDLow());
         bool excluded = !bot->IsAlive() || bot->IsInCombat() || bot->IsTaxiFlying() || bot->IsInWater() ||
             bot->IsNonMeleeSpellCasted(false) || bot->GetTransport() || playerStay || airborne ||
             humanDirectedGroup || botOnlyGroupFollower ||
-            sPlayerbotRendezvousManager.BlocksAutonomousPartyWork(bot->GetGUIDLow());
+            activityOwned;
+        const auto pauseStart = state.recoveryPause.since;
+        const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+        const auto pausedMs = LivingActivity::UpdateRecoveryPause(state.recoveryPause, nowMs, excluded);
+        if (pausedMs)
+        {
+            // Only the watchdog clock is rebased. Actual gameplay timestamps,
+            // quest progress and the winning owner's native route stay intact.
+            const auto rebase = [&](std::chrono::steady_clock::time_point& stamp)
+            {
+                if (!stamp.time_since_epoch().count()) return;
+                const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(stamp.time_since_epoch()).count();
+                stamp += std::chrono::milliseconds(nowMs - std::max<int64_t>(pauseStart, millis));
+            };
+            rebase(state.recoveryStartedAt);
+            rebase(state.lastTravelAdvance);
+            state.recoveryAvailableSince = now;
+        }
         bool expectsMovement = lowered.find("move") != std::string::npos || lowered.find("travel") != std::string::npos ||
             lowered.find("quest") != std::string::npos || lowered.find("rpg") != std::string::npos;
         // Position changes alone are not meaningful progression. Bots that
@@ -1847,8 +1872,10 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
             // or an authoritative terminal outcome is observed.
             state.lastMeaningfulProgress = now;
         }
-        long stillSeconds = std::chrono::duration_cast<std::chrono::seconds>(now - state.lastMoved).count();
-        long progressSeconds = std::chrono::duration_cast<std::chrono::seconds>(now - state.lastMeaningfulProgress).count();
+        long stillSeconds = std::chrono::duration_cast<std::chrono::seconds>(now -
+            std::max(state.lastMoved, state.recoveryAvailableSince)).count();
+        long progressSeconds = std::chrono::duration_cast<std::chrono::seconds>(now -
+            std::max(state.lastMeaningfulProgress, state.recoveryAvailableSince)).count();
         long gameplayProgressSeconds = std::chrono::duration_cast<std::chrono::seconds>(
             now - state.lastGameplayProgress).count();
         uint32 stalledQuestId = 0;
@@ -1918,7 +1945,7 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         // Recovery may have selected a quest before ordinary travel selected a
         // trainer. Release that stale recovery ownership without resetting the
         // new target, teaching spells, or recording an errand completion.
-        if (activeTrainingRoute && state.recoveryStep > 0)
+        if ((activeTrainingRoute || activityOwned || humanDirectedGroup) && state.recoveryStep > 0)
         {
             state.recoveryStep = 0;
             state.questItemFollowup = false;
@@ -1926,7 +1953,7 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
             state.recoveryStartedAt = std::chrono::steady_clock::time_point();
             state.recoveryInteractionAttempts = 0;
             state.lastRecoveryInteraction = std::chrono::steady_clock::time_point();
-            state.recoveryResult = "yielded_to_training_route";
+            state.recoveryResult = activeTrainingRoute ? "yielded_to_training_route" : "yielded_to_activity_owner";
         }
         bool suspected = !excluded && !activeTrainingRoute &&
             (movementStalled || actionStarved || questStalled || inventoryStalled);
@@ -1935,6 +1962,8 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         else if (bot->IsInCombat()) classification = "combat";
         else if (bot->IsTaxiFlying() || bot->GetTransport()) classification = "transport";
         else if (playerStay || humanDirectedGroup || botOnlyGroupFollower) classification = "group_wait";
+        else if (activityOwned) classification = "activity_owned";
+        else if (excluded) classification = "safety_pause";
         else if (activeTrainingRoute) classification = "training_trip";
         else if (inventoryStalled) classification = "inventory_blocked";
         else if (questStalled) classification = "completed_quest_awaiting_turn_in";
@@ -1947,8 +1976,8 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         // recovery step on the world thread. Resetting the travel target makes
         // normal quest/travel strategies choose again without teleporting or
         // modifying authoritative quest state.
-        const bool recoveryExecutionScope = globalRecovery ||
-            (sPlayerbotAIConfig.chatDirectorBotRecoveryMode == 1 && recoveryCanary);
+        const bool recoveryExecutionScope = !excluded && (globalRecovery ||
+            (sPlayerbotAIConfig.chatDirectorBotRecoveryMode == 1 && recoveryCanary));
         const bool recoveryAttemptEligible = recoveryExecutionScope &&
             (!globalRecovery || recoveryCanary || recoverySweepMember);
         TravelTarget* inFlightRecoveryTarget = observedTravelTarget;
@@ -1967,11 +1996,11 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         bool recoveryGameplayTimedOut = state.recoveryStep == 7 && !excluded &&
             recoveryAgeSeconds >= (long)sPlayerbotAIConfig.chatDirectorRecoveryNoProgressSeconds &&
             state.lastGameplayProgress < state.recoveryStartedAt;
-        bool recoveryRouteTerminal = state.recoveryStep > 0 &&
-            (inFlightRecoveryStatus == TravelStatus::TRAVEL_STATUS_NONE ||
+        bool recoveryRouteTerminal = LivingActivity::RecoveryMayEndRoute(excluded, state.recoveryStep > 0,
+            inFlightRecoveryStatus == TravelStatus::TRAVEL_STATUS_NONE ||
              inFlightRecoveryStatus == TravelStatus::TRAVEL_STATUS_COOLDOWN ||
-             inFlightRecoveryStatus == TravelStatus::TRAVEL_STATUS_EXPIRED ||
-             recoveryPrepareTimedOut || recoveryMovementTimedOut || recoveryGameplayTimedOut);
+             inFlightRecoveryStatus == TravelStatus::TRAVEL_STATUS_EXPIRED,
+             recoveryPrepareTimedOut, recoveryMovementTimedOut, recoveryGameplayTimedOut);
         if (recoveryRouteTerminal)
         {
             bool alternateGoalRequested = false;
@@ -2608,7 +2637,11 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         body << "]}";
         payloads.push_back(body.str());
     }
-    if (!payloads.empty())
+    if (!payloads.empty()
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+        && !isolatedRecoveryProbeActor
+#endif
+    )
     {
         std::thread([payloads]() {
             std::vector<std::string> debug;
@@ -2617,6 +2650,47 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         }).detach();
     }
 }
+
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+std::string PlayerbotChatDirector::IsolatedRecoveryProbe(Player* bot)
+{
+    const char* environment = std::getenv("LIVING_WOW_TEST_ENVIRONMENT");
+    std::ifstream marker("/isolated/ENVIRONMENT"); std::string value; std::getline(marker,value);
+    if (!environment || std::string(environment)!="isolated-migration" || value!="isolated-migration-v1" ||
+        !bot || !bot->IsInWorld() || sWorld.GetActiveAndQueuedSessionCount())
+        throw std::runtime_error("isolated_recovery_probe_guard");
+    const uint32 guid=bot->GetGUIDLow();
+    const auto oldHealth=botHealth[guid]; const auto oldSample=nextHealthSample;
+    const auto oldMode=sPlayerbotAIConfig.chatDirectorBotRecoveryMode;
+    const auto oldCanaries=sPlayerbotAIConfig.chatDirectorRecoveryCanaryBotGuids;
+    struct Restore {
+        std::function<void()> restore;
+        ~Restore(){restore();}
+    } restore{[&]{ botHealth[guid]=oldHealth;nextHealthSample=oldSample;isolatedRecoveryProbeActor=0;
+        sPlayerbotAIConfig.chatDirectorBotRecoveryMode=oldMode;
+        sPlayerbotAIConfig.chatDirectorRecoveryCanaryBotGuids=oldCanaries; }};
+    const auto now=std::chrono::steady_clock::now();
+    auto& health=botHealth[guid];health=BotHealthState{};
+    health.lastLevel=bot->GetLevel();health.lastXp=bot->GetUInt32Value(PLAYER_XP);
+    health.questProgressSignature=GetProgressionQuestSnapshot(bot).signature;
+    health.x=bot->GetPositionX();health.y=bot->GetPositionY();
+    health.lastMoved=health.lastMeaningfulProgress=health.lastGameplayProgress=now;
+    health.recoveryStep=7;health.recoveryStartedAt=now-std::chrono::hours(1);
+    health.lastTravelAdvance=health.recoveryStartedAt;
+    nextHealthSample={};isolatedRecoveryProbeActor=guid;
+    sPlayerbotAIConfig.chatDirectorBotRecoveryMode=1;
+    sPlayerbotAIConfig.chatDirectorRecoveryCanaryBotGuids={guid};
+    auto* target=bot->GetPlayerbotAI()->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get();
+    const auto route=target->GetRouteRevision();
+    MaybeReportBotHealth(now);
+    boost::property_tree::ptree report;
+    report.put("step",health.recoveryStep);report.put("result",health.recoveryResult);
+    report.put("failure_streak",health.recoveryFailureStreak);report.put("objective_failures",health.objectiveRouteFailures);
+    report.put("attempts",health.recoveryAttempts.size());report.put("route_before",route);
+    report.put("route_after",target->GetRouteRevision());report.put("paused",health.recoveryPause.paused);
+    std::ostringstream out;boost::property_tree::write_json(out,report,false);return out.str();
+}
+#endif
 
 void PlayerbotChatDirector::MaybeReportPartyActivity(std::chrono::steady_clock::time_point now)
 {

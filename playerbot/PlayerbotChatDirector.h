@@ -8,6 +8,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include "LivingProgressionRecovery.h"
 
 class Player;
 struct ChatDirectorActionProposal;
@@ -188,6 +189,8 @@ public:
     void ObservePartyJoin(Player* bot, Player* inviter);
     bool HandleGuildAddonMessage(Player* receiverBot, Player* sender, const std::string& message);
     void Update();
+    // Implemented only in the isolated fixture binary; never a chat capability.
+    std::string IsolatedRecoveryProbe(Player* bot);
 
 private:
     struct ActiveRequest
@@ -223,6 +226,8 @@ private:
 
     struct BotHealthState
     {
+        LivingActivity::RecoveryPauseClock recoveryPause;
+        std::chrono::steady_clock::time_point recoveryAvailableSince;
         float x = 0.0f;
         float y = 0.0f;
         std::chrono::steady_clock::time_point lastMoved;

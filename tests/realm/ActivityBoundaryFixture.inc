@@ -46,10 +46,14 @@ namespace {
 #include "ActivityGuildAdmissionFixture.inc"
 #include "ActivitySkinningSourceFixture.inc"
 #include "ActivityServicesObservation.inc"
+#include "ActivityProgressionHandoffFixture.inc"
 
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(requested && std::string(requested)=="activity-progression-handoff-v1") {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedProgressionHandoff(*state);return;
+    }
     if(requested && std::string(requested)=="activity-commission-direct-broker-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedCommissionTradeFixture(*state,true,true);return;
     }

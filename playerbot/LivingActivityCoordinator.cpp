@@ -1,6 +1,7 @@
 #include "botpch.h"
 #include "Database/DatabaseImpl.h"
 #include "LivingActivityCoordinator.h"
+#include "LivingProgressionRecovery.h"
 #include "LivingActivity.h"
 #include "LivingActivityAdmission.h"
 #include "LivingCommissionAdmission.h"
@@ -3197,6 +3198,12 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
 
 bool LivingActivityCoordinator::EffectEnforcementEnabled() const {
     return state->enforceEffects.load(std::memory_order_acquire);
+}
+
+bool LivingActivityCoordinator::MovementCommitmentBlocksRecovery(uint32_t actor) const {
+    if(!EffectEnforcementEnabled())return false;
+    if(!OnWorldThread())return true;
+    return LivingActivity::MovementCommitmentBlocksRecovery(state->authority.Read(actor));
 }
 
 bool LivingActivityCoordinator::DefersNativeSave(uint32_t actor) const {

@@ -48,6 +48,9 @@ public:
         const std::string& key, LivingActivity::ActivityLease& identity) const;
     bool OnWorldThread() const;
     bool EffectEnforcementEnabled() const;
+    // Read-only world-thread owner check for ordinary progression watchdogs.
+    // Accepted-but-waiting tasks without a movement lease do not block leveling.
+    bool MovementCommitmentBlocksRecovery(uint32_t actor) const;
     // Read-only native full-save guard. The actor-ID projection survives AI
     // object replacement; no Player/Map pointers or DB query cross threads.
     bool DefersNativeSave(uint32_t actor) const;
