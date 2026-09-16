@@ -41,6 +41,8 @@ void RunIsolatedProgressionHandoff(FixtureState& state) {
         if(!bot || !bot->IsInWorld() || !bot->GetPlayerbotAI() || NativeSafety(bot))return;
         if(!state.bindings.count(f.actor))return;
         auto& coordinator=sLivingActivityCoordinator;
+        const bool oldEnforcement=state.enforceEffects.exchange(true);
+        struct Restore { std::function<void()> fn;~Restore(){fn();} } restore{[&]{state.enforceEffects.store(oldEnforcement);}};
         if(f.stage==0) {
             require(!bot->GetGroup(),"actor_initially_ungrouped");
             require(!state.authority.Read(f.actor).lease.actor,"actor_initially_unowned");
@@ -63,8 +65,6 @@ void RunIsolatedProgressionHandoff(FixtureState& state) {
             f.stage=2;return;
         }
         if(f.stage==3){require(saved->phase==Phase::Cancelled,"fixture_cancel_acknowledged");finish(true,"");return;}
-        const bool oldEnforcement=state.enforceEffects.exchange(true);
-        struct Restore { std::function<void()> fn;~Restore(){fn();} } restore{[&]{state.enforceEffects.store(oldEnforcement);}};
         const auto grant=coordinator.AcquireSavedTask(saved->id,saved->revision,
             Mask(Effect::Movement)|Mask(Effect::TravelTarget),60000,"isolated_progression_fixture");
         require(grant.Permitted(),"saved_service_lease_acquired");
