@@ -31,6 +31,7 @@ public:
     // Reads the acknowledged saved root and acquires its existing authority.
     LivingActivity::ServiceTravelResult ReachSavedService(uint32 actor,const std::string& task,
         uint64 revision,LivingActivity::ServiceDestination service);
+    void ReleaseSavedService(uint32 actor,const std::string& root);
 
 private:
     struct Policy

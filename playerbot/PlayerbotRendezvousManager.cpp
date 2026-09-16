@@ -311,6 +311,9 @@ namespace
     uint32 GroundedSettlementErrandMask(Player* bot)
     {
         uint32 requested = PersonalErrandMask(bot);
+        // A full bag is a dependency of an accepted parcel, not a reason to
+        // forget that parcel. The saved executor owns capacity preparation.
+        if(bot && sLivingActivityCoordinator.SelectPartyMailService(bot->GetGUIDLow())) requested|=kErrandMail;
         uint32 grounded = 0;
         const uint32 errands[] = {kErrandVendor, kErrandRepair, kErrandBank,
             kErrandMail, kErrandAuction, kErrandProfession, kErrandTraining};
@@ -1413,6 +1416,15 @@ bool PlayerbotRendezvousManager::ResumePartyAssist(Player* bot, Player* player, 
     if (session.groupId != bot->GetGroup()->GetId())
         return false;
 
+    if (session.state=="free_time" && !session.managedService.root.empty())
+    {
+        // Recall is a permission revocation, not destruction of the saved
+        // parcel or its atomic receipt. The shared branch performs safe yield.
+        session.freeTimeRecallRequested=true;
+        session.reason=reason;
+        PersistPartySession(session);
+        return true;
+    }
     if (bot->IsInCombat())
     {
         if (session.state != "free_time")
@@ -1523,6 +1535,7 @@ bool PlayerbotRendezvousManager::BeginPartyFreeTime(Player* bot, Player* player,
     session.currentErrandLocal = false;
     session.currentErrandId.clear();
     session.errands.clear();
+    session.managedService = {};
     if (!errandSequence) errandSequence = uint64(time(nullptr)) * 1000000ULL;
     const uint32 bundleTasks[] = {kErrandVendor, kErrandRepair, kErrandBank,
         kErrandMail, kErrandAuction, kErrandProfession, kErrandTraining};
@@ -1611,7 +1624,56 @@ bool PlayerbotRendezvousManager::HasVerifiedErrandRoute(uint32 botGuid) const
     auto found = partySessions.find(botGuid);
     return sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands && found != partySessions.end() &&
         found->second.state == "free_time" && found->second.currentErrand &&
+        found->second.managedService.root.empty() &&
         !found->second.currentErrandLocal && !found->second.freeTimeRecallRequested;
+}
+
+std::optional<LivingActivity::PartyServiceBinding> PlayerbotRendezvousManager::PartyServiceStatus(uint32 actor) const
+{
+    if (!sLivingActivityCoordinator.OnWorldThread()) return {};
+    const auto found=partySessions.find(actor);
+    if(found==partySessions.end() || found->second.managedService.root.empty())return {};
+    return found->second.managedService;
+}
+
+std::optional<LivingActivity::PartyServiceBinding> PlayerbotRendezvousManager::ReadPartyService(
+    Player* bot,const LivingActivity::Task& task,uint32 effects) const
+{
+    using namespace LivingActivity;
+    if (!sLivingActivityCoordinator.OnWorldThread() || !bot || !bot->IsInWorld() ||
+        !bot->GetGroup() || !bot->GetMap() || bot->GetMap()->IsDungeon() || bot->InBattleGround() ||
+        !PartyServiceEffects(effects)) return {};
+    const auto found=partySessions.find(bot->GetGUIDLow());
+    if (found==partySessions.end()) return {};
+    const auto& session=found->second;
+    const auto now=std::chrono::steady_clock::now();
+    if (session.state!="free_time" || session.currentErrand!=kErrandMail || session.freeTimeRecallRequested ||
+        session.groupId!=bot->GetGroup()->GetId() ||
+        (session.freeTimeUntil.time_since_epoch().count() && now>=session.freeTimeUntil) ||
+        (session.automaticErrandHardDeadline.time_since_epoch().count() && now>=session.automaticErrandHardDeadline)) return {};
+    Player* human=sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER,session.playerGuid));
+    if (!human || !human->isRealPlayer() || !human->IsInWorld() || !human->IsAlive() ||
+        human->GetGroup()!=bot->GetGroup() || !human->GetGroup()->IsLeader(human->GetObjectGuid()) ||
+        human->IsInCombat() || human->IsBeingTeleported() || human->IsTaxiFlying() || human->GetTransport() ||
+        human->InBattleGround() || !human->GetMap() || human->GetMap()->IsDungeon() ||
+        human->GetMapId()!=session.freeTimePlayerMapId || human->GetInstanceId()!=session.freeTimePlayerInstanceId ||
+        human->GetZoneId()!=session.freeTimePlayerZoneId || sServerFacade.GetAreaId(human)!=session.freeTimePlayerAreaId) return {};
+    PartyServiceWindow window;
+    window.actor=bot->GetGUIDLow();window.human=human->GetGUIDLow();window.authorized=true;
+    window.session="group:"+std::to_string(bot->GetGroup()->GetId())+":"+
+        std::to_string(bot->GetGroup()->GetLivingActivityIdentity());
+    window.sessionRevision=bot->GetGroup()->GetLivingActivityRevision();
+    return PartyServiceMatches(session.managedService,task,window) ?
+        std::optional<PartyServiceBinding>(session.managedService) : std::nullopt;
+}
+
+void PlayerbotRendezvousManager::RecordPartyServiceReceipt(const LivingActivity::Task& task,
+    const std::string& kind,const LivingActivity::ResourceClaim& claim,const std::string& receipt)
+{
+    if (!sLivingActivityCoordinator.OnWorldThread()) return;
+    const auto found=partySessions.find(task.actor);
+    if (found!=partySessions.end())
+        LivingActivity::PartyServiceReceipt(found->second.managedService,task,kind,claim,receipt);
 }
 
 bool PlayerbotRendezvousManager::FindClassTrainingDestination(Player* bot,
@@ -2382,8 +2444,15 @@ bool PlayerbotRendezvousManager::StartNextVerifiedErrand(PartySession& session, 
     const uint32 priorities[] = {kErrandTraining, kErrandVendor, kErrandRepair, kErrandBank,
         kErrandMail, kErrandAuction, kErrandProfession};
     session.currentErrand = 0;
+    session.managedService = {};
     for (uint32 task : priorities)
         if (remaining & task) { session.currentErrand = task; break; }
+    const auto acceptedMail=(remaining & kErrandMail) ?
+        sLivingActivityCoordinator.SelectPartyMailService(session.botGuid) :
+        std::optional<LivingActivity::PartyServiceBinding>{};
+    // Already accepted goods precede speculative maintenance. Any capacity
+    // prerequisite stays under this parcel's root rather than racing it.
+    if(acceptedMail)session.currentErrand=kErrandMail;
     session.automaticErrandMask = remaining;
     if (!session.currentErrand) return false;
     PartySettlementErrand& taskRecord = session.errands[session.currentErrand];
@@ -2397,6 +2466,32 @@ bool PlayerbotRendezvousManager::StartNextVerifiedErrand(PartySession& session, 
     session.currentErrandId = taskRecord.taskId;
     taskRecord.phase = PartyActivityPhase::preparing;
     taskRecord.outcomeCode.clear();
+    if (session.currentErrand==kErrandMail && bot && bot->GetGroup())
+    {
+        auto selected=acceptedMail;
+        if (selected)
+        {
+            selected->human=session.playerGuid;
+            selected->session="group:"+std::to_string(bot->GetGroup()->GetId())+":"+
+                std::to_string(bot->GetGroup()->GetLivingActivityIdentity());
+            selected->sessionRevision=bot->GetGroup()->GetLivingActivityRevision();
+            session.managedService=*selected;
+            const auto saved=sLivingActivityCoordinator.ReadSavedTask(selected->root);
+            if (saved && ReadPartyService(bot,*saved))
+            {
+                // No legacy route or action is installed. The existing shared
+                // due queue drives this original job and its exact parcel.
+                session.errandBefore=ObserveErrandState(bot);
+                taskRecord.before=session.errandBefore;
+                taskRecord.outcomeCode="shared_mail_service_admitted";
+                session.currentErrandLocal=true;
+                session.errandOperationAccepted=false;
+                PersistPartySession(session);
+                return true;
+            }
+            session.managedService={};
+        }
+    }
     if (!(PersonalErrandMask(bot) & session.currentErrand))
     {
         session.errandBefore = ObserveErrandState(bot);
@@ -2783,6 +2878,7 @@ void PlayerbotRendezvousManager::FinishCurrentErrand(PartySession& session, Play
     session.currentErrandLocal = false;
     session.currentErrandId.clear();
     session.errandOperationAccepted = false;
+    session.managedService = {};
     session.errandRelocationPending = false;
     session.errandLastDistance = -1.0f;
     if (continueTraining)
@@ -2801,6 +2897,24 @@ void PlayerbotRendezvousManager::UpdateVerifiedErrand(PartySession& session, Pla
     Player* player, std::chrono::steady_clock::time_point now)
 {
     if (!bot || !player) { session.freeTimeRecallRequested = true; return; }
+    if (!session.managedService.root.empty())
+    {
+        const auto saved=sLivingActivityCoordinator.ReadSavedTask(session.managedService.root);
+        const bool completed=!session.managedService.receipt.empty();
+        const bool deferred=saved && (saved->phase==LivingActivity::Phase::Deferred ||
+            saved->phase==LivingActivity::Phase::WaitingExternal);
+        if (completed || deferred || !saved || !ReadPartyService(bot,*saved))
+        {
+            if(bot->IsInCombat() || bot->IsBeingTeleported() || bot->IsTaxiFlying() ||
+                bot->GetTransport() || bot->IsNonMeleeSpellCasted(false)) return;
+            // Do not discard an atomic journal/save fence to satisfy recall.
+            if (!sLivingActivityCoordinator.YieldPartyService(session.botGuid,session.managedService.root)) return;
+            session.freeTimeRecallRequested=true;
+            FinishCurrentErrand(session,bot,completed,completed ? "verified_mail_collection" :
+                deferred ? "party_service_deferred" : "party_service_permission_ended");
+        }
+        return;
+    }
     // Both same-map and cross-map teleports await an acknowledgement. Do not
     // issue movement or service interactions against the pre-transfer position.
     if (bot->IsBeingTeleported()) return;

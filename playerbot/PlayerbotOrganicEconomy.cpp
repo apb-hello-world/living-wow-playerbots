@@ -619,6 +619,14 @@ bool PlayerbotOrganicEconomy::HasOwnedLocalServiceApproach(uint32 guid,const Wor
         ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)))==AuthorityCode::Allowed;
 }
 
+void PlayerbotOrganicEconomy::ReleaseSavedService(uint32 actor,const std::string& root)
+{
+    if(!sLivingActivityCoordinator.OnWorldThread())return;
+    const auto trip=serviceTrips.find(actor);
+    if(trip!=serviceTrips.end() && trip->second.managedTask.root==root)
+        ReleaseRecipeService(actor,"party_service_yield");
+}
+
 void PlayerbotOrganicEconomy::ReleaseRecipeService(uint32 guid, const std::string& reason)
 {
     auto found=serviceTrips.find(guid);if(found==serviceTrips.end()) return;

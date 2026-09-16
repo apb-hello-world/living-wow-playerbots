@@ -14,6 +14,7 @@
 #include "LivingProfessionEvidence.h"
 #include "LivingProfessionEconomy.h"
 #include "LivingGuildDelivery.h"
+#include "LivingPartyService.h"
 #include <optional>
 class PlayerbotAI;
 class WorldPacket;
@@ -51,6 +52,10 @@ public:
     // Read-only world-thread owner check for ordinary progression watchdogs.
     // Accepted-but-waiting tasks without a movement lease do not block leveling.
     bool MovementCommitmentBlocksRecovery(uint32_t actor) const;
+    // Admission uses acknowledged task/claim cache and real delivered mail;
+    // selecting a candidate performs no native effect or task reassignment.
+    std::optional<LivingActivity::PartyServiceBinding> SelectPartyMailService(uint32_t actor) const;
+    bool YieldPartyService(uint32_t actor,const std::string& root);
     // Read-only native full-save guard. The actor-ID projection survives AI
     // object replacement; no Player/Map pointers or DB query cross threads.
     bool DefersNativeSave(uint32_t actor) const;

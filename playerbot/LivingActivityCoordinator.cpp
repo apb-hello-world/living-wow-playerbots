@@ -157,6 +157,21 @@ namespace {
                 return member && member->isRealPlayer();
             });
     }
+    const char* SavedPartyBlocker(Player& bot,const Task& task,uint32_t effects=0) {
+        const auto protection=NativePartyProtection(bot);
+        if(protection==PartyProtection::Human &&
+            sPlayerbotRendezvousManager.ReadPartyService(&bot,task,effects))return "";
+        return PartyAdmissionBlocker(protection,PartyAdmission::SavedExecutor,false);
+    }
+    const char* PartyOperationBlocker(Player& bot,const OperationRequest& request) {
+        const auto& task=request.transition.task;
+        const auto protection=NativePartyProtection(bot);
+        if(protection!=PartyProtection::Human)
+            return PartyAdmissionBlocker(protection,PartyAdmission::SavedExecutor,false);
+        const auto scope=sPlayerbotRendezvousManager.ReadPartyService(&bot,task,request.effects);
+        return scope && PartyServiceOperation(*scope,request.kind,request.itemTransfer) ? "" :
+            "party_service_operation_not_authorized";
+    }
     uint32_t NativeSafety(Player* bot) {
         return ReadNativeSafety(*bot, MovementFlags(MOVEFLAG_FALLING | MOVEFLAG_FALLINGFAR));
     }
@@ -926,7 +941,14 @@ struct LivingActivityCoordinator::State {
                         const auto binding = bindings.find(held.actor);
                         if (binding != bindings.end()) binding->second.publisher.Publish(authority.Read(held.actor));
                         ++nativeOutcomes;
-                        if (operation->second.outcome == OperationState::Verified) ++nativeVerifiedResults;
+                        if (operation->second.outcome == OperationState::Verified) {
+                            ++nativeVerifiedResults;
+                            if(claimProjectionValid && !operation->second.saveBlocked) {
+                                const auto& request=operation->second.request;
+                                sPlayerbotRendezvousManager.RecordPartyServiceReceipt(acknowledgedWrite.task,
+                                    request.kind,request.itemTransfer,operation->first);
+                            }
+                        }
                         // Uncertainty remains visible and cannot be replayed.
                         // A domain reconciler must resolve the native references.
                         if (operation->second.uncertain) operation->second.ready = false;
@@ -1552,6 +1574,14 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
             p.put("party_commitment.roster", Name(roster));
             p.put("party_commitment.saved_executor_blocker", PartyAdmissionBlocker(roster, PartyAdmission::SavedExecutor, false));
             p.put("party_commitment.safe_service_window", sPlayerbotRendezvousManager.HasSafePartyServiceWindow(bot));
+            if(const auto service=sPlayerbotRendezvousManager.PartyServiceStatus(guid)) {
+                p.put("party_commitment.service_root",service->root);
+                p.put("party_commitment.service_claim",service->claim);
+                p.put("party_commitment.service_receipt",service->receipt);
+                const auto task=ReadSavedTask(service->root);
+                p.put("party_commitment.service_authorized",task && bool(sPlayerbotRendezvousManager.ReadPartyService(bot,*task)));
+                if(task)p.put("party_commitment.saved_executor_blocker",SavedPartyBlocker(*bot,*task));
+            }
         }
     }
     const auto lease=state->authority.Read(guid);
@@ -2261,7 +2291,9 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         ItemGainSpec capacity;
         if(NativeCapacityNeed(*bot,*saved,batch,capacity,blocker))return prepareCapacity();
         if(blocker!="capacity_already_available")return stop(blocker);
-        for (const auto& claim : batch.claims) if (ValidMailTransfer(claim) && claim.itemEntry==need.entry) {
+        const auto partyService=sPlayerbotRendezvousManager.ReadPartyService(bot,*saved);
+        for (const auto& claim : batch.claims) if (ValidMailTransfer(claim) && claim.itemEntry==need.entry &&
+            (!partyService || claim.id==partyService->claim)) {
             if(!bot->IsStopped()) return beginService(ServiceDestination::Mailbox);
             NativeMailQuote quote;
             if (!PlanNativeMailCollection(*bot,*saved,claim,quote,blocker)) {
@@ -3128,6 +3160,11 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return advance(Phase::Reconciling);
     }
     if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
+    if(NativePartyProtection(*bot)==PartyProtection::Human) {
+        const auto scope=sPlayerbotRendezvousManager.ReadPartyService(bot,*saved);
+        if(!scope)return stop("human_party_executor_not_migrated");
+        return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{scope->entry,1}).blocker);
+    }
     ProfessionSnapshot snapshot;std::string blocker;
     if (!ReadProfessionSnapshot(actor,id,saved->revision,snapshot,blocker)) return stop(blocker);
     const auto next=NextProfessionStep(*saved,snapshot);
@@ -3204,6 +3241,51 @@ bool LivingActivityCoordinator::MovementCommitmentBlocksRecovery(uint32_t actor)
     if(!EffectEnforcementEnabled())return false;
     if(!OnWorldThread())return true;
     return LivingActivity::MovementCommitmentBlocksRecovery(state->authority.Read(actor));
+}
+
+std::optional<PartyServiceBinding> LivingActivityCoordinator::SelectPartyMailService(uint32_t actor) const {
+    if(!OnWorldThread() || !EffectEnforcementEnabled() || !state->loaded ||
+        !state->resources.Protection().ready || DefersNativeSave(actor))return {};
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->IsInWorld() || !bot->GetPlayerbotAI() || NativeSafety(bot))return {};
+    for(const auto& write:state->pending)if(write.task.actor==actor)return {};
+    for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)return {};
+    const Task* chosen=nullptr;ResourceClaim parcel;
+    for(const auto& row:state->cache) {
+        const auto& task=row.second;
+        if(task.actor!=actor || task.id!=task.root || task.kind!=Kind::Profession ||
+            !task.accepted || task.mode!=Mode::Active || Terminal(task.phase) ||
+            task.phase==Phase::Executing || !IsProfessionJob(task))continue;
+        UnsettledClaimBatch claims;std::string why;
+        if(!state->resources.ReadUnsettled(task.id,claims,why) || !claims.complete)continue;
+        for(const auto& claim:claims.claims) {
+            if(!ValidMailTransfer(claim))continue;
+            const auto* mail=bot->GetMail(uint32_t(claim.nativeReference));
+            NativeResourceBalance physical;
+            if(!mail || mail->COD || mail->deliver_time>time(nullptr) ||
+                !ReadNativeMailBalance(*bot,claim,physical))continue;
+            if(!chosen || Before(task,*chosen) || (task.id==chosen->id && claim.id<parcel.id)) {
+                chosen=&task;parcel=claim;
+            }
+        }
+    }
+    if(!chosen)return {};
+    PartyServiceBinding selected;selected.actor=actor;selected.root=chosen->id;
+    selected.acceptedRevision=chosen->revision;selected.claim=parcel.id;selected.entry=parcel.itemEntry;
+    return selected;
+}
+
+bool LivingActivityCoordinator::YieldPartyService(uint32_t actor,const std::string& root) {
+    if(!OnWorldThread() || DefersNativeSave(actor))return false;
+    for(const auto& write:state->pending)if(write.task.actor==actor)return false;
+    for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor && op.second.dispatched)return false;
+    const auto owned=state->authority.Read(actor);
+    if(!owned.operation.empty())return false;
+    // An acknowledged but undispatched intent remains on the SAME saved job;
+    // recalling the bot never erases it or invents a rejected native effect.
+    sPlayerbotOrganicEconomy.ReleaseSavedService(actor,root);
+    if(owned.lease.rootTask==root)ReleaseTaskLease(owned.lease);
+    return true;
 }
 
 bool LivingActivityCoordinator::DefersNativeSave(uint32_t actor) const {
@@ -3520,7 +3602,7 @@ AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint3
     if(history.interruptedCapacity && saved->second.phase==Phase::Executing) {
         if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || LivingServiceExecution::Busy(bot))
             return reject(AdmissionCode::NotReady,"capacity_restart_safety_pause");
-        const auto party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+        const auto party=SavedPartyBlocker(*bot,saved->second);
         if(*party)return reject(AdmissionCode::NotReady,party);
         InterruptedCapacityIntent before;ProfessionPreparation prepared;
         if(!DecodeInterruptedCapacityIntent(saved->second,*history.interruptedCapacity,before,blocker) ||
@@ -3549,7 +3631,7 @@ AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint3
         state->nextWork=0;return reject(AdmissionCode::Pending);
     }
     if(history.interruptedMail && saved->second.phase==Phase::Executing) {
-        const auto partyBlocker=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+        const auto partyBlocker=SavedPartyBlocker(*bot,saved->second);
         if(*partyBlocker) return reject(AdmissionCode::NotReady,partyBlocker);
         NativeMailQuote before;MailRecoverySnapshot native;ProfessionPreparation prepared;
         if(!state->resources.ReadUnsettled(id,batch,blocker) ||
@@ -3608,7 +3690,7 @@ AdmissionResult LivingActivityCoordinator::RevalidateProfessionPreparation(uint3
     // Completed native work is settled from its receipts, never replayed as preparation.
     if (NextProfessionStep(rebound,snapshot).step==ProfessionStep::Finalize)
         return SettleProfessionJobImpl(actor,id,expectedRevision,receipt,true);
-    const auto partyBlocker=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+    const auto partyBlocker=SavedPartyBlocker(*bot,saved->second);
     if (*partyBlocker) return reject(AdmissionCode::ReconciliationRequired,partyBlocker);
     if (!state->resources.ReadUnsettled(id,batch,blocker)) return reject(AdmissionCode::ReconciliationRequired,blocker);
     try {
@@ -4421,12 +4503,14 @@ LivingActivityCoordinator::TaskGrant LivingActivityCoordinator::AcquireSavedTask
     if (!bot || !bot->GetPlayerbotAI()) { result.blocker = "actor_not_available"; return result; }
     const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
     if (!SavedTaskExecutable(saved->second, revision, current, NowMs(), result.blocker)) return result;
-    result.blocker = PartyAdmissionBlocker(NativePartyProtection(*bot), PartyAdmission::SavedExecutor, false);
+    result.blocker = SavedPartyBlocker(*bot,saved->second,effects);
     if (!result.blocker.empty()) return result;
     RefreshPermission(saved->second.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
     const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-    result.authority = state->authority.Acquire(saved->second, effects, monotonic, durationMs);
+    auto admitted=saved->second;
+    if(sPlayerbotRendezvousManager.ReadPartyService(bot,admitted,effects)) admitted.priority=Priority::Human;
+    result.authority = state->authority.Acquire(admitted, effects, monotonic, durationMs);
     if (!result.authority.Granted()) { result.blocker = Name(result.authority.code); return result; }
     state->compatibilityActors.erase(saved->second.actor);
     result.task = saved->second; result.task.ownerGeneration = result.authority.lease.generation;
@@ -4523,6 +4607,8 @@ AdmissionResult LivingActivityCoordinator::SubmitOperationIntent(const Operation
     std::string blocker;
     if (!ValidateOperationRequest(request, saved->second, current, root == state->cache.end() ? nullptr : &root->second, NowMs(), blocker))
         return reject(AdmissionCode::InvalidRequest, blocker);
+    if(const auto party=PartyOperationBlocker(*bot,request);*party)
+        return reject(AdmissionCode::StaleContext,party);
     RefreshPermission(next.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
     auto predecessor = saved->second; predecessor.ownerGeneration = request.authorization.ownerGeneration;
     const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -4586,6 +4672,8 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
         saved->second.phase != Phase::Executing || !grant.Permitted() || grant.action.task != intended.id ||
         grant.action.revision != intended.revision || (request.effects & ~grant.action.permittedEffects))
         return reject(AdmissionCode::StaleRevision, "exact_executing_grant_required");
+    if(const auto party=PartyOperationBlocker(*bot,request);*party)
+        return reject(AdmissionCode::StaleContext,party);
     RefreshPermission(intended.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
     const auto held = state->authority.Read(intended.actor).lease;
     if (!SameLease(held, grant.authority.lease)) return reject(AdmissionCode::StaleContext, "current_operation_lease_required");

@@ -7,6 +7,7 @@
 #include "PlayerbotServiceCatchup.h"
 #include "LivingActivity.h"
 #include "LivingActivityAcquisition.h"
+#include "LivingPartyService.h"
 #include <deque>
 #include <functional>
 #include <map>
@@ -54,6 +55,13 @@ public:
     // existing free-time permission and recall instead of treating a stale
     // state string or an offline human as permission to leave the party.
     bool HasSafePartyServiceWindow(Player* bot) const;
+    // Exact accepted root/parcel only. World-thread callers revalidate native
+    // membership and the initiating human on every service step.
+    std::optional<LivingActivity::PartyServiceBinding> ReadPartyService(Player* bot,
+        const LivingActivity::Task& task, uint32 effects = 0) const;
+    std::optional<LivingActivity::PartyServiceBinding> PartyServiceStatus(uint32 actor) const;
+    void RecordPartyServiceReceipt(const LivingActivity::Task&, const std::string& kind,
+        const LivingActivity::ResourceClaim&, const std::string& receipt);
     bool HasVerifiedErrandRoute(uint32 botGuid) const;
     bool FindClassTrainingDestination(Player* bot, ai::TravelDestination*& destination,
         ai::WorldPosition*& position) const;
@@ -187,6 +195,7 @@ private:
         uint32 currentErrandOutputCountBefore = 0;
         bool currentErrandLocal = false;
         std::string currentErrandId;
+        LivingActivity::PartyServiceBinding managedService;
         std::map<uint32, PartySettlementErrand> errands;
         uint32 errandRouteAttempts = 0;
         uint32 errandOperationAttempts = 0;

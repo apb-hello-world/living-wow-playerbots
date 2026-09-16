@@ -1,0 +1,62 @@
+// Isolated, explicit headless-human INPUT. Native group/session permission code
+// is unchanged. This proves realm execution, not network login or user QA.
+namespace {
+struct PartyMailSessionFixture {
+    uint32_t leaderId=0;
+    WorldSession* original=nullptr;
+    std::unique_ptr<boost::asio::io_context> io;
+    std::shared_ptr<WorldSocket> socket;
+    std::unique_ptr<WorldSession> humanSession;
+    Group* group=nullptr;
+    float x=0,y=0,z=0,o=0;
+    bool bound=false,done=false;
+    void Close() {
+        auto* leader=sRandomPlayerbotMgr.GetPlayerBot(leaderId);
+        if(group) {group->Disband(true);sObjectMgr.RemoveGroup(group);delete group;group=nullptr;}
+        if(leader && original) {
+            leader->SetSession(original);
+            humanSession->SetPlayer(nullptr,0);
+            leader->NearTeleportTo(x,y,z,o);
+        }
+        humanSession.reset();socket.reset();io.reset();original=nullptr;bound=false;done=true;
+    }
+    template<class State> bool Prepare(State& state,Player* bot) {
+        if(!leaderId) {
+            for(const auto& row:state.bindings) {
+                auto* other=sRandomPlayerbotMgr.GetPlayerBot(row.first);
+                if(!other || other==bot || !other->IsInWorld() || NativeSafety(other) ||
+                    other->GetGroup() || other->GetMapId()!=bot->GetMapId() ||
+                    other->GetTeam()!=bot->GetTeam() || !other->GetPlayerbotAI() ||
+                    state.authority.Read(row.first).lease.actor)continue;
+                leaderId=row.first;x=other->GetPositionX();y=other->GetPositionY();z=other->GetPositionZ();o=other->GetOrientation();
+                state.professionCohortActors.back().store(leaderId);
+                other->StopMoving();other->GetMotionMaster()->Clear();
+                other->NearTeleportTo(bot->GetPositionX(),bot->GetPositionY(),bot->GetPositionZ(),bot->GetOrientation());
+                return false;
+            }
+            return false;
+        }
+        auto* leader=sRandomPlayerbotMgr.GetPlayerBot(leaderId);
+        if(!leader || !leader->IsInWorld() || NativeSafety(leader))return false;
+        if(!original) {
+            original=leader->GetSession();io=std::make_unique<boost::asio::io_context>();
+            socket=std::make_shared<WorldSocket>(*io);
+            humanSession=std::make_unique<WorldSession>(original->GetAccountId(),socket.get(),SEC_PLAYER,
+                1,0,LOCALE_enUS,"isolated_party_leader",0,0,false);
+            humanSession->SetPlayer(leader,leaderId);leader->SetSession(humanSession.get());
+            if(!leader->isRealPlayer())throw std::runtime_error("headless_native_human_session_required");
+            group=new Group();
+            if(!group->Create(leader->GetObjectGuid(),leader->GetName()))throw std::runtime_error("fixture_group_create");
+            sObjectMgr.AddGroup(group);
+            if(!group->AddMember(bot->GetObjectGuid(),bot->GetName()))throw std::runtime_error("fixture_group_add");
+        }
+        if(!bound) {
+            sLivingActivityCoordinator.ReleaseTaskLease(state.authority.Read(bot->GetGUIDLow()).lease);
+            if(!sPlayerbotRendezvousManager.BeginPartyFreeTime(bot,leader,"isolated_party_mail"))return false;
+            bound=true;
+        }
+        return true;
+    }
+};
+PartyMailSessionFixture& PartyMailFixture() {static PartyMailSessionFixture fixture;return fixture;}
+}

@@ -6,6 +6,7 @@
 // The mail variant moves a logged fixture item into an ordinary native delayed
 // letter, explicitly links it, then tests collection through the same job.
 // These fixtures do not prove autonomous travel or paid auction procurement.
+#include "ActivityPartyMailSession.inc"
 namespace {
     class CraftFixtureReservation final : public NativeReservationAdapter {
     public:
@@ -52,15 +53,18 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const bool serviceTravel=suite=="activity-profession-mail-travel-v1" || travelRetry;
     const bool mergeMail=suite=="activity-profession-mail-merge-v1";
     const bool capacityMail=suite=="activity-profession-mail-capacity-v1" || capacityResume;
-    const bool mailed=suite=="activity-profession-mail-v1" || checkpoint || resumed || serviceTravel || mergeMail || capacityMail;
+    const bool partyMail=suite=="activity-profession-mail-party-v1";
+    const bool mailed=suite=="activity-profession-mail-v1" || checkpoint || resumed || serviceTravel || mergeMail || capacityMail || partyMail;
     const bool automatic=paid || resumed || serviceTravel || capacityMail;
     const bool settling=suite=="activity-profession-settlement-v1" || paid || banked || mailed;
     const bool supplied=suite=="activity-craft-supplied-v1" || interrupted || settling;
-    if (!fixture.deadline) fixture.deadline=NowMs()+((serviceTravel || capacityMail) ? 180000 : 120000);
+    if (!fixture.deadline) fixture.deadline=NowMs()+(partyMail ? 240000 : (serviceTravel || capacityMail) ? 180000 : 120000);
     auto emit=[&](bool passed,const std::string& failure) {
+        if(partyMail) {PartyMailFixture().Close();state->professionCohortActors.back().store(0);}
         if (passed) fixture.blocker.clear();
         boost::property_tree::ptree report;
         report.put("suite",suite);report.put("boot",state->boot);
+        if(partyMail)report.put("explicit_headless_human_session_fixture",true);
         report.put("expected_operation_outcome",interrupted ? "rejected_without_effect" : "verified");
         report.put("test_only",true);report.put("outcome",passed ? (checkpoint ? "checkpoint" : "passed") : "failed");report.put("failure",failure);
         report.put("step",fixture.step);report.put("blocker",fixture.blocker);report.put("actor",request.task.actor);
@@ -447,7 +451,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(SubmitTask(request).code==AdmissionCode::Pending,"craft_task_admitted");fixture.step=1;return;
         }
         const auto saved=state->cache.find(request.task.id);require(saved!=state->cache.end(),"craft_task_receipt_present");
-        if (fixture.step==10 || fixture.step==11 || (capacityMail && fixture.step==2))
+        if (fixture.step==10 || fixture.step==11 || fixture.step==15 || (capacityMail && fixture.step==2))
             request.task=saved->second; // Journal-driven service substep, same root.
         if (fixture.step==5) {
             if (saved->second.phase==Phase::Executing) {fixture.blocker="native_cast_or_receipt_pending";return;}
@@ -487,6 +491,14 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             request.task.phase=phase;request.task.updatedAtMs=NowMs();
             require(SubmitTask(request).code==AdmissionCode::Pending,"craft_fixture_phase_queued");
         };
+        if(partyMail && fixture.step==15) {
+            if(saved->second.context==ReadNativeContext(*bot,state->policyRevision,state->boot) && saved->second.phase==Phase::Preparing) {
+                require(!bot->GetGroup(),"party_fixture_removed_before_parent_profession_resumes");
+                fixture.step=2;return;
+            }
+            fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+            followRunnerWrite();return;
+        }
         if (fixture.step==13) {
             if (!NativeNearbyMailbox(*bot)) {fixture.blocker="restart_mailbox_arrival_pending";return;}
             if (fixture.mailCollectedAtResume && !fixture.mailLookupReady) {
@@ -596,6 +608,25 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 }
                 require(SubmitResourceReservation(reservation,reserve).code==AdmissionCode::Pending,"exact_fixture_mail_link_saved");
                 fixture.mailClaim=claim.id;followRunnerWrite();if (checkpoint) fixture.step=12;return;
+            }
+            if(partyMail && !PartyMailFixture().bound && !PartyMailFixture().done) {
+                auto* mail=bot->GetMail(fixture.mailId);
+                if(!mail || mail->deliver_time>time(nullptr)){fixture.blocker="fixture_mail_delivery_pending";return;}
+                if(!PartyMailFixture().Prepare(*state,bot)){fixture.blocker="fixture_party_preparation";return;}
+                const auto permission=sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second);
+                require(permission && permission->root==request.task.id && permission->claim==fixture.mailClaim,
+                    "native_party_admits_original_root_exact_mail_claim");
+                auto wrong=saved->second;wrong.id=wrong.root=NewId();
+                require(!sPlayerbotRendezvousManager.ReadPartyService(bot,wrong),"party_window_rejects_competing_job");
+                require(!sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second,Mask(Effect::Spell)),
+                    "party_mail_window_cannot_cast_parent_recipe");
+                auto* leader=sRandomPlayerbotMgr.GetPlayerBot(PartyMailFixture().leaderId);
+                leader->SetSession(PartyMailFixture().original);
+                const bool rejected=!sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second);
+                leader->SetSession(PartyMailFixture().humanSession.get());
+                require(rejected,"absent_human_permission_rejected_before_native_step");
+                require(!sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow()),
+                    "shared_mail_does_not_install_competing_legacy_errand_route");
             }
             if(capacityMail && !fixture.capacityFilled) {
                 fixture.capacityMoneyBefore=bot->GetMoney();
@@ -745,6 +776,19 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 const auto count=state->nativeDispatches;NativeMailCollection adapter({});
                 require(!DispatchSavedOperation(fixture.mailOperation,{},adapter).executed && state->nativeDispatches==count,
                     "duplicate_mail_dispatch_does_not_collect_again");
+                if(partyMail) {
+                    const auto status=sPlayerbotRendezvousManager.PartyServiceStatus(bot->GetGUIDLow());
+                    // The manager may already have consumed the receipt and
+                    // returned; retained status, if present, must be exact.
+                    require(!status || status->receipt==fixture.mailOperation,"party_completion_uses_acknowledged_mail_receipt");
+                    require(!AcquireSavedTask(request.task.id,saved->second.revision,Mask(Effect::Spell),60000,"isolated_parent_cast").Permitted(),
+                        "collected_mail_does_not_authorize_parent_craft_in_party");
+                    PartyMailFixture().Close();state->professionCohortActors.back().store(0);fixture.step=15;
+                    // Party departure invalidates the old native context. The
+                    // same accepted job must revalidate before normal craft.
+                    fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
+                    followRunnerWrite();return;
+                }
                 if (resumed || serviceTravel || capacityMail) {
                     fixture.blocker=AdvanceProfessionJob(request.task.actor,request.task.id).blocker;
                     if (!followRunnerWrite()) return; // History is deliberately asynchronous and revision-bound.
