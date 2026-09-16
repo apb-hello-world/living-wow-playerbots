@@ -1640,7 +1640,8 @@ std::optional<LivingActivity::PartyServiceBinding> PlayerbotRendezvousManager::R
     Player* bot,const LivingActivity::Task& task,uint32 effects) const
 {
     using namespace LivingActivity;
-    if (!sLivingActivityCoordinator.OnWorldThread() || !bot || !bot->IsInWorld() ||
+    if (!sLivingActivityCoordinator.OnWorldThread() || !sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands ||
+        !bot || !bot->IsInWorld() ||
         !bot->GetGroup() || !bot->GetMap() || bot->GetMap()->IsDungeon() || bot->InBattleGround() ||
         !PartyServiceEffects(effects)) return {};
     const auto found=partySessions.find(bot->GetGUIDLow());
@@ -4067,7 +4068,7 @@ void PlayerbotRendezvousManager::UpdatePartyAssists()
                         "free_time_party_entered_combat";
                     if (newlyRequested) PersistPartySession(session);
                 }
-                if (sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands)
+                if (sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands || !session.managedService.root.empty())
                 {
                     UpdateVerifiedErrand(session, bot, human, now);
                     errandsFinished = session.freeTimeRecallRequested &&

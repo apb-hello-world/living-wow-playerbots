@@ -940,7 +940,7 @@ struct LivingActivityCoordinator::State {
                         }
                         const auto binding = bindings.find(held.actor);
                         if (binding != bindings.end()) binding->second.publisher.Publish(authority.Read(held.actor));
-                        ++nativeOutcomes;
+                        if(operation->second.dispatched) ++nativeOutcomes;
                         if (operation->second.outcome == OperationState::Verified) {
                             ++nativeVerifiedResults;
                             if(claimProjectionValid && !operation->second.saveBlocked) {

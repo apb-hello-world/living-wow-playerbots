@@ -637,6 +637,11 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 const bool rejected=!sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second);
                 leader->SetSession(PartyMailFixture().humanSession.get());
                 require(rejected,"absent_human_permission_rejected_before_native_step");
+                const bool oldPolicy=sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands;
+                sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands=false;
+                const bool disabled=!sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second);
+                sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands=oldPolicy;
+                require(disabled,"disabled_party_errands_revoke_service_permission");
                 require(!sPlayerbotRendezvousManager.HasVerifiedErrandRoute(bot->GetGUIDLow()),
                     "shared_mail_does_not_install_competing_legacy_errand_route");
             }

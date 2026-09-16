@@ -20,7 +20,7 @@ struct PartyServiceWindow {
 inline bool PartyServiceMatches(const PartyServiceBinding& binding,const Task& task,
     const PartyServiceWindow& window) {
     return window.authorized && !binding.root.empty() && !binding.claim.empty() &&
-        binding.receipt.empty() && binding.actor && binding.human && binding.entry &&
+        binding.receipt.empty() && !binding.session.empty() && binding.actor && binding.human && binding.entry &&
         binding.sessionRevision && binding.acceptedRevision &&
         binding.actor==window.actor && binding.human==window.human &&
         binding.session==window.session && binding.sessionRevision==window.sessionRevision &&
