@@ -1988,13 +1988,13 @@ void PlayerbotChatDirector::MaybeReportBotHealth(std::chrono::steady_clock::time
         long travelAdvanceAgeSeconds = state.lastTravelAdvance.time_since_epoch().count() == 0 ?
             recoveryAgeSeconds : std::chrono::duration_cast<std::chrono::seconds>(
                 recoveryClockNow - state.lastTravelAdvance).count();
-        bool recoveryPrepareTimedOut = !excluded && state.recoveryStep > 0 &&
+        bool recoveryPrepareTimedOut = recoveryExecutionScope && state.recoveryStep > 0 &&
             inFlightRecoveryStatus == TravelStatus::TRAVEL_STATUS_PREPARE &&
             recoveryAgeSeconds >= 2 * (long)sPlayerbotAIConfig.chatDirectorMovementStuckSeconds;
-        bool recoveryMovementTimedOut = state.recoveryStep > 0 && observedTravelActive && !excluded &&
+        bool recoveryMovementTimedOut = state.recoveryStep > 0 && observedTravelActive && recoveryExecutionScope &&
             stillSeconds >= sPlayerbotAIConfig.chatDirectorMovementStuckSeconds &&
             travelAdvanceAgeSeconds >= sPlayerbotAIConfig.chatDirectorMovementStuckSeconds;
-        bool recoveryGameplayTimedOut = state.recoveryStep == 7 && !excluded &&
+        bool recoveryGameplayTimedOut = state.recoveryStep == 7 && recoveryExecutionScope &&
             recoveryAgeSeconds >= (long)sPlayerbotAIConfig.chatDirectorRecoveryNoProgressSeconds &&
             state.lastGameplayProgress < state.recoveryStartedAt;
         bool recoveryRouteTerminal = LivingActivity::RecoveryMayEndRoute(!recoveryExecutionScope, state.recoveryStep > 0,
