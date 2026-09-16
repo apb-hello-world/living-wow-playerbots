@@ -2881,6 +2881,15 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
         observed.bagGuid=item->GetContainer()?item->GetContainer()->GetGUIDLow():0;
         observed.slot=item->GetSlot();observed.bagSlot=observed.bagGuid?item->GetBagSlot():255;
         if(!ValidPersonalClaimLocation(observed))continue;
+        // Restored native intents are not necessarily present in the live
+        // dispatch map. Require the bounded persisted actor-operation read
+        // before admission, not merely rejection by the SQL final guard.
+        // Other task families retain their existing reconciliation path until
+        // they supply an equivalent durable-operation snapshot.
+        if(!IsProfessionJob(*saved) && !IsGatheringRecoveryTask(*saved))continue;
+        ProfessionHistory history;
+        if(!ReadProfessionHistory(actor,id,saved->revision,history,why))return stop(why);
+        if(!history.complete || history.unresolvedOperation)return stop("resource_location_operation_pending");
         if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || LivingServiceExecution::Busy(bot))
             return stop("resource_location_safety_pause");
         const auto party=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
