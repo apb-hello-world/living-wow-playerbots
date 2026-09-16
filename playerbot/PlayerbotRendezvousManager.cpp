@@ -1344,6 +1344,12 @@ bool PlayerbotRendezvousManager::RegisterPartyAssist(Player* bot, Player* invite
             existingParty->second.partyRosterSignature == currentRosterSignature &&
             IsLivePartyState(existingParty->second.state))
             return true;
+        if (!existingParty->second.managedService.root.empty())
+        {
+            existingParty->second.freeTimeRecallRequested=true;
+            if (!sLivingActivityCoordinator.YieldPartyService(bot->GetGUIDLow(),existingParty->second.managedService.root))
+                return false;
+        }
         QueueActivityTelemetry(bot->GetGUIDLow(), existingParty->second.playerGuid,
             existingParty->second.groupId, PartyActivityOwner::rendezvous,
             PartyActivityPhase::failed, "party_session_replaced", "roster_changed");
@@ -3533,6 +3539,19 @@ void PlayerbotRendezvousManager::UpdatePartyAssists()
         PartySession& session = iterator->second;
         Player* bot = sRandomPlayerbotMgr.GetPlayerBot(session.botGuid);
         bool erase = false;
+        // Reconcile a prepared (not yet dispatched) operation BEFORE reconnect,
+        // departure, replacement or missing-player branches can skip/delete
+        // this permission. Atomic/uncertain outcomes retain their normal fence.
+        if (!session.managedService.root.empty())
+        {
+            const auto task=sLivingActivityCoordinator.ReadSavedTask(session.managedService.root);
+            if (!bot || !task || !ReadPartyService(bot,*task))
+            {
+                session.freeTimeRecallRequested=true;
+                if (!sLivingActivityCoordinator.YieldPartyService(session.botGuid,session.managedService.root))
+                { ++iterator; continue; }
+            }
+        }
         if (!bot)
         {
             session.reason = "party_bot_unavailable";

@@ -665,6 +665,14 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 for(const auto& row:state->operations)if(row.second.request.transition.task.id==request.task.id &&
                     row.second.request.kind=="mail_collect" && row.second.ready && !row.second.dispatched) {
                     auto* leader=sRandomPlayerbotMgr.GetPlayerBot(PartyMailFixture().leaderId);
+                    // Same final roster and leader, but a genuinely new native
+                    // leadership epoch must not revive the prepared permission.
+                    const auto epoch=bot->GetGroup()->GetLivingActivityRevision();
+                    bot->GetGroup()->ChangeLeader(bot->GetObjectGuid());
+                    bot->GetGroup()->ChangeLeader(leader->GetObjectGuid());
+                    require(bot->GetGroup()->GetLivingActivityRevision()!=epoch &&
+                        !sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second),
+                        "native_party_epoch_change_revokes_prepared_permission");
                     require(sPlayerbotRendezvousManager.ResumePartyAssist(bot,leader,"isolated_recall_before_dispatch"),
                         "native_human_recall_accepted");
                     require(!sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second),
