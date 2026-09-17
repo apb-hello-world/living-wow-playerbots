@@ -72,9 +72,16 @@ template<class State> void RunIsolatedPartyRepair(State& state) {
             f.damaged=true;state.enforceEffects.store(true);return;
         }
         if(f.task.empty()) {
+            f.setup.put("legacy_maintenance_strategy",bot->GetPlayerbotAI()->HasStrategy("rpg maintenance",BotState::BOT_STATE_NON_COMBAT));
+            f.setup.put("native_equipment_durability",uint32_t(bot->GetPlayerbotAI()->GetAiObjectContext()->GetValue<uint8>("durability")->Get()));
+            f.setup.put("legacy_can_repair",bot->GetPlayerbotAI()->GetAiObjectContext()->GetValue<bool>("can repair")->Get());
             if(!PartyMailFixture().Prepare(state,bot)) {f.blocker="repair_native_party_window_pending";return;}
             const auto binding=sPlayerbotRendezvousManager.PartyServiceStatus(f.actor);
-            if(!binding){f.blocker="repair_native_admission_pending";return;}
+            if(!binding){
+                f.blocker="repair_native_admission_pending";
+                require(sPlayerbotRendezvousManager.IsPartyFreeTime(f.actor),"repair_window_closed_without_admission");
+                return;
+            }
             require(binding->service==PartyServiceBinding::Service::Repair,"repair_only_binding_required");
             f.task=binding->root;
         }

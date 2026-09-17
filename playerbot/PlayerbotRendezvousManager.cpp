@@ -198,7 +198,17 @@ namespace
             errands |= kErrandTraining;
         if (pressure.vendorStacks && context->GetValue<bool>("can sell")->Get())
             errands |= kErrandVendor;
-        if (context->GetValue<uint8>("durability inventory")->Get() < 85 &&
+        if (sLivingActivityCoordinator.EffectEnforcementEnabled() &&
+            sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands)
+        {
+            // Party follow deliberately removes autonomous RPG strategies.
+            // A native equipment need must not depend on those strategies
+            // being enabled. The shared adapter validates service access,
+            // the actual quote and unreserved money before spending anything.
+            if (context->GetValue<uint8>("durability")->Get() < 85 &&
+                LivingActivity::HasNativeDamagedEquipment(*bot)) errands |= kErrandRepair;
+        }
+        else if (context->GetValue<uint8>("durability inventory")->Get() < 85 &&
             context->GetValue<bool>("can repair")->Get())
             errands |= kErrandRepair;
         if (pressure.StorableStacks() && (pressure.bagUsage >= 70 || pressure.StorableStacks() >= 3) &&
