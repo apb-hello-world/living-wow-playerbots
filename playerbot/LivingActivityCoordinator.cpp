@@ -4946,6 +4946,12 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
         after.retryAtMs=after.updatedAtMs+300000;
         after.checkpoint.blocker=observation.evidence; // Retain claim, do not hammer a rejecting native service.
     }
+    if(request.kind=="party_vendor_sale" && observation.state==OperationState::Rejected &&
+        !PartyVendorFailureBackoff(executed,observation.state)) {
+        // Recall or an obsolete action context did not attempt a sale. Preserve
+        // the receipt/claim, but do not impose a native-failure cooldown.
+        after.retryAtMs=0;after.checkpoint.blocker.clear();
+    }
     // Uncertainty is itself a native observation. Retain its references and
     // measured after-state so a restart can reconcile without guessing/replay.
     OperationResult proof; proof.id = id; proof.task = intended.id; proof.taskRevision = intended.revision;

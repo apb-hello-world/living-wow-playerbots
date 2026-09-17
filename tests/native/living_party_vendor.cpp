@@ -3,6 +3,9 @@
 #include <cassert>
 using namespace LivingActivity;
 int main() {
+    assert(!PartyVendorFailureBackoff(false,OperationState::Rejected));
+    assert(!PartyVendorFailureBackoff(true,OperationState::Verified));
+    assert(PartyVendorFailureBackoff(true,OperationState::Rejected));
     PartyVendorJob job{{{100,7074,3},{200,7073,1}},0},decoded;
     const auto encoded=EncodePartyVendorJob(job);
     assert(DecodePartyVendorJob(encoded,decoded) && decoded.next==0 && decoded.items.size()==2);

@@ -13,6 +13,9 @@ struct PartyVendorJob {
     uint32_t next=0;
 };
 constexpr size_t PartyVendorBatchLimit=32;
+inline bool PartyVendorFailureBackoff(bool nativeAttempted,OperationState outcome) {
+    return nativeAttempted && outcome==OperationState::Rejected;
+}
 inline std::optional<Phase> PartyVendorResumePhase(Phase phase) {
     if(phase==Phase::Paused || phase==Phase::Deferred || phase==Phase::WaitingExternal)return Phase::Reconciling;
     if(phase==Phase::Queued || phase==Phase::Reconciling)return Phase::Preparing;
