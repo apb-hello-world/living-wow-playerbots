@@ -3257,13 +3257,23 @@ std::optional<PartyServiceBinding> LivingActivityCoordinator::SelectPartyMailSer
         const auto found=state->cache.find(id);
         if(found==state->cache.end())continue;
         const auto& task=found->second;
-        if(task.actor!=actor || task.id!=task.root || task.kind!=Kind::Profession ||
-            !task.accepted || task.mode!=Mode::Active || Terminal(task.phase) ||
-            !IsProfessionJob(task))continue;
-        UnsettledClaimBatch claims;std::string why;
+        if(task.actor!=actor || task.id!=task.root ||
+            !task.accepted || task.mode!=Mode::Active || Terminal(task.phase))continue;
+        const bool profession=task.kind==Kind::Profession && IsProfessionJob(task);
+        const bool guild=IsManagedGuildDelivery(task);
+        if(!profession && !guild)continue;
+        UnsettledClaimBatch claims;std::string why;ResourceClaim guildMail;
+        // The native sending handoff already saved this recipient's exact
+        // claim. A party window permits its collection, not fresh procurement,
+        // reservation of legacy mail, or the later guild deposit/remailing.
+        if(guild && !sGuildSupplies.ReadManagedMail(task,guildMail,why))continue;
         if(!state->resources.ReadUnsettled(task.id,claims,why) || !claims.complete)continue;
         for(const auto& claim:claims.claims) {
             if(!ValidMailTransfer(claim))continue;
+            if(guild) {
+                guildMail.id=claim.id;guildMail.revision=claim.revision;
+                if(!SameResourceClaim(guildMail,claim))continue;
+            }
             const auto* mail=bot->GetMail(uint32_t(claim.nativeReference));
             NativeResourceBalance physical;
             if(!mail || mail->COD || mail->deliver_time>time(nullptr) ||

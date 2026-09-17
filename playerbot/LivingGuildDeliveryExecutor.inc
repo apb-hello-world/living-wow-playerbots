@@ -252,6 +252,11 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                 if(!SameResourceClaim(incoming,claim))return stop("guild_delivery_other_mail_claim_requires_reconciliation");
                 return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{job.entry,job.quantity}).blocker);
             }
+            // This bounded party grant was issued for an existing saved claim.
+            // If it disappeared, do not bootstrap a replacement under the
+            // permission to collect. Ordinary custody import can reconcile it.
+            if(sPlayerbotRendezvousManager.ReadPartyService(bot,*saved))
+                return stop("party_service_saved_mail_claim_required");
             const auto grant=AcquireSavedTask(id,saved->revision,Mask(Effect::Inventory),60000,"guild_mail_reservation");
             if(!grant.Permitted())return stop(grant.blocker);
             incoming.id=NewId();ReservationRequest request;

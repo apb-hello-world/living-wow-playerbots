@@ -34,7 +34,8 @@ int main() {
     auto wrong=claim;wrong.id="other";assert(!PartyServiceOperation(binding,"mail_collect",wrong));
     wrong=claim;wrong.task="other";assert(!PartyServiceOperation(binding,"mail_collect",wrong));
     wrong=claim;wrong.location="bags";assert(!PartyServiceOperation(binding,"mail_collect",wrong));
-    for(const auto kind:{"profession_craft","vendor_purchase","auction_purchase","mail_send","guild_deposit"})
+    for(const auto kind:{"profession_craft","vendor_purchase","auction_purchase","mail_send","guild_deposit",
+                        "guild_bank_deposit","guild_mail_send","guild_mail_reservation"})
         assert(!PartyServiceOperation(binding,kind,claim));
     assert(PartyServiceOperation(binding,"capacity_vendor_sale",{}));
     assert(PartyServiceOperation(binding,"bank_deposit",{}));
@@ -49,4 +50,24 @@ int main() {
     PartyServiceBinding restored;
     assert(!PartyServiceMatches(restored,task,window));
     assert(task.revision==4 && claim.location=="mail" && claim.quantity==2);
+    // A guild parcel receives the same one-collection grant, never permission
+    // to deposit or forward it. Existing custody and task identity stay intact.
+    auto guild=task;guild.kind=Kind::GuildDelivery;guild.priority=Priority::Delivery;
+    guild.source="guild_delivery";
+    auto guildBinding=binding;guildBinding.receipt.clear();
+    assert(PartyServiceMatches(guildBinding,guild,window));
+    assert(PartyServiceOperation(guildBinding,"mail_collect",claim));
+    assert(!PartyServiceOperation(guildBinding,"guild_bank_deposit",claim));
+    assert(!PartyServiceOperation(guildBinding,"guild_mail_send",claim));
+    assert(!PartyServiceEffects(Mask(Effect::Guild)|Mask(Effect::Inventory)));
+    changed=window;++changed.sessionRevision;
+    assert(!PartyServiceMatches(guildBinding,guild,changed));
+    window.authorized=false;
+    assert(!PartyServiceMatches(guildBinding,guild,window));
+    // Recall after an atomic collection must still acknowledge that receipt.
+    assert(PartyServiceReceipt(guildBinding,guild,"mail_collect",claim,"guild-collection"));
+    window.authorized=true;
+    assert(!PartyServiceMatches(guildBinding,guild,window));
+    assert(!PartyServiceReceipt(guildBinding,guild,"mail_collect",claim,"duplicate"));
+    assert(guild.priority==Priority::Delivery && guild.root==task.root && guild.revision==task.revision);
 }

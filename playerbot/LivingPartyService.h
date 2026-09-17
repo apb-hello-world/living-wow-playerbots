@@ -4,7 +4,7 @@
 
 namespace LivingActivity {
 // Permission to execute ONE already-owned parcel, not ownership of its goods
-// or permission to continue the parent profession job. Native session epochs
+// or permission to continue the parent profession/guild job. Native session epochs
 // are deliberately ephemeral: restoration must obtain a fresh party window.
 struct PartyServiceBinding {
     std::string root, claim, session, receipt;
