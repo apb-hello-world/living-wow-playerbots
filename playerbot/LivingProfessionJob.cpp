@@ -1,4 +1,5 @@
 #include "LivingProfessionJob.h"
+#include "LivingPartyRepair.h"
 #include "LivingCommissionJob.h"
 #include "LivingGuildProcurement.h"
 #include "LivingGuildDelivery.h"
@@ -254,6 +255,7 @@ namespace LivingActivity {
         job=flow.intent;current=flow.tools.empty() || flow.tools.back().finishedRevision;return true;
     }
     bool IsProfessionJob(const Task& task) {
+        if(IsPartyRepairTask(task))return false; // A shared route label cannot change this typed root.
         // Service step names are backward compatible and shared by learning
         // and guild deliveries; a route label never replaces the typed owner.
         // The typed root retains its identity while using the same adapter.

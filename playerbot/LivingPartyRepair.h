@@ -9,7 +9,9 @@ inline bool IsPartyRepairTask(const Task& task) {
 }
 inline bool ValidatePartyRepairTask(const Task& task,std::string& why) {
     if(task.source!="party_repair")return true;
-    if(!IsPartyRepairTask(task)) {why="invalid_party_repair_task";return false;}
+    if(!IsPartyRepairTask(task) ||
+        (task.checkpoint.step!="maintenance_repair_prepare" && task.checkpoint.step!="maintenance_service_repair" &&
+         task.checkpoint.step!="maintenance_repair")) {why="invalid_party_repair_task";return false;}
     return true;
 }
 }

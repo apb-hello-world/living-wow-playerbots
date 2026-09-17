@@ -694,6 +694,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
     if(!sLivingActivityCoordinator.OnWorldThread()) return {false,"world_thread_required"};
     const auto saved=sLivingActivityCoordinator.ReadSavedTask(id);
     if(!saved || saved->actor!=actor || saved->revision!=revision ||
+        (IsPartyRepairTask(*saved) && service!=ServiceDestination::Repair) ||
         (!IsProfessionJob(*saved) && !IsRecipeLearningTask(*saved) && !IsManagedGuildDelivery(*saved) && !IsGuildProcurementTask(*saved) &&
          !(IsPartyRepairTask(*saved) && service==ServiceDestination::Repair)) ||
         saved->mode!=Mode::Active || !saved->accepted || saved->phase!=LivingActivity::Phase::Traveling ||
