@@ -16,7 +16,7 @@ inline std::string SettledNativeRepairSql() {
         " AND COALESCE(JSON_EXTRACT(o.before_state,'$.effects'),0)=44"
         " AND COALESCE(JSON_EXTRACT(o.before_state,'$.persistence'),0)=1)))";
 }
-// One equipped, actually broken item. No repair-all, bank spending, gear
+// One equipped, actually damaged item. No repair-all, bank spending, gear
 // replacement, or cheat-money path belongs to this prerequisite.
 struct NativeRepairQuote {
     uint32_t actor=0,item=0,entry=0,maximum=0,durability=0,money=0,copper=0;
@@ -37,7 +37,7 @@ inline bool NativeRepairPrice(uint32_t loss,uint32_t multiplier,double quality,f
     copper=std::max(1u,uint32_t(discounted));return true;
 }
 inline bool ValidNativeRepairQuote(const NativeRepairQuote& q) {
-    return q.actor && q.item && q.entry && q.maximum && !q.durability && q.money>=q.copper &&
+    return q.actor && q.item && q.entry && q.maximum && q.durability<q.maximum && q.money>=q.copper &&
         q.copper && q.copper<=INT32_MAX && q.vendor && q.vendorEntry &&
         (q.position>>8)==255 && (q.position&255)<19;
 }

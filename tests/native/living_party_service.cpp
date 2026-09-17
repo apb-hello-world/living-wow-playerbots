@@ -70,4 +70,29 @@ int main() {
     assert(!PartyServiceMatches(guildBinding,guild,window));
     assert(!PartyServiceReceipt(guildBinding,guild,"mail_collect",claim,"duplicate"));
     assert(guild.priority==Priority::Delivery && guild.root==task.root && guild.revision==task.revision);
+    auto repair=task;repair.kind=Kind::PartyErrand;repair.source="party_repair";
+    repair.checkpoint.data="{\"workflow\":\"party_repair_v1\"}";
+    auto repairBinding=binding;repairBinding.service=PartyServiceBinding::Service::Repair;
+    repairBinding.claim.clear();repairBinding.entry=0;repairBinding.receipt.clear();
+    assert(PartyServiceMatches(repairBinding,repair,window));
+    assert(!PartyServiceMatches(repairBinding,task,window));
+    changed=window;++changed.sessionRevision;assert(!PartyServiceMatches(repairBinding,repair,changed));
+    assert(PartyServiceEffects(Mask(Effect::Equipment)|Mask(Effect::Money),repairBinding.service));
+    assert(!PartyServiceEffects(Mask(Effect::Equipment),PartyServiceBinding::Service::Mail));
+    for(auto effect:{Effect::Spell,Effect::Group,Effect::Guild,Effect::Social})
+        assert(!PartyServiceEffects(Mask(effect),repairBinding.service));
+    ResourceClaim money;money.id=claim.id;money.task=repair.id;money.actor=repair.actor;
+    money.state="held";money.location="money";money.copper=19;
+    assert(PartyServiceOperation(repairBinding,"critical_equipment_repair",money));
+    for(const auto kind:{"mail_collect","capacity_vendor_sale","bank_deposit","vendor_purchase","profession_craft"})
+        assert(!PartyServiceOperation(repairBinding,kind,money));
+    assert(!PartyServiceOperation(guildBinding,"critical_equipment_repair",money));
+    wrong=money;++wrong.actor;assert(!PartyServiceOperation(repairBinding,"critical_equipment_repair",wrong));
+    wrong=money;wrong.task="another";assert(!PartyServiceOperation(repairBinding,"critical_equipment_repair",wrong));
+    wrong=money;wrong.itemGuid=1;assert(!PartyServiceOperation(repairBinding,"critical_equipment_repair",wrong));
+    wrong=money;wrong.state="consumed";assert(!PartyServiceOperation(repairBinding,"critical_equipment_repair",wrong));
+    assert(!PartyServiceReceipt(repairBinding,repair,"critical_equipment_repair",money,"partial-repair"));
+    repair.phase=Phase::Completed;
+    assert(PartyServiceReceipt(repairBinding,repair,"critical_equipment_repair",money,"all-repaired"));
+    assert(!PartyServiceReceipt(repairBinding,repair,"critical_equipment_repair",money,"duplicate"));
 }

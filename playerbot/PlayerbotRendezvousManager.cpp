@@ -1531,6 +1531,14 @@ bool PlayerbotRendezvousManager::BeginPartyFreeTime(Player* bot, Player* player,
         now + (automaticSettlement ? std::chrono::minutes(5) : std::chrono::minutes(30));
     session.automaticErrandScopeMask = verifiedBundle ? GroundedSettlementErrandMask(bot) :
         (automaticSettlement ? GroundedSettlementErrandMask(bot) : 0);
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+    // The copied repair acceptance case restricts the requested bundle; it
+    // does not grant repair eligibility, money, a service target or success.
+    const char* fixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    const char* environment=std::getenv("LIVING_WOW_TEST_ENVIRONMENT");
+    if(fixture && environment && std::string(fixture)=="activity-party-repair-v1" &&
+        std::string(environment)=="isolated-migration")session.automaticErrandScopeMask &= kErrandRepair;
+#endif
     session.automaticErrandMask = session.automaticErrandScopeMask;
     session.completedErrandMask = 0;
     session.deferredErrandMask = 0;
@@ -1648,13 +1656,15 @@ std::optional<LivingActivity::PartyServiceBinding> PlayerbotRendezvousManager::R
     using namespace LivingActivity;
     if (!sLivingActivityCoordinator.OnWorldThread() || !sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands ||
         !bot || !bot->IsInWorld() ||
-        !bot->GetGroup() || !bot->GetMap() || bot->GetMap()->IsDungeon() || bot->InBattleGround() ||
-        !PartyServiceEffects(effects)) return {};
+        !bot->GetGroup() || !bot->GetMap() || bot->GetMap()->IsDungeon() || bot->InBattleGround()) return {};
     const auto found=partySessions.find(bot->GetGUIDLow());
     if (found==partySessions.end()) return {};
     const auto& session=found->second;
     const auto now=std::chrono::steady_clock::now();
-    if (session.state!="free_time" || session.currentErrand!=kErrandMail || session.freeTimeRecallRequested ||
+    const auto service=session.managedService.service;
+    if (!PartyServiceEffects(effects,service) || session.state!="free_time" ||
+        session.currentErrand!=(service==PartyServiceBinding::Service::Repair?kErrandRepair:kErrandMail) ||
+        session.freeTimeRecallRequested ||
         session.groupId!=bot->GetGroup()->GetId() ||
         (session.freeTimeUntil.time_since_epoch().count() && now>=session.freeTimeUntil) ||
         (session.automaticErrandHardDeadline.time_since_epoch().count() && now>=session.automaticErrandHardDeadline)) return {};
@@ -2473,6 +2483,26 @@ bool PlayerbotRendezvousManager::StartNextVerifiedErrand(PartySession& session, 
     session.currentErrandId = taskRecord.taskId;
     taskRecord.phase = PartyActivityPhase::preparing;
     taskRecord.outcomeCode.clear();
+    if(session.currentErrand==kErrandRepair && sLivingActivityCoordinator.EffectEnforcementEnabled())
+    {
+        // Never run legacy RepairAllAction while shared admission is pending.
+        // The accepted root is reused across fresh party windows and restart.
+        auto selected=sLivingActivityCoordinator.PreparePartyRepairService(session.botGuid,taskRecord.taskId);
+        if(selected && bot && bot->GetGroup())
+        {
+            selected->human=session.playerGuid;
+            selected->session="group:"+std::to_string(bot->GetGroup()->GetId())+":"+
+                std::to_string(bot->GetGroup()->GetLivingActivityIdentity());
+            selected->sessionRevision=bot->GetGroup()->GetLivingActivityRevision();
+            session.managedService=*selected;
+        }
+        session.errandBefore=ObserveErrandState(bot);taskRecord.before=session.errandBefore;
+        taskRecord.outcomeCode=selected?"shared_repair_service_admitted":"shared_repair_admission_pending";
+        session.currentErrandLocal=true;session.errandOperationAccepted=false;
+        session.nextErrandStep=std::chrono::steady_clock::now()+std::chrono::seconds(1);
+        PersistPartySession(session);
+        return true;
+    }
     if (session.currentErrand==kErrandMail && bot && bot->GetGroup())
     {
         auto selected=acceptedMail;
@@ -2904,12 +2934,20 @@ void PlayerbotRendezvousManager::UpdateVerifiedErrand(PartySession& session, Pla
     Player* player, std::chrono::steady_clock::time_point now)
 {
     if (!bot || !player) { session.freeTimeRecallRequested = true; return; }
+    if(session.currentErrand==kErrandRepair && session.managedService.root.empty() &&
+        sLivingActivityCoordinator.EffectEnforcementEnabled() && !session.freeTimeRecallRequested)
+    {
+        if(now>=session.nextErrandStep)StartNextVerifiedErrand(session,bot);
+        return;
+    }
     if (!session.managedService.root.empty())
     {
         const auto saved=sLivingActivityCoordinator.ReadSavedTask(session.managedService.root);
         const bool completed=!session.managedService.receipt.empty();
         const bool deferred=saved && (saved->phase==LivingActivity::Phase::Deferred ||
             saved->phase==LivingActivity::Phase::WaitingExternal);
+        if(!saved && session.managedService.service==LivingActivity::PartyServiceBinding::Service::Repair &&
+            !session.freeTimeRecallRequested)return; // Waiting for durable admission, not legacy fallback.
         if (completed || deferred || !saved || !ReadPartyService(bot,*saved))
         {
             if(bot->IsInCombat() || bot->IsBeingTeleported() || bot->IsTaxiFlying() ||
@@ -2917,7 +2955,8 @@ void PlayerbotRendezvousManager::UpdateVerifiedErrand(PartySession& session, Pla
             // Do not discard an atomic journal/save fence to satisfy recall.
             if (!sLivingActivityCoordinator.YieldPartyService(session.botGuid,session.managedService.root)) return;
             session.freeTimeRecallRequested=true;
-            FinishCurrentErrand(session,bot,completed,completed ? "verified_mail_collection" :
+            const bool repair=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Repair;
+            FinishCurrentErrand(session,bot,completed,completed ? (repair?"verified_equipment_repairs":"verified_mail_collection") :
                 deferred ? "party_service_deferred" : "party_service_permission_ended");
         }
         return;

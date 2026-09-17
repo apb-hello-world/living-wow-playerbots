@@ -4,6 +4,7 @@
 #include "LivingActivityReservations.h"
 namespace LivingActivity {
 bool HasNativeCriticalRepair(Player& actor);
+bool HasNativeDamagedEquipment(Player& actor);
 bool PlanNativeCriticalRepair(Player&,const Task&,NativeRepairQuote&,ResourceClaim&,std::string&);
 class NativeRepairReservation final : public NativeReservationAdapter {
 public:

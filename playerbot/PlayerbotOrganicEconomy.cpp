@@ -13,6 +13,7 @@
 #include "LivingNativeAuctionPurchase.h"
 #include "LivingRecipeLearning.h"
 #include "LivingGuildProcurement.h"
+#include "LivingPartyRepair.h"
 #include "LivingNativeGathering.h"
 #include "LivingGatheringTravel.h"
 #include "PlayerbotInventoryPressure.h"
@@ -693,7 +694,8 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
     if(!sLivingActivityCoordinator.OnWorldThread()) return {false,"world_thread_required"};
     const auto saved=sLivingActivityCoordinator.ReadSavedTask(id);
     if(!saved || saved->actor!=actor || saved->revision!=revision ||
-        (!IsProfessionJob(*saved) && !IsRecipeLearningTask(*saved) && !IsManagedGuildDelivery(*saved) && !IsGuildProcurementTask(*saved)) ||
+        (!IsProfessionJob(*saved) && !IsRecipeLearningTask(*saved) && !IsManagedGuildDelivery(*saved) && !IsGuildProcurementTask(*saved) &&
+         !(IsPartyRepairTask(*saved) && service==ServiceDestination::Repair)) ||
         saved->mode!=Mode::Active || !saved->accepted || saved->phase!=LivingActivity::Phase::Traveling ||
         saved->checkpoint.step!=ServiceStep(service)) return {false,"saved_service_step_changed"};
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);

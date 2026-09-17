@@ -1,6 +1,7 @@
 #include "LivingActivityRequests.h"
 #include "LivingProfessionJob.h"
 #include "LivingGuildDelivery.h"
+#include "LivingPartyRepair.h"
 #include <cassert>
 #include <limits>
 using namespace LivingActivity;
@@ -22,6 +23,17 @@ static TaskRequest Request() {
 #include "fixtures/GuildDeliveryRequests.inc"
 int main() {
     GuildDeliveryRequests();
+    {
+        auto repair=Request();repair.task.kind=Kind::PartyErrand;repair.task.source="party_repair";
+        repair.task.checkpoint.data="{\"workflow\":\"party_repair_v1\"}";
+        repair.task.checkpoint.step="maintenance_repair_prepare";
+        std::string why;
+        assert(ValidateTaskRequest(repair,nullptr,repair.task.context,why)==AdmissionCode::Pending);
+        auto invalid=repair;invalid.task.checkpoint.data="{}";
+        assert(ValidateTaskRequest(invalid,nullptr,repair.task.context,why)==AdmissionCode::InvalidRequest);
+        invalid=repair;invalid.task.phase=Phase::Completed;
+        assert(ValidateTaskRequest(invalid,nullptr,repair.task.context,why)==AdmissionCode::ReconciliationRequired);
+    }
     auto request = Request(); auto current = request.task.context; std::string reason;
     assert(ValidateTaskRequest(request, nullptr, current, reason) == AdmissionCode::Pending);
     assert(reason.empty());

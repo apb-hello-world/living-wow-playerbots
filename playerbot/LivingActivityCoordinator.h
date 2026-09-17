@@ -55,6 +55,7 @@ public:
     // Admission uses acknowledged task/claim cache and real delivered mail;
     // selecting a candidate performs no native effect or task reassignment.
     std::optional<LivingActivity::PartyServiceBinding> SelectPartyMailService(uint32_t actor) const;
+    std::optional<LivingActivity::PartyServiceBinding> PreparePartyRepairService(uint32_t actor,const std::string& sourceKey);
     bool YieldPartyService(uint32_t actor,const std::string& root);
     // Read-only native full-save guard. The actor-ID projection survives AI
     // object replacement; no Player/Map pointers or DB query cross threads.
@@ -189,6 +190,7 @@ private:
     bool CollectNativeCraft();
     std::optional<ProfessionProgress> DispatchPendingItemService(uint32_t actor,const std::string& task);
     std::optional<ProfessionProgress> AdvanceCriticalPreparation(uint32_t actor,const std::string& task);
+    ProfessionProgress AdvancePartyRepair(uint32_t actor,const std::string& task);
     std::optional<ProfessionProgress> ReconcilePersonalClaimLocation(uint32_t actor,const std::string& task);
     ProfessionProgress AdvanceItemPreparation(uint32_t actor,const std::string& task,
         LivingActivity::ProfessionStep step,const LivingActivity::ProfessionReagent& need={});

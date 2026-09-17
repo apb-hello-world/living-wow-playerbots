@@ -1,7 +1,9 @@
 #include "LivingRepairQuote.h"
 #include "LivingServiceTravel.h"
+#include "LivingPartyRepair.h"
 #include <cassert>
 #include <limits>
+#include <stdexcept>
 using namespace LivingActivity;
 int main() {
     uint32_t cost=0;
@@ -33,7 +35,10 @@ int main() {
     assert(!VerifyNativeRepair(q,q.item+1,q.entry,q.position,q.maximum,30,830));
     assert(!VerifyNativeRepair(q,q.item,q.entry,q.position+1,q.maximum,30,830));
     assert(!VerifyNativeRepair(q,q.item,q.entry,q.position,q.maximum+1,30,830));
-    auto changed=q;changed.durability=1;assert(!ValidNativeRepairQuote(changed));
+    auto changed=q;changed.durability=1;assert(ValidNativeRepairQuote(changed));
+    assert(DecodeNativeRepairQuote(EncodeNativeRepairQuote(changed),decoded) && decoded.durability==1);
+    changed=q;changed.durability=changed.maximum;assert(!ValidNativeRepairQuote(changed));
+    changed=q;changed.durability=changed.maximum+1;assert(!ValidNativeRepairQuote(changed));
     changed=q;changed.position=0xff13;assert(!ValidNativeRepairQuote(changed));
     changed=q;changed.money=100;assert(!ValidNativeRepairQuote(changed));
     ServiceDestination service;
@@ -63,4 +68,23 @@ int main() {
     for(const auto phase:{Phase::Queued,Phase::Preparing,Phase::Traveling,Phase::Executing,
         Phase::Verifying,Phase::Completed,Phase::Failed,Phase::Cancelled})
         assert(!RepairResumePhase(phase)); // Atomic outcomes retain their own proof path.
+    t.source="party_repair";t.sourceKey="repair-test";t.kind=Kind::PartyErrand;
+    t.context.actor=t.actor;t.createdAtMs=1;
+    t.checkpoint.data="{\"workflow\":\"party_repair_v1\"}";t.phase=Phase::Completed;t.revision=2;
+    std::string why;assert(ValidatePartyRepairTask(t,why));
+    auto invalid=t;invalid.checkpoint.data="{}";assert(!ValidatePartyRepairTask(invalid,why));
+    invalid=t;invalid.kind=Kind::Profession;assert(!ValidatePartyRepairTask(invalid,why));
+    OperationResult result;result.id="22222222-2222-4222-8222-222222222222";result.task=t.id;
+    result.taskRevision=1;result.kind="critical_equipment_repair";result.state=OperationState::Verified;
+    result.evidence="native_repair_durability_and_payment_observed";result.nativeReference="repair:123";
+    const auto terminal=OperationOutcomeWrite(t,1,result,result.id,"{}");
+    assert(!terminal.statements.empty());
+    auto rejects=[&](const Task& candidate,const OperationResult& outcome) {
+        bool threw=false;try{OperationOutcomeWrite(candidate,1,outcome,result.id,"{}");}
+        catch(const std::invalid_argument&){threw=true;}assert(threw);
+    };
+    rejects(invalid,result);
+    auto uncertain=result;uncertain.state=OperationState::Reconciling;rejects(t,uncertain);
+    auto rejected=result;rejected.state=OperationState::Rejected;rejects(t,rejected);
+    auto otherKind=result;otherKind.kind="mail_collect";rejects(t,otherKind);
 }

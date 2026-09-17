@@ -74,7 +74,8 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
     const auto safety=ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR));
     std::string pause=safety?NativeSafetyReason(safety):bot->GetMap()->IsDungeon()?"native_dungeon_commitment":
         bot->GetTradeData()?"native_trade_in_progress":LivingServiceExecution::Busy(bot)?LivingServiceExecution::Blocker(bot):"";
-    if(pause.empty())pause=PartyAdmissionBlocker(NativePartyProtection(*bot),PartyAdmission::SavedExecutor,false);
+    if(pause.empty())pause=SavedPartyBlocker(*bot,*saved,
+        Mask(Effect::Inventory)|Mask(Effect::Money)|Mask(Effect::Equipment));
     if(!pause.empty()) {
         if(!repairing)return {}; // The current owner performs its ordinary safety pause.
         if(saved->phase==Phase::Preparing || saved->phase==Phase::Traveling) {
@@ -139,6 +140,17 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
         return stop(SubmitOperationIntent(r,adapter).blocker);
     }
     if(blocker=="critical_repair_travel_required")return advance(Phase::Traveling,ServiceStep(ServiceDestination::Repair));
-    if(blocker=="critical_repair_not_required")return advance(Phase::Preparing,resume);
+    if(blocker=="critical_repair_not_required") {
+        if(IsPartyRepairTask(*saved)) {
+            // Equipment changed or was repaired externally. Do not invent a
+            // receipt, and do not repeatedly dispatch a now-unnecessary task.
+            TaskRequest r;r.task=*saved;r.expectedRevision=saved->revision;r.receipt=NewId();
+            ++r.task.revision;r.task.phase=Phase::Deferred;r.task.updatedAtMs=NowMs();
+            r.task.checkpoint.blocker="party_repair_no_native_receipt_needed";
+            r.task.retryAtMs=NowMs()+300000;
+            return stop(SubmitTask(r).blocker);
+        }
+        return advance(Phase::Preparing,resume);
+    }
     return stop(blocker);
 }

@@ -1,6 +1,7 @@
 #include "LivingActivity.h"
 #include "LivingActivityObservation.h"
 #include "LivingActivityJournal.h"
+#include "LivingPartyRepair.h"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -323,7 +324,9 @@ namespace LivingActivity
         const bool verified = outcome.state == OperationState::Verified;
         const bool uncertain = outcome.state == OperationState::Reconciling;
         const char* state = verified ? "verified" : uncertain ? "reconciling" : "rejected";
-        if (!expected || task.mode != Mode::Active || task.phase != (uncertain ? Phase::Reconciling : Phase::Verifying) ||
+        const bool completedRepair=IsPartyRepairTask(task) && task.phase==Phase::Completed && verified &&
+            outcome.kind=="critical_equipment_repair" && outcome.evidence=="native_repair_durability_and_payment_observed";
+        if (!expected || task.mode != Mode::Active || (!completedRepair && task.phase != (uncertain ? Phase::Reconciling : Phase::Verifying)) ||
             !IsUuid(outcome.id) || outcome.task != task.id || !outcome.taskRevision ||
             !IsToken(outcome.kind, 48) || !IsToken(outcome.evidence) || after.size() > 8192 ||
             outcome.nativeReference.size() > 160 || (verified && outcome.nativeReference.empty()) ||

@@ -5,17 +5,19 @@
 #include "LivingServiceExecution.h"
 #include "LivingPurchaseBudget.h"
 #include "LivingTaskItemRequirements.h"
+#include "LivingPartyRepair.h"
 
 namespace LivingActivity {
 namespace {
-Item* BrokenEquipment(Player& actor) {
+Item* BrokenEquipment(Player& actor,bool damaged=false) {
     // Restore real damage/defence before less critical armour. Native slots,
     // not preferred gear or item quality, define this bounded scan.
     const uint8_t first=actor.getClass()==CLASS_HUNTER?EQUIPMENT_SLOT_RANGED:EQUIPMENT_SLOT_MAINHAND;
     auto broken=[&](uint8_t slot)->Item* {
         auto* item=actor.GetItemByPos(INVENTORY_SLOT_BAG_0,slot);
         return item && item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) &&
-            !item->GetUInt32Value(ITEM_FIELD_DURABILITY)?item:nullptr;
+            (damaged ? item->GetUInt32Value(ITEM_FIELD_DURABILITY)<item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) :
+                !item->GetUInt32Value(ITEM_FIELD_DURABILITY))?item:nullptr;
     };
     if(auto* item=broken(first))return item;
     for(const auto slot:{EQUIPMENT_SLOT_MAINHAND,EQUIPMENT_SLOT_OFFHAND,EQUIPMENT_SLOT_RANGED})
@@ -36,6 +38,7 @@ bool SafeRepair(Player& actor) {
 }
 }
 bool HasNativeCriticalRepair(Player& actor) {return BrokenEquipment(actor)!=nullptr;}
+bool HasNativeDamagedEquipment(Player& actor) {return BrokenEquipment(actor,true)!=nullptr;}
 bool PlanNativeCriticalRepair(Player& actor,const Task& task,NativeRepairQuote& q,ResourceClaim& held,std::string& blocker) {
     q={};held={};auto reject=[&](const char* why){blocker=why;return false;};
     if(!sLivingActivityCoordinator.OnWorldThread() || !SafeRepair(actor) || actor.GetGUIDLow()!=task.actor ||
@@ -47,7 +50,7 @@ bool PlanNativeCriticalRepair(Player& actor,const Task& task,NativeRepairQuote& 
         if(!held.id.empty() || !RepairMoney(c,task))return reject("critical_repair_money_requires_reconciliation");
         held=c;
     }
-    auto* item=BrokenEquipment(actor);
+    auto* item=BrokenEquipment(actor,IsPartyRepairTask(task));
     if(!item)return reject("critical_repair_not_required");
     if(item->GetOwnerGuid()!=actor.GetObjectGuid() || item->IsInTrade())return reject("critical_repair_item_unavailable");
     Creature* vendor=nullptr;
@@ -59,15 +62,16 @@ bool PlanNativeCriticalRepair(Player& actor,const Task& task,NativeRepairQuote& 
     const auto* quality=proto?sDurabilityQualityStore.LookupEntry((proto->Quality+1)*2):nullptr;
     if(!costs || !quality)return reject("critical_repair_native_price_unavailable");
     const uint32_t maximum=item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+    const uint32_t durability=item->GetUInt32Value(ITEM_FIELD_DURABILITY);
     uint32_t copper=0;
-    if(!NativeRepairPrice(maximum,costs->multiplier[ItemSubClassToDurabilityMultiplierId(proto->Class,proto->SubClass)],
+    if(!NativeRepairPrice(maximum-durability,costs->multiplier[ItemSubClassToDurabilityMultiplierId(proto->Class,proto->SubClass)],
         double(quality->quality_mod),actor.GetReputationPriceDiscount(vendor),copper))return reject("critical_repair_native_price_invalid");
     uint32_t available=0;
     if(!sLivingActivityCoordinator.TaskResourceAvailability(task.id,task.revision,
         {task.actor,0,0,0,actor.GetMoney(),"money"},available,blocker))return false;
     if(available<copper)
         return reject("critical_repair_unreserved_money_shortfall");
-    q={task.actor,item->GetGUIDLow(),item->GetEntry(),maximum,0,actor.GetMoney(),copper,
+    q={task.actor,item->GetGUIDLow(),item->GetEntry(),maximum,durability,actor.GetMoney(),copper,
         vendor->GetEntry(),vendor->GetObjectGuid().GetRawValue(),item->GetPos()};
     if(!ValidNativeRepairQuote(q))return reject("critical_repair_quote_invalid");
     blocker.clear();return true;
@@ -136,10 +140,22 @@ NativeObservation NativeCriticalRepair::ExecuteNative(Player& actor,const Operat
 std::string NativeCriticalRepair::PersistedNativeProof(Player& actor,const OperationRequest&,const Task& after) const {
     const auto* item=actor.GetItemByPos(quote.position);
     if(!item || item->GetGUIDLow()!=quote.item)return "";
+    std::string equipmentProof;
+    if(IsPartyRepairTask(after) && after.phase==Phase::Completed) {
+        // Completion proves all equipped durable items, not an aggregate score.
+        for(uint8_t slot=EQUIPMENT_SLOT_START;slot<EQUIPMENT_SLOT_END;++slot) {
+            const auto* equipped=actor.GetItemByPos(INVENTORY_SLOT_BAG_0,slot);
+            if(!equipped || !equipped->GetUInt32Value(ITEM_FIELD_MAXDURABILITY))continue;
+            equipmentProof+=" AND EXISTS(SELECT 1 FROM character_inventory ev JOIN item_instance ei ON ei.guid=ev.item"
+                " WHERE ev.guid=c.guid AND ev.bag=0 AND ev.slot="+std::to_string(slot)+" AND ei.guid="+
+                std::to_string(equipped->GetGUIDLow())+" AND ei.owner_guid=c.guid AND ei.durability="+
+                std::to_string(equipped->GetUInt32Value(ITEM_FIELD_MAXDURABILITY))+")";
+        }
+    }
     return "SELECT "+SqlValue(after.id)+','+std::to_string(after.revision)+" FROM characters c JOIN character_inventory v ON v.guid=c.guid"
         " JOIN item_instance i ON i.guid=v.item WHERE c.guid="+std::to_string(actor.GetGUIDLow())+" AND c.money="+
         std::to_string(actor.GetMoney())+" AND v.bag=0 AND v.slot="+std::to_string(quote.position&255)+
         " AND v.item="+std::to_string(quote.item)+" AND i.itemEntry="+std::to_string(quote.entry)+" AND i.owner_guid=c.guid"
-        " AND i.durability="+std::to_string(item->GetUInt32Value(ITEM_FIELD_DURABILITY));
+        " AND i.durability="+std::to_string(item->GetUInt32Value(ITEM_FIELD_DURABILITY))+equipmentProof;
 }
 }

@@ -169,7 +169,9 @@ namespace {
         if(protection!=PartyProtection::Human)
             return PartyAdmissionBlocker(protection,PartyAdmission::SavedExecutor,false);
         const auto scope=sPlayerbotRendezvousManager.ReadPartyService(&bot,task,request.effects);
-        return scope && PartyServiceOperation(*scope,request.kind,request.itemTransfer) ? "" :
+        const auto& subject=request.kind=="critical_equipment_repair" && request.consumption.size()==1 ?
+            request.consumption.front().before : request.itemTransfer;
+        return scope && PartyServiceOperation(*scope,request.kind,subject) ? "" :
             "party_service_operation_not_authorized";
     }
     uint32_t NativeSafety(Player* bot) {
@@ -675,6 +677,7 @@ struct LivingActivityCoordinator::State {
         if(IsManagedGuildDelivery(task))return true;
         if(IsGuildProcurementTask(task))return true;
         if(IsRecipeLearningTask(task))return true;
+        if(IsPartyRepairTask(task))return true;
         if(!IsProfessionJob(task))return false;
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
         // Historical fault fixtures explicitly drive individual native steps.
@@ -946,7 +949,8 @@ struct LivingActivityCoordinator::State {
                             if(claimProjectionValid && !operation->second.saveBlocked) {
                                 const auto& request=operation->second.request;
                                 sPlayerbotRendezvousManager.RecordPartyServiceReceipt(acknowledgedWrite.task,
-                                    request.kind,request.itemTransfer,operation->first);
+                                    request.kind,request.kind=="critical_equipment_repair" && request.consumption.size()==1 ?
+                                        request.consumption.front().before : request.itemTransfer,operation->first);
                             }
                         }
                         // Uncertainty remains visible and cannot be replayed.
@@ -1450,8 +1454,9 @@ void LivingActivityCoordinator::Update() {
                     (saved->second.phase!=Phase::Executing || saved->second.context.boot.empty()) &&
                     (saved->second.checkpoint.step=="commission_mail_send" || saved->second.checkpoint.step=="commission_mail_wait");
                 const auto location=receiptOnly?std::optional<ProfessionProgress>{}:ReconcilePersonalClaimLocation(saved->second.actor,id);
-                const auto preparation=location ? location : receiptOnly?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
-                auto progress=preparation ? *preparation : IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
+                const auto preparation=location ? location : (receiptOnly || IsPartyRepairTask(saved->second))?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
+                auto progress=preparation ? *preparation : IsPartyRepairTask(saved->second) ? AdvancePartyRepair(saved->second.actor,id) :
+                    IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
                     IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
                     IsGuildProcurementTask(saved->second) ? AdvanceGuildProcurement(saved->second.actor,id) :
                     AdvanceProfessionJob(saved->second.actor,id);
@@ -1959,6 +1964,7 @@ AdmissionResult LivingActivityCoordinator::AdmitEconomyProfession(uint32_t actor
 }
 #include "LivingGuildDeliveryExecutor.inc"
 #include "LivingCriticalPreparation.inc"
+#include "LivingPartyRepairExecutor.inc"
 
 std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoordinator::DispatchPendingItemService(
     uint32_t actor,const std::string& id) {
@@ -4928,6 +4934,9 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     }
     pending.outcome = observation.state;
     after.phase = pending.uncertain ? Phase::Reconciling : Phase::Verifying;
+    if(IsPartyRepairTask(after) && request.kind=="critical_equipment_repair" &&
+        observation.state==OperationState::Verified && !HasNativeDamagedEquipment(actor))
+        after.phase=Phase::Completed; // Same native save/journal proves final durability AND payment.
     after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
     if((request.kind=="capacity_vendor_sale" || request.kind=="guild_bank_deposit" || request.kind=="gather_open" || request.kind=="loot_collect" || request.kind=="critical_equipment_repair" || request.kind=="commission_output_partition") && observation.state==OperationState::Rejected) {
         after.retryAtMs=after.updatedAtMs+300000;
