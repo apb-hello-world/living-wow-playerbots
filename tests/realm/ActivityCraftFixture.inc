@@ -46,7 +46,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const bool paid=suite=="activity-profession-paid-v1" || vendorWalk;
     const bool banked=suite=="activity-profession-bank-v1";
     const bool partyCheckpoint=suite=="activity-profession-mail-party-checkpoint-v1";
-    const bool partyResume=suite=="activity-profession-mail-party-resume-v1";
+    const bool partyRoster=suite=="activity-profession-mail-party-roster-v1";
+    const bool partyResume=suite=="activity-profession-mail-party-resume-v1" || partyRoster;
     const bool checkpoint=suite=="activity-profession-mail-checkpoint-v1" || partyCheckpoint;
     const bool travelRetry=suite=="activity-profession-mail-travel-resume-v1";
     const bool capacityResume=suite=="activity-profession-mail-capacity-resume-v1";
@@ -79,8 +80,8 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     auto emit=[&](bool passed,const std::string& failure) {
         const auto actorDiagnostic=request.task.actor ? ActorJson(request.task.actor) : std::string();
         if(partyMail) {
-            PartyMailFixture().Close(partyCheckpoint && passed);
-            if(!partyCheckpoint || !passed)state->professionCohortActors.back().store(0);
+            PartyMailFixture().Close((partyCheckpoint || partyRoster) && passed);
+            if((!partyCheckpoint && !partyRoster) || !passed)state->professionCohortActors.back().store(0);
         }
         if (passed) fixture.blocker.clear();
         boost::property_tree::ptree report;
@@ -91,7 +92,12 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             const auto& party=PartyMailFixture();
             report.put("party_group",party.persistedGroup);report.put("party_leader",party.leaderId);
             report.put("party_restored_reason",party.restoredReason);
-            report.put("continuing_party_restart_proof",passed && partyResume);
+            report.put("continuing_party_restart_proof",passed && partyResume && !partyRoster);
+            if(partyRoster) {
+                report.put("changed_leader_restart_rejection_proof",passed);
+                report.put("party_changed_leader",party.changedLeader);
+                report.put("party_persisted_before",party.persistedBefore);
+            }
             report.put("explicit_headless_account_classification_fixture",partyResume);
             report.put("party_checkpoint_session",party.checkpointBinding.session);
             report.put("party_checkpoint_revision",party.checkpointBinding.sessionRevision);
@@ -105,9 +111,9 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         if (fixture.after.actor) {
             report.put("native_money_after",fixture.after.money);report.put("skill_after",fixture.after.skill);
         } // An uncollected sample is unknown, not zero gold/skill.
-        report.put("paid_workflow_proof",passed && paid);report.put("profession_job_completion_proof",passed && settling && !checkpoint);report.put("travel_proof",false);
+        report.put("paid_workflow_proof",passed && paid);report.put("profession_job_completion_proof",passed && settling && !checkpoint && !partyRoster);report.put("travel_proof",false);
         report.put("ordinary_profession_runner",automatic);
-        report.put("restart_preparation_proof",passed && resumed && !travelRetry);
+        report.put("restart_preparation_proof",passed && resumed && !travelRetry && !partyRoster);
         report.put("continued_failed_setup",travelRetry);
         report.put("local_service_walk_proof",passed && serviceTravel && fixture.travelArrived && fixture.travelConflictChecked);
         report.put("route_or_transport_proof",false);
@@ -143,7 +149,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             report.put("ordinary_mail_runner",true);report.put("mail_operation",fixture.mailOperation);
             report.put("mail_claim",fixture.mailClaim);report.put("mail_id",fixture.mailId);
             report.put("mail_guid",fixture.mailGuid);report.put("mail_quantity",fixture.mailCount);
-            report.put("mail_link_and_service_positioning_fixture",true);
+            report.put("mail_link_and_service_positioning_fixture",!partyRoster);
             report.put("explicit_collection_selection_fixture",mergeMail);
             if(mergeMail) {
                 report.put("mail_merge_guid",fixture.mailMergeGuid);report.put("mail_merge_prior_count",fixture.mailMergeCount);
@@ -196,7 +202,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
         sLog.outString("Living isolated fixture: %s",Json(report).c_str());
         // Failed/checkpoint actors keep their copied-realm hold until the next
         // explicit restart. Do not let legacy work rewrite the failed evidence.
-        if (passed && !checkpoint) state->gameplayFixtureActor.store(0,std::memory_order_release);
+        if (passed && !checkpoint && !partyRoster) state->gameplayFixtureActor.store(0,std::memory_order_release);
         state->fixtureFinished=true;
     };
     auto require=[&](bool value,const char* name) {
@@ -279,10 +285,14 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                     "restart_requires_party_checkpoint_not_solo_parcel");
                 const auto leader=fixture.originalCheckpoint.get<uint32_t>("party_leader");
                 state->professionCohortActors.back().store(leader);
-                require(PartyMailFixture().Restore(actor,fixture.originalCheckpoint.get<uint32_t>("party_group"),leader),
+                require(PartyMailFixture().Restore(actor,fixture.originalCheckpoint.get<uint32_t>("party_group"),leader,partyRoster),
                     "restart_same_native_group_loaded_without_recreation");
-                require(PartyMailFixture().restoredReason=="realm_restart_errands_deferred",
-                    "restart_defers_original_party_errand_not_restored_permission");
+                if(partyRoster) {
+                    require(PartyMailFixture().changedLeader==actor->GetGUIDLow() &&
+                        PartyMailFixture().restoredReason.empty() && sPlayerbotRendezvousManager.PartyState(actor->GetGUIDLow())=="pending",
+                        "changed_leader_rejects_saved_errand_and_registers_fresh_party");
+                } else require(PartyMailFixture().restoredReason=="realm_restart_errands_deferred",
+                        "restart_defers_original_party_errand_not_restored_permission");
                 require(!sPlayerbotRendezvousManager.ReadPartyService(actor,*prior) &&
                     !sPlayerbotRendezvousManager.PartyServiceStatus(prior->actor),
                     "restart_does_not_restore_transient_service_binding");
@@ -339,6 +349,17 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             }
             require(!fixture.mailClaim.empty() && DecodeProfessionJob(prior->checkpoint.data,job,fixture.blocker) &&
                 ReadNativeCraftFrame(*actor,job,fixture.before,fixture.blocker),"restart_reads_existing_native_preparation_without_grants");
+            if(partyRoster) {
+                require(!AcquireSavedTask(prior->id,prior->revision,Mask(Effect::Inventory),60000,"isolated_changed_roster_probe").Permitted(),
+                    "changed_leader_cannot_collect_with_saved_context");
+                for(const auto& claim:fixture.resumeClaims) {
+                    const auto* current=state->resources.Inspect(claim.id);
+                    require(current && SameResourceClaim(*current,claim),"changed_leader_preserves_exact_accepted_claims");
+                }
+                require(actor->GetGroup() && actor->GetGroup()->GetId()==PartyMailFixture().persistedGroup &&
+                    actor->GetGroup()->GetMembersCount()==2,"changed_leader_retains_original_native_membership");
+                emit(true,"");return; // No fresh consent, travel, collection or craft in this negative case.
+            }
             const auto* spawn=sObjectMgr.GetGOData(actor->GetMapId()==0 ? 44775u : 10107u);
             require(spawn && spawn->mapid==actor->GetMapId() && (spawn->id==143990u || spawn->id==173221u),
                 "restart_fixture_valid_same_continent_mailbox");

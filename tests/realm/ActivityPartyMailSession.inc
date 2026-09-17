@@ -6,7 +6,8 @@
 bool LivingIsolatedPartyReconnectHuman(uint32_t member) {
     const char* mode=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     const char* leader=std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
-    if(!mode || std::string(mode)!="activity-profession-mail-party-resume-v1" || !leader)return false;
+    if(!mode || (std::string(mode)!="activity-profession-mail-party-resume-v1" &&
+        std::string(mode)!="activity-profession-mail-party-roster-v1") || !leader)return false;
     RequireIsolatedNativeFixtureEnvironment();
     return member==std::stoul(leader);
 }
@@ -23,6 +24,8 @@ struct PartyMailSessionFixture {
     bool recallInjected=false,reauthorized=false,recovered=false;
     uint32_t persistedGroup=0;
     std::string restoredReason;
+    std::string persistedBefore;
+    uint32_t changedLeader=0;
     LivingActivity::PartyServiceBinding checkpointBinding;
     std::string recalledOperation;
     void Close(bool preserveGroup=false) {
@@ -36,7 +39,7 @@ struct PartyMailSessionFixture {
         }
         humanSession.reset();socket.reset();io.reset();original=nullptr;bound=false;done=true;
     }
-    bool Restore(Player* bot,uint32_t expectedGroup,uint32_t expectedLeader) {
+    bool Restore(Player* bot,uint32_t expectedGroup,uint32_t expectedLeader,bool changeLeader=false) {
         auto* leader=sRandomPlayerbotMgr.GetPlayerBot(expectedLeader);
         if(!leader || !leader->IsInWorld() || NativeSafety(leader))return false;
         if(!bot->GetGroup() || bot->GetGroup()!=leader->GetGroup() ||
@@ -47,6 +50,19 @@ struct PartyMailSessionFixture {
                 std::to_string(leader->GetGroup()?leader->GetGroup()->GetId():0)+":expected="+
                 std::to_string(expectedGroup));
         leaderId=expectedLeader;persistedGroup=expectedGroup;group=bot->GetGroup();
+        if(changeLeader) {
+            // Alter real native membership metadata, not the saved consent or
+            // a fabricated look-alike group. The existing roster fingerprint
+            // includes leadership. No grant, movement, collection or new party.
+            auto saved=CharacterDatabase.PQuery("SELECT `data`,`value` FROM ai_playerbot_random_bots WHERE bot='%u' AND event='living_party_session_v1' ORDER BY id DESC LIMIT 1",bot->GetGUIDLow());
+            if(!saved || saved->Fetch()[1].GetUInt32()<=uint32_t(time(nullptr)))
+                throw std::runtime_error("changed_roster_requires_unexpired_saved_consent");
+            persistedBefore=saved->Fetch()[0].GetCppString();
+            group->ChangeLeader(bot->GetObjectGuid());
+            if(group->GetLeaderGuid()!=bot->GetObjectGuid())
+                throw std::runtime_error("changed_roster_native_leadership_failed");
+            changedLeader=bot->GetGUIDLow();
+        }
         x=leader->GetPositionX();y=leader->GetPositionY();z=leader->GetPositionZ();o=leader->GetOrientation();
         original=leader->GetSession();io=std::make_unique<boost::asio::io_context>();
         socket=std::make_shared<WorldSocket>(*io);
