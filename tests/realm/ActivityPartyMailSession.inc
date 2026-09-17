@@ -12,6 +12,7 @@ struct PartyMailSessionFixture {
     bool bound=false,done=false;
     bool recallInjected=false,reauthorized=false,recovered=false;
     uint32_t persistedGroup=0;
+    uint32_t headlessAccount=0;
     std::string restoredReason;
     LivingActivity::PartyServiceBinding checkpointBinding;
     std::string recalledOperation;
@@ -25,6 +26,9 @@ struct PartyMailSessionFixture {
             if(!preserveGroup)leader->NearTeleportTo(x,y,z,o);
         }
         humanSession.reset();socket.reset();io.reset();original=nullptr;bound=false;done=true;
+        if(headlessAccount) {
+            sPlayerbotAIConfig.randomBotAccounts.push_back(headlessAccount);headlessAccount=0;
+        }
     }
     bool Restore(Player* bot,uint32_t expectedGroup,uint32_t expectedLeader) {
         auto* leader=sRandomPlayerbotMgr.GetPlayerBot(expectedLeader);

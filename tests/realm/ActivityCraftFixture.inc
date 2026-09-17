@@ -67,7 +67,20 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             const auto* leader=std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
             if(!actor || !leader)throw std::runtime_error("explicit_party_fixture_pair_required");
             sRandomPlayerbotMgr.AddRandomBot(std::stoul(actor));
-            sRandomPlayerbotMgr.AddRandomBot(std::stoul(leader));requested=true;return;
+            sRandomPlayerbotMgr.AddRandomBot(std::stoul(leader));
+            if(partyResume) {
+                // Explicit headless-human INPUT must exist before native bot
+                // login validates persisted roster accounts. The character
+                // remains native; do not recreate its group or bypass login's
+                // ordinary human-party preservation. Restore the in-memory
+                // account classification when this isolated fixture closes.
+                auto& party=PartyMailFixture();
+                party.headlessAccount=sObjectMgr.GetPlayerAccountIdByGUID(ObjectGuid(HIGHGUID_PLAYER,std::stoul(leader)));
+                if(!party.headlessAccount || !sPlayerbotAIConfig.IsInRandomAccountList(party.headlessAccount))
+                    throw std::runtime_error("explicit_headless_account_fixture_required");
+                sPlayerbotAIConfig.randomBotAccounts.remove(party.headlessAccount);
+            }
+            requested=true;return;
         }
     }
     if (!fixture.deadline) fixture.deadline=NowMs()+(partyMail ? 240000 : (serviceTravel || capacityMail) ? 180000 : 120000);
@@ -87,6 +100,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             report.put("party_group",party.persistedGroup);report.put("party_leader",party.leaderId);
             report.put("party_restored_reason",party.restoredReason);
             report.put("continuing_party_restart_proof",passed && partyResume);
+            report.put("explicit_headless_account_classification_fixture",partyResume);
             report.put("party_checkpoint_session",party.checkpointBinding.session);
             report.put("party_checkpoint_revision",party.checkpointBinding.sessionRevision);
         }
