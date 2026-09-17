@@ -26,7 +26,7 @@ std::optional<LivingActivity::PartyServiceBinding> LivingActivityCoordinator::Pr
     TaskRequest request;auto& task=request.task;
     task.id=task.root=SourceId("party_repair",sourceKey);task.source="party_repair";task.sourceKey=sourceKey;
     task.actor=actor;task.kind=Kind::PartyErrand;task.mode=Mode::Active;task.phase=Phase::Queued;
-    task.priority=Priority::Preparation;task.accepted=true;
+    task.priority=Priority::Delivery;task.accepted=true;
     task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
     task.createdAtMs=task.updatedAtMs=NowMs();task.checkpoint.step="maintenance_repair_prepare";
     task.checkpoint.data="{\"workflow\":\"party_repair_v1\"}";request.receipt=NewId();

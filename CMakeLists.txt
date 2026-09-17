@@ -171,6 +171,7 @@ if(LIVING_ISOLATED_NATIVE_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotChatDirector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotGuildSupplies.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotOrganicEconomy.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/PlayerbotRendezvousManager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/TravelNode.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/strategy/actions/MovementActions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/playerbot/strategy/actions/ChooseTravelTargetAction.cpp
