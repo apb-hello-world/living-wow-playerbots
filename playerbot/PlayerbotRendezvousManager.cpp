@@ -1677,7 +1677,8 @@ std::optional<LivingActivity::PartyServiceBinding> PlayerbotRendezvousManager::R
     const auto now=std::chrono::steady_clock::now();
     const auto service=session.managedService.service;
     if (!PartyServiceEffects(effects,service) || session.state!="free_time" ||
-        session.currentErrand!=(service==PartyServiceBinding::Service::Repair?kErrandRepair:kErrandMail) ||
+        session.currentErrand!=(service==PartyServiceBinding::Service::Repair?kErrandRepair:
+            service==PartyServiceBinding::Service::Vendor?kErrandVendor:kErrandMail) ||
         session.freeTimeRecallRequested ||
         session.groupId!=bot->GetGroup()->GetId() ||
         (session.freeTimeUntil.time_since_epoch().count() && now>=session.freeTimeUntil) ||
@@ -2497,6 +2498,28 @@ bool PlayerbotRendezvousManager::StartNextVerifiedErrand(PartySession& session, 
     session.currentErrandId = taskRecord.taskId;
     taskRecord.phase = PartyActivityPhase::preparing;
     taskRecord.outcomeCode.clear();
+    if(session.currentErrand==kErrandVendor && sLivingActivityCoordinator.EffectEnforcementEnabled())
+    {
+        std::string blocker;
+        auto selected=sLivingActivityCoordinator.PreparePartyVendorService(session.botGuid,taskRecord.taskId,blocker);
+        if(!selected && blocker=="party_vendor_no_safely_disposable_stack")
+        {
+            FinishCurrentErrand(session,bot,false,blocker);return session.currentErrand!=0;
+        }
+        if(selected && bot && bot->GetGroup())
+        {
+            selected->human=session.playerGuid;
+            selected->session="group:"+std::to_string(bot->GetGroup()->GetId())+":"+
+                std::to_string(bot->GetGroup()->GetLivingActivityIdentity());
+            selected->sessionRevision=bot->GetGroup()->GetLivingActivityRevision();
+            session.managedService=*selected;
+        }
+        session.errandBefore=ObserveErrandState(bot);taskRecord.before=session.errandBefore;
+        taskRecord.outcomeCode=selected?"shared_vendor_service_admitted":blocker;
+        session.currentErrandLocal=true;session.errandOperationAccepted=false;
+        session.nextErrandStep=std::chrono::steady_clock::now()+std::chrono::seconds(1);
+        PersistPartySession(session);return true; // No legacy sell fallback while admission is pending.
+    }
     if(session.currentErrand==kErrandRepair && sLivingActivityCoordinator.EffectEnforcementEnabled())
     {
         // Never run legacy RepairAllAction while shared admission is pending.
@@ -2956,7 +2979,7 @@ void PlayerbotRendezvousManager::UpdateVerifiedErrand(PartySession& session, Pla
     Player* player, std::chrono::steady_clock::time_point now)
 {
     if (!bot || !player) { session.freeTimeRecallRequested = true; return; }
-    if(session.currentErrand==kErrandRepair && session.managedService.root.empty() &&
+    if((session.currentErrand==kErrandRepair || session.currentErrand==kErrandVendor) && session.managedService.root.empty() &&
         sLivingActivityCoordinator.EffectEnforcementEnabled() && !session.freeTimeRecallRequested)
     {
         if(now>=session.nextErrandStep)StartNextVerifiedErrand(session,bot);
@@ -2968,7 +2991,7 @@ void PlayerbotRendezvousManager::UpdateVerifiedErrand(PartySession& session, Pla
         const bool completed=!session.managedService.receipt.empty();
         const bool deferred=saved && (saved->phase==LivingActivity::Phase::Deferred ||
             saved->phase==LivingActivity::Phase::WaitingExternal);
-        if(!saved && session.managedService.service==LivingActivity::PartyServiceBinding::Service::Repair &&
+        if(!saved && session.managedService.service!=LivingActivity::PartyServiceBinding::Service::Mail &&
             !session.freeTimeRecallRequested)return; // Waiting for durable admission, not legacy fallback.
         if (completed || deferred || !saved || !ReadPartyService(bot,*saved))
         {
@@ -2978,7 +3001,8 @@ void PlayerbotRendezvousManager::UpdateVerifiedErrand(PartySession& session, Pla
             if (!sLivingActivityCoordinator.YieldPartyService(session.botGuid,session.managedService.root)) return;
             session.freeTimeRecallRequested=true;
             const bool repair=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Repair;
-            FinishCurrentErrand(session,bot,completed,completed ? (repair?"verified_equipment_repairs":"verified_mail_collection") :
+            const bool vendor=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Vendor;
+            FinishCurrentErrand(session,bot,completed,completed ? (vendor?"verified_vendor_batch":repair?"verified_equipment_repairs":"verified_mail_collection") :
                 deferred ? "party_service_deferred" : "party_service_permission_ended");
         }
         return;

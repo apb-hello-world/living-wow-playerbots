@@ -2,6 +2,7 @@
 #define LIVING_PARTY_SERVICE_H
 #include "LivingActivityEffects.h"
 #include "LivingPartyRepair.h"
+#include "LivingPartyVendor.h"
 
 namespace LivingActivity {
 // Permission for one owned parcel OR one finite equipped-item repair root,
@@ -11,7 +12,7 @@ struct PartyServiceBinding {
     std::string root, claim, session, receipt;
     uint32_t actor=0, human=0, entry=0;
     uint64_t sessionRevision=0, acceptedRevision=0;
-    enum class Service { Mail, Repair } service=Service::Mail;
+    enum class Service { Mail, Repair, Vendor } service=Service::Mail;
 };
 struct PartyServiceWindow {
     uint32_t actor=0, human=0;
@@ -22,7 +23,9 @@ struct PartyServiceWindow {
 inline bool PartyServiceMatches(const PartyServiceBinding& binding,const Task& task,
     const PartyServiceWindow& window) {
     const bool repair=binding.service==PartyServiceBinding::Service::Repair;
-    const bool subject=repair ? IsPartyRepairTask(task) && binding.claim.empty() && !binding.entry :
+    const bool vendor=binding.service==PartyServiceBinding::Service::Vendor;
+    const bool subject=vendor ? IsPartyVendorTask(task) && binding.claim.empty() && !binding.entry :
+        repair ? IsPartyRepairTask(task) && binding.claim.empty() && !binding.entry :
         !binding.claim.empty() && binding.entry;
     return window.authorized && !binding.root.empty() && subject &&
         binding.receipt.empty() && !binding.session.empty() && binding.actor && binding.human &&
@@ -41,6 +44,10 @@ inline bool PartyServiceEffects(uint32_t effects,PartyServiceBinding::Service se
 }
 inline bool PartyServiceOperation(const PartyServiceBinding& binding,const std::string& kind,
     const ResourceClaim& claim) {
+    if(binding.service==PartyServiceBinding::Service::Vendor)
+        return kind=="party_vendor_sale" && IsUuid(claim.id) && claim.task==binding.root &&
+            claim.actor==binding.actor && claim.state=="held" && claim.location=="bags" &&
+            claim.itemGuid && claim.itemEntry && claim.quantity && !claim.copper && !claim.nativeReference;
     if(binding.service==PartyServiceBinding::Service::Repair)
         return kind=="critical_equipment_repair" && claim.task==binding.root &&
             claim.actor==binding.actor && claim.state=="held" && claim.location=="money" &&
@@ -57,8 +64,10 @@ inline bool PartyServiceReceipt(PartyServiceBinding& binding,const Task& task,
     // Completion remains valid if recall happened after the atomic native
     // effect. Only the acknowledged journal callback may supply this proof.
     const bool repair=binding.service==PartyServiceBinding::Service::Repair;
+    const bool vendor=binding.service==PartyServiceBinding::Service::Vendor;
     if(receipt.empty() || !binding.receipt.empty() ||
-        (repair ? !IsPartyRepairTask(task) || task.phase!=Phase::Completed : kind!="mail_collect") ||
+        (vendor ? !IsPartyVendorTask(task) || task.phase!=Phase::Completed :
+         repair ? !IsPartyRepairTask(task) || task.phase!=Phase::Completed : kind!="mail_collect") ||
         task.id!=binding.root || task.actor!=binding.actor || task.revision<binding.acceptedRevision ||
         !PartyServiceOperation(binding,kind,claim))return false;
     binding.receipt=receipt;return true;

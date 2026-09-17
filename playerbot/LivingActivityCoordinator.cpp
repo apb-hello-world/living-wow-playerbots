@@ -169,7 +169,7 @@ namespace {
         if(protection!=PartyProtection::Human)
             return PartyAdmissionBlocker(protection,PartyAdmission::SavedExecutor,false);
         const auto scope=sPlayerbotRendezvousManager.ReadPartyService(&bot,task,request.effects);
-        const auto& subject=request.kind=="critical_equipment_repair" && request.consumption.size()==1 ?
+        const auto& subject=(request.kind=="critical_equipment_repair" || request.kind=="party_vendor_sale") && request.consumption.size()==1 ?
             request.consumption.front().before : request.itemTransfer;
         return scope && PartyServiceOperation(*scope,request.kind,subject) ? "" :
             "party_service_operation_not_authorized";
@@ -365,6 +365,7 @@ struct LivingActivityCoordinator::State {
         std::string outcome,evidence;
     };
     std::map<std::string,RepairRead> repairReads;
+    std::map<std::string,RepairRead> vendorReads; // Bounded receipt cache, not another scheduler.
     std::atomic<uint64_t> publishedPolicyRevision{0};
     std::future<bool> projectionSend;
     std::set<std::string> projectionIds;
@@ -678,6 +679,7 @@ struct LivingActivityCoordinator::State {
         if(IsGuildProcurementTask(task))return true;
         if(IsRecipeLearningTask(task))return true;
         if(IsPartyRepairTask(task))return true;
+        if(IsPartyVendorTask(task))return true;
         if(!IsProfessionJob(task))return false;
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
         // Historical fault fixtures explicitly drive individual native steps.
@@ -949,7 +951,7 @@ struct LivingActivityCoordinator::State {
                             if(claimProjectionValid && !operation->second.saveBlocked) {
                                 const auto& request=operation->second.request;
                                 sPlayerbotRendezvousManager.RecordPartyServiceReceipt(acknowledgedWrite.task,
-                                    request.kind,request.kind=="critical_equipment_repair" && request.consumption.size()==1 ?
+                                    request.kind,(request.kind=="critical_equipment_repair" || request.kind=="party_vendor_sale") && request.consumption.size()==1 ?
                                         request.consumption.front().before : request.itemTransfer,operation->first);
                             }
                         }
@@ -1454,8 +1456,9 @@ void LivingActivityCoordinator::Update() {
                     (saved->second.phase!=Phase::Executing || saved->second.context.boot.empty()) &&
                     (saved->second.checkpoint.step=="commission_mail_send" || saved->second.checkpoint.step=="commission_mail_wait");
                 const auto location=receiptOnly?std::optional<ProfessionProgress>{}:ReconcilePersonalClaimLocation(saved->second.actor,id);
-                const auto preparation=location ? location : (receiptOnly || IsPartyRepairTask(saved->second))?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
+                const auto preparation=location ? location : (receiptOnly || IsPartyRepairTask(saved->second) || IsPartyVendorTask(saved->second))?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
                 auto progress=preparation ? *preparation : IsPartyRepairTask(saved->second) ? AdvancePartyRepair(saved->second.actor,id) :
+                    IsPartyVendorTask(saved->second) ? AdvancePartyVendor(saved->second.actor,id) :
                     IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
                     IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
                     IsGuildProcurementTask(saved->second) ? AdvanceGuildProcurement(saved->second.actor,id) :
@@ -1965,6 +1968,7 @@ AdmissionResult LivingActivityCoordinator::AdmitEconomyProfession(uint32_t actor
 #include "LivingGuildDeliveryExecutor.inc"
 #include "LivingCriticalPreparation.inc"
 #include "LivingPartyRepairExecutor.inc"
+#include "LivingPartyVendorExecutor.inc"
 
 std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoordinator::DispatchPendingItemService(
     uint32_t actor,const std::string& id) {
@@ -2013,7 +2017,7 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
             if(!grant.Permitted())return stop(grant.blocker);
             return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
         }
-        if (row.second.request.kind=="capacity_vendor_sale") {
+        if (row.second.request.kind=="capacity_vendor_sale" || row.second.request.kind=="party_vendor_sale") {
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
             const auto* fixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
             if (fixture && std::string(fixture)=="activity-commission-direct-broker-v1" &&
@@ -4938,7 +4942,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
         observation.state==OperationState::Verified && !HasNativeDamagedEquipment(actor))
         after.phase=Phase::Completed; // Same native save/journal proves final durability AND payment.
     after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
-    if((request.kind=="capacity_vendor_sale" || request.kind=="guild_bank_deposit" || request.kind=="gather_open" || request.kind=="loot_collect" || request.kind=="critical_equipment_repair" || request.kind=="commission_output_partition") && observation.state==OperationState::Rejected) {
+    if((request.kind=="capacity_vendor_sale" || request.kind=="party_vendor_sale" || request.kind=="guild_bank_deposit" || request.kind=="gather_open" || request.kind=="loot_collect" || request.kind=="critical_equipment_repair" || request.kind=="commission_output_partition") && observation.state==OperationState::Rejected) {
         after.retryAtMs=after.updatedAtMs+300000;
         after.checkpoint.blocker=observation.evidence; // Retain claim, do not hammer a rejecting native service.
     }
@@ -4952,6 +4956,13 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     std::string gainReservation;
     Task recipientTask;
     try {
+        if(IsPartyVendorTask(after) && request.kind=="party_vendor_sale" && proof.state==OperationState::Verified) {
+            NativeSaleQuote quote;
+            if(!DecodeNativeSaleQuote(request.beforeState,quote) || !quote.partyCleanup ||
+                request.consumption.size()!=1 ||
+                !AcknowledgePartyVendorSale(after,quote.item,request.consumption.front().before,proof))
+                throw std::runtime_error("party_vendor_native_receipt_invalid");
+        }
         if(proof.state==OperationState::Verified && request.kind=="guild_mail_send") {
             GuildMailQuote quote;
             if(!DecodeGuildMailQuote(request.beforeState,quote) || !VerifyGuildMailAttachment(quote,observation.mailedItem))
@@ -5027,6 +5038,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
             state->claimBlocker="native_transfer_claim_requires_reconciliation";pending.saveBlocked=true;
         }
         pending.uncertain=true; pending.outcome=proof.state=OperationState::Reconciling;
+        if(IsPartyVendorTask(after))after.checkpoint.data=saved->second.checkpoint.data;
         proof.evidence="claim_outcome_requires_reconciliation";
         after.phase=Phase::Reconciling; after.checkpoint.blocker=proof.evidence;
         changes.clear();
@@ -5059,6 +5071,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
                  reason=="native_save_journal_queue_failed" || reason=="native_save_transaction_missing")?reason.c_str():"native_capture_exception",
                 unsigned(write.plan.statements.size()),unsigned(largest),unsigned(write.plan.receiptQuery.size()));
             write.task.phase=Phase::Reconciling; write.task.checkpoint.blocker=proof.evidence;
+            if(IsPartyVendorTask(write.task))write.task.checkpoint.data=saved->second.checkpoint.data;
             write.claims.clear();
             write.recipientTask={};
             // A failed capture cannot acknowledge acquired claims separately.

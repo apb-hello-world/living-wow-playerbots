@@ -695,8 +695,10 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
     const auto saved=sLivingActivityCoordinator.ReadSavedTask(id);
     if(!saved || saved->actor!=actor || saved->revision!=revision ||
         (IsPartyRepairTask(*saved) && service!=ServiceDestination::Repair) ||
+        (IsPartyVendorTask(*saved) && service!=ServiceDestination::Vendor) ||
         (!IsProfessionJob(*saved) && !IsRecipeLearningTask(*saved) && !IsManagedGuildDelivery(*saved) && !IsGuildProcurementTask(*saved) &&
-         !(IsPartyRepairTask(*saved) && service==ServiceDestination::Repair)) ||
+         !(IsPartyRepairTask(*saved) && service==ServiceDestination::Repair) &&
+         !(IsPartyVendorTask(*saved) && service==ServiceDestination::Vendor)) ||
         saved->mode!=Mode::Active || !saved->accepted || saved->phase!=LivingActivity::Phase::Traveling ||
         saved->checkpoint.step!=ServiceStep(service)) return {false,"saved_service_step_changed"};
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);

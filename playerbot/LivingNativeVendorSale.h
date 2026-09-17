@@ -2,6 +2,7 @@
 #include "LivingActivityOperations.h"
 #include "LivingActivityReservations.h"
 #include "LivingCapacityPreparation.h"
+#include "LivingPartyVendor.h"
 class Item;
 namespace LivingActivity {
 bool NativeCapacityNeed(Player& actor,const Task& task,
@@ -12,7 +13,10 @@ struct NativeSaleQuote {
     uint32_t copper=0,countBefore=0,vendorEntry=0,capacityEntry=0,capacityQuantity=0;
     uint64_t vendor=0;
     uint16_t from=0;
+    bool partyCleanup=false;
 };
+// Read-only admission snapshot; permission and reservations remain separate.
+bool PlanNativePartyVendorBatch(Player& actor,PartyVendorJob& job,std::string& blocker);
 std::string EncodeNativeSaleQuote(const NativeSaleQuote& quote);
 bool DecodeNativeSaleQuote(const std::string& value,NativeSaleQuote& quote);
 // Read-only native preparation. A missing safe candidate never authorizes a
@@ -26,7 +30,7 @@ public:
 class NativeVendorSale final : public NativeOperationAdapter {
 public:
     explicit NativeVendorSale(NativeSaleQuote value):quote(std::move(value)) {}
-    const char* OperationKind() const override {return "capacity_vendor_sale";}
+    const char* OperationKind() const override {return quote.partyCleanup?"party_vendor_sale":"capacity_vendor_sale";}
     uint32_t OperationEffects() const override {return Mask(Effect::Inventory)|Mask(Effect::Money);}
     bool SupportsClaimedConsumption() const override {return true;}
     NativePersistence PersistencePolicy() const override {return NativePersistence::Inventory;}

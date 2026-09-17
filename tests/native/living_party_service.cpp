@@ -95,4 +95,23 @@ int main() {
     repair.phase=Phase::Completed;
     assert(PartyServiceReceipt(repairBinding,repair,"critical_equipment_repair",money,"all-repaired"));
     assert(!PartyServiceReceipt(repairBinding,repair,"critical_equipment_repair",money,"duplicate"));
+    auto vendor=task;vendor.kind=Kind::PartyErrand;vendor.source="party_vendor";
+    vendor.checkpoint.data=EncodePartyVendorJob({{{123,765,2}},0});
+    auto vendorBinding=repairBinding;vendorBinding.service=PartyServiceBinding::Service::Vendor;vendorBinding.receipt.clear();
+    assert(PartyServiceMatches(vendorBinding,vendor,window));
+    assert(!PartyServiceMatches(vendorBinding,repair,window));
+    assert(!PartyServiceMatches(repairBinding,vendor,window));
+    changed=window;changed.authorized=false;assert(!PartyServiceMatches(vendorBinding,vendor,changed));
+    changed=window;++changed.sessionRevision;assert(!PartyServiceMatches(vendorBinding,vendor,changed));
+    auto sale=claim;sale.location="bags";sale.nativeReference=0;
+    assert(PartyServiceOperation(vendorBinding,"party_vendor_sale",sale));
+    for(const auto kind:{"mail_collect","bank_deposit","capacity_vendor_sale","vendor_purchase","critical_equipment_repair"})
+        assert(!PartyServiceOperation(vendorBinding,kind,sale));
+    assert(!PartyServiceEffects(Mask(Effect::Equipment),vendorBinding.service));
+    wrong=sale;wrong.state="consumed";assert(!PartyServiceOperation(vendorBinding,"party_vendor_sale",wrong));
+    wrong=sale;wrong.actor=1;assert(!PartyServiceOperation(vendorBinding,"party_vendor_sale",wrong));
+    assert(!PartyServiceReceipt(vendorBinding,vendor,"party_vendor_sale",sale,"partial-sale"));
+    vendor.phase=Phase::Completed;
+    assert(PartyServiceReceipt(vendorBinding,vendor,"party_vendor_sale",sale,"native-final-sale"));
+    assert(!PartyServiceReceipt(vendorBinding,vendor,"party_vendor_sale",sale,"duplicate-sale"));
 }

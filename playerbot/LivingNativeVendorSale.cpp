@@ -108,6 +108,7 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
     blocker="capacity_already_available";return false;
 }
 bool JobProtected(Player& actor,const Task& task,Item& item) {
+    if(IsPartyVendorTask(task))return false; // Other jobs, gear and quests are checked independently.
     if (IsGuildProcurementTask(task)) {
         GuildProcurementJob job;std::string blocker;
         if(!ValidateGuildProcurementTask(task,blocker) ||
@@ -164,6 +165,30 @@ bool NativeCapacityItemProtected(Player& actor,const Task& task,Item& item) {
     const auto facts=Facts(actor,task,item);
     return !facts.ownedBag || facts.legacyProtected || facts.charged;
 }
+bool PlanNativePartyVendorBatch(Player& actor,PartyVendorJob& job,std::string& blocker) {
+    job={};
+    if(!sLivingActivityCoordinator.OnWorldThread() || !SafeActor(actor)) {
+        blocker="party_vendor_safety_pause";return false;
+    }
+    const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
+    if(!view || !view->ready) {blocker="capacity_reservations_unavailable";return false;}
+    // A read-only classification context. This does not create or authorize a task.
+    Task task;task.source="party_vendor";task.kind=Kind::PartyErrand;task.actor=actor.GetGUIDLow();
+    auto items=actor.GetPlayerbotAI()->InventoryParseItems("inventory",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+    items.sort([](const Item* a,const Item* b){return a->GetGUIDLow()<b->GetGUIDLow();});
+    uint64_t total=actor.GetMoney();
+    for(auto* item:items) {
+        if(!item)continue;
+        const auto facts=Facts(actor,task,*item);uint32_t price=0;
+        if(!QuoteCapacitySale(facts,price) || view->HasUncertainItem(task.actor,facts.entry) ||
+            view->ProtectedItem(facts.guid))continue;
+        if(total+price>uint64_t(std::numeric_limits<int32_t>::max()))continue;
+        total+=price;job.items.push_back({facts.guid,facts.entry,facts.quantity});
+        if(job.items.size()==PartyVendorBatchLimit)break;
+    }
+    if(!ValidPartyVendorJob(job)) {blocker="party_vendor_no_safely_disposable_stack";return false;}
+    blocker.clear();return true;
+}
 std::string EncodeNativeSaleQuote(const NativeSaleQuote& q) {
     const auto& f=q.item;
     return "{\"actor\":"+std::to_string(f.actor)+",\"guid\":"+std::to_string(f.guid)+",\"entry\":"+std::to_string(f.entry)+
@@ -171,7 +196,7 @@ std::string EncodeNativeSaleQuote(const NativeSaleQuote& q) {
         std::to_string(f.money)+",\"copper\":"+std::to_string(q.copper)+",\"count_before\":"+std::to_string(q.countBefore)+
         ",\"vendor\":"+std::to_string(q.vendor)+",\"vendor_entry\":"+std::to_string(q.vendorEntry)+",\"from\":"+
         std::to_string(q.from)+",\"capacity_entry\":"+std::to_string(q.capacityEntry)+",\"capacity_quantity\":"+
-        std::to_string(q.capacityQuantity)+'}';
+        std::to_string(q.capacityQuantity)+(q.partyCleanup?",\"party_cleanup\":true":"")+'}';
 }
 bool DecodeNativeSaleQuote(const std::string& value,NativeSaleQuote& q) {
     q={};
@@ -182,20 +207,26 @@ bool DecodeNativeSaleQuote(const std::string& value,NativeSaleQuote& q) {
         f.ownedBag=f.disposable=true;q.copper=p.get<uint32_t>("copper");q.countBefore=p.get<uint32_t>("count_before");
         q.vendor=p.get<uint64_t>("vendor");q.vendorEntry=p.get<uint32_t>("vendor_entry");q.from=p.get<uint16_t>("from");
         q.capacityEntry=p.get<uint32_t>("capacity_entry");q.capacityQuantity=p.get<uint32_t>("capacity_quantity");
+        q.partyCleanup=p.get<bool>("party_cleanup",false);
         uint32_t price=0;
-        return EncodeNativeSaleQuote(q)==value && q.vendor && q.vendorEntry && q.capacityEntry && q.capacityQuantity &&
+        return EncodeNativeSaleQuote(q)==value && q.vendor && q.vendorEntry &&
+            (q.partyCleanup? !q.capacityEntry && !q.capacityQuantity : q.capacityEntry && q.capacityQuantity) &&
             QuoteCapacitySale(f,price) && price==q.copper && q.countBefore>=f.quantity;
     } catch(...) {q={};return false;}
 }
 bool PlanNativeCapacitySale(Player& actor,const Task& task,NativeSaleQuote& q,ResourceClaim& held,std::string& blocker) {
     q={};held={};auto reject=[&](const char* why){blocker=why;return false;};
+    const bool cleanup=IsPartyVendorTask(task);PartyVendorJob batch;
     if (!sLivingActivityCoordinator.OnWorldThread() || !SafeActor(actor) || actor.GetGUIDLow()!=task.actor ||
-        (!IsProfessionJob(task) && !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task) && !IsGuildProcurementTask(task)) ||
+        (!IsProfessionJob(task) && !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task) && !IsGuildProcurementTask(task) && !cleanup) ||
         task.mode!=Mode::Active || !task.accepted || task.root!=task.id)
         return reject("capacity_safety_or_task_pause");
     UnsettledClaimBatch claims;ItemGainSpec need;
-    if(!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,blocker) ||
-        !NeededCapacity(actor,task,claims,need,blocker))return false;
+    if(!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,blocker))return false;
+    if(cleanup) {
+        if(!ValidatePartyVendorTask(task,blocker) || !DecodePartyVendorJob(task.checkpoint.data,batch))return false;
+        if(batch.next>=batch.items.size())return reject("party_vendor_receipts_complete");
+    } else if(!NeededCapacity(actor,task,claims,need,blocker))return false;
     const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
     if(!view || !view->ready)return reject("capacity_reservations_unavailable");
     auto items=actor.GetPlayerbotAI()->InventoryParseItems("inventory",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
@@ -204,6 +235,7 @@ bool PlanNativeCapacitySale(Player& actor,const Task& task,NativeSaleQuote& q,Re
     for(auto* item : items) {
         if(!item)continue;
         auto facts=Facts(actor,task,*item);uint32_t price=0;
+        if(cleanup && !PartyVendorItemMatches(batch,facts))continue;
         if(!QuoteCapacitySale(facts,price) || view->HasUncertainItem(task.actor,facts.entry))continue;
         ResourceClaim own;
         for(const auto& c : claims.claims) if(c.itemGuid==facts.guid) {
@@ -219,7 +251,7 @@ bool PlanNativeCapacitySale(Player& actor,const Task& task,NativeSaleQuote& q,Re
             if(!own.id.empty())break;
         }
     }
-    if(!selected)return reject("capacity_no_safely_disposable_stack");
+    if(!selected)return reject(cleanup?"party_vendor_accepted_stack_changed_or_protected":"capacity_no_safely_disposable_stack");
     if(!actor.IsStopped())return reject("capacity_vendor_travel_required");
     for(const auto guid : actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("nearest npcs no los")->Get())
         if(auto* vendor=actor.GetNPCIfCanInteractWith(guid,UNIT_NPC_FLAG_VENDOR)) {
@@ -227,7 +259,7 @@ bool PlanNativeCapacitySale(Player& actor,const Task& task,NativeSaleQuote& q,Re
         }
     if(!q.vendor)return reject("capacity_vendor_travel_required");
     q.from=selected->GetPos();q.countBefore=actor.GetItemCount(q.item.entry,false);
-    q.capacityEntry=need.entry;q.capacityQuantity=need.quantity;blocker.clear();return true;
+    q.capacityEntry=need.entry;q.capacityQuantity=need.quantity;q.partyCleanup=cleanup;blocker.clear();return true;
 }
 bool NativeCapacityReservation::ValidatePurpose(Player& actor,const ReservationRequest& r,std::string& blocker) {
     const auto task=sLivingActivityCoordinator.ReadSavedTask(r.transition.task.id);
@@ -272,7 +304,8 @@ NativeObservation NativeVendorSale::ExecuteNative(Player& actor,const OperationR
         ",\"buyback_guid\":"+std::to_string(bought?bought->GetGUIDLow():0)+'}';
     if(VerifyCapacitySale(quote.item,actor.GetMoney(),quote.countBefore,count,empty,inBags,
         bought?bought->GetGUIDLow():0,bought?bought->GetEntry():0,bought?bought->GetCount():0)) {
-        out.state=OperationState::Verified;out.evidence="native_capacity_sale_money_item_and_slot_observed";
+        out.state=OperationState::Verified;out.evidence=quote.partyCleanup?
+            "native_party_sale_money_item_and_slot_observed":"native_capacity_sale_money_item_and_slot_observed";
     } else if(inBags && count==quote.countBefore && actor.GetMoney()==quote.item.money) {
         out.state=OperationState::Rejected;out.evidence="native_capacity_sale_rejected_without_effect";
     } else out.evidence="native_capacity_sale_requires_reconciliation";
