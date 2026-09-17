@@ -194,7 +194,8 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
         std::string(requested)=="activity-profession-mail-checkpoint-v1" || std::string(requested)=="activity-profession-mail-resume-v1" ||
         std::string(requested)=="activity-profession-mail-travel-v1" || std::string(requested)=="activity-profession-mail-travel-resume-v1" ||
         std::string(requested)=="activity-profession-mail-merge-v1" || std::string(requested)=="activity-profession-mail-capacity-v1" ||
-        std::string(requested)=="activity-profession-mail-capacity-resume-v1" || std::string(requested)=="activity-profession-mail-party-v1")) {
+        std::string(requested)=="activity-profession-mail-capacity-resume-v1" || std::string(requested)=="activity-profession-mail-party-v1" ||
+        std::string(requested)=="activity-profession-mail-party-checkpoint-v1" || std::string(requested)=="activity-profession-mail-party-resume-v1")) {
         RunIsolatedCraftFixture();return;
     }
     if (requested && (std::string(requested) == "activity-vendor-v1" || std::string(requested) == "activity-vendor-failure-v1")) {

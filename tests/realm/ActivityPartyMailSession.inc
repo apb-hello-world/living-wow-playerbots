@@ -10,17 +10,40 @@ struct PartyMailSessionFixture {
     Group* group=nullptr;
     float x=0,y=0,z=0,o=0;
     bool bound=false,done=false;
-    bool recallInjected=false,reauthorized=false;
+    bool recallInjected=false,reauthorized=false,recovered=false;
+    uint32_t persistedGroup=0;
+    std::string restoredReason;
+    LivingActivity::PartyServiceBinding checkpointBinding;
     std::string recalledOperation;
-    void Close() {
+    void Close(bool preserveGroup=false) {
         auto* leader=sRandomPlayerbotMgr.GetPlayerBot(leaderId);
-        if(group) {group->Disband(true);sObjectMgr.RemoveGroup(group);delete group;group=nullptr;}
+        if(group && !preserveGroup) {group->Disband(true);sObjectMgr.RemoveGroup(group);delete group;}
+        group=nullptr; // A preserved native group belongs to ObjectMgr, not this fixture.
         if(leader && original) {
             leader->SetSession(original);
             humanSession->SetPlayer(nullptr,0);
-            leader->NearTeleportTo(x,y,z,o);
+            if(!preserveGroup)leader->NearTeleportTo(x,y,z,o);
         }
         humanSession.reset();socket.reset();io.reset();original=nullptr;bound=false;done=true;
+    }
+    bool Restore(Player* bot,uint32_t expectedGroup,uint32_t expectedLeader) {
+        auto* leader=sRandomPlayerbotMgr.GetPlayerBot(expectedLeader);
+        if(!leader || !leader->IsInWorld() || NativeSafety(leader))return false;
+        if(!bot->GetGroup() || bot->GetGroup()!=leader->GetGroup() ||
+            bot->GetGroup()->GetId()!=expectedGroup || bot->GetGroup()->GetMembersCount()!=2 ||
+            bot->GetGroup()->GetLeaderGuid()!=leader->GetObjectGuid())
+            throw std::runtime_error("restart_requires_same_persisted_native_group");
+        leaderId=expectedLeader;persistedGroup=expectedGroup;group=bot->GetGroup();
+        x=leader->GetPositionX();y=leader->GetPositionY();z=leader->GetPositionZ();o=leader->GetOrientation();
+        original=leader->GetSession();io=std::make_unique<boost::asio::io_context>();
+        socket=std::make_shared<WorldSocket>(*io);
+        humanSession=std::make_unique<WorldSession>(original->GetAccountId(),socket.get(),SEC_PLAYER,
+            1,0,LOCALE_enUS,"isolated_party_leader",0,0,false);
+        humanSession->SetNoAnticheat();humanSession->SetPlayer(leader,leaderId);leader->SetSession(humanSession.get());
+        if(!leader->isRealPlayer() || !sPlayerbotRendezvousManager.RegisterPartyAssist(bot,leader,true))
+            throw std::runtime_error("restart_native_party_registration_required");
+        restoredReason=sPlayerbotRendezvousManager.PartyReason(bot->GetGUIDLow());
+        recovered=true;return true;
     }
     template<class State> bool Prepare(State& state,Player* bot) {
         if(!leaderId) {

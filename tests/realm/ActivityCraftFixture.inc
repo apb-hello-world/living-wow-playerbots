@@ -46,14 +46,16 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     const bool vendorWalk=suite=="activity-profession-vendor-walk-v1";
     const bool paid=suite=="activity-profession-paid-v1" || vendorWalk;
     const bool banked=suite=="activity-profession-bank-v1";
-    const bool checkpoint=suite=="activity-profession-mail-checkpoint-v1";
+    const bool partyCheckpoint=suite=="activity-profession-mail-party-checkpoint-v1";
+    const bool partyResume=suite=="activity-profession-mail-party-resume-v1";
+    const bool checkpoint=suite=="activity-profession-mail-checkpoint-v1" || partyCheckpoint;
     const bool travelRetry=suite=="activity-profession-mail-travel-resume-v1";
     const bool capacityResume=suite=="activity-profession-mail-capacity-resume-v1";
-    const bool resumed=suite=="activity-profession-mail-resume-v1" || travelRetry || capacityResume;
+    const bool resumed=suite=="activity-profession-mail-resume-v1" || travelRetry || capacityResume || partyResume;
     const bool serviceTravel=suite=="activity-profession-mail-travel-v1" || travelRetry;
     const bool mergeMail=suite=="activity-profession-mail-merge-v1";
     const bool capacityMail=suite=="activity-profession-mail-capacity-v1" || capacityResume;
-    const bool partyMail=suite=="activity-profession-mail-party-v1";
+    const bool partyMail=suite=="activity-profession-mail-party-v1" || partyCheckpoint || partyResume;
     const bool mailed=suite=="activity-profession-mail-v1" || checkpoint || resumed || serviceTravel || mergeMail || capacityMail || partyMail;
     const bool automatic=paid || resumed || serviceTravel || capacityMail;
     const bool settling=suite=="activity-profession-settlement-v1" || paid || banked || mailed;
@@ -71,12 +73,23 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
     if (!fixture.deadline) fixture.deadline=NowMs()+(partyMail ? 240000 : (serviceTravel || capacityMail) ? 180000 : 120000);
     auto emit=[&](bool passed,const std::string& failure) {
         const auto actorDiagnostic=request.task.actor ? ActorJson(request.task.actor) : std::string();
-        if(partyMail) {PartyMailFixture().Close();state->professionCohortActors.back().store(0);}
+        if(partyMail) {
+            PartyMailFixture().Close(partyCheckpoint && passed);
+            if(!partyCheckpoint || !passed)state->professionCohortActors.back().store(0);
+        }
         if (passed) fixture.blocker.clear();
         boost::property_tree::ptree report;
         report.put("suite",suite);report.put("boot",state->boot);
         if(partyMail)report.put("explicit_headless_human_session_fixture",true);
         if(partyMail)report.put("recalled_operation",PartyMailFixture().recalledOperation);
+        if(partyMail) {
+            const auto& party=PartyMailFixture();
+            report.put("party_group",party.persistedGroup);report.put("party_leader",party.leaderId);
+            report.put("party_restored_reason",party.restoredReason);
+            report.put("continuing_party_restart_proof",passed && partyResume);
+            report.put("party_checkpoint_session",party.checkpointBinding.session);
+            report.put("party_checkpoint_revision",party.checkpointBinding.sessionRevision);
+        }
         report.put("expected_operation_outcome",interrupted ? "rejected_without_effect" : "verified");
         report.put("test_only",true);report.put("outcome",passed ? (checkpoint ? "checkpoint" : "passed") : "failed");report.put("failure",failure);
         report.put("step",fixture.step);report.put("blocker",fixture.blocker);report.put("actor",request.task.actor);
@@ -220,9 +233,15 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 }
                 fixture.blocker="restart_fixture_actor_login_pending";return;
             }
-            if (!actor->GetPlayerbotAI() || !actor->IsInWorld() || NativeSafety(actor) || actor->GetGroup() ||
+            if (!actor->GetPlayerbotAI() || !actor->IsInWorld() || NativeSafety(actor) || (!partyResume && actor->GetGroup()) ||
                 actor->GetTradeData() || actor->GetMap()->IsDungeon() || DefersNativeSave(prior->actor)) {
                 fixture.blocker="restart_fixture_actor_safety_pending";return;
+            }
+            if(partyResume) {
+                auto* leader=sRandomPlayerbotMgr.GetPlayerBot(std::stoul(std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT")));
+                if(!leader || !leader->IsInWorld() || NativeSafety(leader)) {
+                    fixture.blocker="restart_human_login_pending";return;
+                }
             }
             state->gameplayFixtureActor.store(prior->actor,std::memory_order_release);
             require(actor->GetTeam()==HORDE && actor->GetMapId()<=1,"restart_native_actor_on_supported_continent");
@@ -249,6 +268,21 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             require(originalValid &&
                 fixture.originalCheckpoint.get<std::string>("task")==prior->id &&
                 fixture.originalCheckpoint.get<uint32_t>("actor")==prior->actor,"restart_original_checkpoint_receipt_retained");
+            if(partyResume) {
+                require(fixture.originalCheckpoint.get<std::string>("suite")=="activity-profession-mail-party-checkpoint-v1",
+                    "restart_requires_party_checkpoint_not_solo_parcel");
+                const auto leader=fixture.originalCheckpoint.get<uint32_t>("party_leader");
+                state->professionCohortActors.back().store(leader);
+                require(PartyMailFixture().Restore(actor,fixture.originalCheckpoint.get<uint32_t>("party_group"),leader),
+                    "restart_same_native_group_loaded_without_recreation");
+                require(PartyMailFixture().restoredReason=="realm_restart_errands_deferred",
+                    "restart_defers_original_party_errand_not_restored_permission");
+                require(!sPlayerbotRendezvousManager.ReadPartyService(actor,*prior) &&
+                    !sPlayerbotRendezvousManager.PartyServiceStatus(prior->actor),
+                    "restart_does_not_restore_transient_service_binding");
+                PartyMailFixture().checkpointBinding.session=fixture.originalCheckpoint.get<std::string>("party_checkpoint_session");
+                PartyMailFixture().checkpointBinding.sessionRevision=fixture.originalCheckpoint.get<uint64_t>("party_checkpoint_revision");
+            }
             if(capacityResume) {
                 fixture.capacityFilled=true;
                 fixture.capacityMoneyBefore=fixture.originalCheckpoint.get<uint32_t>("money_before_capacity");
@@ -531,6 +565,23 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             if (fixture.mailCollectedAtResume) require(IsUuid(fixture.mailOperation),"restart_exact_saved_collection_operation_retained");
             require(!AcquireSavedTask(request.task.id,request.task.revision,effects,60000,"isolated_restart_probe").Permitted(),
                 "restart_old_context_cannot_cast_or_collect");
+            if(partyResume && !PartyMailFixture().reauthorized) {
+                require(!AcquireSavedTask(request.task.id,request.task.revision,Mask(Effect::Inventory),60000,"isolated_restart_mail").Permitted(),
+                    "restart_old_context_cannot_collect_parcel");
+                auto* leader=sRandomPlayerbotMgr.GetPlayerBot(PartyMailFixture().leaderId);
+                if(!sPlayerbotRendezvousManager.BeginPartyFreeTime(bot,leader,"isolated_restart_fresh_permission")) {
+                    fixture.blocker="restart_fresh_party_window_pending";return;
+                }
+                const auto permission=sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second);
+                require(permission && permission->root==request.task.id && permission->claim==fixture.mailClaim,
+                    "restart_fresh_window_reauthorizes_original_parcel");
+                leader->SetSession(PartyMailFixture().original);
+                const bool absent=!sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second);
+                leader->SetSession(PartyMailFixture().humanSession.get());
+                require(absent,"restart_offline_human_does_not_authorize_collection");
+                PartyMailFixture().reauthorized=true;PartyMailFixture().bound=true;
+                PartyMailFixture().recallInjected=true; // The recall variant is a separate accepted test.
+            }
             if (fixture.resumeReceipt.empty()) fixture.resumeReceipt=NewId();
             const auto result=RevalidateProfessionPreparation(request.task.actor,request.task.id,request.task.revision,fixture.resumeReceipt);
             fixture.blocker=result.blocker;if (result.code==AdmissionCode::NotReady) return;
@@ -562,6 +613,18 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 "restart_checkpoint_saved_with_all_three_claims");
             fixture.resumeClaims=batch.claims;fixture.resumeTask=saved->second;
             require(!fixture.launches && fixture.mailOperation.empty(),"checkpoint_has_not_collected_or_crafted");
+            if(partyCheckpoint) {
+                auto* mail=bot->GetMail(fixture.mailId);
+                if(!mail || mail->deliver_time>time(nullptr)){fixture.blocker="checkpoint_delivery_pending";return;}
+                if(!PartyMailFixture().Prepare(*state,bot)){fixture.blocker="checkpoint_party_preparation";return;}
+                const auto permission=sPlayerbotRendezvousManager.ReadPartyService(bot,saved->second);
+                require(permission && permission->claim==fixture.mailClaim,"checkpoint_native_party_owns_exact_parcel");
+                PartyMailFixture().checkpointBinding=*permission;
+                PartyMailFixture().persistedGroup=bot->GetGroup()->GetId();
+                auto* leader=sRandomPlayerbotMgr.GetPlayerBot(PartyMailFixture().leaderId);
+                bot->SaveToDB();leader->SaveToDB();
+                require(state->operations.empty(),"party_checkpoint_has_no_unacknowledged_native_operation");
+            }
             emit(true,"");return;
         }
         if (fixture.step==1) {
