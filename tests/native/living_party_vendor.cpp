@@ -22,10 +22,16 @@ int main() {
     Task task;task.id=task.root="11111111-1111-4111-8111-111111111111";task.source="party_vendor";
     task.sourceKey="party-vendor:7:1";task.actor=7;task.kind=Kind::PartyErrand;task.mode=Mode::Active;
     task.phase=Phase::Preparing;task.revision=4;task.context.actor=7;task.context.actorGeneration=1;
+    task.createdAtMs=task.updatedAtMs=1000;
     task.context.mapGeneration=1;task.context.policyRevision=1;
     task.context.boot="22222222-2222-4222-8222-222222222222";
     task.checkpoint.step="party_vendor_prepare";task.checkpoint.data=encoded;std::string why;
     assert(ValidatePartyVendorTask(task,why));
+    for(const auto phase:{Phase::Queued,Phase::Paused,Phase::Deferred,Phase::WaitingExternal,Phase::Reconciling}) {
+        const auto next=PartyVendorResumePhase(phase);auto previous=task;previous.phase=phase;
+        assert(next && CanTransition(previous,*next));
+    }
+    for(const auto phase:{Phase::Executing,Phase::Verifying,Phase::Completed})assert(!PartyVendorResumePhase(phase));
     auto badTask=task;badTask.kind=Kind::Profession;assert(!ValidatePartyVendorTask(badTask,why));
     badTask=task;badTask.parent="another";assert(!ValidatePartyVendorTask(badTask,why));
     badTask=task;badTask.checkpoint.step="profession_prepare";assert(!ValidatePartyVendorTask(badTask,why));

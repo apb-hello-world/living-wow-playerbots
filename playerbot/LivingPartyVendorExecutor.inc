@@ -107,9 +107,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return stop(pause);
     }
     if(saved->retryAtMs>NowMs())return stop(saved->checkpoint.blocker);
-    if(saved->phase==Phase::Queued || saved->phase==Phase::Paused || saved->phase==Phase::Deferred ||
-        saved->phase==Phase::Reconciling || saved->phase==Phase::WaitingExternal)
-        return advance(Phase::Preparing,saved->checkpoint.step);
+    if(const auto phase=PartyVendorResumePhase(saved->phase))return advance(*phase,saved->checkpoint.step);
     if(saved->checkpoint.step==ServiceStep(ServiceDestination::Vendor)) {
         if(saved->phase==Phase::Preparing)return advance(Phase::Traveling,ServiceStep(ServiceDestination::Vendor));
         const auto route=sPlayerbotOrganicEconomy.ReachSavedService(actor,id,saved->revision,ServiceDestination::Vendor);

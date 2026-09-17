@@ -2,6 +2,7 @@
 #include "LivingCapacityPreparation.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
+#include <optional>
 
 namespace LivingActivity {
 // Snapshot at acceptance, not a live query for everything now considered junk.
@@ -12,6 +13,11 @@ struct PartyVendorJob {
     uint32_t next=0;
 };
 constexpr size_t PartyVendorBatchLimit=32;
+inline std::optional<Phase> PartyVendorResumePhase(Phase phase) {
+    if(phase==Phase::Paused || phase==Phase::Deferred || phase==Phase::WaitingExternal)return Phase::Reconciling;
+    if(phase==Phase::Queued || phase==Phase::Reconciling)return Phase::Preparing;
+    return {};
+}
 inline bool ValidPartyVendorJob(const PartyVendorJob& job) {
     if(job.items.empty() || job.items.size()>PartyVendorBatchLimit || job.next>job.items.size())return false;
     uint32_t previous=0;
