@@ -375,7 +375,7 @@ struct LivingActivityCoordinator::State {
     uint64_t observedActions = 0, unknownActions = 0, actionCardinalityRejected = 0;
     uint64_t nativeViewsPublished = 0, staleActorObservations = 0;
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
-    bool fixtureFinished = false;
+    std::atomic<bool> fixtureFinished{false};
     uint64_t fixtureNext = 0;
     unsigned admissionFixtureStep = 0;
     uint64_t admissionFixtureDeadline = 0;
@@ -1540,7 +1540,7 @@ std::string LivingActivityCoordinator::StatusJson() const {
     p.put("compatibility_lease_index",state->compatibilityActors.size());
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
     p.put("isolated_fixture_build", true);
-    p.put("isolated_fixture_attempted", state->fixtureFinished);
+    p.put("isolated_fixture_attempted", state->fixtureFinished.load(std::memory_order_acquire));
 #endif
     for (unsigned boundary = 0; boundary != 3; ++boundary) {
         const char* name = boundary == 0 ? "acquire" : boundary == 1 ? "renew" : "release";
