@@ -25,7 +25,8 @@ inline std::string EncodePartyVendorJob(const PartyVendorJob& job) {
     std::string value="{\"workflow\":\"party_vendor_v1\",\"next\":"+std::to_string(job.next)+",\"items\":[";
     bool first=true;
     for(const auto& item:job.items) {
-        if(!first)value+=',';first=false;
+        if(!first)value+=',';
+        first=false;
         value+="{\"guid\":"+std::to_string(item.guid)+",\"entry\":"+std::to_string(item.entry)+
             ",\"quantity\":"+std::to_string(item.quantity)+'}';
     }
