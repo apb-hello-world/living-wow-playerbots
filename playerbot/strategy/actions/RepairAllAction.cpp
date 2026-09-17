@@ -1,6 +1,7 @@
 
 #include "playerbot/playerbot.h"
 #include "playerbot/LivingActivityCoordinator.h"
+#include "playerbot/PlayerbotRendezvousManager.h"
 #include "playerbot/PlayerbotServiceTracking.h"
 #include "RepairAllAction.h"
 #include "playerbot/strategy/ItemVisitors.h"
@@ -11,6 +12,12 @@ using namespace ai;
 
 bool RepairAllAction::Execute(Event& event)
 {
+    // This family has one executor during verified party free time, including
+    // the admission/save gap before its first durable lease exists. Preserve
+    // ordinary solo legacy repair until that family is migrated separately.
+    if(sLivingActivityCoordinator.EffectEnforcementEnabled() &&
+        sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands &&
+        sPlayerbotRendezvousManager.IsPartyFreeTime(bot->GetGUIDLow()))return false;
     if (!sLivingActivityCoordinator.PermitEffects(*ai, GetActivityEffects(), "native service mutation")) return false;
     // Group leaders may remain here so followers can repair. That group trigger
     // does not mean the leader has damaged items of their own to repair.
