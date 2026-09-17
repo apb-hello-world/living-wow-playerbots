@@ -69,16 +69,9 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
             sRandomPlayerbotMgr.AddRandomBot(std::stoul(actor));
             sRandomPlayerbotMgr.AddRandomBot(std::stoul(leader));
             if(partyResume) {
-                // Explicit headless-human INPUT must exist before native bot
-                // login validates persisted roster accounts. The character
-                // remains native; do not recreate its group or bypass login's
-                // ordinary human-party preservation. Restore the in-memory
-                // account classification when this isolated fixture closes.
-                auto& party=PartyMailFixture();
-                party.headlessAccount=sObjectMgr.GetPlayerAccountIdByGUID(ObjectGuid(HIGHGUID_PLAYER,uint32_t(std::stoul(leader))));
-                if(!party.headlessAccount || !sPlayerbotAIConfig.IsInRandomAccountList(party.headlessAccount))
-                    throw std::runtime_error("explicit_headless_account_fixture_required");
-                sPlayerbotAIConfig.randomBotAccounts.remove(party.headlessAccount);
+                // Match the explicit offline-human input at native group
+                // login; the normal population/account list stays unchanged.
+                state->professionCohortActors.back().store(std::stoul(leader));
             }
             requested=true;return;
         }

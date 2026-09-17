@@ -1,5 +1,15 @@
 // Isolated, explicit headless-human INPUT. Native group/session permission code
 // is unchanged. This proves realm execution, not network login or user QA.
+// Login needs the explicit offline-human input before the simulated session
+// can be attached. This test-only predicate never changes account ownership,
+// the population account list, or a native group. It is absent from production.
+bool LivingIsolatedPartyReconnectHuman(uint32_t member) {
+    const char* mode=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    const char* leader=std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
+    if(!mode || std::string(mode)!="activity-profession-mail-party-resume-v1" || !leader)return false;
+    RequireIsolatedNativeFixtureEnvironment();
+    return member==std::stoul(leader) && sLivingActivityCoordinator.IsolatedGameplayActor(member);
+}
 namespace {
 struct PartyMailSessionFixture {
     uint32_t leaderId=0;
@@ -12,7 +22,6 @@ struct PartyMailSessionFixture {
     bool bound=false,done=false;
     bool recallInjected=false,reauthorized=false,recovered=false;
     uint32_t persistedGroup=0;
-    uint32_t headlessAccount=0;
     std::string restoredReason;
     LivingActivity::PartyServiceBinding checkpointBinding;
     std::string recalledOperation;
@@ -26,9 +35,6 @@ struct PartyMailSessionFixture {
             if(!preserveGroup)leader->NearTeleportTo(x,y,z,o);
         }
         humanSession.reset();socket.reset();io.reset();original=nullptr;bound=false;done=true;
-        if(headlessAccount) {
-            sPlayerbotAIConfig.randomBotAccounts.push_back(headlessAccount);headlessAccount=0;
-        }
     }
     bool Restore(Player* bot,uint32_t expectedGroup,uint32_t expectedLeader) {
         auto* leader=sRandomPlayerbotMgr.GetPlayerBot(expectedLeader);

@@ -22,6 +22,11 @@
 
 class LoginQueryHolder;
 class CharacterHandler;
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+// Defined only by the copied-realm fixture: supplies the identity of its
+// explicit headless human while that character's login is still pending.
+bool LivingIsolatedPartyReconnectHuman(uint32_t member);
+#endif
 
 PlayerbotHolder::PlayerbotHolder() : PlayerbotAIBase()
 {
@@ -462,6 +467,13 @@ void PlayerbotHolder::OnBotLogin(Player * const bot)
             // Don't disband alt groups when master goes away
             // (will need to manually disband with leave command)
             uint32 account = sObjectMgr.GetPlayerAccountIdByGUID(member);
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+            if (LivingIsolatedPartyReconnectHuman(member.GetCounter()))
+            {
+                groupValid = true;
+                break;
+            }
+#endif
             if (!sPlayerbotAIConfig.IsInRandomAccountList(account))
             {
                 groupValid = true;
