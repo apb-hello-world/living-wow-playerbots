@@ -119,6 +119,12 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     };
     const bool serviceResult=saved->checkpoint.step=="guild_bank_deposit" || saved->checkpoint.step=="guild_mail_send" || saved->checkpoint.step=="profession_mail_collect" ||
         saved->checkpoint.step=="profession_capacity_sale" || saved->checkpoint.step=="profession_capacity_bank";
+    // A recalled, undispatched collection is a permission interruption, not
+    // a failed native service. Preserve this checkpoint until fresh consent.
+    if(saved->phase==Phase::Verifying && saved->checkpoint.step=="profession_mail_collect" &&
+        saved->checkpoint.blocker=="party_recall_before_dispatch" &&
+        !sPlayerbotRendezvousManager.ReadPartyService(bot,*saved))
+        return stop("party_service_reauthorization_required");
     if((saved->phase==Phase::Verifying || saved->phase==Phase::Reconciling || restoredSend) && serviceResult) {
         auto found=state->guildDeliveryReads.find(id);
         if(found==state->guildDeliveryReads.end()) {
@@ -139,8 +145,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             read.revision=saved->revision;read.pending=true;state->ioPending=true;const auto revision=saved->revision;
             const std::string query="SELECT IF(d.carrier_guid="+std::to_string(actor)+" AND d.mail_id="+
                 std::to_string(job.incomingMail)+",d.phase,'handed_off'),d.deposited_quantity,(SELECT COUNT(*) FROM living_activity_operation o WHERE o.task_id="+
-                SqlValue(id)+" AND o.state='rejected' AND o.evidence_code<>'native_guild_mail_not_committed'),(SELECT COALESCE(MAX(o.updated_at_ms),0) FROM living_activity_operation o WHERE o.task_id="+
-                SqlValue(id)+" AND o.state='rejected' AND o.evidence_code<>'native_guild_mail_not_committed'),(SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
+                SqlValue(id)+" AND o.state='rejected' AND o.evidence_code<>'native_guild_mail_not_committed' AND NOT(o.kind='mail_collect' AND o.evidence_code='party_recall_before_dispatch' AND o.after_state='{\"dispatched\":false}')),(SELECT COALESCE(MAX(o.updated_at_ms),0) FROM living_activity_operation o WHERE o.task_id="+
+                SqlValue(id)+" AND o.state='rejected' AND o.evidence_code<>'native_guild_mail_not_committed' AND NOT(o.kind='mail_collect' AND o.evidence_code='party_recall_before_dispatch' AND o.after_state='{\"dispatched\":false}')),(SELECT COUNT(*) FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
                 " WHERE t.actor_guid="+std::to_string(actor)+" AND o.state IN ('intent','reconciling')) FROM guild_society_supply_delivery d WHERE d.delivery_id="+
                 std::to_string(job.delivery)+" AND d.guild_id="+std::to_string(job.guild)+" AND d.goal_id="+SqlValue(job.goal)+
                 " AND d.donor_guid="+std::to_string(job.donor)+

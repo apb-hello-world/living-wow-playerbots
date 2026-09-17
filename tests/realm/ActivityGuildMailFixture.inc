@@ -393,7 +393,8 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
                             session.recallInjected=true;session.recalledOperation=row.first;
                             f.setup.put("party_recalled_operation",row.first);return;
                         }
-                        f.setup.put("party_collection_operation",row.first);
+                        if(session.reauthorized && row.first!=session.recalledOperation)
+                            f.setup.put("party_collection_operation",row.first);
                     }
                     return;
                 }
