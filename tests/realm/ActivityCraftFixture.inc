@@ -6,7 +6,6 @@
 // The mail variant moves a logged fixture item into an ordinary native delayed
 // letter, explicitly links it, then tests collection through the same job.
 // These fixtures do not prove autonomous travel or paid auction procurement.
-#include "ActivityPartyMailSession.inc"
 namespace {
     class CraftFixtureReservation final : public NativeReservationAdapter {
     public:

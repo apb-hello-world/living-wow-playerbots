@@ -30,6 +30,7 @@ namespace {
     }
 }
 
+#include "ActivityPartyMailSession.inc"
 #include "ActivityProfessionFixture.inc"
 #include "ActivityUsefulRecipeFixture.inc"
 #include "ActivityManagedRecipeFixture.inc"
@@ -89,6 +90,9 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     }
     if(requested && std::string(requested)=="activity-guild-admission-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedGuildAdmissionFixture(*state);return;
+    }
+    if(requested && std::string(requested)=="activity-guild-mail-party-v1") {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedGuildMailFixture(*state,false,true,false,false,false,true);return;
     }
     if(requested && std::string(requested)=="activity-guild-mail-partial-v1") {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedGuildMailFixture(*state,false,true,true);return;

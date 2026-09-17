@@ -58,7 +58,7 @@ struct PartyMailSessionFixture {
         restoredReason=sPlayerbotRendezvousManager.PartyReason(bot->GetGUIDLow());
         recovered=true;return true;
     }
-    template<class State> bool Prepare(State& state,Player* bot) {
+    template<class State> bool Prepare(State& state,Player* bot,bool authorize=true) {
         if(!leaderId) {
             for(const auto& row:state.bindings) {
                 if(row.first!=std::stoul(std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT")))continue;
@@ -94,6 +94,7 @@ struct PartyMailSessionFixture {
             if(sPlayerbotRendezvousManager.RegisterPartyAssist(leader,leader))
                 throw std::runtime_error("human_cannot_create_self_follow_session");
         }
+        if(!authorize)return true; // Form the test party before delayed guild mail arrives.
         if(!bound) {
             sLivingActivityCoordinator.ReleaseTaskLease(state.authority.Read(bot->GetGUIDLow()).lease);
             if(!sPlayerbotRendezvousManager.BeginPartyFreeTime(bot,leader,"isolated_party_mail"))return false;

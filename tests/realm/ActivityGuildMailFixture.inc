@@ -18,7 +18,7 @@ boost::property_tree::ptree GuildMailFixtureInventory(Player& actor) {
     bags(INVENTORY_SLOT_BAG_START,INVENTORY_SLOT_BAG_END);bags(BANK_SLOT_BAG_START,BANK_SLOT_BAG_END);return rows;
 }
 template<class FixtureState>
-void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool forward=false,bool partial=false,bool cancelled=false,bool bankSurplus=false) {
+void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool forward=false,bool partial=false,bool cancelled=false,bool bankSurplus=false,bool party=false) {
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
     state.fixtureNext=NowMs()+500;auto& f=state.guildDepositFixture;
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
@@ -26,6 +26,11 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
         if(forward && f.setup.template get_optional<uint32_t>("forward_mail_delay_original"))
             sWorld.setConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY,f.setup.template get<uint32_t>("forward_mail_delay_original"));
         auto report=f.setup;report.put("suite",bankSurplus?"activity-guild-mail-bank-surplus-v1":cancelled?"activity-guild-mail-cancel-v1":partial?"activity-guild-mail-partial-v1":forward?"activity-guild-mail-forward-v1":fullBags?"activity-guild-mail-capacity-v1":"activity-guild-mail-v1");report.put("boot",state.boot);
+        if(party) {
+            report.put("suite","activity-guild-mail-party-v1");
+            report.put("headless_human_input",true);report.put("leader_fixture_relocation",true);
+            if(!PartyMailFixture().done)PartyMailFixture().Close();
+        }
         report.put("task",f.task);report.put("actor",f.actor);report.put("test_only",true);
         report.put("original_boot",f.originalBoot);report.put("resumed_same_task",f.resuming);
         report.put("outcome",passed?"passed":"failed");report.put("failure",why);report.put("blocker",f.blocker);
@@ -73,7 +78,8 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
                 }
                 f.blocker="forward_recipient_native_login_pending";return false;
             }
-            if(!recipient->IsInWorld() || !recipient->GetMap() || NativeSafety(recipient) || recipient->GetGroup() ||
+            if(!recipient->IsInWorld() || !recipient->GetMap() || NativeSafety(recipient) ||
+                (recipient->GetGroup() && !(party && recipient->GetGroup()==PartyMailFixture().group)) ||
                 recipient->GetMap()->IsDungeon() || recipient->GetTradeData()) {f.blocker="forward_recipient_native_safety_wait";return false;}
             require(recipient->GetPlayerbotAI() && !recipient->isRealPlayer() && recipient->GetSession() &&
                 sPlayerbotAIConfig.IsInRandomAccountList(recipient->GetSession()->GetAccountId()),"native_bot_forward_recipient_required");
@@ -170,6 +176,8 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
                 f.setup.add_child("inventory_before",GuildMailFixtureInventory(*actor));
             }
             if(forward)f.setup.put("forward_requested",true);
+            if(party){require(forward && !partial && !fullBags && !f.resuming,"separate_party_forward_fixture_required");
+                f.setup.put("party_requested",true);}
             if(partial){require(forward && !fullBags,"partial_forward_scenario_required");
                 f.setup.put("partial_requested",true);f.setup.put("partial_input_quantity",8);}
             boost::property_tree::ptree beforeInventory,fillSlots;
@@ -277,6 +285,24 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
         if(forward) {
             sWorld.setConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY,uint32_t(120));
             if(!loadRecipient())return;
+            if(party && !PartyMailFixture().done && !PartyMailFixture().group) {
+                const char* raw=std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
+                const std::string id=raw?raw:"";
+                require(!id.empty() && id.size()<=9 && id.find_first_not_of("0123456789")==std::string::npos,
+                    "explicit_party_leader_required");
+                const auto leader=uint32_t(std::stoul(id));
+                require(leader && leader!=f.actor && leader!=recipient->GetGUIDLow(),"distinct_party_leader_required");
+                state.professionCohortActors.back().store(leader,std::memory_order_release);
+                if(!sRandomPlayerbotMgr.GetPlayerBot(leader)) {
+                    if(!f.setup.template get<bool>("party_leader_requested",false)) {
+                        f.setup.put("party_leader_requested",true);sRandomPlayerbotMgr.AddRandomBot(leader);
+                    }
+                    f.blocker="party_leader_login_pending";return;
+                }
+                if(!PartyMailFixture().Prepare(state,recipient,false)) {f.blocker="guild_party_assembly";return;}
+                f.setup.put("party_group",recipient->GetGroup()->GetId());f.setup.put("party_leader",leader);
+                require(!f.admitted,"party_formed_before_sender_admission");
+            }
         }
         if(!f.admitted) {
             GuildDeliveryJob native;
@@ -324,6 +350,62 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
             const auto pending=state.executionBlockers.find(receiverTask->id);
             f.blocker=pending==state.executionBlockers.end()?receiverTask->checkpoint.blocker:pending->second;
             f.setup.put("forward_task",receiverTask->id);f.setup.put("forward_phase",Name(receiverTask->phase));
+            if(party && !PartyMailFixture().done) {
+                auto& session=PartyMailFixture();
+                require(recipient->GetGroup()==session.group,"same_native_party_required");
+                UnsettledClaimBatch claims;
+                if(!sLivingActivityCoordinator.ReadTaskClaims(recipient->GetGUIDLow(),receiverTask->id,receiverTask->revision,claims,f.blocker))return;
+                require(claims.complete && claims.claims.size()==1,"single_existing_handoff_claim_required");
+                const auto& claim=claims.claims.front();
+                if(!f.setup.template get_optional<std::string>("party_claim")) {
+                    require(claim.location=="mail" && claim.state=="held","native_handoff_mail_claim_required");
+                    f.setup.put("party_claim",claim.id);f.setup.put("party_mail",claim.nativeReference);
+                    f.setup.put("party_item",claim.itemGuid);
+                }
+                require(claim.id==f.setup.template get<std::string>("party_claim"),"no_replacement_party_claim");
+                if(claim.location=="mail") {
+                    const auto* mail=recipient->GetMail(uint32_t(claim.nativeReference));
+                    if(!mail || mail->deliver_time>time(nullptr)){f.blocker="party_native_mail_delivery_pending";return;}
+                    if(!session.bound) {
+                        if(!session.Prepare(state,recipient)){f.blocker="party_mail_window_pending";return;}
+                        const auto scope=sPlayerbotRendezvousManager.ReadPartyService(recipient,*receiverTask);
+                        require(scope && scope->root==receiverTask->id && scope->claim==claim.id,"guild_parcel_exact_party_binding");
+                        f.setup.put("party_bound_original_claim",true);
+                    }
+                    auto* leader=sRandomPlayerbotMgr.GetPlayerBot(session.leaderId);
+                    if(session.recallInjected && !session.reauthorized && state.operations.empty()) {
+                        require(receiverTask->phase==Phase::Verifying && receiverTask->checkpoint.blocker=="party_recall_before_dispatch",
+                            "guild_recall_verified_no_effect");
+                        if(!sPlayerbotRendezvousManager.BeginPartyFreeTime(recipient,leader,"isolated_guild_mail_resume"))return;
+                        require(bool(sPlayerbotRendezvousManager.ReadPartyService(recipient,*receiverTask)),"same_guild_parcel_reauthorized");
+                        session.reauthorized=true;
+                    }
+                    for(const auto& row:state.operations)if(row.second.request.transition.task.id==receiverTask->id &&
+                        row.second.request.kind=="mail_collect" && row.second.ready && !row.second.dispatched) {
+                        if(!session.recallInjected) {
+                            require(sPlayerbotRendezvousManager.ResumePartyAssist(recipient,leader,"isolated_guild_recall"),"guild_parcel_recall_accepted");
+                            require(!sPlayerbotRendezvousManager.ReadPartyService(recipient,*receiverTask),"guild_recall_revokes_permission");
+                            session.recallInjected=true;session.recalledOperation=row.first;
+                            f.setup.put("party_recalled_operation",row.first);return;
+                        }
+                        f.setup.put("party_collection_operation",row.first);
+                    }
+                    return;
+                }
+                require(claim.location=="bags" && claim.state=="held" && session.reauthorized,
+                    "party_collection_preserves_original_claim_in_bags");
+                require(!sLivingActivityCoordinator.AcquireSavedTask(receiverTask->id,receiverTask->revision,
+                    Mask(Effect::Inventory)|Mask(Effect::Guild),60000,"isolated_forbidden_party_deposit").Permitted(),
+                    "party_collection_does_not_authorize_guild_deposit");
+                auto* guild=sGuildMgr.GetGuildById(f.job.guild);require(guild,"party_original_guild_required");
+                const auto stock=guild->GetBankItemCounts();const auto it=stock.find(f.job.entry);
+                require((it==stock.end()?0:it->second)==f.setup.template get<uint32_t>("bank_before"),"no_bank_credit_during_party");
+                if(sPlayerbotRendezvousManager.IsPartyFreeTime(recipient->GetGUIDLow()))return;
+                auto* leader=sRandomPlayerbotMgr.GetPlayerBot(session.leaderId);
+                if(!leader || recipient->GetDistance(leader)>15.0f){f.blocker="party_return_distance_pending";return;}
+                f.setup.put("party_return_before_deposit",true);f.setup.put("party_closed_at_ms",NowMs());
+                session.Close();state.professionCohortActors.back().store(0);return;
+            }
             require(!Terminal(receiverTask->phase) || receiverTask->phase==Phase::Completed,"forward_recipient_ended_without_deposit");
             if(receiverTask->phase!=Phase::Completed)return;
             require(!sLivingActivityCoordinator.DefersNativeSave(recipient->GetGUIDLow()) &&
