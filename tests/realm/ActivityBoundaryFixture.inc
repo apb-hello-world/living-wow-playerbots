@@ -54,7 +54,9 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     if(requested && (std::string(requested)=="activity-party-repair-v1" ||
-        std::string(requested)=="activity-party-repair-recall-v1")) {
+        std::string(requested)=="activity-party-repair-recall-v1" ||
+        std::string(requested)=="activity-party-repair-checkpoint-v1" ||
+        std::string(requested)=="activity-party-repair-resume-v1")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyRepair(*state);return;
     }
     if(requested && std::string(requested)=="activity-progression-handoff-v1") {

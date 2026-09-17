@@ -13,15 +13,21 @@ template<class State> void RunIsolatedPartyRepair(State& state) {
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     const bool recall=suite=="activity-party-repair-recall-v1";
+    const bool checkpoint=suite=="activity-party-repair-checkpoint-v1";
+    const bool restart=suite=="activity-party-repair-resume-v1";
     Player* bot=nullptr;
     auto emit=[&](bool passed,const std::string& why) {
         auto report=f.setup;report.put("suite",suite);report.put("boot",state.boot);
         report.put("actor",f.actor);report.put("leader",f.leader);report.put("task",f.task);
-        report.put("outcome",passed?"passed":"failed");report.put("failure",why);report.put("blocker",f.blocker);
+        report.put("outcome",passed?(checkpoint?"checkpoint":"passed"):"failed");report.put("failure",why);report.put("blocker",f.blocker);
         report.put("test_only",true);report.put("ordinary_due_queue",true);report.put("independent_audit_required",true);
         if(bot){report.put("money_after",bot->GetMoney());report.put("activity_json",sLivingActivityCoordinator.ActorJson(f.actor));}
-        if(!PartyMailFixture().done)PartyMailFixture().Close();
+        if(checkpoint && passed)state.enforceEffects.store(false); // Freeze this explicit test checkpoint, not a realm configuration change.
+        if(!PartyMailFixture().done)PartyMailFixture().Close(checkpoint && passed);
         std::ofstream out("/isolated/evidence/activity-party-repair-"+state.boot+".json");out<<Json(report);out.close();
+        if(checkpoint && passed) {
+            std::ofstream copy("/isolated/evidence/party-repair-checkpoint.json");copy<<Json(report);copy.close();
+        }
         state.fixtureFinished=true;
         sLog.outString("Living isolated fixture: %s",Json(report).c_str());
     };
@@ -34,6 +40,17 @@ template<class State> void RunIsolatedPartyRepair(State& state) {
             require(f.actor && f.leader && f.actor!=f.leader,"distinct_repair_pair_required");
             state.gameplayFixtureActor.store(f.actor);state.professionCohortActors.back().store(f.leader);
             f.deadline=NowMs()+600000;
+            if(restart) {
+                std::ifstream input("/isolated/evidence/party-repair-checkpoint.json");
+                boost::property_tree::read_json(input,f.setup);
+                require(f.setup.template get<std::string>("suite")=="activity-party-repair-checkpoint-v1" &&
+                    f.setup.template get<std::string>("outcome")=="checkpoint" &&
+                    f.setup.template get<uint32_t>("actor")==f.actor && f.setup.template get<uint32_t>("leader")==f.leader,
+                    "repair_requires_matching_native_checkpoint");
+                f.task=f.setup.template get<std::string>("task");require(IsUuid(f.task),"repair_checkpoint_task_uuid");
+                f.setup.put("checkpoint_boot",f.setup.template get<std::string>("boot"));
+                f.damaged=true; // Resume never creates damage, equipment, money, a group or a replacement task.
+            }
         }
         if(sWorld.GetActiveAndQueuedSessionCount() || !state.loaded || state.ioPending ||
             !state.pending.empty() || !state.incoming.empty() || !state.resources.Protection().ready)return;
@@ -101,6 +118,39 @@ template<class State> void RunIsolatedPartyRepair(State& state) {
             }
             return Json(rows);
         };
+        if(checkpoint && saved->phase==Phase::Verifying && state.operations.empty() &&
+            bot->GetMoney()<f.setup.template get<uint32_t>("money_before")) {
+            require(HasNativeDamagedEquipment(*bot),"repair_checkpoint_is_incomplete");
+            require(bool(sPlayerbotRendezvousManager.ReadPartyService(bot,*saved)),"repair_checkpoint_has_native_party_permission");
+            f.setup.put("checkpoint_revision",saved->revision);f.setup.put("checkpoint_at_ms",NowMs());
+            f.setup.put("checkpoint_money",bot->GetMoney());f.setup.put("checkpoint_equipment",equipment());
+            f.setup.put("party_group",bot->GetGroup()->GetId());
+            bot->SaveToDB();leader->SaveToDB();emit(true,"");return;
+        }
+        if(restart && !f.resumed) {
+            require(!Terminal(saved->phase) && bot->GetMoney()==f.setup.template get<uint32_t>("checkpoint_money") &&
+                equipment()==f.setup.template get<std::string>("checkpoint_equipment"),"repair_restart_preserves_native_possessions");
+            auto& party=PartyMailFixture();
+            if(!party.recovered) {
+                if(!party.Restore(bot,f.setup.template get<uint32_t>("party_group"),f.leader))return;
+                require(party.restoredReason=="realm_restart_errands_deferred","repair_restart_defers_old_consent");
+            }
+            state.enforceEffects.store(true);
+            require(!sPlayerbotRendezvousManager.ReadPartyService(bot,*saved) &&
+                !sPlayerbotRendezvousManager.PartyServiceStatus(f.actor),"repair_restart_drops_transient_binding");
+            const auto denied=sLivingActivityCoordinator.AcquireSavedTask(f.task,saved->revision,
+                Mask(Effect::Inventory)|Mask(Effect::Money)|Mask(Effect::Equipment),60000,"isolated_repair_restart_probe");
+            require(!denied.Permitted(),"repair_restart_cannot_use_old_permission");
+            if(!sPlayerbotRendezvousManager.BeginPartyFreeTime(bot,leader,"isolated_repair_restart_permission")) {
+                f.blocker="repair_restart_party_return_pending";return;
+            }
+            const auto binding=sPlayerbotRendezvousManager.PartyServiceStatus(f.actor);
+            require(binding && binding->root==f.task,"repair_restart_reuses_exact_root");
+            f.setup.put("restart_old_permission_denied",true);f.setup.put("restart_possessions_unchanged",true);
+            f.setup.put("restart_same_group",bot->GetGroup()->GetId());
+            f.setup.put("restart_reauthorized_at_ms",NowMs());f.setup.put("restart_resume_revision",saved->revision);
+            f.resumed=true;
+        }
         if(recall && !f.recalled && saved->phase==Phase::Verifying && state.operations.empty() &&
             bot->GetMoney()<f.setup.template get<uint32_t>("money_before")) {
             require(HasNativeDamagedEquipment(*bot),"recall_before_all_repairs_complete");
@@ -130,6 +180,7 @@ template<class State> void RunIsolatedPartyRepair(State& state) {
             f.setup.put("paused_equipment_unchanged",true);f.resumed=true;
         }
         if(saved->phase==Phase::Completed) {
+            require(!restart || f.resumed,"repair_restart_fresh_permission_required");
             require(!recall || (f.recalled && f.resumed),"repair_recall_and_reauthorization_required");
             require(!HasNativeDamagedEquipment(*bot),"all_equipped_items_repaired");
             require(bot->GetMoney()<f.setup.template get<uint32_t>("money_before"),"real_money_spent");

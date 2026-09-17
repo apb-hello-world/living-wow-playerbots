@@ -7,7 +7,8 @@ bool LivingIsolatedPartyReconnectHuman(uint32_t member) {
     const char* mode=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     const char* leader=std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
     if(!mode || (std::string(mode)!="activity-profession-mail-party-resume-v1" &&
-        std::string(mode)!="activity-profession-mail-party-roster-v1") || !leader)return false;
+        std::string(mode)!="activity-profession-mail-party-roster-v1" &&
+        std::string(mode)!="activity-party-repair-resume-v1") || !leader)return false;
     RequireIsolatedNativeFixtureEnvironment();
     return member==std::stoul(leader);
 }

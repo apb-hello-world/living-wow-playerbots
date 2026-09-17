@@ -9,7 +9,8 @@ bool LivingActivityCoordinator::IsolatedGameplayActor(uint32_t actor) const {
     // from their first native AI update, not only after fixture admission.
     const char* mode=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     if(!state->fixtureFinished && mode && (std::string(mode)=="activity-profession-mail-party-resume-v1" ||
-        std::string(mode)=="activity-profession-mail-party-roster-v1")) {
+        std::string(mode)=="activity-profession-mail-party-roster-v1" ||
+        std::string(mode)=="activity-party-repair-resume-v1")) {
         const char* selected=std::getenv("LIVING_WOW_NATIVE_FIXTURE_ACTOR");
         const char* leader=std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
         if(selected && leader && (actor==std::strtoul(selected,nullptr,10) || actor==std::strtoul(leader,nullptr,10)))return true;
