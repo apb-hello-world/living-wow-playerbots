@@ -8,7 +8,7 @@ bool LivingIsolatedPartyReconnectHuman(uint32_t member) {
     const char* leader=std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
     if(!mode || std::string(mode)!="activity-profession-mail-party-resume-v1" || !leader)return false;
     RequireIsolatedNativeFixtureEnvironment();
-    return member==std::stoul(leader) && sLivingActivityCoordinator.IsolatedGameplayActor(member);
+    return member==std::stoul(leader);
 }
 namespace {
 struct PartyMailSessionFixture {
@@ -42,7 +42,10 @@ struct PartyMailSessionFixture {
         if(!bot->GetGroup() || bot->GetGroup()!=leader->GetGroup() ||
             bot->GetGroup()->GetId()!=expectedGroup || bot->GetGroup()->GetMembersCount()!=2 ||
             bot->GetGroup()->GetLeaderGuid()!=leader->GetObjectGuid())
-            throw std::runtime_error("restart_requires_same_persisted_native_group");
+            throw std::runtime_error("restart_requires_same_persisted_native_group:actor="+
+                std::to_string(bot->GetGroup()?bot->GetGroup()->GetId():0)+":leader="+
+                std::to_string(leader->GetGroup()?leader->GetGroup()->GetId():0)+":expected="+
+                std::to_string(expectedGroup));
         leaderId=expectedLeader;persistedGroup=expectedGroup;group=bot->GetGroup();
         x=leader->GetPositionX();y=leader->GetPositionY();z=leader->GetPositionZ();o=leader->GetOrientation();
         original=leader->GetSession();io=std::make_unique<boost::asio::io_context>();

@@ -4,6 +4,15 @@
 // Fixture health setup/restoration is NOT organic gameplay/economy evidence.
 bool LivingActivityCoordinator::IsolatedGameplayActor(uint32_t actor) const {
     if(!actor)return false;
+    // Persisted groups can cause login BEFORE the coordinator's task cache is
+    // loaded and its replay starts. Hold the explicitly selected restart pair
+    // from their first native AI update, not only after fixture admission.
+    const char* mode=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(!state->fixtureFinished && mode && std::string(mode)=="activity-profession-mail-party-resume-v1") {
+        const char* selected=std::getenv("LIVING_WOW_NATIVE_FIXTURE_ACTOR");
+        const char* leader=std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT");
+        if(selected && leader && (actor==std::strtoul(selected,nullptr,10) || actor==std::strtoul(leader,nullptr,10)))return true;
+    }
     if(state->gameplayFixtureActor.load(std::memory_order_acquire)==actor)return true;
     for(const auto& held:state->professionCohortActors)
         if(held.load(std::memory_order_acquire)==actor)return true;
