@@ -123,7 +123,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     // a failed native service. Preserve this checkpoint until fresh consent.
     if(saved->phase==Phase::Verifying && saved->checkpoint.step=="profession_mail_collect" &&
         saved->checkpoint.blocker=="party_recall_before_dispatch" &&
-        !sPlayerbotRendezvousManager.ReadPartyService(bot,*saved))
+        *SavedPartyBlocker(*bot,*saved))
         return stop("party_service_reauthorization_required");
     if((saved->phase==Phase::Verifying || saved->phase==Phase::Reconciling || restoredSend) && serviceResult) {
         auto found=state->guildDeliveryReads.find(id);
