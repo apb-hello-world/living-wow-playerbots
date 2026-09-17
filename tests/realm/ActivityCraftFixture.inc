@@ -75,7 +75,7 @@ void LivingActivityCoordinator::RunIsolatedCraftFixture() {
                 // ordinary human-party preservation. Restore the in-memory
                 // account classification when this isolated fixture closes.
                 auto& party=PartyMailFixture();
-                party.headlessAccount=sObjectMgr.GetPlayerAccountIdByGUID(ObjectGuid(HIGHGUID_PLAYER,std::stoul(leader)));
+                party.headlessAccount=sObjectMgr.GetPlayerAccountIdByGUID(ObjectGuid(HIGHGUID_PLAYER,uint32_t(std::stoul(leader))));
                 if(!party.headlessAccount || !sPlayerbotAIConfig.IsInRandomAccountList(party.headlessAccount))
                     throw std::runtime_error("explicit_headless_account_fixture_required");
                 sPlayerbotAIConfig.randomBotAccounts.remove(party.headlessAccount);
