@@ -1,5 +1,6 @@
 #include "botpch.h"
 #include "PlayerbotRendezvousManager.h"
+#include "LivingNativeRepair.h"
 #include "LivingActivityCoordinator.h"
 #include "PlayerbotGuildEventExecutor.h"
 #include "PlayerbotPartyCatchup.h"
@@ -2488,6 +2489,14 @@ bool PlayerbotRendezvousManager::StartNextVerifiedErrand(PartySession& session, 
         // Never run legacy RepairAllAction while shared admission is pending.
         // The accepted root is reused across fresh party windows and restart.
         auto selected=sLivingActivityCoordinator.PreparePartyRepairService(session.botGuid,taskRecord.taskId);
+        if(!selected && bot && !LivingActivity::HasNativeDamagedEquipment(*bot))
+        {
+            // The finite adapter repairs equipped gear. A changed need (or
+            // damaged bag-only gear) is a deferral, not completion or an
+            // endless wait for a task that cannot be admitted.
+            FinishCurrentErrand(session,bot,false,"no_equipped_repair_need");
+            return session.currentErrand!=0;
+        }
         if(selected && bot && bot->GetGroup())
         {
             selected->human=session.playerGuid;
