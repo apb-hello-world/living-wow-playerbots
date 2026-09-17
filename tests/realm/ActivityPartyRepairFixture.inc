@@ -4,15 +4,18 @@ namespace {
 template<class State> void RunIsolatedPartyRepair(State& state) {
     struct Fixture {
         uint32_t actor=0,leader=0;uint64_t deadline=0;bool logged=false,damaged=false;
-        std::string task,blocker;boost::property_tree::ptree setup;
+        std::string task,blocker,pausedEquipment;boost::property_tree::ptree setup;
+        bool recalled=false,resumed=false;uint64_t recalledAt=0;uint32_t pausedMoney=0;
     };
     static Fixture f;
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
     state.fixtureNext=NowMs()+500;
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
+    const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    const bool recall=suite=="activity-party-repair-recall-v1";
     Player* bot=nullptr;
     auto emit=[&](bool passed,const std::string& why) {
-        auto report=f.setup;report.put("suite","activity-party-repair-v1");report.put("boot",state.boot);
+        auto report=f.setup;report.put("suite",suite);report.put("boot",state.boot);
         report.put("actor",f.actor);report.put("leader",f.leader);report.put("task",f.task);
         report.put("outcome",passed?"passed":"failed");report.put("failure",why);report.put("blocker",f.blocker);
         report.put("test_only",true);report.put("ordinary_due_queue",true);report.put("independent_audit_required",true);
@@ -89,7 +92,45 @@ template<class State> void RunIsolatedPartyRepair(State& state) {
         if(!saved)return;
         f.blocker=state.executionBlockers[f.task];
         require(IsPartyRepairTask(*saved) && saved->actor==f.actor,"original_repair_identity_required");
+        auto equipment=[&]() {
+            boost::property_tree::ptree rows;
+            for(uint8_t slot=EQUIPMENT_SLOT_START;slot<EQUIPMENT_SLOT_END;++slot) {
+                auto* item=bot->GetItemByPos(INVENTORY_SLOT_BAG_0,slot);if(!item)continue;
+                boost::property_tree::ptree row;row.put("slot",uint32_t(slot));row.put("guid",item->GetGUIDLow());
+                row.put("durability",item->GetUInt32Value(ITEM_FIELD_DURABILITY));rows.push_back({"",row});
+            }
+            return Json(rows);
+        };
+        if(recall && !f.recalled && saved->phase==Phase::Verifying && state.operations.empty() &&
+            bot->GetMoney()<f.setup.template get<uint32_t>("money_before")) {
+            require(HasNativeDamagedEquipment(*bot),"recall_before_all_repairs_complete");
+            f.pausedMoney=bot->GetMoney();f.pausedEquipment=equipment();f.recalledAt=NowMs();
+            f.setup.put("recall_revision",saved->revision);f.setup.put("recalled_at_ms",f.recalledAt);
+            f.setup.put("money_at_recall",f.pausedMoney);
+            require(sPlayerbotRendezvousManager.ResumePartyAssist(bot,leader,"isolated_repair_recall"),"native_repair_recall_accepted");
+            require(!sPlayerbotRendezvousManager.ReadPartyService(bot,*saved),"repair_recall_revokes_permission");
+            f.recalled=true;return;
+        }
+        if(recall && f.recalled && !f.resumed) {
+            require(bot->GetMoney()==f.pausedMoney && equipment()==f.pausedEquipment,"repair_recall_preserves_wallet_and_equipment");
+            require(!Terminal(saved->phase),"repair_recall_preserves_unfinished_root");
+            require(!sPlayerbotRendezvousManager.ReadPartyService(bot,*saved),"repair_permission_not_implicitly_restored");
+            const auto denied=sLivingActivityCoordinator.AcquireSavedTask(f.task,saved->revision,
+                Mask(Effect::Inventory)|Mask(Effect::Money)|Mask(Effect::Equipment),60000,"isolated_recalled_repair_probe");
+            require(!denied.Permitted(),"recalled_repair_cannot_acquire_effects");
+            if(NowMs()<f.recalledAt+10000){f.blocker="repair_verified_permission_pause";return;}
+            if(!sPlayerbotRendezvousManager.BeginPartyFreeTime(bot,leader,"isolated_repair_resume")) {
+                f.blocker="repair_return_before_reauthorization";return;
+            }
+            const auto resumed=sPlayerbotRendezvousManager.PartyServiceStatus(f.actor);
+            require(resumed && resumed->root==f.task && resumed->service==PartyServiceBinding::Service::Repair,
+                "repair_fresh_permission_reuses_original_root");
+            f.setup.put("reauthorized_at_ms",NowMs());f.setup.put("resume_revision",saved->revision);
+            f.setup.put("money_at_reauthorization",bot->GetMoney());f.setup.put("recalled_effects_denied",true);
+            f.setup.put("paused_equipment_unchanged",true);f.resumed=true;
+        }
         if(saved->phase==Phase::Completed) {
+            require(!recall || (f.recalled && f.resumed),"repair_recall_and_reauthorization_required");
             require(!HasNativeDamagedEquipment(*bot),"all_equipped_items_repaired");
             require(bot->GetMoney()<f.setup.template get<uint32_t>("money_before"),"real_money_spent");
             f.setup.put("final_revision",saved->revision);emit(true,"");

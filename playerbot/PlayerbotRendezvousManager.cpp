@@ -1547,7 +1547,8 @@ bool PlayerbotRendezvousManager::BeginPartyFreeTime(Player* bot, Player* player,
     // does not grant repair eligibility, money, a service target or success.
     const char* fixture=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     const char* environment=std::getenv("LIVING_WOW_TEST_ENVIRONMENT");
-    if(fixture && environment && std::string(fixture)=="activity-party-repair-v1" &&
+    if(fixture && environment && (std::string(fixture)=="activity-party-repair-v1" ||
+        std::string(fixture)=="activity-party-repair-recall-v1") &&
         std::string(environment)=="isolated-migration")session.automaticErrandScopeMask &= kErrandRepair;
 #endif
     session.automaticErrandMask = session.automaticErrandScopeMask;
