@@ -22,6 +22,10 @@ void RunIsolatedGuildMailFixture(FixtureState& state,bool fullBags=false,bool fo
     const uint32_t fixtureEntry=party?2770:2772; // Preserve stock from earlier isolated cases.
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
     state.fixtureNext=NowMs()+500;auto& f=state.guildDepositFixture;
+    if(!f.admitted && !f.blocker.empty() && f.lastDiagnostic!="setup:"+f.blocker) {
+        f.lastDiagnostic="setup:"+f.blocker;
+        sLog.outString("Living guild mail setup: actor=%u blocker=%s",f.actor,f.blocker.c_str());
+    }
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     auto emit=[&](bool passed,const std::string& why,Player* actor) {
         if(forward && f.setup.template get_optional<uint32_t>("forward_mail_delay_original"))

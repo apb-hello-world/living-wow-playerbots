@@ -60,14 +60,16 @@ struct PartyMailSessionFixture {
     }
     template<class State> bool Prepare(State& state,Player* bot,bool authorize=true) {
         if(!leaderId) {
-            for(const auto& row:state.bindings) {
-                if(row.first!=std::stoul(std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT")))continue;
-                auto* other=sRandomPlayerbotMgr.GetPlayerBot(row.first);
+            // A held fixture actor has not necessarily executed an AI action
+            // yet, so it need not have an observation-cache binding. Resolve
+            // only the explicitly supplied native character, not that cache.
+            for(const auto candidate:{uint32_t(std::stoul(std::getenv("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT")))}) {
+                auto* other=sRandomPlayerbotMgr.GetPlayerBot(candidate);
                 if(!other || other==bot || !other->IsInWorld() || NativeSafety(other) ||
                     other->GetGroup() || other->GetMapId()!=bot->GetMapId() ||
                     other->GetTeam()!=bot->GetTeam() || !other->GetPlayerbotAI() ||
-                    state.authority.Read(row.first).lease.actor)continue;
-                leaderId=row.first;x=other->GetPositionX();y=other->GetPositionY();z=other->GetPositionZ();o=other->GetOrientation();
+                    state.authority.Read(candidate).lease.actor)continue;
+                leaderId=candidate;x=other->GetPositionX();y=other->GetPositionY();z=other->GetPositionZ();o=other->GetOrientation();
                 state.professionCohortActors.back().store(leaderId);
                 other->StopMoving();other->GetMotionMaster()->Clear();
                 other->NearTeleportTo(bot->GetPositionX(),bot->GetPositionY(),bot->GetPositionZ(),bot->GetOrientation());
