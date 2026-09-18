@@ -1,9 +1,28 @@
 #include "LivingPartyVendor.h"
 #include "LivingActivityRequests.h"
 #include "LivingProfessionJob.h"
+#include "PartyPersistenceToken.h"
 #include <cassert>
 using namespace LivingActivity;
 int main() {
+    // Exact label emitted by the legacy writer at its 16-byte boundary.
+    using namespace LivingPartyPersistence;
+    assert(Token("s_default_s_dps_more",16)=="s_default_s_dps");
+    assert(ValidSavedToken("s_default_s_dps_",16));
+    assert(ValidSavedToken("s_default_s_dps",16));
+    assert(!ValidSavedToken("s_default_s_dps__",16));
+    assert(!ValidSavedToken("s_default_s_dp_",16));
+    assert(!ValidSavedToken("s_Default_s_dps_",16));
+    assert(!ValidSavedToken("s_default_s_dps|",16));
+    assert(!ValidSavedToken("",16));
+    for(size_t limit:{size_t(16),size_t(32)}) {
+        const std::string raw="s_default_s_dps_s_chat_s_buff_s_follow_s_misc_extra";
+        for(size_t cut=1;cut<=raw.size();++cut) {
+            auto value=Token(raw.substr(0,cut),limit);
+            assert(value==Token(value,limit) && ValidSavedToken(value,limit));
+        }
+        assert(ValidSavedToken(std::string(limit-1,'a')+'_',limit));
+    }
     assert(!PartyVendorFailureBackoff(false,OperationState::Rejected));
     assert(!PartyVendorFailureBackoff(true,OperationState::Verified));
     assert(PartyVendorFailureBackoff(true,OperationState::Rejected));

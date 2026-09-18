@@ -2,6 +2,7 @@
 #include "PlayerbotRendezvousManager.h"
 #include "LivingNativeRepair.h"
 #include "LivingNativeVendorSale.h"
+#include "PartyPersistenceToken.h"
 #include "LivingActivityCoordinator.h"
 #include "PlayerbotGuildEventExecutor.h"
 #include "PlayerbotPartyCatchup.h"
@@ -88,22 +89,12 @@ namespace
 
     std::string ActivityToken(const std::string& value)
     {
-        std::string result;
-        for (char c : value)
-        {
-            if (result.size() >= 48) break;
-            if (std::isalnum((unsigned char)c)) result.push_back((char)std::tolower((unsigned char)c));
-            else if (!result.empty() && result.back() != '_') result.push_back('_');
-        }
-        while (!result.empty() && result.back() == '_') result.pop_back();
-        return result.empty() ? "none" : result;
+        return LivingPartyPersistence::ActivityToken(value);
     }
 
     std::string PersistenceToken(const std::string& value, size_t maximumLength)
     {
-        std::string token = ActivityToken(value);
-        if (token.size() > maximumLength) token.resize(maximumLength);
-        return token;
+        return LivingPartyPersistence::Token(value, maximumLength);
     }
 
     PersistedPartyState PersistenceState(const std::string& state)
@@ -737,8 +728,8 @@ bool PlayerbotRendezvousManager::RestorePersistedPartySession(
         persistedState > PersistedPartyState::dungeon_return ||
         numeric[7] > 1 || parts[16].size() > kPartyPersistenceTaskIdLimit ||
         parts[17].size() > kPartyPersistenceActivityLimit ||
-        PersistenceToken(parts[16], kPartyPersistenceTaskIdLimit) != parts[16] ||
-        PersistenceToken(parts[17], kPartyPersistenceActivityLimit) != parts[17]))
+        !LivingPartyPersistence::ValidSavedToken(parts[16], kPartyPersistenceTaskIdLimit) ||
+        !LivingPartyPersistence::ValidSavedToken(parts[17], kPartyPersistenceActivityLimit)))
     {
         valid = false;
         rejection = "unsupported_payload";
