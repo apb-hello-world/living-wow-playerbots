@@ -20,14 +20,12 @@ TrainingLessonState ReadLessonState(Player& actor) {
     return result;
 }
 }
-NativeTrainingLessonResult ExecuteNativeTrainingLesson(PlayerbotAI& ai,const ObjectGuid& guid,uint32_t lesson) {
-    auto reject=[](const char* reason){return NativeTrainingLessonResult{TrainingLessonOutcome::Rejected,reason};};
+bool PlanNativeTrainingLesson(PlayerbotAI& ai,const ObjectGuid& guid,uint32_t lesson,TrainingLessonQuote& output,std::string& reason) {
+    output={};auto reject=[&](const char* why){reason=why;return false;};
     auto* bot=ai.GetBot();
     if(!bot || !bot->GetSession() || !bot->GetMap() || !bot->IsStopped() || bot->GetMap()->IsDungeon() ||
         ReadNativeSafety(*bot,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) ||
         LivingServiceExecution::Busy(bot))return reject("training_safety_pause");
-    const Effects effects{Mask(Effect::Spell)|Mask(Effect::Money)|Mask(Effect::Social),Lane::Managed,true};
-    if(!sLivingActivityCoordinator.PermitEffects(ai,effects,"native trainer lesson"))return reject("training_authority_denied");
     auto* trainer=bot->GetNPCIfCanInteractWith(guid,UNIT_NPC_FLAG_TRAINER);
     if(!trainer || !trainer->IsTrainerOf(bot,false))return reject("training_interacting_trainer_required");
     // Same precedence as the legacy merged list: creature-specific lessons win.
@@ -38,17 +36,18 @@ NativeTrainingLessonResult ExecuteNativeTrainingLesson(PlayerbotAI& ai,const Obj
     const auto* teaching=sSpellTemplate.LookupEntry<SpellEntry>(offered->spell);
     if(!teaching)return reject("training_teaching_spell_missing");
     TrainingLessonQuote quote;quote.actor=bot->GetGUIDLow();quote.trainer=guid.GetRawValue();quote.lesson=lesson;
+    quote.teachingSpell=offered->spell;
     quote.money=bot->GetMoney();
     const bool free=LivingWowFreeBotTraining(bot) || sPlayerbotAIConfig.autoTrainSpells=="free" || ai.HasCheat(BotCheatMask::gold);
     quote.cost=free?0:uint32(floor(offered->spellCost*bot->GetReputationPriceDiscount(trainer)));
     if(quote.cost && ai.GetAiObjectContext()->GetValue<uint32>("free money for",std::to_string(uint32(ai::NeedMoneyFor::spells)))->Get()<quote.cost)
         return reject("training_unreserved_money_shortfall");
 #ifdef MANGOSBOT_ZERO
-    const bool cast= !offered->learnedSpell;
+    quote.cast= !offered->learnedSpell;
 #else
-    const bool cast=offered->IsCastable();
+    quote.cast=offered->IsCastable();
 #endif
-    if(cast) {
+    if(quote.cast) {
         std::set<uint32_t> player,pets;
         for(unsigned i=0;i<3;++i) {
             if(teaching->Effect[i]!=SPELL_EFFECT_LEARN_SPELL && teaching->Effect[i]!=SPELL_EFFECT_LEARN_PET_SPELL)continue;
@@ -71,6 +70,19 @@ NativeTrainingLessonResult ExecuteNativeTrainingLesson(PlayerbotAI& ai,const Obj
     }
     const auto before=ReadLessonState(*bot);quote.pet=before.pet;
     if(!TrainingLessonReady(quote,before))return reject("training_exact_lesson_unavailable");
+    output=std::move(quote);reason.clear();return true;
+}
+NativeTrainingLessonResult ExecuteNativeTrainingLesson(PlayerbotAI& ai,const TrainingLessonQuote& quote) {
+    auto reject=[](const char* reason){return NativeTrainingLessonResult{TrainingLessonOutcome::Rejected,reason};};
+    if(!ValidTrainingLesson(quote))return reject("training_invalid_quote");
+    const ObjectGuid guid(quote.trainer);TrainingLessonQuote current;std::string reason;
+    if(!PlanNativeTrainingLesson(ai,guid,quote.lesson,current,reason))return reject(reason.c_str());
+    if(!SameTrainingLessonQuote(quote,current))return reject("training_quote_changed");
+    const Effects effects{Mask(Effect::Spell)|Mask(Effect::Money)|Mask(Effect::Social),Lane::Managed,true};
+    if(!sLivingActivityCoordinator.PermitEffects(ai,effects,"native trainer lesson"))return reject("training_authority_denied");
+    auto* bot=ai.GetBot();
+    const auto before=ReadLessonState(*bot);
+    if(!TrainingLessonReady(quote,before))return reject("training_exact_lesson_unavailable");
 #ifndef MANGOSBOT_ZERO
     bot->GetSession()->SendPlaySpellVisual(guid,0xB3);
     WorldPacket impact(SMSG_PLAY_SPELL_IMPACT,8+4);
@@ -79,16 +91,23 @@ NativeTrainingLessonResult ExecuteNativeTrainingLesson(PlayerbotAI& ai,const Obj
 #endif
     // Never charge before validating the spell, recipient and native offer.
     if(quote.cost)bot->ModifyMoney(-int32(quote.cost));
-    if(cast)bot->CastSpell(bot,offered->spell,TRIGGERED_OLD_TRIGGERED);
+    if(quote.cast)bot->CastSpell(bot,quote.teachingSpell,TRIGGERED_OLD_TRIGGERED);
     else for(const auto spell:quote.playerSpells)bot->learnSpell(spell,false);
     const auto after=ReadLessonState(*bot);
     const auto outcome=ObserveTrainingLesson(quote,before,after);
     sLog.outString("Living WoW training event=lesson_observed bot=%u trainer=%u lesson=%u outcome=%s money_before=%u money_after=%u",
-        quote.actor,trainer->GetEntry(),lesson,outcome==TrainingLessonOutcome::Verified?"verified":
+        quote.actor,guid.GetEntry(),quote.lesson,outcome==TrainingLessonOutcome::Verified?"verified":
         outcome==TrainingLessonOutcome::Rejected?"rejected":"uncertain",before.money,after.money);
-    if(outcome==TrainingLessonOutcome::Verified)
-        sPlayerbotAIConfig.logEvent(&ai,"TrainerAction",teaching->SpellName[0],std::to_string(teaching->Id));
+    if(outcome==TrainingLessonOutcome::Verified) {
+        const auto* teaching=sSpellTemplate.LookupEntry<SpellEntry>(quote.teachingSpell);
+        if(teaching)sPlayerbotAIConfig.logEvent(&ai,"TrainerAction",teaching->SpellName[0],std::to_string(teaching->Id));
+    }
     return {outcome,outcome==TrainingLessonOutcome::Verified?"native_exact_trainer_lesson_observed":
         outcome==TrainingLessonOutcome::Rejected?"native_training_rejected_without_effect":"native_training_requires_reconciliation"};
+}
+NativeTrainingLessonResult ExecuteNativeTrainingLesson(PlayerbotAI& ai,const ObjectGuid& guid,uint32_t lesson) {
+    TrainingLessonQuote quote;std::string reason;
+    if(!PlanNativeTrainingLesson(ai,guid,lesson,quote,reason))return {TrainingLessonOutcome::Rejected,reason};
+    return ExecuteNativeTrainingLesson(ai,quote);
 }
 }

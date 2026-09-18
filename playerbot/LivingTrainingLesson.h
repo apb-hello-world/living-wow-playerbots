@@ -8,8 +8,9 @@ namespace LivingActivity {
 // dispatch and available to the pending durable service adapter; native code
 // supplies all facts. This value contract alone is not a persisted receipt.
 struct TrainingLessonQuote {
-    uint32_t actor=0, lesson=0, money=0, cost=0;
+    uint32_t actor=0, lesson=0, teachingSpell=0, money=0, cost=0;
     uint64_t trainer=0, pet=0;
+    bool cast=false;
     std::vector<uint32_t> playerSpells, petSpells;
 };
 struct TrainingLessonState {
@@ -19,7 +20,7 @@ struct TrainingLessonState {
 };
 enum class TrainingLessonOutcome { Rejected, Verified, Uncertain };
 inline bool ValidTrainingLesson(const TrainingLessonQuote& q) {
-    if(!q.actor || !q.trainer || !q.lesson || q.cost>q.money ||
+    if(!q.actor || !q.trainer || !q.lesson || !q.teachingSpell || q.cost>q.money ||
         q.playerSpells.size()+q.petSpells.size()==0 ||
         q.playerSpells.size()+q.petSpells.size()>3 || (!q.petSpells.empty() && !q.pet))return false;
     for(const auto* spells:{&q.playerSpells,&q.petSpells}) {
@@ -27,6 +28,11 @@ inline bool ValidTrainingLesson(const TrainingLessonQuote& q) {
         for(const auto spell:*spells) {if(!spell || spell<=previous)return false;previous=spell;}
     }
     return true;
+}
+inline bool SameTrainingLessonQuote(const TrainingLessonQuote& a,const TrainingLessonQuote& b) {
+    return a.actor==b.actor && a.lesson==b.lesson && a.teachingSpell==b.teachingSpell &&
+        a.money==b.money && a.cost==b.cost && a.trainer==b.trainer && a.pet==b.pet &&
+        a.cast==b.cast && a.playerSpells==b.playerSpells && a.petSpells==b.petSpells;
 }
 inline bool TrainingLessonSubjectMatches(const TrainingLessonQuote& q,const TrainingLessonState& s) {
     return s.actor==q.actor && (q.petSpells.empty() || s.pet==q.pet);

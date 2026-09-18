@@ -2,10 +2,21 @@
 #include <cassert>
 using namespace LivingActivity;
 int main() {
-    TrainingLessonQuote quote;quote.actor=484;quote.trainer=123;quote.lesson=456;
+    TrainingLessonQuote quote;quote.actor=484;quote.trainer=123;quote.lesson=456;quote.teachingSpell=456;
     quote.money=100;quote.cost=10;quote.playerSpells={456};
     TrainingLessonState before;before.actor=484;before.money=100;before.playerSpells={111};
     assert(TrainingLessonReady(quote,before));
+    assert(SameTrainingLessonQuote(quote,quote));
+    auto changed=quote;changed.cost=0;assert(!SameTrainingLessonQuote(quote,changed));
+    changed=quote;changed.money=99;assert(!SameTrainingLessonQuote(quote,changed));
+    changed=quote;changed.actor=485;assert(!SameTrainingLessonQuote(quote,changed));
+    changed=quote;changed.trainer=124;assert(!SameTrainingLessonQuote(quote,changed));
+    changed=quote;changed.pet=55;assert(!SameTrainingLessonQuote(quote,changed));
+    changed=quote;changed.lesson=789;assert(!SameTrainingLessonQuote(quote,changed));
+    changed=quote;changed.teachingSpell=789;assert(!SameTrainingLessonQuote(quote,changed));
+    changed=quote;changed.cast=true;assert(!SameTrainingLessonQuote(quote,changed));
+    changed=quote;changed.playerSpells={789};assert(!SameTrainingLessonQuote(quote,changed));
+    changed=quote;changed.petSpells={789};assert(!SameTrainingLessonQuote(quote,changed));
     auto after=before;after.money=90;after.playerSpells.insert(456);
     assert(ObserveTrainingLesson(quote,before,after)==TrainingLessonOutcome::Verified);
     assert(ObserveTrainingLesson(quote,before,before)==TrainingLessonOutcome::Rejected);
