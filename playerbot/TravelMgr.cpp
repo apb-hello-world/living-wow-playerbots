@@ -895,6 +895,10 @@ TravelTarget::TravelTarget(PlayerbotAI* ai) : AiObject(ai)
 }
 
 bool TravelTarget::AllowActivityMutation() const {
+    // TravelMgr's singleton destructor clears targets after the coordinator
+    // may already be destroyed. This is world-stop cleanup, not a new route.
+    // Consult the static stop flag without touching another singleton.
+    if (World::IsStopped()) return true;
     return !activityBound || sLivingActivityCoordinator.PermitEffects(*ai,
         {LivingActivity::Mask(LivingActivity::Effect::TravelTarget), LivingActivity::Lane::Managed, true},
         "native travel target mutation");
