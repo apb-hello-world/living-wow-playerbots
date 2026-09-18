@@ -30,6 +30,12 @@ struct PartyMailSessionFixture {
     uint32_t changedLeader=0;
     LivingActivity::PartyServiceBinding checkpointBinding;
     std::string recalledOperation;
+    ~PartyMailSessionFixture() {
+        // At process exit the world may already have deleted its Player via
+        // the original native session. This isolated wrapper does not own that
+        // Player; never let its destructor attempt a second LogoutPlayer.
+        if(humanSession)humanSession->SetPlayer(nullptr,0);
+    }
     void Close(bool preserveGroup=false) {
         auto* leader=sRandomPlayerbotMgr.GetPlayerBot(leaderId);
         if(group && !preserveGroup) {group->Disband(true);sObjectMgr.RemoveGroup(group);delete group;}
