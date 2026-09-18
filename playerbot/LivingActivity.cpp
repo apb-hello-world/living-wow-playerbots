@@ -2,6 +2,7 @@
 #include "LivingActivityObservation.h"
 #include "LivingActivityJournal.h"
 #include "LivingPartyRepair.h"
+#include "LivingPartyVendor.h"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -326,7 +327,13 @@ namespace LivingActivity
         const char* state = verified ? "verified" : uncertain ? "reconciling" : "rejected";
         const bool completedRepair=IsPartyRepairTask(task) && task.phase==Phase::Completed && verified &&
             outcome.kind=="critical_equipment_repair" && outcome.evidence=="native_repair_durability_and_payment_observed";
-        if (!expected || task.mode != Mode::Active || (!completedRepair && task.phase != (uncertain ? Phase::Reconciling : Phase::Verifying)) ||
+        PartyVendorJob vendor;std::string vendorBlocker;
+        const bool completedVendor=IsPartyVendorTask(task) && task.phase==Phase::Completed && verified &&
+            outcome.kind=="party_vendor_sale" && outcome.evidence=="native_party_sale_money_item_and_slot_observed" &&
+            ValidatePartyVendorTask(task,vendorBlocker) && DecodePartyVendorJob(task.checkpoint.data,vendor) &&
+            vendor.next==vendor.items.size() && outcome.taskRevision==expected && task.revision==expected+1 &&
+            outcome.nativeReference=="vendor_sale:"+std::to_string(vendor.items.back().guid);
+        if (!expected || task.mode != Mode::Active || (!completedRepair && !completedVendor && task.phase != (uncertain ? Phase::Reconciling : Phase::Verifying)) ||
             !IsUuid(outcome.id) || outcome.task != task.id || !outcome.taskRevision ||
             !IsToken(outcome.kind, 48) || !IsToken(outcome.evidence) || after.size() > 8192 ||
             outcome.nativeReference.size() > 160 || (verified && outcome.nativeReference.empty()) ||

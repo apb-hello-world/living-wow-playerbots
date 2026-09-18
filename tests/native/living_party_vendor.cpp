@@ -104,5 +104,20 @@ int main() {
     proof.taskRevision=8;proof.nativeReference="vendor_sale:200";task.revision=9;
     assert(AcknowledgePartyVendorSale(task,facts,claim,proof));
     assert(task.phase==Phase::Completed && ValidatePartyVendorTask(task,why));
+    // Exercise the actual journal boundary, not only cursor acknowledgement.
+    // Final sale, task completion and consumed claim share this native write.
+    const auto journal=OperationOutcomeWrite(task,8,proof,task.context.boot,"{}");
+    assert(!journal.statements.empty() && !journal.receiptQuery.empty());
+    auto rejectsFinal=[&](const Task& candidate,const OperationResult& result) {
+        bool rejected=false;
+        try { OperationOutcomeWrite(candidate,8,result,task.context.boot,"{}"); }
+        catch(const std::invalid_argument&) { rejected=true; }
+        assert(rejected);
+    };
+    wrong=proof;wrong.nativeReference="vendor_sale:100";rejectsFinal(task,wrong);
+    wrong=proof;wrong.kind="capacity_vendor_sale";rejectsFinal(task,wrong);
+    wrong=proof;wrong.state=OperationState::Rejected;rejectsFinal(task,wrong);
+    wrong=proof;wrong.taskRevision=7;rejectsFinal(task,wrong);
+    badTask=task;decoded.next=1;badTask.checkpoint.data=EncodePartyVendorJob(decoded);rejectsFinal(badTask,proof);
     assert(!AcknowledgePartyVendorSale(task,facts,claim,proof));
 }
