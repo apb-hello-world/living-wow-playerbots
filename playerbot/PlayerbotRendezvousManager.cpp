@@ -1,6 +1,7 @@
 #include "botpch.h"
 #include "PlayerbotRendezvousManager.h"
 #include "LivingNativeRepair.h"
+#include "LivingNativeVendorSale.h"
 #include "LivingActivityCoordinator.h"
 #include "PlayerbotGuildEventExecutor.h"
 #include "PlayerbotPartyCatchup.h"
@@ -196,11 +197,13 @@ namespace
         if (!context->GetValue<std::vector<TrainerSpell const*>>(
             "trainable spells", std::to_string(TRAINER_TYPE_CLASS))->Get().empty())
             errands |= kErrandTraining;
-        if (pressure.vendorStacks && context->GetValue<bool>("can sell")->Get())
-            errands |= kErrandVendor;
         if (sLivingActivityCoordinator.EffectEnforcementEnabled() &&
             sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands)
         {
+            // Admission is an actual finite native need, not permission to
+            // re-enable the autonomous vendor strategy removed by party follow.
+            LivingActivity::PartyVendorJob vendor;std::string vendorBlocker;
+            if (LivingActivity::PlanNativePartyVendorBatch(*bot,vendor,vendorBlocker)) errands |= kErrandVendor;
             // Party follow deliberately removes autonomous RPG strategies.
             // A native equipment need must not depend on those strategies
             // being enabled. The shared adapter validates service access,
@@ -208,9 +211,12 @@ namespace
             if (context->GetValue<uint8>("durability")->Get() < 85 &&
                 LivingActivity::HasNativeDamagedEquipment(*bot)) errands |= kErrandRepair;
         }
-        else if (context->GetValue<uint8>("durability inventory")->Get() < 85 &&
-            context->GetValue<bool>("can repair")->Get())
-            errands |= kErrandRepair;
+        else
+        {
+            if (pressure.vendorStacks && context->GetValue<bool>("can sell")->Get()) errands |= kErrandVendor;
+            if (context->GetValue<uint8>("durability inventory")->Get() < 85 &&
+                context->GetValue<bool>("can repair")->Get()) errands |= kErrandRepair;
+        }
         if (pressure.StorableStacks() && (pressure.bagUsage >= 70 || pressure.StorableStacks() >= 3) &&
             context->GetValue<bool>("should bank deposit")->Get())
             errands |= kErrandBank;

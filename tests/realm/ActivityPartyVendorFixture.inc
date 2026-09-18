@@ -14,15 +14,16 @@ template<class State> void RunIsolatedPartyVendor(State& state) {
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     Player* bot=nullptr;
     auto inventory=[&]() {
-        boost::property_tree::ptree rows;
+        std::string rows="[";bool first=true;
         auto items=bot->GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
         items.sort([](Item* a,Item* b){return a->GetGUIDLow()<b->GetGUIDLow();});
         for(auto* item:items) {
             boost::property_tree::ptree row;row.put("guid",item->GetGUIDLow());row.put("entry",item->GetEntry());
             row.put("quantity",item->GetCount());row.put("position",item->GetPos());
-            rows.push_back({"",row});
+            if(!first)rows+=',';
+            first=false;rows+=Json(row);
         }
-        return Json(rows);
+        return rows+"]";
     };
     auto emit=[&](bool passed,const std::string& why) {
         f.report.put("suite",suite);f.report.put("boot",state.boot);f.report.put("actor",f.actor);
