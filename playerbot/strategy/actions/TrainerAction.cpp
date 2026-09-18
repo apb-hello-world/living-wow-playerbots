@@ -4,72 +4,28 @@
 #include "playerbot/PlayerbotServiceTracking.h"
 #include "TrainerAction.h"
 #include "playerbot/PlayerbotTraining.h"
+#include "playerbot/PlayerbotTrainingLesson.h"
 #include "playerbot/ServerFacade.h"
 #include "playerbot/strategy/values/BudgetValues.h"
 
 using namespace ai;
 
-void TrainerAction::Learn(uint32 cost, ObjectGuid trainerGuid, uint32 spellId, TrainerSpell const* tSpell, std::ostringstream& msg)
+LivingActivity::TrainingLessonOutcome TrainerAction::Learn(uint32, ObjectGuid trainerGuid, uint32 spellId, TrainerSpell const*, std::ostringstream& msg)
 {
-    if (!sLivingActivityCoordinator.PermitEffects(*ai, GetActivityEffects(), "native service mutation")) return;
-    if (!LivingWowFreeBotTraining(bot) && sPlayerbotAIConfig.autoTrainSpells != "free" && !ai->HasCheat(BotCheatMask::gold))
-    {
-        if (AI_VALUE2(uint32, "free money for", (uint32)NeedMoneyFor::spells) < cost)
-        {
-            msg << " - too expensive";
-            return;
-        }
-
-        bot->ModifyMoney(-int32(cost));
-    }
-
-    SpellEntry const* proto = sServerFacade.LookupSpellInfo(tSpell->spell);
-    if (!proto)
-        return;
-
-#ifdef MANGOSBOT_ZERO
-    if (tSpell->learnedSpell)
-    {
-        // old code
-        // bot->learnSpell(tSpell->learnedSpell, false);
-        bool learned = false;
-        for (int j = 0; j < 3; ++j)
-        {
-            if (proto->Effect[j] == SPELL_EFFECT_LEARN_SPELL)
-            {
-                uint32 learnedSpell = proto->EffectTriggerSpell[j];
-                bot->learnSpell(learnedSpell, false);
-                learned = true;
-            }
-        }
-        if (!learned) bot->learnSpell(tSpell->learnedSpell, false);
-    }
-    else
-        ai->CastSpell(tSpell->spell, bot);
-#else
-    // From NPCHandler
-    bot->GetSession()->SendPlaySpellVisual(trainerGuid, 0xB3);   // visual effect on trainer
-
-    WorldPacket data(SMSG_PLAY_SPELL_IMPACT, 8 + 4);             // visual effect on player
-    data << bot->GetObjectGuid();
-    data << uint32(0x016A);                                      // index from SpellVisualKit.dbc
-    bot->GetSession()->SendPacket(data);
-
-    if (tSpell->IsCastable())
-        bot->CastSpell(bot, tSpell->spell, TRIGGERED_OLD_TRIGGERED);
-    else
-        bot->learnSpell(spellId, false);
-#endif
-
-    sPlayerbotAIConfig.logEvent(ai, "TrainerAction", proto->SpellName[0], std::to_string(proto->Id));
-
-    msg << " - learned";
+    const auto result=LivingActivity::ExecuteNativeTrainingLesson(*ai,trainerGuid,spellId);
+    if(result.outcome==LivingActivity::TrainingLessonOutcome::Verified)msg << " - learned";
+    else if(result.reason=="training_unreserved_money_shortfall")msg << " - too expensive";
+    else if(result.outcome==LivingActivity::TrainingLessonOutcome::Uncertain)msg << " - learning outcome not yet verified";
+    else msg << " - cannot learn right now";
+    return result.outcome;
 }
 
 bool TrainerAction::Iterate(Player* requester, Creature* creature, TrainerSpellAction action, SpellIds& spells)
 {
     bool hasHeader = false;    
     bool hasTrainable = false;
+    bool learnedAny = false;
+    bool uncertain = false;
 
     TrainerSpellData const* cSpells = creature->GetTrainerSpells();
     TrainerSpellData const* tSpells = creature->GetTrainerTemplateSpells();
@@ -175,7 +131,11 @@ bool TrainerAction::Iterate(Player* requester, Creature* creature, TrainerSpellA
         out << chat->formatSpell(pSpellInfo) << chat->formatMoney(cost);
 
         if (action)
-            (this->*action)(cost, creature->GetObjectGuid(), itr->first, tSpell, out);
+        {
+            const auto outcome=(this->*action)(cost, creature->GetObjectGuid(), itr->first, tSpell, out);
+            learnedAny |= outcome==LivingActivity::TrainingLessonOutcome::Verified;
+            uncertain = outcome==LivingActivity::TrainingLessonOutcome::Uncertain;
+        }
 
         if (!hasHeader)
         {
@@ -183,6 +143,7 @@ bool TrainerAction::Iterate(Player* requester, Creature* creature, TrainerSpellA
             hasHeader = true;
         }
         ai->TellPlayer(requester, out, PlayerbotSecurityLevel::PLAYERBOT_SECURITY_ALLOW_ALL, false);
+        if(uncertain)break; // Do not repeat a partially observed native lesson.
     }
 
     if(hasHeader)
@@ -190,7 +151,7 @@ bool TrainerAction::Iterate(Player* requester, Creature* creature, TrainerSpellA
     else if (!ai->GetMaster() || sServerFacade.GetDistance2d(bot, ai->GetMaster()) < sPlayerbotAIConfig.reactDistance || ai->HasStrategy("debug", BotState::BOT_STATE_NON_COMBAT))
         ai->TellPlayerNoFacing(requester, "No spells can be learned from this trainer");
 
-    return hasTrainable;
+    return action ? learnedAny && !uncertain : hasTrainable;
 }
 
 bool TrainerAction::Execute(Event& event)
