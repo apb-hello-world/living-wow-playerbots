@@ -2,9 +2,9 @@
 namespace {
 template<class State> void RunIsolatedPartyVendor(State& state) {
     struct Fixture {
-        uint32_t actor=0,leader=0,money=0;uint64_t deadline=0,recalledAt=0;
+        uint32_t actor=0,leader=0,money=0;uint64_t deadline=0,recalledAt=0,diagnosticAt=0;
         bool logged=false,prepared=false,resumed=false,recalled=false,reauthorized=false;
-        std::string task,blocker,pausedInventory;boost::property_tree::ptree report;
+        std::string task,blocker,pausedInventory,retryRoot;boost::property_tree::ptree report;
     };
     static Fixture f;
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
@@ -48,6 +48,8 @@ template<class State> void RunIsolatedPartyVendor(State& state) {
             require(f.actor && f.leader && f.actor!=f.leader,"distinct_vendor_pair_required");
             state.gameplayFixtureActor.store(f.actor);state.professionCohortActors.back().store(f.leader);
             f.deadline=NowMs()+600000;
+            if(!restart)if(const auto* retry=std::getenv("LIVING_WOW_NATIVE_FIXTURE_TASK"))f.retryRoot=retry;
+            require(f.retryRoot.empty() || IsUuid(f.retryRoot),"retry_requires_explicit_task_uuid");
             if(restart) {
                 std::ifstream input("/isolated/evidence/party-vendor-checkpoint.json");boost::property_tree::read_json(input,f.report);
                 require(f.report.template get<std::string>("outcome")=="checkpoint" &&
@@ -69,10 +71,18 @@ template<class State> void RunIsolatedPartyVendor(State& state) {
         if(!f.prepared) {
             require(!bot->GetGroup() && !leader->GetGroup(),"existing_vendor_groups_preserved");
             for(const auto& row:state.cache)if(row.second.actor==f.actor && row.second.mode==Mode::Active && !Terminal(row.second.phase))
-                require(false,"existing_vendor_actor_obligation_preserved");
+                require(!f.retryRoot.empty() && row.first==f.retryRoot,"existing_vendor_actor_obligation_preserved");
             PartyVendorJob planned;
             require(PlanNativePartyVendorBatch(*bot,planned,f.blocker),"native_disposable_batch_required:"+f.blocker);
             require(planned.items.size()>=3,"three_existing_disposable_stacks_required");
+            if(!f.retryRoot.empty()) {
+                const auto prior=sLivingActivityCoordinator.ReadSavedTask(f.retryRoot);
+                require(prior && IsPartyVendorTask(*prior) && prior->actor==f.actor && !Terminal(prior->phase) &&
+                    prior->checkpoint.data==EncodePartyVendorJob(planned),"retry_requires_same_unsold_native_manifest");
+                auto operations=CharacterDatabase.PQuery("SELECT COUNT(*) FROM living_activity_operation WHERE task_id='%s'",f.retryRoot.c_str());
+                require(operations && operations->Fetch()[0].GetUInt32()==0,"retry_cannot_reset_an_attempted_sale");
+                f.report.put("retry_existing_root",f.retryRoot);
+            }
             f.report.put("accepted_manifest",EncodePartyVendorJob(planned));f.report.put("inventory_before",inventory());
             f.report.put("money_before",bot->GetMoney());f.report.put("money_grants",0);f.report.put("item_grants",0);
             bot->SaveToDB();f.prepared=true;state.enforceEffects.store(true);
@@ -83,6 +93,7 @@ template<class State> void RunIsolatedPartyVendor(State& state) {
             const auto binding=sPlayerbotRendezvousManager.PartyServiceStatus(f.actor);
             if(!binding){f.blocker="vendor_native_admission_pending";return;}
             require(binding->service==PartyServiceBinding::Service::Vendor,"vendor_only_binding_required");f.task=binding->root;
+            require(f.retryRoot.empty() || f.task==f.retryRoot,"retry_preserves_original_root");
         }
         const auto saved=sLivingActivityCoordinator.ReadSavedTask(f.task);if(!saved)return;
         PartyVendorJob job;
@@ -90,6 +101,11 @@ template<class State> void RunIsolatedPartyVendor(State& state) {
         const auto next=job.next;job.next=0;
         require(EncodePartyVendorJob(job)==f.report.template get<std::string>("accepted_manifest"),"accepted_vendor_items_immutable");
         f.blocker=state.executionBlockers[f.task];
+        if(NowMs()>=f.diagnosticAt) {
+            f.diagnosticAt=NowMs()+10000;
+            std::ofstream progress("/isolated/evidence/party-vendor-progress-"+state.boot+".json");
+            progress<<sLivingActivityCoordinator.ActorJson(f.actor);
+        }
         if(!restart && next==1 && saved->phase==Phase::Verifying && state.operations.empty()) {
             f.report.put("checkpoint_revision",saved->revision);f.report.put("checkpoint_at_ms",NowMs());
             f.report.put("checkpoint_money",bot->GetMoney());f.report.put("checkpoint_inventory",inventory());

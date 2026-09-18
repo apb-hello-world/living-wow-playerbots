@@ -1,5 +1,6 @@
 #include "LivingPartyVendor.h"
 #include "LivingActivityRequests.h"
+#include "LivingProfessionJob.h"
 #include <cassert>
 using namespace LivingActivity;
 int main() {
@@ -42,6 +43,14 @@ int main() {
     TaskRequest transition;transition.task=task;++transition.task.revision;
     transition.expectedRevision=task.revision;transition.receipt=task.context.boot;
     assert(ValidateTaskRequest(transition,&task,task.context,why)==AdmissionCode::Pending);
+    // Shared route labels must not reclassify this party root as a recipe job.
+    auto travel=transition;travel.task.phase=Phase::Traveling;
+    travel.task.checkpoint.step="profession_service_capacity_vendor";
+    assert(!IsProfessionJob(travel.task));
+    assert(ValidateTaskRequest(travel,&task,task.context,why)==AdmissionCode::Pending);
+    assert(SavedTaskExecutable(travel.task,travel.task.revision,task.context,1000,why));
+    auto malformed=travel.task;malformed.source="profession_job";
+    assert(IsProfessionJob(malformed) && !ValidateProfessionTask(malformed,why));
     changed=job;changed.next=1;transition.task.checkpoint.data=EncodePartyVendorJob(changed);
     assert(ValidateTaskRequest(transition,&task,task.context,why)==AdmissionCode::InvalidRequest);
     changed=job;changed.items[0].quantity=2;transition.task.checkpoint.data=EncodePartyVendorJob(changed);

@@ -255,14 +255,14 @@ namespace LivingActivity {
         job=flow.intent;current=flow.tools.empty() || flow.tools.back().finishedRevision;return true;
     }
     bool IsProfessionJob(const Task& task) {
-        if(IsPartyRepairTask(task))return false; // A shared route label cannot change this typed root.
         // Service step names are backward compatible and shared by learning
         // and guild deliveries; a route label never replaces the typed owner.
         // The typed root retains its identity while using the same adapter.
         if(IsGuildProcurementTask(task))return IsGuildCraftTask(task);
         if(IsCommissionJob(task))return true;
         return !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task) &&
-            (task.source == "profession_job" || task.checkpoint.step.compare(0, 11, "profession_") == 0);
+            (task.source == "profession_job" ||
+                (task.kind == Kind::Profession && task.checkpoint.step.compare(0, 11, "profession_") == 0));
     }
     bool MatchNativeProfessionRecipe(const ProfessionJob& job, const NativeProfessionRecipe& native,
         std::string& blocker) {
