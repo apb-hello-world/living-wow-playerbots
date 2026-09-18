@@ -3,7 +3,7 @@ namespace {
 template<class State> void RunIsolatedPartyVendor(State& state) {
     struct Fixture {
         uint32_t actor=0,leader=0,money=0;uint64_t deadline=0,recalledAt=0,diagnosticAt=0;
-        bool logged=false,prepared=false,resumed=false,recalled=false,reauthorized=false;
+        bool logged=false,prepared=false,resumed=false,recalled=false,reauthorized=false,leaderJoinedVendor=false;
         std::string task,blocker,pausedInventory,retryRoot;boost::property_tree::ptree report;
     };
     static Fixture f;
@@ -118,6 +118,17 @@ template<class State> void RunIsolatedPartyVendor(State& state) {
             require(next==1 && bot->GetMoney()==f.report.template get<uint32_t>("checkpoint_money") &&
                 inventory()==f.report.template get<std::string>("checkpoint_inventory"),"vendor_restart_possessions_unchanged");
             auto& party=PartyMailFixture();
+            if(!f.leaderJoinedVendor) {
+                require(bot->GetMapId()==leader->GetMapId(),"vendor_replay_same_map_leader_input");
+                f.leaderJoinedVendor=true;
+                f.report.put("test_leader_joined_vendor",true);
+                f.report.put("test_leader_initial_distance",bot->GetDistance(leader));
+                // Explicit headless-human input, like Prepare's initial join.
+                // Do it before attaching the simulated network session. This
+                // receipt/permission replay does NOT claim route coverage.
+                leader->NearTeleportTo(bot->GetPositionX(),bot->GetPositionY(),bot->GetPositionZ(),bot->GetOrientation());
+                return;
+            }
             if(!party.recovered){if(!party.Restore(bot,f.report.template get<uint32_t>("party_group"),f.leader))return;
                 require(party.restoredReason=="realm_restart_errands_deferred","vendor_old_consent_deferred");}
             state.enforceEffects.store(true);
