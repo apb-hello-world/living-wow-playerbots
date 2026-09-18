@@ -33,7 +33,10 @@ template<class State> void RunIsolatedPartyVendor(State& state) {
         if(bot){f.report.put("money_after",bot->GetMoney());f.report.put("inventory_after",inventory());
             f.report.put("activity_json",sLivingActivityCoordinator.ActorJson(f.actor));}
         if(passed)state.enforceEffects.store(false);
-        if(!PartyMailFixture().done)PartyMailFixture().Close(passed && !restart);
+        // Keep the headless human attached until world shutdown at a saved
+        // checkpoint. Detaching it here makes a still-running world correctly
+        // clean up the now bot-only session before the operator can stop it.
+        if(!PartyMailFixture().done && (!passed || restart))PartyMailFixture().Close();
         std::ofstream out("/isolated/evidence/activity-party-vendor-"+state.boot+".json");out<<Json(f.report);out.close();
         if(passed && !restart){std::ofstream copy("/isolated/evidence/party-vendor-checkpoint.json");copy<<Json(f.report);}
         state.fixtureFinished=true;
