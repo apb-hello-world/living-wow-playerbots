@@ -357,6 +357,12 @@ PlayerbotGuildEventExecutor::~PlayerbotGuildEventExecutor()=default;
 PlayerbotGuildEventExecutor& PlayerbotGuildEventExecutor::instance() { static PlayerbotGuildEventExecutor value;return value; }
 bool PlayerbotGuildEventExecutor::DungeonSupported(uint32 map) {return DungeonFor(map).valid;}
 bool PlayerbotGuildEventExecutor::DungeonParticipantReady(Player* player,uint32 map) {return DungeonReady(player,DungeonFor(map));}
+uint32_t PlayerbotGuildEventExecutor::ParticipantCoordinator(const LivingActivity::Task& task) const {
+    LivingActivity::GuildEventCommitment definition;
+    if(!sLivingActivityCoordinator.OnWorldThread() || !LivingActivity::DecodeGuildEventCommitment(task.checkpoint.data,definition))return 0;
+    const auto found=state_->events.find(definition.event);
+    return found!=state_->events.end() && found->second.revision==definition.eventRevision?found->second.coordinator:0;
+}
 std::string PlayerbotGuildEventExecutor::ExecuteParticipant(const LivingActivity::Task& task,const LivingActivity::ActionContext& action) {
     using namespace LivingActivity;
     GuildEventCommitment definition;std::string why;
@@ -377,17 +383,17 @@ std::string PlayerbotGuildEventExecutor::ExecuteParticipant(const LivingActivity
     const auto& accepted=roster->second;
     if(HasUncommittedHuman(bot,{}) || HasUncommittedHuman(coordinator,{}))return "guild_event_human_party_requires_session_authority";
     if(!sLivingActivityCoordinator.PermitEffects(*bot->GetPlayerbotAI(),
-        {Mask(Effect::Group)|Mask(Effect::Movement)|Mask(Effect::TravelTarget),Lane::Managed,true},"guild event participant"))
+        {Mask(Effect::Movement)|Mask(Effect::TravelTarget),Lane::Managed,true},"guild event participant"))
         return "guild_event_execution_authority_changed";
     if(bot->GetGroup() && bot->GetGroup()==coordinator->GetGroup() && bot!=coordinator &&
         bot->GetGroup()->GetLeaderGuid()==bot->GetObjectGuid()) {
-        bot->GetGroup()->ChangeLeader(coordinator->GetObjectGuid());return "guild_event_group_context_changed";
+        return "guild_event_journalled_leader_handoff_required";
     }
     if(bot==coordinator && bot->GetGroup() && bot->GetGroup()->GetLeaderGuid()!=bot->GetObjectGuid() &&
         accepted.count(bot->GetGroup()->GetLeaderGuid().GetCounter()))return "guild_event_leader_handoff_pending";
     if(event.state=="forming" || event.state=="traveling") {
-        const auto formation=std::string(FormBotParticipant(event,coordinator,bot,accepted));
-        if(formation!="guild_formation_joined" && formation!="guild_formation_coordinator_ready")return formation;
+        if(bot!=coordinator && (!bot->GetGroup() || bot->GetGroup()!=coordinator->GetGroup()))
+            return "guild_event_journalled_group_required";
         if(bot==coordinator)return "guild_event_roster_assembly_pending";
         return sLivingActivityCoordinator.ApproachGuildParticipant(task,action,event.coordinator);
     }

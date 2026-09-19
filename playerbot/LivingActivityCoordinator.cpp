@@ -63,6 +63,7 @@
 #include "LivingGuildProcurementHandoff.h"
 #include "LivingNativeGuildProcurement.h"
 #include "LivingNativeGuildEvent.h"
+#include "LivingNativeGuildGroup.h"
 #include "LivingGuildEventSettlement.h"
 #include "PlayerbotGuildEventExecutor.h"
 #include "LivingGuildProcurementRecovery.h"
@@ -4002,8 +4003,15 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || bot->IsBeingTeleported())return stop("guild_event_actor_unavailable");
     if(state->operationDispatching || DefersNativeSave(actor))return stop("guild_event_native_save_pending");
     for(const auto& write:state->pending)if(write.task.actor==actor)return stop("guild_event_task_write_pending");
-    for(const auto& operation:state->operations)if(operation.second.request.transition.task.actor==actor)
-        return stop("guild_event_native_operation_pending");
+    for(const auto& operation:state->operations)if(operation.second.request.transition.task.actor==actor) {
+        const auto& request=operation.second.request;
+        if(request.transition.task.id!=id || request.kind!="guild_event_group")return stop("guild_event_other_operation_pending");
+        GuildGroupQuote quote;if(!DecodeGuildGroupQuote(request.beforeState,quote))return stop("guild_event_group_intent_invalid");
+        NativeGuildGroup adapter(quote);
+        const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"guild_event_group");
+        if(!grant.Permitted())return stop(grant.blocker);
+        return stop(DispatchSavedOperation(operation.first,grant,adapter).admission.blocker);
+    }
     UnsettledClaimBatch claims;
     if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
     if(!claims.claims.empty())return stop("guild_event_resources_require_reconciliation");
@@ -4014,6 +4022,33 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         request.task.phase=phase;request.task.checkpoint.step=step;request.task.checkpoint.blocker=blocker;
         request.receipt=NewId();return stop(SubmitTask(request).blocker);
     };
+    if(saved->checkpoint.step=="guild_event_group") {
+        // Never replay a saved invitation after restart. Reconcile the desired
+        // native membership and the exact intent before admitting a new step.
+        const auto rows=CharacterDatabase.Query(("SELECT operation_id,task_revision,state,before_state FROM living_activity_operation"
+            " WHERE task_id="+SqlValue(id)+" AND kind='guild_event_group' ORDER BY task_revision DESC LIMIT 1").c_str());
+        if(!rows || rows->GetFieldCount()!=4)return stop("guild_event_group_receipt_unavailable");
+        const auto* f=rows->Fetch();const auto outcome=f[2].GetCppString();
+        if(outcome=="intent" || outcome=="reconciling") {
+            GuildGroupQuote quote;std::string before;
+            try {boost::property_tree::ptree parsed;std::istringstream in(f[3].GetCppString());boost::property_tree::read_json(in,parsed);
+                std::ostringstream out;boost::property_tree::write_json(out,parsed.get_child("native"),false);before=out.str();}
+            catch(const std::exception&) {return stop("guild_event_group_receipt_invalid");}
+            if(!DecodeGuildGroupQuote(before,quote) || quote.actor!=actor)return stop("guild_event_group_receipt_invalid");
+            const auto observed=InspectNativeGuildGroup(*bot,quote);
+            if(observed.state==OperationState::Reconciling)return stop(observed.evidence);
+            if(state->pending.size()>=state->batch)return stop("guild_event_receipt_backpressure");
+            Task after=*saved;++after.revision;after.phase=Phase::Verifying;after.context=current;after.updatedAtMs=now;
+            after.checkpoint.blocker=observed.evidence;
+            OperationResult proof;proof.id=f[0].GetCppString();proof.task=id;proof.taskRevision=f[1].GetUInt64();
+            proof.kind="guild_event_group";proof.state=observed.state;proof.evidence=observed.evidence;proof.nativeReference=observed.nativeReference;
+            State::Pending write;write.task=after;write.admissionReceipt=NewId();
+            write.plan=OperationOutcomeWrite(after,saved->revision,proof,write.admissionReceipt,observed.afterState);
+            state->pending.push_back(std::move(write));state->nextWork=0;return stop("guild_event_group_reconciliation_receipt_pending");
+        }
+        if(outcome!="verified" && outcome!="rejected")return stop("guild_event_group_receipt_invalid");
+        return checkpoint(Phase::Reconciling,"guild_event_form","guild_event_group_context_reconciliation");
+    }
     if(!(saved->context==current))return checkpoint(Phase::Reconciling,saved->checkpoint.step,"guild_event_context_reconciliation");
     const auto native=CharacterDatabase.Query(GuildEventClosureQuery(*saved,event).c_str());
     if(!native || native->GetFieldCount()!=6)return stop("guild_event_native_revision_unavailable");
@@ -4056,6 +4091,23 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     const auto grant=AcquireSavedTask(id,saved->revision,effects,60000,"guild_event_participant");
     if(!grant.Permitted())return stop(grant.blocker);
     ExecutionScope scope(grant.task,grant.action);
+    const auto coordinator=sGuildEventExecutor.ParticipantCoordinator(*saved);
+    if(!coordinator)return stop("guild_event_coordinator_snapshot_required");
+    // Only forming/traveling repairs membership. Once in a dungeon, preserve
+    // the existing group and let the ordinary objective executor proceed.
+    if(closure.state=="forming" || closure.state=="traveling") {
+        GuildGroupQuote quote;
+        if(!PlanNativeGuildGroup(*bot,*saved,coordinator,quote,why))return stop(why);
+        if(!quote.change.empty()) {
+            NativeGuildGroup adapter(quote);OperationRequest request;
+            request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+            ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+            request.transition.task.checkpoint.step="guild_event_group";request.transition.task.updatedAtMs=now;
+            request.transition.receipt=NewId();request.authorization=grant.action;request.kind=adapter.OperationKind();
+            request.effects=adapter.OperationEffects();request.beforeState=EncodeGuildGroupQuote(quote);
+            return stop(SubmitOperationIntent(request,adapter).blocker);
+        }
+    }
     return stop(sGuildEventExecutor.ExecuteParticipant(grant.task,grant.action));
 }
 

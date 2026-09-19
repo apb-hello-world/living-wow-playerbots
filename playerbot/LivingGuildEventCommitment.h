@@ -49,7 +49,7 @@ inline bool ValidateGuildEventCommitmentTask(const Task& task,std::string& why) 
     GuildEventCommitment c;
     bool step=false;
     for(const auto* value:{"guild_event_wait","guild_event_form","guild_event_prepare","guild_event_travel",
-        "guild_event_objective","guild_event_return","guild_event_verify","guild_event_closed"})step|=task.checkpoint.step==value;
+        "guild_event_objective","guild_event_return","guild_event_verify","guild_event_closed","guild_event_group"})step|=task.checkpoint.step==value;
     if(task.source!="guild_event_commitment" || task.kind!=Kind::GuildEvent || task.root!=task.id ||
         !task.parent.empty() || !task.accepted || !task.actor || task.priority!=Priority::Scheduled || !step ||
         !DecodeGuildEventCommitment(task.checkpoint.data,c) || task.sourceKey!=GuildEventCommitmentKey(c,task.actor) ||
