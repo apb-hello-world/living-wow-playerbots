@@ -17,6 +17,9 @@ bool SupportedNativeTrainingCast(const TrainingLessonQuote& q,std::string& why) 
     const auto* spell=sSpellTemplate.LookupEntry<SpellEntry>(q.teachingSpell);
     if(!spell || SpellScriptMgr::GetSpellScript(q.teachingSpell) || IsChanneledSpell(spell))
         return reject("training_scripted_or_channelled_cast_unsupported");
+    if(spell->manaCost || spell->manaCostPerlevel || spell->ManaCostPercentage ||
+        spell->manaPerSecond || spell->manaPerSecondPerLevel)
+        return reject("training_cast_extra_resources_unsupported");
     std::set<uint32_t> targets;
     for(unsigned i=0;i<MAX_EFFECT_INDEX;++i)if(spell->Effect[i]) {
         if(spell->Effect[i]!=SPELL_EFFECT_LEARN_SPELL || !spell->EffectTriggerSpell[i] ||
