@@ -79,8 +79,16 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
                 f.report.template get<uint32_t>("actor")==f.actor && f.report.template get<uint32_t>("leader")==f.leader,
                 "matching_mount_completion_required");
             f.task=f.report.template get<std::string>("task");
-            const auto saved=sLivingActivityCoordinator.ReadSavedTask(f.task);if(!saved)return;
-            require(saved->phase==Phase::Completed && !bot->GetGroup() && !leader->GetGroup(),"mount_completed_task_and_party_cleanup_required");
+            // Terminal history deliberately is not restored into the active
+            // cache. Read this exact fixture record once, without admitting or
+            // replaying any work. The independent auditor checks its receipt.
+            require(IsUuid(f.task),"mount_completion_uuid_required");
+            const auto sql="SELECT "+PersistedTaskProjection()+" FROM living_activity_task WHERE task_id="+SqlValue(f.task);
+            const auto row=CharacterDatabase.Query(sql.c_str());Task saved;std::string decode;
+            require(row && DecodeTaskProjection(row->Fetch()[0].GetCppString(),saved,decode) &&
+                saved.id==f.task && saved.actor==f.actor && saved.source=="party_training" &&
+                saved.phase==Phase::Completed && saved.accepted && saved.mode==Mode::Active &&
+                !bot->GetGroup() && !leader->GetGroup(),"mount_completed_task_and_party_cleanup_required");
             require(spells()==f.report.template get<std::string>("spells_after") &&
                 bot->GetMoney()==f.report.template get<uint32_t>("money_after"),"mount_restart_preserves_native_spells_and_money");
             require(bot->GetSkillValuePure(SKILL_RIDING)==75 && bot->GetSkillMaxPure(SKILL_RIDING)==75 &&
