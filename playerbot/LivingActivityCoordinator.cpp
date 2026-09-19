@@ -62,6 +62,7 @@
 #include "PlayerbotGuildSupplies.h"
 #include "LivingGuildProcurementHandoff.h"
 #include "LivingNativeGuildProcurement.h"
+#include "LivingNativeGuildEvent.h"
 #include "LivingGuildProcurementRecovery.h"
 #include "LivingGatherRecovery.h"
 #include "LivingGuildProcurementProjection.h"
@@ -4577,6 +4578,11 @@ AdmissionResult LivingActivityCoordinator::SubmitTask(const TaskRequest& request
     const auto valid = ValidateTaskRequest(request, saved == state->cache.end() ? nullptr : &saved->second, current, reason,
         parent == state->cache.end() ? nullptr : &parent->second);
     if (valid != AdmissionCode::Pending) return reject(valid, reason);
+    // Revoked/edited commitments may still pause or reconcile, but cannot
+    // enter execution using an old RSVP or inherited guild delegation.
+    if(IsGuildEventCommitment(task) && (saved==state->cache.end() ||
+        task.phase==Phase::Preparing || task.phase==Phase::Traveling) &&
+        !ValidateNativeGuildEventTask(*bot,task,reason))return reject(AdmissionCode::NotReady,reason);
     if(saved==state->cache.end() && IsGuildProcurementTask(task)) {
         uint32_t available=0;GuildProcurementJob job;
         if(!ReadGuildProcurementAvailability(task,available,reason) || !DecodeGuildProcurementJob(task.checkpoint.data,job,reason))
@@ -4639,6 +4645,7 @@ LivingActivityCoordinator::TaskGrant LivingActivityCoordinator::AcquireSavedTask
     if (!bot || !bot->GetPlayerbotAI()) { result.blocker = "actor_not_available"; return result; }
     const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
     if (!SavedTaskExecutable(saved->second, revision, current, NowMs(), result.blocker)) return result;
+    if(!ValidateNativeGuildEventTask(*bot,saved->second,result.blocker))return result;
     result.blocker = SavedPartyBlocker(*bot,saved->second,effects);
     if (!result.blocker.empty()) return result;
     RefreshPermission(saved->second.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
@@ -4677,6 +4684,7 @@ LivingActivityCoordinator::TaskGrant LivingActivityCoordinator::SelectSavedStep(
     const auto current = ReadNativeContext(*bot, state->policyRevision, state->boot);
     if (id.empty() ? !SavedTaskExecutable(root->second, revision, current, NowMs(), result.blocker) :
         !SavedStepExecutable(selected->second, root->second, revision, current, NowMs(), result.blocker)) return result;
+    if(!ValidateNativeGuildEventTask(*bot,root->second,result.blocker))return result;
     RefreshPermission(lease.actor, bot->GetPlayerbotAI()->GetActivityActorEpoch());
     const uint64_t monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
