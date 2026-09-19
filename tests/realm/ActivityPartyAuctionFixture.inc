@@ -134,6 +134,43 @@ template<class State> void RunIsolatedPartyAuction(State& state) {
             }
             if(!party.recovered){if(!party.Restore(bot,f.report.template get<uint32_t>("party_group"),f.leader))return;
                 require(party.restoredReason=="realm_restart_errands_deferred","auction_old_consent_deferred");}
+            if(f.report.template get<bool>("test_sell_first_listing",false)) {
+                // Explicit isolated human buyout input. No seller receipt, mail,
+                // gold or item is fabricated. Stop before resuming the seller so
+                // a second boot must recover with the original listing absent.
+                require(!recovery && !f.report.get_child_optional("test_native_sale"),"sale_checkpoint_once");
+                auto posted=CharacterDatabase.PQuery("SELECT before_state,after_state FROM living_activity_operation "
+                    "WHERE task_id='%s' AND state='verified' ORDER BY task_revision LIMIT 1",f.task.c_str());
+                require(bool(posted),"sale_requires_verified_first_post");
+                boost::property_tree::ptree before,after;
+                std::istringstream beforeIn(posted->Fetch()[0].GetCppString()),afterIn(posted->Fetch()[1].GetCppString());
+                boost::property_tree::read_json(beforeIn,before);boost::property_tree::read_json(afterIn,after);
+                NativeAuctionQuote quote;std::string why;
+                leader->StopMoving();
+                require(InspectNativeAuctionQuote(*leader,before.get<uint64_t>("native.native.auctioneer"),
+                    after.get<uint32_t>("native.auction"),quote,why),"sale_native_quote:"+why);
+                require(quote.seller==f.actor && quote.guid==job.items.front().guid && !quote.bidder,
+                    "sale_exact_unbid_owned_listing");
+                const auto started=NowMs();AuctionMailCapture capture;
+                WorldPacket packet;packet<<ObjectGuid(quote.auctioneer)<<quote.auction<<quote.copper;
+                leader->GetSession()->HandleAuctionPlaceBid(packet);
+                NativeResourceBalance received;
+                require(capture.Valid() && leader->GetMoney()==quote.moneyBefore-quote.copper &&
+                    VerifyAuctionMails(quote,capture.Rows(),received,why),"sale_native_result:"+why);
+                require(!sAuctionMgr.GetAItem(quote.guid),"sale_no_remaining_escrow");
+                leader->SaveToDB();bot->SaveToDB();
+                f.report.put("test_sell_first_listing",false);
+                f.report.put("test_native_sale.quote",EncodeNativeAuctionQuote(quote));
+                f.report.put("test_native_sale.mails",AuctionMailsJson(capture.Rows()));
+                f.report.put("test_native_sale.buyer_money_after",leader->GetMoney());
+                f.report.put("test_native_sale.started_at_ms",started);
+                f.report.put("test_native_sale.boot",state.boot);
+                std::ofstream checkpoint("/isolated/evidence/party-auction-checkpoint.json");
+                checkpoint<<Json(f.report);checkpoint.close();
+                std::ofstream sale("/isolated/evidence/party-auction-sale-"+state.boot+".json");
+                sale<<Json(f.report);sale.close();
+                state.fixtureFinished=true;state.enforceEffects.store(false);return;
+            }
             state.enforceEffects.store(true);
             require(!sPlayerbotRendezvousManager.ReadPartyService(bot,*saved),"auction_old_permission_not_restored");
             require(!sLivingActivityCoordinator.AcquireSavedTask(f.task,saved->revision,Mask(Effect::Inventory),
