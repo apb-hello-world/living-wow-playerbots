@@ -1808,6 +1808,20 @@ std::optional<Task> LivingActivityCoordinator::ReadSavedTask(const std::string& 
     const auto found=state->cache.find(id);
     return found==state->cache.end() ? std::optional<Task>{} : found->second;
 }
+std::optional<Task> LivingActivityCoordinator::ReadPendingAdmission(uint32_t actor,const std::string& id) const {
+    if (!OnWorldThread() || !actor || state->cache.count(id)) return {};
+    // The bounded receipt queue retains in-flight writes until acknowledgement.
+    // Do not expose later revisions, native intents, or reconciliation work as
+    // an initial admission. Absence after a rejected write still recalls safely.
+    for (const auto& pending : state->pending) {
+        const auto& task=pending.task;
+        if (task.id==id && task.root==id && task.actor==actor && task.revision==1 &&
+            task.parent.empty() && task.accepted && task.mode==Mode::Active && task.phase==Phase::Queued &&
+            !pending.admissionReceipt.empty() && pending.operation.empty() && !pending.operationOutcome &&
+            !pending.nativeSave && pending.claims.empty()) return task;
+    }
+    return {};
+}
 bool LivingActivityCoordinator::TaskResourceAvailability(const std::string& id,uint64_t revision,
     const NativeResourceBalance& native,uint32_t& available,std::string& blocker) const {
     available=0;

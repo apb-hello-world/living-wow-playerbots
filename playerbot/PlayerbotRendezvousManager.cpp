@@ -3742,7 +3742,11 @@ void PlayerbotRendezvousManager::UpdatePartyAssists()
         // this permission. Atomic/uncertain outcomes retain their normal fence.
         if (!session.managedService.root.empty())
         {
-            const auto task=sLivingActivityCoordinator.ReadSavedTask(session.managedService.root);
+            auto task=sLivingActivityCoordinator.ReadSavedTask(session.managedService.root);
+            // Binding is installed when submission is accepted, before its DB
+            // acknowledgement. Keep checking the live human permission window
+            // during that interval, but leave execution behind ReadSavedTask.
+            if (!task) task=sLivingActivityCoordinator.ReadPendingAdmission(session.botGuid,session.managedService.root);
             if (!bot || !task || !ReadPartyService(bot,*task))
             {
                 session.freeTimeRecallRequested=true;

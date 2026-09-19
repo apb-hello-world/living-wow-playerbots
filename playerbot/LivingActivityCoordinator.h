@@ -93,6 +93,9 @@ public:
     LivingActivity::ResourceReader ResourceReservations() const;
     bool AcknowledgedResourceClaim(const LivingActivity::ResourceClaim&) const;
     std::optional<LivingActivity::Task> ReadSavedTask(const std::string& id) const;
+    // Permission-window observation only. This initial, unacknowledged
+    // admission must NEVER be used for an execution grant or native mutation.
+    std::optional<LivingActivity::Task> ReadPendingAdmission(uint32_t actor,const std::string& id) const;
     // Explicit request lookup only: completed orders are not in the active
     // cache. One primary-key native read never restores execution ownership.
     std::optional<LivingActivity::Task> ReadSavedCommission(const std::string& commission,bool* readable=nullptr) const;
