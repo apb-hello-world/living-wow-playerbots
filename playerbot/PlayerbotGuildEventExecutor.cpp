@@ -295,6 +295,54 @@ struct PlayerbotGuildEventExecutor::State {
             return result;
         })});
     }
+
+    // One world-thread route installation, separable from async completion and
+    // calendar planning. The shared executor can invoke this under its actor's
+    // current task grant; a worker result alone never supplies that grant.
+    bool ApplyObjectiveRoute(const Job& job,const std::vector<GuildRouteProposal>& proposals) {
+        auto owner=reservations.find(job.guid);Player* bot=Online(job.guid);
+        if(owner==reservations.end() || owner->second.event!=job.event || owner->second.revision!=job.revision ||
+            !owner->second.active || !bot || !FreshGuildRoute(job.epoch,RouteEpoch(bot)) ||
+            !Safe(bot,bot->GetGuildId(),true) || !bot->GetPlayerbotAI() ||
+            HasUncommittedHuman(bot,rosters[job.event]) ||
+            sPlayerbotRendezvousManager.GetPartyActivityOwner(job.guid)!=PlayerbotRendezvousManager::PartyActivityOwner::guild_event ||
+            !CharacterDatabase.PQuery("SELECT event_id FROM guild_society_event WHERE event_id='%s' AND state='active' AND revision=%u AND executor_guid=%u AND (event_type<>'dungeon' OR (target_id=%u OR %u=0)) AND (activity_instance_id=0 OR activity_instance_id=%u OR %u=0)",job.event.c_str(),job.revision,job.guid,bot->GetMapId(),bot->GetMap()->IsDungeon()?1:0,bot->GetInstanceId(),bot->GetMap()->IsDungeon()?1:0))return false;
+        const PlayerTravelInfo currentInfo(bot);
+        for(const auto& proposal:proposals) {
+            if(!proposal.Valid())continue;
+            Route route;
+            // Resolve current metadata locally; never retain a pointer supplied
+            // by a worker across a map, login, roster or leader change.
+            for(auto* destination:sTravelMgr.GetDestinations(currentInfo,proposal.purpose,
+                {proposal.quest?int32(proposal.quest):proposal.entry},true,10000)) {
+                auto* quest=dynamic_cast<QuestTravelDestination*>(destination);
+                if(uint32(destination->GetPurpose())!=proposal.purpose || destination->GetEntry()!=proposal.entry ||
+                    (quest?quest->GetQuestId():0)!=proposal.quest || !destination->IsActive(bot,currentInfo))continue;
+                auto* point=destination->GetClosestPoint(WorldPosition(proposal.map,proposal.x,proposal.y,proposal.z));
+                if(point && point->getMapId()==proposal.map && point->getX()==proposal.x &&
+                    point->getY()==proposal.y && point->getZ()==proposal.z)route={destination,point};
+                if(route.destination)break;
+            }
+            if(!route.destination)continue;
+            auto context=bot->GetPlayerbotAI()->GetAiObjectContext();
+            auto* previousFuture=context->GetValue<FutureDestinations*>("future travel destinations")->Get();
+            if(previousFuture&&previousFuture->valid()) {
+                if(previousFuture->wait_for(std::chrono::seconds(0))!=std::future_status::ready)return false;
+                try {previousFuture->get();} catch(...) {}
+            }
+            TravelTarget* target=context->GetValue<TravelTarget*>("travel target")->Get();
+            target->SetTarget(route.destination,route.point);
+            if(!FreshGuildRoute(job.epoch,RouteEpoch(bot)) || target->GetDestination()!=route.destination ||
+                target->GetPosition()!=route.point)return false;
+            target->SetForced(false);target->SetConditions({});
+            target->SetRelevance(199); // Population load shedding, not movement safety.
+            target->SetStatus(TravelStatus::TRAVEL_STATUS_READY);
+            context->GetValue<GuidPosition>("rpg target")->Reset();
+            context->GetValue<bool>("travel target active")->Reset();
+            installed[job.guid]=route;return true;
+        }
+        return false;
+    }
 };
 
 PlayerbotGuildEventExecutor::PlayerbotGuildEventExecutor():state_(new State) {}
@@ -647,46 +695,7 @@ void PlayerbotGuildEventExecutor::Update() {
         if(it->future.wait_for(std::chrono::seconds(0))!=std::future_status::ready) {++it;continue;}
         std::vector<GuildRouteProposal> proposals;
         try {proposals=it->future.get();} catch(...) {proposals.clear();}
-        auto owner=state_->reservations.find(it->guid);Player* bot=Online(it->guid);
-        if(owner!=state_->reservations.end()&&owner->second.event==it->event&&owner->second.revision==it->revision&&owner->second.active&&
-            bot&&FreshGuildRoute(it->epoch,RouteEpoch(bot))&&Safe(bot,bot->GetGuildId(),true)&&bot->GetPlayerbotAI()&&!HasUncommittedHuman(bot,state_->rosters[it->event])&&
-            sPlayerbotRendezvousManager.GetPartyActivityOwner(it->guid)==PlayerbotRendezvousManager::PartyActivityOwner::guild_event&&
-            CharacterDatabase.PQuery("SELECT event_id FROM guild_society_event WHERE event_id='%s' AND state='active' AND revision=%u AND executor_guid=%u AND (event_type<>'dungeon' OR (target_id=%u OR %u=0)) AND (activity_instance_id=0 OR activity_instance_id=%u OR %u=0)",it->event.c_str(),it->revision,it->guid,bot->GetMapId(),bot->GetMap()->IsDungeon()?1:0,bot->GetInstanceId(),bot->GetMap()->IsDungeon()?1:0)) {
-            const PlayerTravelInfo currentInfo(bot);
-            for(const auto& proposal:proposals) {
-                if(!proposal.Valid())continue;
-                State::Route route;
-                // Resolve only from current native metadata on the world thread.
-                // No pointer from the asynchronous result can outlive/rebind a
-                // map, login, roster or leader change, even on the same map ID.
-                for(auto* destination:sTravelMgr.GetDestinations(currentInfo,proposal.purpose,
-                    {proposal.quest?int32(proposal.quest):proposal.entry},true,10000)) {
-                    auto* quest=dynamic_cast<QuestTravelDestination*>(destination);
-                    if(uint32(destination->GetPurpose())!=proposal.purpose || destination->GetEntry()!=proposal.entry ||
-                        (quest?quest->GetQuestId():0)!=proposal.quest || !destination->IsActive(bot,currentInfo))continue;
-                    auto* point=destination->GetClosestPoint(WorldPosition(proposal.map,proposal.x,proposal.y,proposal.z));
-                    if(point && point->getMapId()==proposal.map &&
-                        point->getX()==proposal.x && point->getY()==proposal.y && point->getZ()==proposal.z) {
-                        route={destination,point};
-                    }
-                    if(route.destination)break;
-                }
-                if(!route.destination)continue;
-                auto context=bot->GetPlayerbotAI()->GetAiObjectContext();
-                auto* previousFuture=context->GetValue<FutureDestinations*>("future travel destinations")->Get();
-                if(previousFuture&&previousFuture->valid()) {
-                    if(previousFuture->wait_for(std::chrono::seconds(0))!=std::future_status::ready) break;
-                    try {previousFuture->get();} catch(...) {}
-                }
-                TravelTarget* target=context->GetValue<TravelTarget*>("travel target")->Get();
-                target->SetTarget(route.destination,route.point);target->SetForced(false);target->SetConditions({});
-                target->SetRelevance(199); // Bypass population load shedding, not movement safety.
-                target->SetStatus(TravelStatus::TRAVEL_STATUS_READY);
-                context->GetValue<GuidPosition>("rpg target")->Reset();
-                context->GetValue<bool>("travel target active")->Reset();
-                state_->installed[it->guid]=route;break;
-            }
-        }
+        state_->ApplyObjectiveRoute(*it,proposals);
         it=state_->jobs.erase(it);
     }
     for(auto it=state_->routeRetry.begin();it!=state_->routeRetry.end();)
