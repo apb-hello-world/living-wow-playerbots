@@ -1,6 +1,7 @@
 #ifndef LIVING_GUILD_ACTIVITY_EVIDENCE_H
 #define LIVING_GUILD_ACTIVITY_EVIDENCE_H
 #include <atomic>
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <mutex>
@@ -36,8 +37,12 @@ public:
         proofs_.push_back({found->second,actor,kind,entry,map,instance,occurred,source});
         return true;
     }
-    std::vector<ActivityProof> Drain() {
-        std::lock_guard<std::mutex> lock(mutex_);std::vector<ActivityProof> result;result.swap(proofs_);return result;
+    std::vector<ActivityProof> Drain(size_t limit=512) {
+        std::lock_guard<std::mutex> lock(mutex_);std::vector<ActivityProof> result;
+        const size_t count=std::min(limit,proofs_.size());
+        result.reserve(count);
+        for(size_t i=0;i<count;++i)result.push_back(std::move(proofs_[i]));
+        proofs_.erase(proofs_.begin(),proofs_.begin()+count);return result;
     }
 private:
     std::atomic<bool> enabled_{false};std::mutex mutex_;

@@ -150,12 +150,12 @@ struct PlayerbotGuildEventExecutor::State {
     std::vector<ActivityProof> pendingProofs;
     uint32 nextUpdate=0;
 
-    void FlushProofs(uint32 now) {
-        auto incoming=mailbox.Drain();
-        for(auto& proof:incoming) if(pendingProofs.size()<512) pendingProofs.push_back(std::move(proof));
-        pendingProofs.erase(std::remove_if(pendingProofs.begin(),pendingProofs.end(),[now](const ActivityProof& p){
-            return p.occurred>now||now-p.occurred>300;
-        }),pendingProofs.end());
+    void FlushProofs() {
+        // Backpressure remains in the bounded mailbox rather than draining and
+        // dropping evidence behind an unacknowledged write. Retry the original
+        // native occurrence time, never a freshly invented completion timestamp.
+        auto incoming=mailbox.Drain(64-pendingProofs.size());
+        for(auto& proof:incoming) pendingProofs.push_back(std::move(proof));
         if(pendingProofs.empty()||!CharacterDatabase.BeginTransaction()) return;
         std::map<uint32,bool> authority;
         for(const auto& p:pendingProofs) {
@@ -176,7 +176,24 @@ struct PlayerbotGuildEventExecutor::State {
                 p.binding.event.c_str(),p.binding.guild,p.binding.revision,p.occurred,p.occurred,
                 p.kind,p.entry,p.kind,p.map,p.instance,p.instance);
         }
-        if(CharacterDatabase.CommitTransactionDirect()) pendingProofs.clear();
+        if(!CharacterDatabase.CommitTransactionDirect()) return;
+        pendingProofs.erase(std::remove_if(pendingProofs.begin(),pendingProofs.end(),[](const ActivityProof& p){
+            // Dispatch success is not a receipt. Read the entire native identity
+            // (including occurrence time) before retiring this callback. A lost
+            // read/commit leaves it queued and INSERT IGNORE makes replay safe.
+            const auto saved=CharacterDatabase.PQuery("SELECT e.revision,e.state,EXISTS(SELECT 1 FROM guild_society_activity_proof a WHERE a.event_id=e.event_id AND a.revision=%u AND a.character_guid=%u AND a.kind=%u AND a.entry=%u AND a.source_guid=%llu AND a.map_id=%u AND a.instance_id=%u AND a.occurred_at=%u) FROM guild_society_event e WHERE e.event_id='%s'",
+                p.binding.revision,p.actor,p.kind,p.entry,static_cast<unsigned long long>(p.source),p.map,p.instance,p.occurred,p.binding.event.c_str());
+            if(!saved) return false;
+            const auto* row=saved->Fetch();
+            if(row[2].GetUInt32()) return true;
+            if(row[0].GetUInt32()!=p.binding.revision || TerminalEvent(row[1].GetCppString())) {
+                sLog.outError("Living guild native proof rejected after event change: event=%s revision=%u actor=%u kind=%u entry=%u source=%llu occurred=%u saved_revision=%u state=%s",
+                    p.binding.event.c_str(),p.binding.revision,p.actor,p.kind,p.entry,
+                    static_cast<unsigned long long>(p.source),p.occurred,row[0].GetUInt32(),row[1].GetCppString().c_str());
+                return true;
+            }
+            return false;
+        }),pendingProofs.end());
     }
 
     void Release(uint32 guid,const Reservation& old) {
@@ -311,7 +328,7 @@ void PlayerbotGuildEventExecutor::Update() {
         for(const auto& old:state_->reservations) state_->Release(old.first,old.second);
         state_->reservations.clear();return;
     }
-    state_->FlushProofs(now);
+    state_->FlushProofs();
     std::map<uint32,State::Reservation> previous=state_->reservations;
     state_->reservations.clear();
     state_->rosters.clear();
