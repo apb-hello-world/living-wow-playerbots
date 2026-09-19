@@ -15,12 +15,13 @@ template<class State> void RunIsolatedPartyProfession(State& state) {
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     Player* bot=nullptr;
     auto inventory=[&]() {
-        boost::property_tree::ptree rows;
+        std::string rows="[";bool first=true;
         auto items=bot->GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask(uint8_t(IterateItemsMask::ITERATE_ITEMS_IN_BAGS)|uint8_t(IterateItemsMask::ITERATE_ITEMS_IN_BANK)));
         items.sort([](Item* a,Item* b){return a->GetGUIDLow()<b->GetGUIDLow();});
         for(auto* item:items){boost::property_tree::ptree row;row.put("guid",item->GetGUIDLow());row.put("entry",item->GetEntry());
-            row.put("quantity",item->GetCount());row.put("position",item->GetPos());rows.push_back({"",row});}
-        return Json(rows);
+            row.put("quantity",item->GetCount());row.put("position",item->GetPos());
+            if(!first)rows+=',';first=false;rows+=Json(row);}
+        return rows+"]";
     };
     auto operations=[&]() {
         auto rows=CharacterDatabase.PQuery("SELECT COUNT(*) FROM living_activity_operation WHERE task_id='%s'",f.task.c_str());
