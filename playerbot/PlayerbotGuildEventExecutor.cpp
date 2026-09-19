@@ -591,7 +591,10 @@ void PlayerbotGuildEventExecutor::Update() {
             }
         } while(participation->NextRow());
         const bool objectiveDone=e.kind=="quest"||((completedMask&DungeonFor(e.target).required)==DungeonFor(e.target).required);
-        if(verified>=e.minimum&&objectiveDone) {
+        // Minimum attendance is an admission rule, not permission to abandon
+        // accepted participants after the first two quest rewards. Withdrawn
+        // RSVPs leave this set explicitly; unfinished accepted members do not.
+        if(verified>=e.minimum&&verified==accepted.size()&&objectiveDone) {
             if(!CharacterDatabase.BeginTransaction()) continue;
             CharacterDatabase.PExecute("UPDATE guild_society_event SET state='completed',failure_reason='%s',finished_at=%u,updated_at=%u WHERE event_id='%s' AND state='active' AND revision=%u",e.kind=="quest"?"quest_reward_verified":"dungeon_encounters_verified",now,now,e.id.c_str(),e.revision);
             CharacterDatabase.PExecute("INSERT IGNORE INTO guild_society_credit (guild_id,character_guid,source_id,source_type,earned_at) SELECT %u,p.character_guid,CONCAT('event:',p.event_id),'%s',p.verified_at FROM guild_society_event_participant p JOIN guild_member m ON m.guid=p.character_guid AND m.guildid=%u WHERE p.event_id='%s' AND p.revision=%u AND p.verified_at>0",e.guild,e.kind=="quest"?"verified_quest":"verified_dungeon",e.guild,e.id.c_str(),e.revision);
