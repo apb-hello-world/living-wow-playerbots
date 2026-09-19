@@ -1,9 +1,15 @@
 #include "LivingPartyTraining.h"
+#include "../realm/TrainingSpellSet.h"
 #include "LivingPartyService.h"
 #include "LivingActivityRequests.h"
 #include <cassert>
 using namespace LivingActivity;
 int main() {
+    assert(SameTrainingSpellSet("4187,24545,2649","2649,4187,24545"));
+    assert(!SameTrainingSpellSet("4187,24545","2649,4187,24545"));
+    assert(!SameTrainingSpellSet("4187,24545,2649,4187","2649,4187,24545"));
+    for(const auto* invalid:{"","4187,","4187,,24545","-4187","4294967296","4187x"})
+        assert(!SameTrainingSpellSet(invalid,"4187"));
     PartyTrainingJob job{123,0,{100,200}},decoded;
     const auto encoded=EncodePartyTrainingJob(job);
     assert(DecodePartyTrainingJob(encoded,decoded));

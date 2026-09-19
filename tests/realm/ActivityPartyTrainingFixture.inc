@@ -1,4 +1,5 @@
 #include "playerbot/PlayerbotTrainingLesson.h"
+#include "TrainingSpellSet.h"
 // Isolated input: a named copied actor joins a headless human at a real class
 // trainer. Three existing known spells may be unlearned to create a repeatable
 // lesson requirement. This is NOT organic need or travel coverage.
@@ -106,7 +107,7 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
                 saved.actor==f.actor && saved.source=="party_training" && saved.phase==Phase::Completed &&
                 !bot->GetGroup() && !leader->GetGroup(),"pet_owner_completed_task_and_party_cleanup_required");
             require(spells()==f.report.template get<std::string>("spells_after") && bot->GetPet() &&
-                bot->GetMoney()==f.report.template get<uint32_t>("money_after") && petSpells()==f.report.template get<std::string>("pet_spells_after") &&
+                bot->GetMoney()==f.report.template get<uint32_t>("money_after") && SameTrainingSpellSet(petSpells(),f.report.template get<std::string>("pet_spells_after")) &&
                 bot->GetPet()->m_TrainingPoints==f.report.template get<int32_t>("pet_points_after") &&
                 bot->GetPet()->GetCharmInfo()->GetPetNumber()==f.report.template get<uint32_t>("pet_number"),"pet_restart_preserves_exact_subject_and_spells");
             f.report.put("pet_owner_prior_boot",f.report.template get<std::string>("boot"));
