@@ -59,10 +59,16 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
                 f.report.put("checkpoint_boot",f.report.template get<std::string>("boot"));f.prepared=true;
             }
         }
+        bot=sRandomPlayerbotMgr.GetPlayerBot(f.actor);
+        // A failed retained save deliberately keeps pending work alive. It must
+        // not suppress diagnostics or make this finite fixture wait forever.
+        if(NowMs()>=f.diagnosticAt) {
+            f.diagnosticAt=NowMs()+10000;
+            std::ofstream progress("/isolated/evidence/party-training-progress-"+state.boot+".json");progress<<sLivingActivityCoordinator.ActorJson(f.actor);
+        }
+        if(NowMs()>f.deadline){emit(false,"training_deadline_preserved_obligation");return;}
         if(sWorld.GetActiveAndQueuedSessionCount() || !state.loaded || state.ioPending ||
             !state.pending.empty() || !state.incoming.empty() || !state.resources.Protection().ready)return;
-        bot=sRandomPlayerbotMgr.GetPlayerBot(f.actor);
-        if(NowMs()>f.deadline){emit(false,"training_deadline_preserved_obligation");return;}
         if(!f.logged){f.logged=true;for(auto id:{f.actor,f.leader})
             if(!sRandomPlayerbotMgr.GetPlayerBot(id))sRandomPlayerbotMgr.AddRandomBot(id);}
         auto* leader=sRandomPlayerbotMgr.GetPlayerBot(f.leader);
@@ -179,10 +185,6 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
         f.blocker=state.executionBlockers[f.task];
         if(travel && saved->phase==Phase::Traveling && saved->checkpoint.step==ServiceStep(ServiceDestination::ClassTrainer))
             f.report.put("saved_trainer_travel_observed",true);
-        if(NowMs()>=f.diagnosticAt) {
-            f.diagnosticAt=NowMs()+10000;
-            std::ofstream progress("/isolated/evidence/party-training-progress-"+state.boot+".json");progress<<sLivingActivityCoordinator.ActorJson(f.actor);
-        }
         if(!restart && !cast && next==1 && saved->phase==Phase::Verifying && state.operations.empty()) {
             f.report.put("checkpoint_revision",saved->revision);f.report.put("checkpoint_at_ms",NowMs());
             f.report.put("checkpoint_spells",spells());f.report.put("party_group",bot->GetGroup()->GetId());
