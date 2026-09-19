@@ -191,8 +191,9 @@ namespace
             "trainable spells", std::to_string(TRAINER_TYPE_CLASS))->Get().empty())
             errands |= kErrandTraining;
         if(sLivingActivityCoordinator.EffectEnforcementEnabled())
-            for(auto entry:context->GetValue<std::vector<int32>>("available trainers",std::to_string(TRAINER_TYPE_TRADESKILLS))->Get())
-                if(LivingWowHasPartyTraining(bot,entry)){errands|=kErrandTraining;break;}
+            for(auto type:{TRAINER_TYPE_TRADESKILLS,TRAINER_TYPE_PETS})
+                for(auto entry:context->GetValue<std::vector<int32>>("available trainers",std::to_string(type))->Get())
+                    if(LivingWowHasPartyTraining(bot,entry)){errands|=kErrandTraining;break;}
         if (sLivingActivityCoordinator.EffectEnforcementEnabled() &&
             sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands)
         {
@@ -304,9 +305,11 @@ namespace
             entries = bot->GetPlayerbotAI()->GetAiObjectContext()->
                 GetValue<std::vector<int32>>("available trainers", std::to_string(TRAINER_TYPE_CLASS))->Get();
             if(sLivingActivityCoordinator.EffectEnforcementEnabled()) {
-                const auto trades=bot->GetPlayerbotAI()->GetAiObjectContext()->
-                    GetValue<std::vector<int32>>("available trainers",std::to_string(TRAINER_TYPE_TRADESKILLS))->Get();
-                for(auto entry:trades)if(LivingWowHasPartyTraining(bot,entry))entries.push_back(entry);
+                for(auto type:{TRAINER_TYPE_TRADESKILLS,TRAINER_TYPE_PETS}) {
+                    const auto trainers=bot->GetPlayerbotAI()->GetAiObjectContext()->
+                        GetValue<std::vector<int32>>("available trainers",std::to_string(type))->Get();
+                    for(auto entry:trainers)if(LivingWowHasPartyTraining(bot,entry))entries.push_back(entry);
+                }
                 std::sort(entries.begin(),entries.end());entries.erase(std::unique(entries.begin(),entries.end()),entries.end());
             }
             // An empty filter means ALL destinations to TravelMgr.
