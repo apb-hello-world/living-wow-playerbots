@@ -11,6 +11,7 @@ bool LivingIsolatedPartyReconnectHuman(uint32_t member) {
         std::string(mode)!="activity-party-repair-resume-v1" &&
         std::string(mode)!="activity-party-training-resume-v1" &&
         std::string(mode)!="activity-party-training-travel-resume-v1" &&
+        std::string(mode)!="activity-party-bank-resume-v1" &&
         std::string(mode)!="activity-party-vendor-resume-v1") || !leader)return false;
     RequireIsolatedNativeFixtureEnvironment();
     return member==std::stoul(leader);

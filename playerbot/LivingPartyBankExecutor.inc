@@ -1,4 +1,15 @@
 // Finite accepted inventory, executed by the existing shared due queue.
+bool LivingActivityCoordinator::HasPendingPartyBankService(uint32_t actor) const {
+    if(!OnWorldThread() || !EffectEnforcementEnabled())return false;
+    const auto indexed=state->cachedByActor.find(actor);
+    if(indexed!=state->cachedByActor.end())for(const auto& id:indexed->second) {
+        const auto& task=state->cache.at(id);
+        if(IsPartyBankTask(task) && task.accepted && task.mode==Mode::Active && !Terminal(task.phase))return true;
+    }
+    for(const auto& write:state->pending)if(write.task.actor==actor && IsPartyBankTask(write.task) &&
+        write.task.accepted && write.task.mode==Mode::Active && !Terminal(write.task.phase))return true;
+    return false;
+}
 std::optional<LivingActivity::PartyServiceBinding> LivingActivityCoordinator::PreparePartyBankService(
     uint32_t actor,const std::string& sourceKey,std::string& blocker) {
     blocker="party_bank_admission_pending";

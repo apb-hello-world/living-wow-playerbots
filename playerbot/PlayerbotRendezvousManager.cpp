@@ -209,7 +209,8 @@ namespace
             if (context->GetValue<uint8>("durability inventory")->Get() < 85 &&
                 context->GetValue<bool>("can repair")->Get()) errands |= kErrandRepair;
         }
-        if (pressure.StorableStacks() && (pressure.bagUsage >= 70 || pressure.StorableStacks() >= 3)) {
+        if(sLivingActivityCoordinator.HasPendingPartyBankService(bot->GetGUIDLow()))errands|=kErrandBank;
+        else if (pressure.StorableStacks() && (pressure.bagUsage >= 70 || pressure.StorableStacks() >= 3)) {
             if(sLivingActivityCoordinator.EffectEnforcementEnabled() && sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands) {
                 LivingActivity::PartyBankJob bank;std::string blocker;
                 if(LivingActivity::PlanNativePartyBankBatch(*bot,bank,blocker))errands|=kErrandBank;
@@ -1556,6 +1557,9 @@ bool PlayerbotRendezvousManager::BeginPartyFreeTime(Player* bot, Player* player,
     if(fixture && environment && (std::string(fixture)=="activity-party-vendor-checkpoint-v1" ||
         std::string(fixture)=="activity-party-vendor-resume-v1") &&
         std::string(environment)=="isolated-migration")session.automaticErrandScopeMask &= kErrandVendor;
+    if(fixture && environment && (std::string(fixture)=="activity-party-bank-checkpoint-v1" ||
+        std::string(fixture)=="activity-party-bank-resume-v1") &&
+        std::string(environment)=="isolated-migration")session.automaticErrandScopeMask &= kErrandBank;
 #endif
     session.automaticErrandMask = session.automaticErrandScopeMask;
     session.completedErrandMask = 0;

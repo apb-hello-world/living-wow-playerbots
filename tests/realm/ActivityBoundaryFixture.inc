@@ -33,6 +33,7 @@ namespace {
 #include "ActivityPartyMailSession.inc"
 #include "ActivityPartyRepairFixture.inc"
 #include "ActivityPartyVendorFixture.inc"
+#include "ActivityPartyBankFixture.inc"
 #include "ActivityPartyTrainingFixture.inc"
 #include "ActivityProfessionFixture.inc"
 #include "ActivityUsefulRecipeFixture.inc"
@@ -74,6 +75,10 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
         std::string(requested)=="activity-party-training-mount-v1" ||
         std::string(requested)=="activity-party-training-mount-restart-v1")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyTraining(*state);return;
+    }
+    if(requested && (std::string(requested)=="activity-party-bank-checkpoint-v1" ||
+        std::string(requested)=="activity-party-bank-resume-v1")) {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyBank(*state);return;
     }
     if(requested && (std::string(requested)=="activity-party-vendor-checkpoint-v1" ||
         std::string(requested)=="activity-party-vendor-resume-v1")) {
