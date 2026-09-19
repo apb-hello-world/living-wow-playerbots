@@ -697,12 +697,14 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
         (IsPartyRepairTask(*saved) && service!=ServiceDestination::Repair) ||
         (IsPartyVendorTask(*saved) && service!=ServiceDestination::Vendor) ||
         (IsPartyBankTask(*saved) && service!=ServiceDestination::PersonalBank) ||
+        (IsPartyAuctionTask(*saved) && service!=ServiceDestination::AuctionHouse) ||
         (IsPartyTrainingTask(*saved) && service!=ServiceDestination::ClassTrainer) ||
         (service==ServiceDestination::ClassTrainer && !IsPartyTrainingTask(*saved)) ||
         (!IsProfessionJob(*saved) && !IsRecipeLearningTask(*saved) && !IsManagedGuildDelivery(*saved) && !IsGuildProcurementTask(*saved) &&
          !(IsPartyRepairTask(*saved) && service==ServiceDestination::Repair) &&
          !(IsPartyVendorTask(*saved) && service==ServiceDestination::Vendor) &&
          !(IsPartyBankTask(*saved) && service==ServiceDestination::PersonalBank) &&
+         !(IsPartyAuctionTask(*saved) && service==ServiceDestination::AuctionHouse) &&
          !(IsPartyTrainingTask(*saved) && service==ServiceDestination::ClassTrainer)) ||
         saved->mode!=Mode::Active || !saved->accepted || saved->phase!=LivingActivity::Phase::Traveling ||
         saved->checkpoint.step!=ServiceStep(service)) return {false,"saved_service_step_changed"};

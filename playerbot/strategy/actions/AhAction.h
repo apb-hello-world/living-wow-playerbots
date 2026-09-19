@@ -12,6 +12,11 @@ namespace ai
             return {Mask(Effect::Inventory) | Mask(Effect::Money) | Mask(Effect::Social), Lane::Managed, true};
         }
         virtual bool Execute(Event& event) override;
+        // Read-only access to the existing organic posting policy. Managed
+        // services use the same limits/classification, not a second economy.
+        static bool PostingCapacity(Player&, uint32& available, std::string& blocker);
+        static bool PostingItem(Player&, Item&, uint32& unitPrice, uint32& minutes, std::string& blocker);
+        static uint32 PostingMoney(Player&);
 
     private:
         virtual bool ExecuteCommand(Player* requester, std::string text, Unit* auctioneer);

@@ -26,8 +26,32 @@ struct TestAdapter final : NativeOperationAdapter {
     NativeObservation ExecuteNative(Player&,const OperationRequest&)override{assert(false);return {};}
 };
 #include "fixtures/CommissionMail.h"
+#include "LivingPartyAuction.h"
 #include "fixtures/CommissionTrade.h"
 int main() {
+    {
+        OperationRequest r;r.kind="party_auction_post";r.effects=Mask(Effect::Inventory)|Mask(Effect::Money);
+        r.persistence=NativePersistence::Inventory;
+        auto& t=r.transition.task;t.id=t.root="11111111-1111-4111-8111-111111111111";t.source="party_auction";
+        t.kind=Kind::PartyErrand;t.actor=7;t.phase=Phase::Executing;t.checkpoint.step="party_auction_post";
+        PartyAuctionJob job{{{100,2589,5,500,720}},0};t.checkpoint.data=EncodePartyAuctionJob(job);
+        AuctionPostQuote q;q.item=job.items[0];q.actor=7;q.house=1;q.auctioneerEntry=1000;q.auctioneer=1234;
+        q.money=10000;q.deposit=15;q.bid=475;q.from=23;r.beforeState=EncodeAuctionPostQuote(q);
+        ResourceClaim item;item.id="22222222-2222-4222-8222-222222222222";item.task=t.id;item.actor=7;
+        item.itemGuid=100;item.itemEntry=2589;item.quantity=5;item.location="bags";item.state="held";item.revision=1;
+        ResourceClaim money;money.id="33333333-3333-4333-8333-333333333333";money.task=t.id;money.actor=7;
+        money.copper=15;money.location="money";money.state="held";money.revision=1;r.consumption={{item,5},{money,15}};
+        TestAdapter adapter(r);adapter.consumes=true;std::string why;
+        assert(ValidateOperationAdapter(r,adapter,why));
+        auto bad=r;bad.consumption.pop_back();assert(!ValidateOperationAdapter(bad,adapter,why));
+        bad=r;bad.transition.task.source="profession";assert(!ValidateOperationAdapter(bad,adapter,why));
+        bad=r;bad.itemGain={2589,1};adapter.gains=true;assert(!ValidateOperationAdapter(bad,adapter,why));adapter.gains=false;
+        bad=r;bad.beforeState="{}";assert(!ValidateOperationAdapter(bad,adapter,why));
+        bad=r;bad.consumption[0].used=4;assert(!ValidateOperationAdapter(bad,adapter,why));
+        bad=r;bad.consumption[1].before.copper=16;assert(!ValidateOperationAdapter(bad,adapter,why));
+        bad=r;bad.transition.task.checkpoint.step="profession_prepare";assert(!ValidateOperationAdapter(bad,adapter,why));
+        bad=r;bad.mailGain={9,100,2589,5};adapter.mail=true;assert(!ValidateOperationAdapter(bad,adapter,why));
+    }
     TestCommissionMail();
     TestCommissionTradeOperation();
     Task saved; saved.id = saved.root = "637bd562-36d2-5b01-bc01-e2d831c49f38";

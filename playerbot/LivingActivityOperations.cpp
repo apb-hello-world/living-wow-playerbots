@@ -8,6 +8,7 @@
 #include "LivingGatherQuote.h"
 #include "LivingRepairQuote.h"
 #include "LivingPartyTraining.h"
+#include "LivingPartyAuction.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <tuple>
@@ -23,6 +24,16 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(request.kind=="party_auction_post") {
+                AuctionPostQuote q;
+                if(!DecodeAuctionPostQuote(request.beforeState,q) || !PartyAuctionQuoteMatches(request.transition.task,q) ||
+                    !ExactAuctionPostConsumption(request.transition.task.root,q,request.consumption) ||
+                    request.transition.task.checkpoint.step!="party_auction_post" ||
+                    request.effects!=(Mask(Effect::Inventory)|Mask(Effect::Money)) ||
+                    request.persistence!=NativePersistence::Inventory || !request.itemGain.Empty() ||
+                    !request.mailGain.Empty() || !request.itemTransfer.id.empty())
+                    throw std::invalid_argument("Exact party listing escrow and deposit contract required");
+            }
             if(request.kind=="party_training_learn") {
                 TrainingLessonQuote quote;
                 if(!DecodePartyTrainingQuote(request.beforeState,quote) ||

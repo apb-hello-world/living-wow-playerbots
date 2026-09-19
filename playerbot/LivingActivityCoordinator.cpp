@@ -26,6 +26,7 @@
 #include "LivingNativeCraftCapture.h"
 #include "LivingNativeRecipeLearning.h"
 #include "LivingNativeTraining.h"
+#include "LivingNativeAuctionPost.h"
 #include "LivingNativeGathering.h"
 #include "LivingNativeLootCollection.h"
 #include "LivingRecipeLearningSettlement.h"
@@ -170,7 +171,7 @@ namespace {
         if(protection!=PartyProtection::Human)
             return PartyAdmissionBlocker(protection,PartyAdmission::SavedExecutor,false);
         const auto scope=sPlayerbotRendezvousManager.ReadPartyService(&bot,task,request.effects);
-        const auto& subject=(request.kind=="critical_equipment_repair" || request.kind=="party_vendor_sale") && request.consumption.size()==1 ?
+        const auto& subject=((request.kind=="critical_equipment_repair" || request.kind=="party_vendor_sale") && request.consumption.size()==1) || (request.kind=="party_auction_post" && !request.consumption.empty()) ?
             request.consumption.front().before : request.itemTransfer;
         return scope && PartyServiceOperation(*scope,request.kind,subject) ? "" :
             "party_service_operation_not_authorized";
@@ -368,6 +369,7 @@ struct LivingActivityCoordinator::State {
     std::map<std::string,RepairRead> repairReads;
     std::map<std::string,RepairRead> vendorReads; // Bounded receipt cache, not another scheduler.
     std::map<std::string,RepairRead> bankReads;
+    std::map<std::string,RepairRead> auctionPostReads;
     std::map<std::string,RepairRead> trainingReads;
     std::atomic<uint64_t> publishedPolicyRevision{0};
     std::future<bool> projectionSend;
@@ -684,6 +686,7 @@ struct LivingActivityCoordinator::State {
         if(IsPartyRepairTask(task))return true;
         if(IsPartyVendorTask(task))return true;
         if(IsPartyBankTask(task))return true;
+        if(IsPartyAuctionTask(task))return true;
         if(IsPartyTrainingTask(task))return true;
         if(!IsProfessionJob(task))return false;
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
@@ -956,7 +959,7 @@ struct LivingActivityCoordinator::State {
                             if(claimProjectionValid && !operation->second.saveBlocked) {
                                 const auto& request=operation->second.request;
                                 sPlayerbotRendezvousManager.RecordPartyServiceReceipt(acknowledgedWrite.task,
-                                    request.kind,(request.kind=="critical_equipment_repair" || request.kind=="party_vendor_sale") && request.consumption.size()==1 ?
+                                    request.kind,((request.kind=="critical_equipment_repair" || request.kind=="party_vendor_sale") && request.consumption.size()==1) || (request.kind=="party_auction_post" && !request.consumption.empty()) ?
                                         request.consumption.front().before : request.itemTransfer,operation->first);
                             }
                         }
@@ -1461,10 +1464,11 @@ void LivingActivityCoordinator::Update() {
                     (saved->second.phase!=Phase::Executing || saved->second.context.boot.empty()) &&
                     (saved->second.checkpoint.step=="commission_mail_send" || saved->second.checkpoint.step=="commission_mail_wait");
                 const auto location=receiptOnly?std::optional<ProfessionProgress>{}:ReconcilePersonalClaimLocation(saved->second.actor,id);
-                const auto preparation=location ? location : (receiptOnly || IsPartyRepairTask(saved->second) || IsPartyVendorTask(saved->second) || IsPartyBankTask(saved->second) || IsPartyTrainingTask(saved->second))?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
+                const auto preparation=location ? location : (receiptOnly || IsPartyRepairTask(saved->second) || IsPartyVendorTask(saved->second) || IsPartyBankTask(saved->second) || IsPartyAuctionTask(saved->second) || IsPartyTrainingTask(saved->second))?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
                 auto progress=preparation ? *preparation : IsPartyRepairTask(saved->second) ? AdvancePartyRepair(saved->second.actor,id) :
                     IsPartyVendorTask(saved->second) ? AdvancePartyVendor(saved->second.actor,id) :
                     IsPartyBankTask(saved->second) ? AdvancePartyBank(saved->second.actor,id) :
+                    IsPartyAuctionTask(saved->second) ? AdvancePartyAuction(saved->second.actor,id) :
                     IsPartyTrainingTask(saved->second) ? AdvancePartyTraining(saved->second.actor,id) :
                     IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
                     IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
@@ -1977,6 +1981,7 @@ AdmissionResult LivingActivityCoordinator::AdmitEconomyProfession(uint32_t actor
 #include "LivingPartyRepairExecutor.inc"
 #include "LivingPartyVendorExecutor.inc"
 #include "LivingPartyBankExecutor.inc"
+#include "LivingPartyAuctionExecutor.inc"
 #include "LivingPartyTrainingExecutor.inc"
 
 std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoordinator::DispatchPendingItemService(
@@ -1988,6 +1993,14 @@ std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoord
     for (const auto& row : state->operations) if (row.second.request.transition.task.actor==actor) {
         if (row.second.request.transition.task.id!=id) return stop("profession_operation_requires_reconciliation");
         if (row.second.dispatched || !row.second.ready) return stop("profession_native_result_pending");
+        if (row.second.request.kind=="party_auction_post") {
+            AuctionPostQuote quote;
+            if(!DecodeAuctionPostQuote(row.second.request.beforeState,quote))return stop("party_auction_intent_invalid");
+            NativeAuctionPost adapter(quote);
+            const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"party_auction_post");
+            if(!grant.Permitted())return stop(grant.blocker);
+            return stop(DispatchSavedOperation(row.first,grant,adapter).admission.blocker);
+        }
         if (row.second.request.kind=="bank_withdraw") {
             NativeBankQuote quote;
             if (!DecodeNativeBankQuote(row.second.request.beforeState,quote)) return stop("profession_bank_intent_invalid");
@@ -4951,6 +4964,10 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
         observation.state==OperationState::Verified && !HasNativeDamagedEquipment(actor))
         after.phase=Phase::Completed; // Same native save/journal proves final durability AND payment.
     after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
+    if(request.kind=="party_auction_post" && observation.state==OperationState::Rejected) {
+        after.retryAtMs=executed?after.updatedAtMs+300000:0;
+        after.checkpoint.blocker=executed?observation.evidence:"";
+    }
     if(request.kind=="party_training_learn" && observation.state==OperationState::Rejected) {
         after.retryAtMs=executed?after.updatedAtMs+300000:0;
         after.checkpoint.blocker=executed?observation.evidence:"";
@@ -4979,6 +4996,12 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     std::string gainReservation;
     Task recipientTask;
     try {
+        if(IsPartyAuctionTask(after) && request.kind=="party_auction_post" && proof.state==OperationState::Verified) {
+            AuctionPostQuote quote;AuctionPostReceipt posted;
+            if(!DecodeAuctionPostQuote(request.beforeState,quote) || !DecodeAuctionPostReceipt(observation.afterState,posted) ||
+                !AcknowledgePartyAuctionPost(after,quote,request.consumption,proof,posted))
+                throw std::runtime_error("party_auction_native_receipt_invalid");
+        }
         if(IsPartyBankTask(after) && request.kind=="bank_deposit" && proof.state==OperationState::Verified) {
             NativeBankQuote quote;
             if(!DecodeNativeBankQuote(request.beforeState,quote) || !quote.deposit || quote.actor!=after.actor ||
@@ -5074,6 +5097,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
         pending.uncertain=true; pending.outcome=proof.state=OperationState::Reconciling;
         if(IsPartyVendorTask(after))after.checkpoint.data=saved->second.checkpoint.data;
         if(IsPartyBankTask(after))after.checkpoint.data=saved->second.checkpoint.data;
+        if(IsPartyAuctionTask(after))after.checkpoint.data=saved->second.checkpoint.data;
         if(IsPartyTrainingTask(after))after.checkpoint.data=saved->second.checkpoint.data;
         proof.evidence="claim_outcome_requires_reconciliation";
         after.phase=Phase::Reconciling; after.checkpoint.blocker=proof.evidence;
@@ -5109,6 +5133,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
             write.task.phase=Phase::Reconciling; write.task.checkpoint.blocker=proof.evidence;
             if(IsPartyVendorTask(write.task))write.task.checkpoint.data=saved->second.checkpoint.data;
             if(IsPartyBankTask(write.task))write.task.checkpoint.data=saved->second.checkpoint.data;
+            if(IsPartyAuctionTask(write.task))write.task.checkpoint.data=saved->second.checkpoint.data;
             if(IsPartyTrainingTask(write.task))write.task.checkpoint.data=saved->second.checkpoint.data;
             write.claims.clear();
             write.recipientTask={};

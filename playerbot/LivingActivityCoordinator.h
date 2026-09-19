@@ -59,6 +59,8 @@ public:
     std::optional<LivingActivity::PartyServiceBinding> PreparePartyVendorService(uint32_t actor,const std::string& sourceKey,std::string& blocker);
     std::optional<LivingActivity::PartyServiceBinding> PreparePartyBankService(uint32_t actor,const std::string& sourceKey,std::string& blocker);
     bool HasPendingPartyBankService(uint32_t actor) const;
+    std::optional<LivingActivity::PartyServiceBinding> PreparePartyAuctionService(uint32_t actor,const std::string& sourceKey,std::string& blocker);
+    bool HasPendingPartyAuctionService(uint32_t actor) const;
     std::optional<LivingActivity::PartyServiceBinding> PreparePartyTrainingService(uint32_t actor,const std::string& sourceKey,uint64_t trainer,std::string& blocker);
     bool YieldPartyService(uint32_t actor,const std::string& root);
     // Read-only native full-save guard. The actor-ID projection survives AI
@@ -197,6 +199,7 @@ private:
     ProfessionProgress AdvancePartyRepair(uint32_t actor,const std::string& task);
     ProfessionProgress AdvancePartyVendor(uint32_t actor,const std::string& task);
     ProfessionProgress AdvancePartyBank(uint32_t actor,const std::string& task);
+    ProfessionProgress AdvancePartyAuction(uint32_t actor,const std::string& task);
     ProfessionProgress AdvancePartyTraining(uint32_t actor,const std::string& task);
     std::optional<ProfessionProgress> ReconcilePersonalClaimLocation(uint32_t actor,const std::string& task);
     ProfessionProgress AdvanceItemPreparation(uint32_t actor,const std::string& task,

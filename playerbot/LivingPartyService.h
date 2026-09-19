@@ -4,6 +4,7 @@
 #include "LivingPartyRepair.h"
 #include "LivingPartyVendor.h"
 #include "LivingPartyBank.h"
+#include "LivingPartyAuction.h"
 #include "LivingPartyTraining.h"
 
 namespace LivingActivity {
@@ -14,7 +15,7 @@ struct PartyServiceBinding {
     std::string root, claim, session, receipt;
     uint32_t actor=0, human=0, entry=0;
     uint64_t sessionRevision=0, acceptedRevision=0;
-    enum class Service { Mail, Repair, Vendor, Training, Bank } service=Service::Mail;
+    enum class Service { Mail, Repair, Vendor, Training, Bank, Auction } service=Service::Mail;
 };
 struct PartyServiceWindow {
     uint32_t actor=0, human=0;
@@ -28,7 +29,8 @@ inline bool PartyServiceMatches(const PartyServiceBinding& binding,const Task& t
     const bool vendor=binding.service==PartyServiceBinding::Service::Vendor;
     const bool bank=binding.service==PartyServiceBinding::Service::Bank;
     const bool training=binding.service==PartyServiceBinding::Service::Training;
-    const bool subject=training ? IsPartyTrainingTask(task) && binding.claim.empty() && !binding.entry :
+    const bool subject=binding.service==PartyServiceBinding::Service::Auction ? IsPartyAuctionTask(task) && binding.claim.empty() && !binding.entry :
+        training ? IsPartyTrainingTask(task) && binding.claim.empty() && !binding.entry :
         bank ? IsPartyBankTask(task) && binding.claim.empty() && !binding.entry :
         vendor ? IsPartyVendorTask(task) && binding.claim.empty() && !binding.entry :
         repair ? IsPartyRepairTask(task) && binding.claim.empty() && !binding.entry :
@@ -54,6 +56,10 @@ inline bool PartyServiceEffects(uint32_t effects,PartyServiceBinding::Service se
 }
 inline bool PartyServiceOperation(const PartyServiceBinding& binding,const std::string& kind,
     const ResourceClaim& claim) {
+    if(binding.service==PartyServiceBinding::Service::Auction)
+        return kind=="party_auction_post" && IsUuid(claim.id) && claim.task==binding.root && claim.actor==binding.actor &&
+            claim.state=="held" && claim.location=="bags" && claim.itemGuid && claim.itemEntry && claim.quantity &&
+            !claim.copper && !claim.nativeReference;
     if(binding.service==PartyServiceBinding::Service::Bank)
         return kind=="bank_deposit" && IsUuid(claim.id) && claim.task==binding.root && claim.actor==binding.actor &&
             claim.state=="held" && claim.location=="bags" && claim.itemGuid && claim.itemEntry && claim.quantity &&
@@ -83,7 +89,8 @@ inline bool PartyServiceReceipt(PartyServiceBinding& binding,const Task& task,
     const bool vendor=binding.service==PartyServiceBinding::Service::Vendor;
     const bool training=binding.service==PartyServiceBinding::Service::Training;
     if(receipt.empty() || !binding.receipt.empty() ||
-        (binding.service==PartyServiceBinding::Service::Bank ? !IsPartyBankTask(task) || task.phase!=Phase::Completed :
+        (binding.service==PartyServiceBinding::Service::Auction ? !IsPartyAuctionTask(task) || task.phase!=Phase::Completed :
+         binding.service==PartyServiceBinding::Service::Bank ? !IsPartyBankTask(task) || task.phase!=Phase::Completed :
          training ? !IsPartyTrainingTask(task) || task.phase!=Phase::Completed :
          vendor ? !IsPartyVendorTask(task) || task.phase!=Phase::Completed :
          repair ? !IsPartyRepairTask(task) || task.phase!=Phase::Completed : kind!="mail_collect") ||

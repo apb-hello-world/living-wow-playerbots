@@ -404,6 +404,43 @@ bool AhAction::Execute(Event& event)
     return false;
 }
 
+bool AhAction::PostingCapacity(Player& actor,uint32& available,std::string& blocker)
+{
+    available=0;const auto policy=GetOrganicAuctionPolicy();
+    if(policy.mode!="active" || !policy.posting) {blocker="auction_posting_policy_disabled";return false;}
+    std::unique_ptr<QueryResult> rows=CharacterDatabase.PQuery(
+        "SELECT COUNT(*) FROM auction WHERE itemowner=%u",actor.GetGUIDLow());
+    if(!rows) {blocker="auction_posting_count_unavailable";return false;}
+    const auto limit=ListingLimit(actor.GetLevel()),count=(*rows)[0].GetUInt32();
+    if(count>=limit) {blocker="auction_posting_listing_limit";return false;}
+    available=limit-count;blocker.clear();return true;
+}
+bool AhAction::PostingItem(Player& actor,Item& item,uint32& unitPrice,uint32& minutes,std::string& blocker)
+{
+    unitPrice=minutes=0;
+    if(!actor.GetPlayerbotAI() || !LivingWowAuctionItemEligible(&item)) {blocker="auction_posting_item_ineligible";return false;}
+    std::unique_ptr<QueryResult> rows=CharacterDatabase.PQuery(
+        "SELECT COUNT(*) FROM organic_economy_auction_history WHERE buyer_guid=%u AND item_entry=%u "
+        "AND outcome='sold' AND occurred_at>DATE_SUB(NOW(),INTERVAL 1 DAY)",actor.GetGUIDLow(),item.GetEntry());
+    if(!rows) {blocker="auction_posting_origin_unavailable";return false;}
+    if((*rows)[0].GetUInt32()) {blocker="auction_posting_recent_purchase_protected";return false;}
+    auto* usage=actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<ItemUsage>("item usage",ItemQualifier(&item).GetQualifier());
+    usage->Reset();
+    if(usage->Get()!=ItemUsage::ITEM_USAGE_AH ||
+        !ItemUsageValue::IsMoreProfitableToSellToAHThanToVendor(item.GetProto(),&actor)) {
+        blocker="auction_posting_disposition_changed";return false;
+    }
+    const auto* proto=item.GetProto();unitPrice=ItemUsageValue::GetBotSellPrice(proto,&actor);
+    minutes=proto->Quality>=ITEM_QUALITY_RARE?2880:proto->InventoryType!=INVTYPE_NON_EQUIP?1440:720;
+    blocker.clear();return true;
+}
+uint32 AhAction::PostingMoney(Player& actor)
+{
+    if(!actor.GetPlayerbotAI())return 0;
+    auto* value=actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<uint32>("free money for",uint32(NeedMoneyFor::ah));
+    value->Reset();return value->Get();
+}
+
 bool AhAction::ExecuteCommand(Player* requester, std::string text, Unit* auctioneer)
 {
     uint32 time;

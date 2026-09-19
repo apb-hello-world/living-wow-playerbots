@@ -229,6 +229,7 @@ namespace
         }
 
         std::string goal = sPlayerbotOrganicEconomy.CurrentGoalType(bot->GetGUIDLow());
+        if(sLivingActivityCoordinator.HasPendingPartyAuctionService(bot->GetGUIDLow()))errands|=kErrandAuction;
         if ((pressure.auctionStacks || goal == "list_surplus") &&
             sPlayerbotOrganicEconomy.IsAuctionPostingEnabled() &&
             context->GetValue<bool>("can ah sell")->Get())
@@ -1688,6 +1689,7 @@ std::optional<LivingActivity::PartyServiceBinding> PlayerbotRendezvousManager::R
         session.currentErrand!=(service==PartyServiceBinding::Service::Repair?kErrandRepair:
             service==PartyServiceBinding::Service::Vendor?kErrandVendor:
             service==PartyServiceBinding::Service::Bank?kErrandBank:
+            service==PartyServiceBinding::Service::Auction?kErrandAuction:
             service==PartyServiceBinding::Service::Training?kErrandTraining:kErrandMail) ||
         session.freeTimeRecallRequested ||
         session.groupId!=bot->GetGroup()->GetId() ||
@@ -2539,6 +2541,25 @@ bool PlayerbotRendezvousManager::StartNextVerifiedErrand(PartySession& session, 
         // No accepted lesson yet: existing party service travel chooses a real
         // trainer. Admission snapshots its eligible offers only upon arrival.
     }
+    if(session.currentErrand==kErrandAuction && sLivingActivityCoordinator.EffectEnforcementEnabled())
+    {
+        std::string blocker;
+        auto selected=sLivingActivityCoordinator.PreparePartyAuctionService(session.botGuid,taskRecord.taskId,blocker);
+        if(!selected && blocker=="party_auction_no_eligible_owned_stack") {
+            FinishCurrentErrand(session,bot,false,blocker);return session.currentErrand!=0;
+        }
+        if(selected && bot && bot->GetGroup()) {
+            selected->human=session.playerGuid;
+            selected->session="group:"+std::to_string(bot->GetGroup()->GetId())+":"+
+                std::to_string(bot->GetGroup()->GetLivingActivityIdentity());
+            selected->sessionRevision=bot->GetGroup()->GetLivingActivityRevision();session.managedService=*selected;
+        }
+        session.errandBefore=ObserveErrandState(bot);taskRecord.before=session.errandBefore;
+        taskRecord.outcomeCode=selected?"shared_auction_post_service_admitted":blocker;
+        session.currentErrandLocal=true;session.errandOperationAccepted=false;
+        session.nextErrandStep=std::chrono::steady_clock::now()+std::chrono::seconds(1);
+        PersistPartySession(session);return true; // Pending journal admission is never permission for the legacy AH loop.
+    }
     if(session.currentErrand==kErrandBank && sLivingActivityCoordinator.EffectEnforcementEnabled())
     {
         std::string blocker;
@@ -2946,7 +2967,8 @@ bool PlayerbotRendezvousManager::ExecuteVerifiedErrand(PartySession& session, Pl
     if (session.currentErrand == kErrandMail)
         return ai->DoSpecificAction("mail", Event("rpg action", "take", nullptr), true);
     if (session.currentErrand == kErrandAuction)
-        return ai->DoSpecificAction("ah", Event("rpg action", "vendor", nullptr), true);
+        return !sLivingActivityCoordinator.EffectEnforcementEnabled() &&
+            ai->DoSpecificAction("ah", Event("rpg action", "vendor", nullptr), true);
     if (session.currentErrand == kErrandProfession)
         return session.currentErrandCapability && ai->DoSpecificAction("cast custom nc spell",
             Event("organic economy", std::to_string(session.currentErrandCapability) + " 1", nullptr), true);
@@ -3081,7 +3103,8 @@ void PlayerbotRendezvousManager::UpdateVerifiedErrand(PartySession& session, Pla
             const bool repair=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Repair;
             const bool vendor=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Vendor;
             const bool bank=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Bank;
-            FinishCurrentErrand(session,bot,completed,completed ? (bank?"verified_bank_batch":training?"verified_direct_training_batch":vendor?"verified_vendor_batch":repair?"verified_equipment_repairs":"verified_mail_collection") :
+            const bool auction=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Auction;
+            FinishCurrentErrand(session,bot,completed,completed ? (auction?"verified_auction_post_batch":bank?"verified_bank_batch":training?"verified_direct_training_batch":vendor?"verified_vendor_batch":repair?"verified_equipment_repairs":"verified_mail_collection") :
                 deferred ? "party_service_deferred" : "party_service_permission_ended");
         }
         return;
