@@ -4,6 +4,15 @@
 #include <vector>
 
 namespace LivingActivity {
+struct TrainingSkillState {
+    uint16_t value=0,maximum=0,step=0;
+    bool operator==(const TrainingSkillState& b) const {return value==b.value && maximum==b.maximum && step==b.step;}
+};
+struct TrainingSkillTransition {
+    uint16_t id=0;
+    TrainingSkillState before,after;
+    bool operator==(const TrainingSkillTransition& b) const {return id==b.id && before==b.before && after==b.after;}
+};
 // One trainer lesson, not an aggregate spell-count change. Shared by legacy
 // dispatch and available to the pending durable service adapter; native code
 // supplies all facts. This value contract alone is not a persisted receipt.
@@ -12,6 +21,7 @@ struct TrainingLessonQuote {
     uint64_t trainer=0, pet=0;
     bool cast=false;
     std::vector<uint32_t> playerSpells, petSpells;
+    TrainingSkillTransition skill;
 };
 struct TrainingLessonState {
     uint32_t actor=0, money=0;
@@ -32,7 +42,7 @@ inline bool ValidTrainingLesson(const TrainingLessonQuote& q) {
 inline bool SameTrainingLessonQuote(const TrainingLessonQuote& a,const TrainingLessonQuote& b) {
     return a.actor==b.actor && a.lesson==b.lesson && a.teachingSpell==b.teachingSpell &&
         a.money==b.money && a.cost==b.cost && a.trainer==b.trainer && a.pet==b.pet &&
-        a.cast==b.cast && a.playerSpells==b.playerSpells && a.petSpells==b.petSpells;
+        a.cast==b.cast && a.playerSpells==b.playerSpells && a.petSpells==b.petSpells && a.skill==b.skill;
 }
 inline bool TrainingLessonSubjectMatches(const TrainingLessonQuote& q,const TrainingLessonState& s) {
     return s.actor==q.actor && (q.petSpells.empty() || s.pet==q.pet);

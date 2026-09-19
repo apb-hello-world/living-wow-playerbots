@@ -58,7 +58,9 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     if(requested && (std::string(requested)=="activity-party-training-checkpoint-v1" ||
         std::string(requested)=="activity-party-training-resume-v1" ||
         std::string(requested)=="activity-party-training-travel-resume-v1" ||
-        std::string(requested)=="activity-party-training-cast-v1")) {
+        std::string(requested)=="activity-party-training-cast-v1" ||
+        std::string(requested)=="activity-party-training-mount-v1" ||
+        std::string(requested)=="activity-party-training-mount-restart-v1")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyTraining(*state);return;
     }
     if(requested && (std::string(requested)=="activity-party-vendor-checkpoint-v1" ||

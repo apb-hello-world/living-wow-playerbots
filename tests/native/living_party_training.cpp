@@ -115,4 +115,20 @@ int main() {
     proof.evidence=PartyTrainingEvidence(q);assert(AcknowledgePartyTraining(after,q,proof));
     assert(after.phase==Phase::Completed);
     assert(!OperationOutcomeWrite(after,task.revision,proof,task.id,"{}").statements.empty());
+    q.skill={762,{}, {75,75,1}};
+    assert(FreePlayerTrainingCastQuote(q));
+    assert(DecodePartyTrainingQuote(EncodePartyTrainingQuote(q),copy) && SameTrainingLessonQuote(q,copy));
+    assert(EncodePartyTrainingQuote(q).find("training_cast_v2")!=std::string::npos);
+    cast.skillsBefore={{164,{25,75,1}}};cast.skillsAfter=cast.skillsBefore;cast.skillsAfter[762]={75,75,1};
+    assert(VerifyTrainingCast(q,cast,why)==OperationState::Verified && why==PartyTrainingEvidence(q));
+    broken=cast;broken.skillsAfter.erase(762);assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;broken.skillsAfter[762].maximum=150;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;broken.skillsAfter[762].step=2;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;broken.skillsAfter[164].value=26;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;broken.skillsBefore[762]={1,75,1};assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    invalid=q;invalid.skill.after={74,75,0};assert(!FreePlayerTrainingCastQuote(invalid));
+    invalid=q;invalid.skill.before={150,150,2};assert(!FreePlayerTrainingCastQuote(invalid));
+    invalid=q;invalid.skill.id=0;assert(!FreePlayerTrainingCastQuote(invalid));
+    invalid=q;invalid.cast=false;assert(!DirectFreeTrainingQuote(invalid));
+    q.skill={};broken=cast;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
 }

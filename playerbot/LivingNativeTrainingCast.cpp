@@ -20,21 +20,76 @@ bool SupportedNativeTrainingCast(const TrainingLessonQuote& q,std::string& why) 
     if(spell->manaCost || spell->manaCostPerlevel || spell->ManaCostPercentage ||
         spell->manaPerSecond || spell->manaPerSecondPerLevel)
         return reject("training_cast_extra_resources_unsupported");
-    std::set<uint32_t> targets;
+    std::set<uint32_t> targets;unsigned skillEffects=0;
     for(unsigned i=0;i<MAX_EFFECT_INDEX;++i)if(spell->Effect[i]) {
+        if((spell->EffectImplicitTargetA[i] && spell->EffectImplicitTargetA[i]!=TARGET_UNIT_CASTER) || spell->EffectImplicitTargetB[i])
+            return reject("training_exact_player_learning_effect_required");
+        if(spell->Effect[i]==SPELL_EFFECT_SKILL_STEP) {
+            if(++skillEffects!=1 || !q.skill.id || spell->EffectMiscValue[i]!=q.skill.id ||
+                spell->EffectDieSides[i]>1 || spell->EffectDicePerLevel[i] || spell->EffectRealPointsPerLevel[i])
+                return reject("training_exact_skill_step_required");
+            continue;
+        }
         if(spell->Effect[i]!=SPELL_EFFECT_LEARN_SPELL || !spell->EffectTriggerSpell[i] ||
-            (spell->EffectImplicitTargetA[i] && spell->EffectImplicitTargetA[i]!=TARGET_UNIT_CASTER) || spell->EffectImplicitTargetB[i] ||
             !sSpellTemplate.LookupEntry<SpellEntry>(spell->EffectTriggerSpell[i]))
             return reject("training_exact_player_learning_effect_required");
         targets.insert(spell->EffectTriggerSpell[i]);
     }
     for(unsigned i=0;i<MAX_SPELL_REAGENTS;++i)
         if(spell->Reagent[i]>0 && spell->ReagentCount[i]>0)return reject("training_cast_extra_resources_unsupported");
-    if(std::vector<uint32_t>(targets.begin(),targets.end())!=q.playerSpells)
+    if(bool(skillEffects)!=bool(q.skill.id) || std::vector<uint32_t>(targets.begin(),targets.end())!=q.playerSpells)
         return reject("training_cast_target_manifest_changed");
     why.clear();return true;
 }
+bool CompleteNativeTrainingSkillQuote(Player& actor,TrainingLessonQuote& quote,std::string& why) {
+    quote.skill={};if(!quote.cast)return true;
+    auto reject=[&](const char* code){why=code;return false;};
+    const auto* info=sSpellTemplate.LookupEntry<SpellEntry>(quote.teachingSpell);
+    if(!info || SpellScriptMgr::GetSpellScript(quote.teachingSpell) || IsChanneledSpell(info))
+        return reject("training_scripted_or_channelled_cast_unsupported");
+    for(unsigned i=0;i<MAX_EFFECT_INDEX;++i)if(info->Effect[i]==SPELL_EFFECT_SKILL_STEP) {
+        if(quote.skill.id || info->EffectMiscValue[i]<=0 || info->EffectMiscValue[i]>65535 ||
+            info->EffectDieSides[i]>1 || info->EffectDicePerLevel[i] || info->EffectRealPointsPerLevel[i])
+            return reject("training_exact_skill_step_required");
+        // Same native calculation as EffectLearnSkill, with no cast/effect.
+        Spell inspect(&actor,info,TRIGGERED_OLD_TRIGGERED);
+        const auto step=inspect.CalculateSpellEffectValue(SpellEffectIndex(i),&actor,true,false);
+        if(step<=0 || step>MAX_SKILL_STEP)return reject("training_skill_step_unavailable");
+        auto& skill=quote.skill;skill.id=uint16_t(info->EffectMiscValue[i]);
+        skill.before={actor.GetSkillValuePure(skill.id),actor.GetSkillMaxPure(skill.id),actor.GetSkillStep(skill.id)};
+        uint16_t maximum=0;
+        const auto* native=actor.GetSkillInfo(skill.id,[&](const SkillRaceClassInfoEntry& entry) {
+            const auto* tiers=sSkillTiersStore.LookupEntry(entry.skillTierId);
+            if(!tiers || !tiers->maxSkillValue[step-1])return false;
+            maximum=uint16_t(tiers->maxSkillValue[step-1]);return true;
+        });
+        if(!native || !maximum)return reject("training_native_skill_tier_missing");
+        skill.after={uint16_t(native->flags&SKILL_FLAG_MAXIMIZED?maximum:std::max(uint16_t(1),skill.before.value)),
+            maximum,uint16_t(step)};
+        if(skill.before.step>skill.after.step || skill.before.maximum>maximum || skill.after.value>maximum)
+            return reject("training_skill_downgrade_not_allowed");
+    }
+    return SupportedNativeTrainingCast(quote,why);
+}
 namespace {
+std::map<uint16_t,TrainingSkillState> ReadTrainingSkills(Player& actor) {
+    std::map<uint16_t,TrainingSkillState> out;
+    for(unsigned i=0;i<PLAYER_MAX_SKILLS;++i) {
+        const auto id=uint16_t(actor.GetUInt32Value(PLAYER_SKILL_INFO_1_1+3*i));
+        if(id && actor.HasSkill(id))out.emplace(id,TrainingSkillState{
+            actor.GetSkillValuePure(id),actor.GetSkillMaxPure(id),actor.GetSkillStep(id)});
+    }
+    return out;
+}
+std::string TrainingSkillsJson(const std::map<uint16_t,TrainingSkillState>& skills) {
+    std::string out="[";
+    for(const auto& row:skills) {
+        if(out.size()>1)out+=',';
+        out+='['+std::to_string(row.first)+','+std::to_string(row.second.value)+','+
+            std::to_string(row.second.maximum)+','+std::to_string(row.second.step)+']';
+    }
+    return out+']';
+}
 TrainingLessonState ReadTrainingFrame(Player& actor) {
     TrainingLessonState out;out.actor=actor.GetGUIDLow();out.money=actor.GetMoney();
     for(const auto& row:actor.GetSpellMap())
@@ -65,8 +120,10 @@ bool TrainingCastOfferReady(Player& actor,const TrainingLessonQuote& quote,std::
         trainer->GetCreatureInfo()->TrainerClass!=actor.getClass())return false;
     for(const auto* list:{trainer->GetTrainerSpells(),trainer->GetTrainerTemplateSpells()})if(list) {
         const auto found=list->spellList.find(quote.lesson);if(found==list->spellList.end())continue;
+        auto current=quote;
         return found->second.spell==quote.teachingSpell && LivingWowCanTrainSpell(&actor,&found->second,trainer) &&
-            SupportedNativeTrainingCast(quote,why) && TrainingLessonReady(quote,ReadTrainingFrame(actor));
+            CompleteNativeTrainingSkillQuote(actor,current,why) && SameTrainingLessonQuote(quote,current) &&
+            TrainingLessonReady(quote,ReadTrainingFrame(actor));
     }
     return false;
 }
@@ -84,9 +141,10 @@ public:
         why="training_cast_launch_prerequisite";TrainingLessonQuote current;
         if(result.started || !sLivingActivityCoordinator.OnWorldThread() || actor.GetGUIDLow()!=task.actor ||
             !Authority(actor) || actor.IsNonMeleeSpellCasted(false,true,true) ||
-            !PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),ObjectGuid(quote.trainer),quote.lesson,current,why) ||
+            !QuoteNativePartyTraining(actor,task,current,why) ||
             !SameTrainingLessonQuote(quote,current) || !TrainingCastOfferReady(actor,quote,why))return false;
         result.before=ReadTrainingFrame(actor);
+        result.skillsBefore=ReadTrainingSkills(actor);
         const auto* info=sSpellTemplate.LookupEntry<SpellEntry>(quote.teachingSpell);
         // Preserve the native trainer's triggered teaching semantics, while
         // attaching the existing pre-effect and completion/save fence.
@@ -100,15 +158,16 @@ public:
         gains.clear();NativeObservation out;out.nativeReference="trainer_lesson:"+std::to_string(quote.lesson);
         out.afterState="{\"lesson\":"+std::to_string(quote.lesson)+",\"effect_entered\":"+(result.effect?"true":"false")+
             ",\"native_finished\":"+(result.finished?"true":"false")+",\"native_succeeded\":"+(result.succeeded?"true":"false")+
-            ",\"before\":"+TrainingFrameJson(result.before,quote)+",\"after\":"+TrainingFrameJson(result.after,quote)+'}';
+            ",\"before\":"+TrainingFrameJson(result.before,quote)+",\"after\":"+TrainingFrameJson(result.after,quote)+
+            ",\"skills_before\":"+TrainingSkillsJson(result.skillsBefore)+",\"skills_after\":"+TrainingSkillsJson(result.skillsAfter)+'}';
         out.state=VerifyTrainingCast(quote,result,out.evidence);
-        if(!SameTrainingState(ReadTrainingFrame(actor),result.after)) {
+        if(!SameTrainingState(ReadTrainingFrame(actor),result.after) || ReadTrainingSkills(actor)!=result.skillsAfter) {
             out.state=OperationState::Reconciling;out.evidence="training_cast_changed_before_save";
         }
         return out;
     }
     std::string PersistedProof(Player& actor,const Task& after) const override {
-        if(!result.finished || result.uncertain || !SameTrainingState(ReadTrainingFrame(actor),result.after))
+        if(!result.finished || result.uncertain || !SameTrainingState(ReadTrainingFrame(actor),result.after) || ReadTrainingSkills(actor)!=result.skillsAfter)
             throw std::runtime_error("training_cast_native_proof_missing");
         std::string proof="SELECT "+SqlValue(after.id)+','+std::to_string(after.revision)+" FROM characters c WHERE c.guid="+
             std::to_string(task.actor)+" AND c.money="+std::to_string(result.after.money);
@@ -117,19 +176,29 @@ public:
         // predicate proves each promised target, not an invalid global count.
         for(auto id:quote.playerSpells)proof+=(result.after.playerSpells.count(id)?" AND EXISTS(":" AND NOT EXISTS(")+
             std::string("SELECT 1 FROM character_spell s WHERE s.guid=c.guid AND s.spell=")+std::to_string(id)+" AND s.disabled=0)";
+        if(quote.skill.id) {
+            const auto found=result.skillsAfter.find(quote.skill.id);
+            const bool exists=found!=result.skillsAfter.end();
+            proof+=(exists?" AND EXISTS(":" AND NOT EXISTS(")+std::string("SELECT 1 FROM character_skills s WHERE s.guid=c.guid AND s.skill=")+
+                std::to_string(quote.skill.id);
+            if(exists)proof+=" AND s.value="+std::to_string(found->second.value)+" AND s.max="+std::to_string(found->second.maximum);
+            proof+=')'; // Native login reconstructs the step from the saved max and DBC tier.
+        }
         return proof;
     }
     std::unique_ptr<ExecutionScope> EnterEffect(Spell& spell) override {
         auto* actor=Actor(spell);std::string why;
         if(!actor || !result.started || result.effect || result.finished || result.uncertain || !Authority(*actor) ||
-            !TrainingCastOfferReady(*actor,quote,why) || !SameTrainingState(ReadTrainingFrame(*actor),result.before))return {};
+            !TrainingCastOfferReady(*actor,quote,why) || !SameTrainingState(ReadTrainingFrame(*actor),result.before) ||
+            ReadTrainingSkills(*actor)!=result.skillsBefore)return {};
         result.effect=true;return std::make_unique<ExecutionScope>(task,action);
     }
     void Created(Spell&,uint32_t,uint32_t) noexcept override{result.uncertain=true;}
     void Finished(Spell& spell,bool success) noexcept override {
         try {
             if(result.finished)return;
-            auto* actor=Actor(spell);if(!actor)result.uncertain=true;else result.after=ReadTrainingFrame(*actor);
+            auto* actor=Actor(spell);if(!actor)result.uncertain=true;
+            else {result.after=ReadTrainingFrame(*actor);result.skillsAfter=ReadTrainingSkills(*actor);}
             result.finished=true;result.succeeded=success;
         }catch(...){result.uncertain=true;}
     }

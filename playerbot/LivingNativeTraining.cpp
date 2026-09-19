@@ -15,6 +15,7 @@ bool PlanNativePartyTraining(Player& actor,const ObjectGuid& guid,PartyTrainingJ
         for(const auto& row:list->spellList) {
             TrainingLessonQuote q;std::string blocker;
             if(!PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),guid,row.first,q,blocker))continue;
+            if(!CompleteNativeTrainingSkillQuote(actor,q,blocker)){cast=true;continue;}
             if(!DirectFreeTrainingQuote(q) && !SupportedNativeTrainingCast(q,blocker)){cast=true;continue;}
             lessons.insert(row.first);
         }
@@ -37,6 +38,7 @@ bool QuoteNativePartyTraining(Player& actor,const Task& task,TrainingLessonQuote
         if(!trainer || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_CLASS ||
             trainer->GetCreatureInfo()->TrainerClass!=actor.getClass())continue;
         if(PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),guid,job.lessons[job.next],quote,why)) {
+            if(!CompleteNativeTrainingSkillQuote(actor,quote,why))return false;
             if(PartyTrainingQuoteMatches(task,quote) &&
                 (DirectFreeTrainingQuote(quote) || SupportedNativeTrainingCast(quote,why)))return true;
             why="party_training_native_quote_changed";
