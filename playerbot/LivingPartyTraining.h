@@ -1,6 +1,7 @@
 #pragma once
 #include "LivingActivity.h"
 #include "LivingTrainingLesson.h"
+#include "LivingServiceTravel.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 namespace LivingActivity {
@@ -38,7 +39,8 @@ inline bool ValidatePartyTrainingTask(const Task& task,std::string& why) {
     if(task.source!="party_training")return true;
     PartyTrainingJob job;
     if(!IsPartyTrainingTask(task) || !DecodePartyTrainingJob(task.checkpoint.data,job) ||
-        (task.checkpoint.step!="party_training_prepare" && task.checkpoint.step!="party_training_learn") ||
+        (task.checkpoint.step!="party_training_prepare" && task.checkpoint.step!="party_training_learn" &&
+            task.checkpoint.step!=ServiceStep(ServiceDestination::ClassTrainer)) ||
         (task.phase==Phase::Queued && job.next) || ((task.phase==Phase::Completed)!=(job.next==job.lessons.size()))) {
         why="invalid_party_training_task";return false;
     }

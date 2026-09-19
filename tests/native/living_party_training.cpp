@@ -21,6 +21,15 @@ int main() {
     task.context.boot="22222222-2222-4222-8222-222222222222";
     task.checkpoint.step="party_training_prepare";task.checkpoint.data=encoded;std::string why;
     assert(ValidatePartyTrainingTask(task,why));
+    auto traveling=task;traveling.phase=Phase::Traveling;traveling.checkpoint.step=ServiceStep(ServiceDestination::ClassTrainer);
+    assert(ValidatePartyTrainingTask(traveling,why));
+    ServiceDestination service;assert(ParseServiceStep(traveling.checkpoint.step,service) && service==ServiceDestination::ClassTrainer);
+    auto wrongService=traveling;wrongService.checkpoint.step=ServiceStep(ServiceDestination::Vendor);
+    assert(!ValidatePartyTrainingTask(wrongService,why));
+    Task arrived;ServiceTravelResult route;route.arrived=true;
+    assert(CheckpointServiceTravel(traveling,route,2000,"party_training_prepare",arrived));
+    assert(arrived.phase==Phase::Preparing && arrived.checkpoint.data==encoded && arrived.checkpoint.step=="party_training_prepare");
+    assert(ValidatePartyTrainingTask(arrived,why));
     auto bad=task;bad.phase=Phase::Completed;assert(!ValidatePartyTrainingTask(bad,why));
     bad=task;bad.kind=Kind::Profession;assert(!ValidatePartyTrainingTask(bad,why));
     TaskRequest request;request.task=task;++request.task.revision;request.expectedRevision=task.revision;request.receipt=task.context.boot;

@@ -106,16 +106,29 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         LivingServiceExecution::Busy(bot)?LivingServiceExecution::Blocker(bot):"";
     if(pause.empty())pause=SavedPartyBlocker(*bot,*saved,Mask(Effect::Spell)|Mask(Effect::Social));
     if(!pause.empty()) {
-        if(saved->phase==Phase::Preparing)return advance(Phase::Paused,saved->checkpoint.step,pause);
+        if(saved->phase==Phase::Preparing || saved->phase==Phase::Traveling)return advance(Phase::Paused,saved->checkpoint.step,pause);
         return stop(pause);
     }
     if(saved->retryAtMs>NowMs())return stop(saved->checkpoint.blocker);
     if(saved->phase==Phase::Queued || saved->phase==Phase::Reconciling)return advance(Phase::Preparing,"party_training_prepare");
     if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal)
         return advance(Phase::Reconciling,saved->checkpoint.step);
+    if(saved->checkpoint.step==ServiceStep(ServiceDestination::ClassTrainer)) {
+        if(saved->phase==Phase::Preparing)return advance(Phase::Traveling,ServiceStep(ServiceDestination::ClassTrainer));
+        const auto route=sPlayerbotOrganicEconomy.ReachSavedService(actor,id,saved->revision,ServiceDestination::ClassTrainer);
+        Task next;
+        if(CheckpointServiceTravel(*saved,route,NowMs(),"party_training_prepare",next)) {
+            TaskRequest r;r.task=std::move(next);r.expectedRevision=saved->revision;r.receipt=NewId();return stop(SubmitTask(r).blocker);
+        }
+        return stop(route.blocker);
+    }
     if(saved->phase!=Phase::Preparing)return stop("party_training_preparation_required");
     TrainingLessonQuote quote;
-    if(!QuoteNativePartyTraining(*bot,*saved,quote,blocker))return advance(Phase::Deferred,"party_training_prepare",blocker);
+    if(!QuoteNativePartyTraining(*bot,*saved,quote,blocker)) {
+        if(blocker=="party_training_class_trainer_required" || blocker=="training_interacting_trainer_required")
+            return advance(Phase::Traveling,ServiceStep(ServiceDestination::ClassTrainer));
+        return advance(Phase::Deferred,"party_training_prepare",blocker);
+    }
     NativePartyTraining adapter(quote);
     const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"party_training_prepare");
     if(!grant.Permitted())return stop(grant.blocker);

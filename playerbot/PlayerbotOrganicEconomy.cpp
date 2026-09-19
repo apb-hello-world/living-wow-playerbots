@@ -696,9 +696,12 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
     if(!saved || saved->actor!=actor || saved->revision!=revision ||
         (IsPartyRepairTask(*saved) && service!=ServiceDestination::Repair) ||
         (IsPartyVendorTask(*saved) && service!=ServiceDestination::Vendor) ||
+        (IsPartyTrainingTask(*saved) && service!=ServiceDestination::ClassTrainer) ||
+        (service==ServiceDestination::ClassTrainer && !IsPartyTrainingTask(*saved)) ||
         (!IsProfessionJob(*saved) && !IsRecipeLearningTask(*saved) && !IsManagedGuildDelivery(*saved) && !IsGuildProcurementTask(*saved) &&
          !(IsPartyRepairTask(*saved) && service==ServiceDestination::Repair) &&
-         !(IsPartyVendorTask(*saved) && service==ServiceDestination::Vendor)) ||
+         !(IsPartyVendorTask(*saved) && service==ServiceDestination::Vendor) &&
+         !(IsPartyTrainingTask(*saved) && service==ServiceDestination::ClassTrainer)) ||
         saved->mode!=Mode::Active || !saved->accepted || saved->phase!=LivingActivity::Phase::Traveling ||
         saved->checkpoint.step!=ServiceStep(service)) return {false,"saved_service_step_changed"};
     auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
@@ -708,6 +711,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::ReachSavedService(u
         uint32(ai::TravelDestinationPurpose::Bank);
     if(service==ServiceDestination::Vendor)purpose=uint32(ai::TravelDestinationPurpose::Vendor);
     if(service==ServiceDestination::Repair)purpose=uint32(ai::TravelDestinationPurpose::Repair);
+    if(service==ServiceDestination::ClassTrainer)purpose=uint32(ai::TravelDestinationPurpose::Trainer);
     if(service==ServiceDestination::AuctionHouse)purpose=uint32(ai::TravelDestinationPurpose::AH);
     if(service==ServiceDestination::GuildBank)purpose=uint32(ai::TravelDestinationPurpose::GuildBank);
     if(service==ServiceDestination::Gathering) {
@@ -765,6 +769,13 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     ServiceTravelResult result;result.activeElapsedMs=saved?saved->checkpoint.activeElapsedMs:0;
     auto stop=[&](const std::string& blocker){result.blocker=blocker;return result;};
     std::vector<int32_t> purchaseVendors;std::string sourceBlocker;
+    uint32_t trainerEntry=0;
+    if(purpose==uint32(ai::TravelDestinationPurpose::Trainer)) {
+        PartyTrainingJob training;std::string why;
+        if(!saved || !IsPartyTrainingTask(*saved) || !ValidatePartyTrainingTask(*saved,why) ||
+            !DecodePartyTrainingJob(saved->checkpoint.data,training))return stop("training_saved_trainer_required");
+        trainerEntry=training.trainer;
+    }
     std::vector<int32_t> gatherSources;uint32 gatherPurpose=0;
     if(gatherItem && (!saved || !NativeGatherSources(*bot,gatherItem,gatherSources,gatherPurpose,sourceBlocker) || purpose!=gatherPurpose))
         return stop(sourceBlocker.empty()?"gather_saved_source_changed":sourceBlocker);
@@ -906,6 +917,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
     const bool guildBank=purpose==uint32(ai::TravelDestinationPurpose::GuildBank);
     const uint32 flag=purpose==uint32(ai::TravelDestinationPurpose::Bank)?UNIT_NPC_FLAG_BANKER:
         purpose==uint32(ai::TravelDestinationPurpose::Vendor)?UNIT_NPC_FLAG_VENDOR:
+        trainerEntry?UNIT_NPC_FLAG_TRAINER:
         purpose==uint32(ai::TravelDestinationPurpose::Repair)?UNIT_NPC_FLAG_REPAIR:UNIT_NPC_FLAG_AUCTIONEER;
     if(gatherItem) {
         service=NativeGatherNode(*bot,gatherItem,gatherSources);
@@ -917,6 +929,11 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             go->GetGoType()==GAMEOBJECT_TYPE_SPELL_FOCUS && go->GetGOInfo()->spellFocus.focusId==(purpose&~FocusService))) candidate=go;}
         else {auto* npc=ai->GetUnit(id);if(npc && npc->HasFlag(UNIT_NPC_FLAGS,flag) && !sServerFacade.IsHostileTo(npc,bot) &&
             (!purchaseItem || std::binary_search(purchaseVendors.begin(),purchaseVendors.end(),int32(id.GetEntry())))) candidate=npc;}
+        if(candidate && trainerEntry) {
+            auto* trainer=bot->GetMap()->GetCreature(id);
+            if(id.GetEntry()!=trainerEntry || !trainer || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_CLASS ||
+                trainer->GetCreatureInfo()->TrainerClass!=bot->getClass() || !trainer->IsTrainerOf(bot,false))candidate=nullptr;
+        }
         if(candidate && candidate->GetMap()==bot->GetMap() && bot->GetDistance(candidate)<distance) {
             service=candidate;distance=bot->GetDistance(candidate);
         }
@@ -1000,6 +1017,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
         bool same=(!saved || trip.routeOwned) && target && target->GetDestination() &&
             uint32(target->GetDestination()->GetPurpose())==purpose && target->IsActive() &&
             (!purchaseItem || std::binary_search(purchaseVendors.begin(),purchaseVendors.end(),target->GetDestination()->GetEntry())) &&
+            (!trainerEntry || target->GetDestination()->GetEntry()==int32_t(trainerEntry)) &&
             (!gatherItem || std::binary_search(gatherSources.begin(),gatherSources.end(),target->GetDestination()->GetEntry()));
         uint64 missingSpawn=0;std::string gatherExclusion;
         if(saved && gatherItem && same && target->GetPosition() &&
@@ -1046,7 +1064,7 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
                 // Accepted work does not inherit volatile RPG desire checks.
                 // Native source eligibility and action authority remain required.
                 ai::RequestTravelTargetAction request(ai);Event event("","",bot);
-                const auto entries=gatherItem?gatherSources:(purchaseItem || purpose==uint32(ai::TravelDestinationPurpose::AH)) ?
+                const auto entries=trainerEntry?std::vector<int32_t>{int32_t(trainerEntry)}:gatherItem?gatherSources:(purchaseItem || purpose==uint32(ai::TravelDestinationPurpose::AH)) ?
                     NearestNativePurchaseEntries(*bot,purpose,purchaseVendors) : purchaseVendors;
                 requested=request.RequestForEntries(event,ai::TravelDestinationPurpose(purpose),entries,trip.unavailableGathering);
             } else requested=ai->DoSpecificAction("request travel target::"+std::to_string(purpose),Event("can move around","",bot),true);

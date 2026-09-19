@@ -12,7 +12,8 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
     state.fixtureNext=NowMs()+250;
     const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
-    const bool restart=suite=="activity-party-training-resume-v1";
+    const bool travel=suite=="activity-party-training-travel-resume-v1";
+    const bool restart=travel || suite=="activity-party-training-resume-v1";
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     Player* bot=nullptr;
     auto spells=[&]() {
@@ -102,6 +103,8 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
         require(EncodePartyTrainingJob(job)==f.report.template get<std::string>("accepted_manifest"),"accepted_training_lessons_immutable");
         require(bot->GetMoney()==f.report.template get<uint32_t>("money_before"),"free_training_wallet_unchanged");
         f.blocker=state.executionBlockers[f.task];
+        if(travel && saved->phase==Phase::Traveling && saved->checkpoint.step==ServiceStep(ServiceDestination::ClassTrainer))
+            f.report.put("saved_trainer_travel_observed",true);
         if(NowMs()>=f.diagnosticAt) {
             f.diagnosticAt=NowMs()+10000;
             std::ofstream progress("/isolated/evidence/party-training-progress-"+state.boot+".json");progress<<sLivingActivityCoordinator.ActorJson(f.actor);
@@ -114,6 +117,26 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
         if(restart && !f.resumed) {
             require(next==1 && spells()==f.report.template get<std::string>("checkpoint_spells"),"training_restart_spellbook_unchanged");
             auto& party=PartyMailFixture();
+            if(travel && !f.placed) {
+                // Deliberate isolated displacement, not a journey success. A
+                // checked local path ensures the test starts outside trainer
+                // range on reachable ground; only shared native movement may
+                // bring the actor back after authorization.
+                const float x=bot->GetPositionX(),y=bot->GetPositionY(),z=bot->GetPositionZ();
+                for(unsigned i=0;i<8 && !f.placed;++i) {
+                    const float angle=float(i)*float(M_PI)/4.0f;
+                    PathFinder path(bot);
+                    path.calculate(x+12*std::cos(angle),y+12*std::sin(angle),z,false);
+                    const PathType invalid=PathType(PATHFIND_NOPATH|PATHFIND_SHORTCUT|PATHFIND_INCOMPLETE|PATHFIND_NOT_USING_PATH|PATHFIND_SHORT);
+                    if(!(path.getPathType()&PATHFIND_NORMAL) || (path.getPathType()&invalid) || path.getPath().size()<2)continue;
+                    const auto& end=path.getPath().back();
+                    if(std::hypot(end.x-x,end.y-y)<10)continue;
+                    f.report.put("test_walk_start_x",end.x);f.report.put("test_walk_start_y",end.y);f.report.put("test_walk_start_z",end.z);
+                    f.report.put("test_displaced_outside_trainer_range",true);
+                    bot->NearTeleportTo(end.x,end.y,end.z,bot->GetOrientation());f.placed=true;
+                }
+                require(f.placed,"training_walk_reachable_test_start_required");return;
+            }
             if(!f.leaderJoined) {
                 require(bot->GetMapId()==leader->GetMapId(),"training_replay_same_map_leader_input");f.leaderJoined=true;
                 f.report.put("test_leader_joined_trainer",true);
@@ -150,6 +173,12 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
         }
         if(saved->phase==Phase::Completed) {
             require(restart && f.recalled && f.reauthorized && next==job.lessons.size(),"training_all_interruptions_required");
+            if(travel) {
+                require(f.report.template get<bool>("saved_trainer_travel_observed",false),"saved_training_travel_phase_required");
+                const ObjectGuid trainer(f.report.template get<uint64_t>("trainer_guid"));
+                require(bot->GetNPCIfCanInteractWith(trainer,UNIT_NPC_FLAG_TRAINER)!=nullptr,"native_training_walk_arrival_required");
+                f.report.put("native_walk_arrival_verified",true);
+            }
             for(auto lesson:job.lessons)require(bot->HasSpell(lesson),"training_actual_spellbook_required");
             f.report.put("final_revision",saved->revision);emit(true,"");
         }
