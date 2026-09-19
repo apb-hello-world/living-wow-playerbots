@@ -4006,6 +4006,15 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     for(const auto& operation:state->operations)if(operation.second.request.transition.task.actor==actor) {
         const auto& request=operation.second.request;
         if(request.transition.task.id!=id || request.kind!="guild_event_group")return stop("guild_event_other_operation_pending");
+        // The first async membership save may not be readable in the same
+        // world update. Once that uncertainty itself is acknowledged, inspect
+        // the native rows below; never try to dispatch this intent again.
+        if(operation.second.uncertain && saved->phase==Phase::Reconciling)break;
+        // A queued intent displaced by a party/map change or revoked event is
+        // settled read-only, not kept forever behind a grant it can never get.
+        if(operation.second.ready && !operation.second.dispatched &&
+            (!(saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot)) ||
+             !ValidateNativeGuildEventTask(*bot,*saved,why)))break;
         GuildGroupQuote quote;if(!DecodeGuildGroupQuote(request.beforeState,quote))return stop("guild_event_group_intent_invalid");
         NativeGuildGroup adapter(quote);
         const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"guild_event_group");
@@ -4044,6 +4053,12 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             proof.kind="guild_event_group";proof.state=observed.state;proof.evidence=observed.evidence;proof.nativeReference=observed.nativeReference;
             State::Pending write;write.task=after;write.admissionReceipt=NewId();
             write.plan=OperationOutcomeWrite(after,saved->revision,proof,write.admissionReceipt,observed.afterState);
+            const auto pending=state->operations.find(proof.id);
+            if(pending!=state->operations.end()) {
+                pending->second.uncertain=false;pending->second.outcome=observed.state;
+                pending->second.dispatched=false; // The first uncertain receipt counted the dispatch.
+                write.operation=proof.id;write.operationOutcome=true;
+            }
             state->pending.push_back(std::move(write));state->nextWork=0;return stop("guild_event_group_reconciliation_receipt_pending");
         }
         if(outcome!="verified" && outcome!="rejected")return stop("guild_event_group_receipt_invalid");
