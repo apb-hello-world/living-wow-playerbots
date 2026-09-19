@@ -3,6 +3,7 @@
 #include "PlayerbotGuildGovernance.h"
 #include "GuildEventExecutionPolicy.h"
 #include "GuildActivityEvidence.h"
+#include "GuildRouteProposal.h"
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotSocialActionBroker.h"
 #include "RandomPlayerbotMgr.h"
@@ -19,6 +20,15 @@ using namespace ai;
 using namespace livingguild;
 namespace {
 Player* Online(uint32 guid) { return sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER,guid)); }
+GuildRouteEpoch RouteEpoch(Player* bot) {
+    GuildRouteEpoch e;
+    if(!bot || !bot->IsInWorld() || bot->IsBeingTeleported() || !bot->GetPlayerbotAI() || !bot->GetGroup())return e;
+    e.actor=bot->GetGUIDLow();e.guild=bot->GetGuildId();e.map=bot->GetMapId();e.instance=bot->GetInstanceId();
+    e.actorGeneration=bot->GetPlayerbotAI()->GetActivityActorEpoch();
+    e.mapGeneration=bot->GetPlayerbotAI()->GetActivityMapEpoch();
+    e.groupIdentity=bot->GetGroup()->GetLivingActivityIdentity();
+    e.groupRevision=bot->GetGroup()->GetLivingActivityRevision();return e;
+}
 bool Safe(Player* p,uint32 guild,bool allowDungeon=false) {
     return p && p->IsInWorld() && p->GetMap() && p->GetSession() && p->GetGuildId()==guild &&
         p->IsAlive() && !p->IsInCombat() && !p->IsBeingTeleported() && !p->IsTaxiFlying() &&
@@ -120,7 +130,7 @@ bool Transition(const CalendarEvent& e,const char* next,const char* reason,uint3
 struct PlayerbotGuildEventExecutor::State {
     struct Reservation { std::string event; uint32 revision=0,coordinator=0; bool active=false,moving=false; };
     struct Route { TravelDestination* destination=nullptr; WorldPosition* point=nullptr; };
-    struct Job { std::string event;uint32 revision=0,guid=0;std::future<std::vector<Route>> future; };
+    struct Job { std::string event;uint32 revision=0,guid=0;GuildRouteEpoch epoch;std::future<std::vector<GuildRouteProposal>> future; };
     std::map<uint32,Reservation> reservations;
     std::map<std::string,std::set<uint32>> rosters;
     std::map<uint32,Route> installed;
@@ -202,8 +212,9 @@ struct PlayerbotGuildEventExecutor::State {
         if(dungeon) {
             for(const auto& boss:DungeonFor(objective).bosses) if(!(completedMask&boss.bit)) entries.push_back(int32(boss.entry));
         } else entries.push_back(int32(objective));
-        jobs.push_back({e.id,e.revision,coordinator->GetGUIDLow(),std::async(std::launch::async,[info,center,purpose,objective,dungeon,entries]() {
-            std::vector<Route> result;
+        const auto epoch=RouteEpoch(coordinator);if(!epoch.Valid())return;
+        jobs.push_back({e.id,e.revision,coordinator->GetGUIDLow(),epoch,std::async(std::launch::async,[info,center,purpose,objective,dungeon,entries]() {
+            std::vector<GuildRouteProposal> result;
             // Keep native encounter order; never route to an arbitrary grind
             // destination under a dungeon label. Copied IDs only on this worker.
             for(int32 entry:entries) for(auto* destination:sTravelMgr.GetDestinations(info,purpose,{entry},true,10000)) {
@@ -212,7 +223,12 @@ struct PlayerbotGuildEventExecutor::State {
                     (!questDestination||questDestination->GetQuestId()!=objective)) continue;
                 std::list<uint8> chances={10,50,90};
                 WorldPosition* point=destination->GetNextPoint(center,chances);
-                if(point&&(!dungeon||point->getMapId()==objective)) result.push_back({destination,point});
+                if(point&&(!dungeon||point->getMapId()==objective)) {
+                    GuildRouteProposal proposal;proposal.purpose=uint32(destination->GetPurpose());
+                    proposal.entry=destination->GetEntry();proposal.quest=questDestination?questDestination->GetQuestId():0;
+                    proposal.map=point->getMapId();proposal.x=point->getX();proposal.y=point->getY();proposal.z=point->getZ();
+                    if(proposal.Valid())result.push_back(proposal);
+                }
                 if(result.size()>=32) return result;
             }
             return result;
@@ -570,15 +586,33 @@ void PlayerbotGuildEventExecutor::Update() {
     // destructor can wait. Cancelled jobs are drained once ready and discarded.
     for(auto it=state_->jobs.begin();it!=state_->jobs.end();) {
         if(it->future.wait_for(std::chrono::seconds(0))!=std::future_status::ready) {++it;continue;}
-        std::vector<State::Route> routes;
-        try {routes=it->future.get();} catch(...) {routes.clear();}
+        std::vector<GuildRouteProposal> proposals;
+        try {proposals=it->future.get();} catch(...) {proposals.clear();}
         auto owner=state_->reservations.find(it->guid);Player* bot=Online(it->guid);
         if(owner!=state_->reservations.end()&&owner->second.event==it->event&&owner->second.revision==it->revision&&owner->second.active&&
-            bot&&Safe(bot,bot->GetGuildId(),true)&&bot->GetPlayerbotAI()&&!HasUncommittedHuman(bot,state_->rosters[it->event])&&
+            bot&&FreshGuildRoute(it->epoch,RouteEpoch(bot))&&Safe(bot,bot->GetGuildId(),true)&&bot->GetPlayerbotAI()&&!HasUncommittedHuman(bot,state_->rosters[it->event])&&
             sPlayerbotRendezvousManager.GetPartyActivityOwner(it->guid)==PlayerbotRendezvousManager::PartyActivityOwner::guild_event&&
             CharacterDatabase.PQuery("SELECT event_id FROM guild_society_event WHERE event_id='%s' AND state='active' AND revision=%u AND executor_guid=%u AND (event_type<>'dungeon' OR (target_id=%u OR %u=0)) AND (activity_instance_id=0 OR activity_instance_id=%u OR %u=0)",it->event.c_str(),it->revision,it->guid,bot->GetMapId(),bot->GetMap()->IsDungeon()?1:0,bot->GetInstanceId(),bot->GetMap()->IsDungeon()?1:0)) {
-            for(const auto& route:routes) {
-                if(!route.destination->IsActive(bot,PlayerTravelInfo(bot))) continue;
+            const PlayerTravelInfo currentInfo(bot);
+            for(const auto& proposal:proposals) {
+                if(!proposal.Valid())continue;
+                State::Route route;
+                // Resolve only from current native metadata on the world thread.
+                // No pointer from the asynchronous result can outlive/rebind a
+                // map, login, roster or leader change, even on the same map ID.
+                for(auto* destination:sTravelMgr.GetDestinations(currentInfo,proposal.purpose,
+                    {proposal.quest?int32(proposal.quest):proposal.entry},true,10000)) {
+                    auto* quest=dynamic_cast<QuestTravelDestination*>(destination);
+                    if(uint32(destination->GetPurpose())!=proposal.purpose || destination->GetEntry()!=proposal.entry ||
+                        (quest?quest->GetQuestId():0)!=proposal.quest || !destination->IsActive(bot,currentInfo))continue;
+                    auto* point=destination->GetClosestPoint(WorldPosition(proposal.map,proposal.x,proposal.y,proposal.z));
+                    if(point && point->getMapId()==proposal.map &&
+                        point->getX()==proposal.x && point->getY()==proposal.y && point->getZ()==proposal.z) {
+                        route={destination,point};
+                    }
+                    if(route.destination)break;
+                }
+                if(!route.destination)continue;
                 auto context=bot->GetPlayerbotAI()->GetAiObjectContext();
                 auto* previousFuture=context->GetValue<FutureDestinations*>("future travel destinations")->Get();
                 if(previousFuture&&previousFuture->valid()) {
