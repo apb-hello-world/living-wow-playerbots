@@ -131,4 +131,14 @@ int main() {
     invalid=q;invalid.skill.id=0;assert(!FreePlayerTrainingCastQuote(invalid));
     invalid=q;invalid.cast=false;assert(!DirectFreeTrainingQuote(invalid));
     q.skill={};broken=cast;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    std::set<uint32_t> persisted;
+    assert(TrainingPersistenceTargets({33388,34769},{33388},{{34769,33388}},persisted));
+    assert(persisted==std::set<uint32_t>{34769});
+    assert(!TrainingPersistenceTargets({33388,34769},{33388},{},persisted));
+    assert(!TrainingPersistenceTargets({33388,34769},{33388,34769},{{34769,33388},{33388,34769}},persisted));
+    assert(!TrainingPersistenceTargets({33388},{33388},{{34769,33388}},persisted));
+    assert(!TrainingPersistenceTargets({34769},{33388},{},persisted));
+    assert(TrainingPersistenceTargets({1,2,3},{2,3},{{1,2},{2,3}},persisted) && persisted==std::set<uint32_t>{1});
+    assert(TrainingPersistenceTargets({20271,21084},{},{},persisted) && persisted.size()==2);
+    assert(TrainingPersistenceTargets({},{},{},persisted) && persisted.empty());
 }

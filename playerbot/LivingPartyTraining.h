@@ -90,6 +90,20 @@ inline bool FreePlayerTrainingCastQuote(const TrainingLessonQuote& q) {
 inline bool ManagedTrainingQuote(const TrainingLessonQuote& q) {
     return DirectFreeTrainingQuote(q) || FreePlayerTrainingCastQuote(q);
 }
+// Native _SaveSpells omits dependent abilities. Each omitted target must be
+// reachable through native non-auto learning edges from a saved quoted target.
+// No arbitrary known spell, unrooted cycle or missing row counts as proof.
+inline bool TrainingPersistenceTargets(const std::set<uint32_t>& present,const std::set<uint32_t>& dependent,
+    const std::vector<std::pair<uint32_t,uint32_t>>& edges,std::set<uint32_t>& saved) {
+    saved.clear();if(present.size()>3 || edges.size()>9)return false;
+    for(auto id:dependent)if(!present.count(id))return false;
+    for(auto id:present) {if(!id)return false;if(!dependent.count(id))saved.insert(id);}
+    auto reached=saved;
+    for(const auto& edge:edges)if(!present.count(edge.first) || !present.count(edge.second))return false;
+    for(size_t n=0;n<present.size();++n)
+        for(const auto& edge:edges)if(reached.count(edge.first))reached.insert(edge.second);
+    return reached==present;
+}
 inline std::string EncodePartyTrainingQuote(const TrainingLessonQuote& q) {
     if(!q.cast)return EncodeDirectTrainingQuote(q); // Historical journal fingerprint.
     std::string out="{\"workflow\":\""+std::string(q.skill.id?"training_cast_v2":"training_cast_v1")+"\",\"actor\":"+std::to_string(q.actor)+

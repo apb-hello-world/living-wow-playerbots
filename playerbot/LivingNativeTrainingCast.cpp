@@ -72,6 +72,24 @@ bool CompleteNativeTrainingSkillQuote(Player& actor,TrainingLessonQuote& quote,s
     return SupportedNativeTrainingCast(quote,why);
 }
 namespace {
+bool TrainingSavedTargets(Player& actor,const TrainingLessonQuote& q,std::set<uint32_t>& saved,
+    std::set<uint32_t>& dependent) {
+    std::set<uint32_t> present;dependent.clear();std::vector<std::pair<uint32_t,uint32_t>> edges;
+    for(auto id:q.playerSpells) {
+        const auto found=actor.GetSpellMap().find(id);
+        if(found==actor.GetSpellMap().end() || found->second.state==PLAYERSPELL_REMOVED || found->second.disabled)continue;
+        present.insert(id);if(found->second.dependent)dependent.insert(id);
+    }
+    for(auto parent:present) {
+        const auto bounds=sSpellMgr.GetSpellLearnSpellMapBounds(parent);
+        for(auto it=bounds.first;it!=bounds.second;++it)
+            if(!it->second.autoLearned && present.count(it->second.spell))edges.emplace_back(parent,it->second.spell);
+    }
+    return TrainingPersistenceTargets(present,dependent,edges,saved);
+}
+std::string TrainingIdsJson(const std::set<uint32_t>& ids) {
+    std::string out="[";for(auto id:ids){if(out.size()>1)out+=',';out+=std::to_string(id);}return out+']';
+}
 std::map<uint16_t,TrainingSkillState> ReadTrainingSkills(Player& actor) {
     std::map<uint16_t,TrainingSkillState> out;
     for(unsigned i=0;i<PLAYER_MAX_SKILLS;++i) {
@@ -156,14 +174,17 @@ public:
     bool Ready() const override{return result.finished || result.uncertain;}
     NativeObservation Observe(Player& actor,std::vector<VerifiedItemGain>& gains) const override {
         gains.clear();NativeObservation out;out.nativeReference="trainer_lesson:"+std::to_string(quote.lesson);
+        std::set<uint32_t> saved,dependent;const bool persistenceReady=TrainingSavedTargets(actor,quote,saved,dependent);
         out.afterState="{\"lesson\":"+std::to_string(quote.lesson)+",\"effect_entered\":"+(result.effect?"true":"false")+
             ",\"native_finished\":"+(result.finished?"true":"false")+",\"native_succeeded\":"+(result.succeeded?"true":"false")+
             ",\"before\":"+TrainingFrameJson(result.before,quote)+",\"after\":"+TrainingFrameJson(result.after,quote)+
-            ",\"skills_before\":"+TrainingSkillsJson(result.skillsBefore)+",\"skills_after\":"+TrainingSkillsJson(result.skillsAfter)+'}';
+            ",\"skills_before\":"+TrainingSkillsJson(result.skillsBefore)+",\"skills_after\":"+TrainingSkillsJson(result.skillsAfter)+
+            ",\"saved_targets\":"+TrainingIdsJson(saved)+",\"dependent_targets\":"+TrainingIdsJson(dependent)+'}';
         out.state=VerifyTrainingCast(quote,result,out.evidence);
         if(!SameTrainingState(ReadTrainingFrame(actor),result.after) || ReadTrainingSkills(actor)!=result.skillsAfter) {
             out.state=OperationState::Reconciling;out.evidence="training_cast_changed_before_save";
         }
+        if(!persistenceReady){out.state=OperationState::Reconciling;out.evidence="training_dependency_save_proof_unavailable";}
         return out;
     }
     std::string PersistedProof(Player& actor,const Task& after) const override {
@@ -174,7 +195,9 @@ public:
         // Login-provided default spells need not have character_spell rows.
         // Full runtime spellbook conservation was checked above; the durable
         // predicate proves each promised target, not an invalid global count.
-        for(auto id:quote.playerSpells)proof+=(result.after.playerSpells.count(id)?" AND EXISTS(":" AND NOT EXISTS(")+
+        std::set<uint32_t> saved,dependent;
+        if(!TrainingSavedTargets(actor,quote,saved,dependent))throw std::runtime_error("training_dependency_save_proof_unavailable");
+        for(auto id:quote.playerSpells)if(!dependent.count(id))proof+=(result.after.playerSpells.count(id)?" AND EXISTS(":" AND NOT EXISTS(")+
             std::string("SELECT 1 FROM character_spell s WHERE s.guid=c.guid AND s.spell=")+std::to_string(id)+" AND s.disabled=0)";
         if(quote.skill.id) {
             const auto found=result.skillsAfter.find(quote.skill.id);
