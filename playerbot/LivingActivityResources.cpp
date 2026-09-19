@@ -379,7 +379,8 @@ namespace LivingActivity {
             if (before) {
                 if (before->revision != change.expectedRevision) return ClaimInstall::Stale;
                 if (transferred) {
-                    if (changes.size()!=1 || balances.size()!=1 || before->state!="held" || after.state!="held" ||
+                    const bool storedRelease=before->location=="bags" && after.location=="bank" && after.state=="released";
+                    if (changes.size()!=1 || balances.size()!=1 || before->state!="held" || (after.state!="held" && !storedRelease) ||
                         !(((before->location=="bank" || before->location=="mail") && after.location=="bags") ||
                           (before->location=="bags" && !before->nativeReference && after.location=="bank")) ||
                         after.nativeReference || before->copper || after.copper || !before->itemGuid || !after.itemGuid ||
@@ -397,7 +398,7 @@ namespace LivingActivity {
                 ++added;
             }
             if (after.state == "proposed" && (after.itemGuid || after.nativeReference)) return ClaimInstall::Invalid;
-            if (after.state != "held") continue; // Pending release still protects the acknowledged quantity.
+            if (after.state != "held" && !transferred) continue; // Transfers protect their destination until ACK, including a final storage release.
             const auto limit = limits.find(after.itemGuid);
             if (limit == limits.end() || limit->second.itemEntry != after.itemEntry ||
                 limit->second.location != after.location || limit->second.nativeReference!=after.nativeReference) return ClaimInstall::Invalid;
@@ -405,6 +406,7 @@ namespace LivingActivity {
             const uint64_t newAmount = after.quantity+after.copper;
             if (newAmount > oldAmount) {
                 auto extra = after;
+                extra.state="held";
                 if (after.copper) extra.copper = newAmount-oldAmount; else extra.quantity = newAmount-oldAmount;
                 additional[after.itemGuid] += newAmount-oldAmount;
                 reservation.additional.push_back(std::move(extra));

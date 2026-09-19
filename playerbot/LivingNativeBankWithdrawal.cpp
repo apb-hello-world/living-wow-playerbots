@@ -11,6 +11,7 @@
 #include "LivingNativeGuildProcurement.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
+#include "PlayerbotOrganicEconomy.h"
 #include "playerbot/strategy/values/ItemUsageValue.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
@@ -46,12 +47,42 @@ bool EmptyBankDestination(Player& actor,Item& item,uint16_t& destination) {
 }
 bool SafeStoredMaterial(Player& actor,const Task& task,Item& item) {
     const auto* proto=item.GetProto();
-    if (!proto || proto->Class!=ITEM_CLASS_TRADE_GOODS || NativeCapacityItemProtected(actor,task,item)) return false;
+    const bool party=IsPartyBankTask(task);
+    if (!proto || (!party && proto->Class!=ITEM_CLASS_TRADE_GOODS) || NativeCapacityItemProtected(actor,task,item) ||
+        (party && sPlayerbotOrganicEconomy.RecipeMaterialQuantity(actor.GetGUIDLow(),item.GetEntry()))) return false;
     ai::ItemQualifier qualifier(&item);
     auto* value=actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<ai::ItemUsage>("item usage",qualifier.GetQualifier());
     value->Reset();const auto usage=value->Get();
     return usage==ai::ItemUsage::ITEM_USAGE_BANK || usage==ai::ItemUsage::ITEM_USAGE_SKILL ||
-        usage==ai::ItemUsage::ITEM_USAGE_AH || usage==ai::ItemUsage::ITEM_USAGE_BROKEN_AH;
+        usage==ai::ItemUsage::ITEM_USAGE_AH || usage==ai::ItemUsage::ITEM_USAGE_BROKEN_AH ||
+        (party && usage==ai::ItemUsage::ITEM_USAGE_DISENCHANT);
+}
+bool BankDestination(Player& actor,Item& item,NativeBankQuote& quote,bool permitMerge) {
+    if(permitMerge) {
+        ItemPosCountVec positions;uint8_t affected=0;
+        if(actor.CanBankItem(NULL_BAG,NULL_SLOT,positions,&item,false,affected)==EQUIP_ERR_OK &&
+            positions.size()==1 && positions[0].count==item.GetCount() && Player::IsBankPos(positions[0].pos)) {
+            const auto* target=actor.GetItemByPos(positions[0].pos);
+            const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
+            if(target && target->GetEntry()==item.GetEntry() && target->GetGUIDLow()!=item.GetGUIDLow() &&
+                view && view->ready && !view->HasUncertainItem(actor.GetGUIDLow(),item.GetEntry()) &&
+                view->ProtectedItem(target->GetGUIDLow())<=target->GetCount()) {
+                quote.to=positions[0].pos;quote.mergeGuid=target->GetGUIDLow();quote.mergeCount=target->GetCount();return true;
+            }
+        }
+    }
+    return EmptyBankDestination(actor,item,quote.to);
+}
+bool ExactBankDestination(Player& actor,Item& item,const NativeBankQuote& quote) {
+    if(!quote.mergeGuid)return ExactEmptyBankDestination(actor,item,quote.to);
+    const auto* target=actor.GetItemByPos(quote.to);
+    const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
+    if(!target || !Player::IsBankPos(quote.to) || target->GetGUIDLow()!=quote.mergeGuid ||
+        target->GetEntry()!=quote.entry || target->GetCount()!=quote.mergeCount || !view || !view->ready ||
+        view->HasUncertainItem(quote.actor,quote.entry) || view->ProtectedItem(quote.mergeGuid)>quote.mergeCount)return false;
+    ItemPosCountVec positions;uint8_t affected=0;
+    return actor.CanBankItem(uint8_t(quote.to>>8),uint8_t(quote.to),positions,&item,false,affected)==EQUIP_ERR_OK &&
+        positions.size()==1 && positions[0].pos==quote.to && positions[0].count==quote.quantity;
 }
 bool ExactEmptyDestination(Player& actor,Item& item,uint8_t bag,uint8_t slot) {
     if (!Player::IsInventoryPos(bag,slot)) return false;
@@ -139,7 +170,7 @@ bool DecodeNativeBankQuote(const std::string& value,NativeBankQuote& q) {
         q.deposit=p.get<bool>("deposit",false);q.moneyBefore=p.get<uint32_t>("money_before",0);
         return value==EncodeNativeBankQuote(q) && q.actor && q.guid && q.entry && q.quantity && q.banker &&
             bool(q.mergeGuid)==bool(q.mergeCount) && q.mergeGuid!=q.guid && uint64_t(q.mergeCount)+q.quantity<=UINT32_MAX &&
-            (!q.deposit || (!q.mergeGuid && q.bagBefore>=q.quantity && q.totalBefore>=q.bagBefore));
+            (!q.deposit || (q.bagBefore>=q.quantity && q.totalBefore>=q.bagBefore));
     } catch (...) {q={};return false;}
 }
 bool PlanNativeBankWithdrawal(Player& actor,const Task& task,const ProfessionReagent& need,
@@ -177,22 +208,48 @@ bool PlanNativeBankWithdrawal(Player& actor,const Task& task,const ProfessionRea
     }
     return reject("profession_bank_uncommitted_stack_unavailable");
 }
+bool PlanNativePartyBankBatch(Player& actor,PartyBankJob& job,std::string& blocker) {
+    job={};
+    if(!sLivingActivityCoordinator.OnWorldThread() || !actor.GetPlayerbotAI() || !actor.IsInWorld() ||
+        !actor.IsAlive() || !actor.GetMap() || actor.GetMap()->IsDungeon() || actor.IsBeingTeleported() ||
+        ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)) || LivingServiceExecution::Busy(&actor)) {
+        blocker="party_bank_safety_pause";return false;
+    }
+    const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
+    if(!view || !view->ready) {blocker="capacity_reservations_unavailable";return false;}
+    Task task;task.source="party_bank";task.kind=Kind::PartyErrand;task.actor=actor.GetGUIDLow();
+    auto items=actor.GetPlayerbotAI()->InventoryParseItems("inventory",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
+    items.sort([](const Item* a,const Item* b){return a->GetGUIDLow()<b->GetGUIDLow();});
+    for(auto* item:items) {
+        if(!item || !SafeStoredMaterial(actor,task,*item) || view->HasUncertainItem(task.actor,item->GetEntry()) ||
+            view->ProtectedItem(item->GetGUIDLow()))continue;
+        job.items.push_back({item->GetGUIDLow(),item->GetEntry(),item->GetCount()});
+        if(job.items.size()==PartyBankBatchLimit)break;
+    }
+    if(!ValidPartyBankJob(job)) {blocker="party_bank_no_safely_storable_stack";return false;}
+    blocker.clear();return true;
+}
 bool PlanNativeBankDeposit(Player& actor,const Task& task,NativeBankQuote& q,ResourceClaim& held,std::string& blocker) {
     q={};held={};auto reject=[&](const char* why){blocker=why;return false;};
+    const bool party=IsPartyBankTask(task);PartyBankJob batch;
     if (!sLivingActivityCoordinator.OnWorldThread() || actor.GetGUIDLow()!=task.actor ||
-        (!IsProfessionJob(task) && !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task) && !IsGuildProcurementTask(task)) ||
+        (!IsProfessionJob(task) && !IsRecipeLearningTask(task) && !IsManagedGuildDelivery(task) && !IsGuildProcurementTask(task) && !party) ||
         task.mode!=Mode::Active || !task.accepted || task.root!=task.id)
         return reject("capacity_bank_task_unavailable");
     if (!SafeBankActor(actor)) return reject(actor.IsStopped()?"capacity_bank_safety_pause":"capacity_bank_travel_required");
     UnsettledClaimBatch claims;ItemGainSpec need;
-    if (!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,blocker) ||
-        !NativeCapacityNeed(actor,task,claims,need,blocker)) return false;
+    if (!sLivingActivityCoordinator.ReadTaskClaims(task.actor,task.id,task.revision,claims,blocker))return false;
+    if(party) {
+        if(!ValidatePartyBankTask(task,blocker) || !DecodePartyBankJob(task.checkpoint.data,batch))return false;
+        if(batch.next>=batch.items.size())return reject("party_bank_receipts_complete");
+    } else if(!NativeCapacityNeed(actor,task,claims,need,blocker))return false;
     const auto view=sLivingActivityCoordinator.ResourceReservations().Inspect();
     if (!view || !view->ready) return reject("capacity_reservations_unavailable");
     auto items=actor.GetPlayerbotAI()->InventoryParseItems("all",IterateItemsMask::ITERATE_ITEMS_IN_BAGS);
     items.sort([](const Item* a,const Item* b){return a->GetGUIDLow()<b->GetGUIDLow();});
     Item* selected=nullptr;
     for (auto* item:items) {
+        if(party && item && !PartyBankItemMatches(batch,{item->GetGUIDLow(),item->GetEntry(),item->GetCount()}))continue;
         if (!item || !SafeStoredMaterial(actor,task,*item) || view->HasUncertainItem(task.actor,item->GetEntry())) continue;
         ResourceClaim own;
         for (const auto& c:claims.claims) if (c.itemGuid==item->GetGUIDLow()) {
@@ -203,8 +260,8 @@ bool PlanNativeBankDeposit(Player& actor,const Task& task,NativeBankQuote& q,Res
         if (view->ProtectedItem(item->GetGUIDLow())!=(own.id.empty()?0:item->GetCount())) continue;
         if (!selected || !own.id.empty()) {selected=item;held=own;if (!own.id.empty()) break;}
     }
-    if (!selected) return reject("capacity_no_safely_storable_stack");
-    if (!EmptyBankDestination(actor,*selected,q.to)) return reject("capacity_personal_bank_full");
+    if (!selected) return reject(party?"party_bank_accepted_stack_changed_or_protected":"capacity_no_safely_storable_stack");
+    if (!BankDestination(actor,*selected,q,party)) return reject("capacity_personal_bank_full");
     q.banker=NativeNearbyBanker(actor);
     if (!q.banker) return reject("capacity_bank_travel_required");
     q.actor=task.actor;q.guid=selected->GetGUIDLow();q.entry=selected->GetEntry();q.quantity=selected->GetCount();
@@ -238,7 +295,7 @@ bool NativeBankTransfer::ValidateNative(Player& actor,const OperationRequest& r,
         !(deposit?Player::IsInventoryPos(item->GetBagSlot(),item->GetSlot()):Player::IsBankPos(item->GetBagSlot(),item->GetSlot())) || item->GetCount()!=quote.quantity ||
         ProtectedLegacy(actor,*item)) return reject("profession_banked_stack_changed");
     if (actor.GetItemCount(quote.entry,false)!=quote.bagBefore || actor.GetItemCount(quote.entry,true)!=quote.totalBefore ||
-        !(deposit?ExactEmptyBankDestination(actor,*item,quote.to):ExactDestination(actor,*item,quote)))
+        !(deposit?ExactBankDestination(actor,*item,quote):ExactDestination(actor,*item,quote)))
         return reject("profession_bank_destination_changed");
     if (deposit) {
         // Validation runs both before intent persistence and again at native

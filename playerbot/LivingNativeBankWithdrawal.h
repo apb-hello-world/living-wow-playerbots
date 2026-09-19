@@ -2,6 +2,7 @@
 #include "LivingActivityOperations.h"
 #include "LivingProfessionJob.h"
 #include "LivingActivityReservations.h"
+#include "LivingPartyBank.h"
 class Player;
 namespace LivingActivity {
 struct NativeBankQuote {
@@ -20,6 +21,7 @@ bool PlanNativeBankWithdrawal(Player& actor,const Task& task,const ProfessionRea
     NativeBankQuote& quote,std::string& blocker);
 bool PlanNativeBankDeposit(Player& actor,const Task& task,NativeBankQuote& quote,
     ResourceClaim& existing,std::string& blocker);
+bool PlanNativePartyBankBatch(Player& actor,PartyBankJob& job,std::string& blocker);
 class NativeCapacityBankReservation final : public NativeReservationAdapter {
 public:
     bool ValidatePurpose(Player&,const ReservationRequest&,std::string&) override;

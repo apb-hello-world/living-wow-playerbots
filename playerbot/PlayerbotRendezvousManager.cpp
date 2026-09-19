@@ -2,6 +2,7 @@
 #include "PlayerbotRendezvousManager.h"
 #include "LivingNativeRepair.h"
 #include "LivingNativeVendorSale.h"
+#include "LivingNativeBankWithdrawal.h"
 #include "PartyPersistenceToken.h"
 #include "LivingActivityCoordinator.h"
 #include "PlayerbotGuildEventExecutor.h"
@@ -208,9 +209,12 @@ namespace
             if (context->GetValue<uint8>("durability inventory")->Get() < 85 &&
                 context->GetValue<bool>("can repair")->Get()) errands |= kErrandRepair;
         }
-        if (pressure.StorableStacks() && (pressure.bagUsage >= 70 || pressure.StorableStacks() >= 3) &&
-            context->GetValue<bool>("should bank deposit")->Get())
-            errands |= kErrandBank;
+        if (pressure.StorableStacks() && (pressure.bagUsage >= 70 || pressure.StorableStacks() >= 3)) {
+            if(sLivingActivityCoordinator.EffectEnforcementEnabled() && sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands) {
+                LivingActivity::PartyBankJob bank;std::string blocker;
+                if(LivingActivity::PlanNativePartyBankBatch(*bot,bank,blocker))errands|=kErrandBank;
+            } else if(context->GetValue<bool>("should bank deposit")->Get())errands|=kErrandBank;
+        }
 
         time_t now = time(nullptr);
         for (PlayerMails::iterator mail = bot->GetMailBegin(); mail != bot->GetMailEnd(); ++mail)
@@ -1679,6 +1683,7 @@ std::optional<LivingActivity::PartyServiceBinding> PlayerbotRendezvousManager::R
     if (!PartyServiceEffects(effects,service) || session.state!="free_time" ||
         session.currentErrand!=(service==PartyServiceBinding::Service::Repair?kErrandRepair:
             service==PartyServiceBinding::Service::Vendor?kErrandVendor:
+            service==PartyServiceBinding::Service::Bank?kErrandBank:
             service==PartyServiceBinding::Service::Training?kErrandTraining:kErrandMail) ||
         session.freeTimeRecallRequested ||
         session.groupId!=bot->GetGroup()->GetId() ||
@@ -2530,6 +2535,25 @@ bool PlayerbotRendezvousManager::StartNextVerifiedErrand(PartySession& session, 
         // No accepted lesson yet: existing party service travel chooses a real
         // trainer. Admission snapshots its eligible offers only upon arrival.
     }
+    if(session.currentErrand==kErrandBank && sLivingActivityCoordinator.EffectEnforcementEnabled())
+    {
+        std::string blocker;
+        auto selected=sLivingActivityCoordinator.PreparePartyBankService(session.botGuid,taskRecord.taskId,blocker);
+        if(!selected && blocker=="party_bank_no_safely_storable_stack") {
+            FinishCurrentErrand(session,bot,false,blocker);return session.currentErrand!=0;
+        }
+        if(selected && bot && bot->GetGroup()) {
+            selected->human=session.playerGuid;
+            selected->session="group:"+std::to_string(bot->GetGroup()->GetId())+":"+
+                std::to_string(bot->GetGroup()->GetLivingActivityIdentity());
+            selected->sessionRevision=bot->GetGroup()->GetLivingActivityRevision();session.managedService=*selected;
+        }
+        session.errandBefore=ObserveErrandState(bot);taskRecord.before=session.errandBefore;
+        taskRecord.outcomeCode=selected?"shared_bank_service_admitted":blocker;
+        session.currentErrandLocal=true;session.errandOperationAccepted=false;
+        session.nextErrandStep=std::chrono::steady_clock::now()+std::chrono::seconds(1);
+        PersistPartySession(session);return true; // Admission waiting never invokes the legacy bank loop.
+    }
     if(session.currentErrand==kErrandVendor && sLivingActivityCoordinator.EffectEnforcementEnabled())
     {
         std::string blocker;
@@ -2913,7 +2937,8 @@ bool PlayerbotRendezvousManager::ExecuteVerifiedErrand(PartySession& session, Pl
     if (session.currentErrand == kErrandRepair)
         return ai->DoSpecificAction("repair", event, true);
     if (session.currentErrand == kErrandBank)
-        return ai->DoSpecificAction("bank", Event("rpg action", "living-wow-safe-storage", nullptr), true);
+        return !sLivingActivityCoordinator.EffectEnforcementEnabled() &&
+            ai->DoSpecificAction("bank", Event("rpg action", "living-wow-safe-storage", nullptr), true);
     if (session.currentErrand == kErrandMail)
         return ai->DoSpecificAction("mail", Event("rpg action", "take", nullptr), true);
     if (session.currentErrand == kErrandAuction)
@@ -3051,7 +3076,8 @@ void PlayerbotRendezvousManager::UpdateVerifiedErrand(PartySession& session, Pla
             if(!training || !completed)session.freeTimeRecallRequested=true;
             const bool repair=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Repair;
             const bool vendor=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Vendor;
-            FinishCurrentErrand(session,bot,completed,completed ? (training?"verified_direct_training_batch":vendor?"verified_vendor_batch":repair?"verified_equipment_repairs":"verified_mail_collection") :
+            const bool bank=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Bank;
+            FinishCurrentErrand(session,bot,completed,completed ? (bank?"verified_bank_batch":training?"verified_direct_training_batch":vendor?"verified_vendor_batch":repair?"verified_equipment_repairs":"verified_mail_collection") :
                 deferred ? "party_service_deferred" : "party_service_permission_ended");
         }
         return;

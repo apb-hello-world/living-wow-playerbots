@@ -367,6 +367,7 @@ struct LivingActivityCoordinator::State {
     };
     std::map<std::string,RepairRead> repairReads;
     std::map<std::string,RepairRead> vendorReads; // Bounded receipt cache, not another scheduler.
+    std::map<std::string,RepairRead> bankReads;
     std::map<std::string,RepairRead> trainingReads;
     std::atomic<uint64_t> publishedPolicyRevision{0};
     std::future<bool> projectionSend;
@@ -682,6 +683,7 @@ struct LivingActivityCoordinator::State {
         if(IsRecipeLearningTask(task))return true;
         if(IsPartyRepairTask(task))return true;
         if(IsPartyVendorTask(task))return true;
+        if(IsPartyBankTask(task))return true;
         if(IsPartyTrainingTask(task))return true;
         if(!IsProfessionJob(task))return false;
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
@@ -1459,9 +1461,10 @@ void LivingActivityCoordinator::Update() {
                     (saved->second.phase!=Phase::Executing || saved->second.context.boot.empty()) &&
                     (saved->second.checkpoint.step=="commission_mail_send" || saved->second.checkpoint.step=="commission_mail_wait");
                 const auto location=receiptOnly?std::optional<ProfessionProgress>{}:ReconcilePersonalClaimLocation(saved->second.actor,id);
-                const auto preparation=location ? location : (receiptOnly || IsPartyRepairTask(saved->second) || IsPartyVendorTask(saved->second) || IsPartyTrainingTask(saved->second))?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
+                const auto preparation=location ? location : (receiptOnly || IsPartyRepairTask(saved->second) || IsPartyVendorTask(saved->second) || IsPartyBankTask(saved->second) || IsPartyTrainingTask(saved->second))?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
                 auto progress=preparation ? *preparation : IsPartyRepairTask(saved->second) ? AdvancePartyRepair(saved->second.actor,id) :
                     IsPartyVendorTask(saved->second) ? AdvancePartyVendor(saved->second.actor,id) :
+                    IsPartyBankTask(saved->second) ? AdvancePartyBank(saved->second.actor,id) :
                     IsPartyTrainingTask(saved->second) ? AdvancePartyTraining(saved->second.actor,id) :
                     IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
                     IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
@@ -1973,6 +1976,7 @@ AdmissionResult LivingActivityCoordinator::AdmitEconomyProfession(uint32_t actor
 #include "LivingCriticalPreparation.inc"
 #include "LivingPartyRepairExecutor.inc"
 #include "LivingPartyVendorExecutor.inc"
+#include "LivingPartyBankExecutor.inc"
 #include "LivingPartyTrainingExecutor.inc"
 
 std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoordinator::DispatchPendingItemService(
@@ -4955,6 +4959,10 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
         after.retryAtMs=after.updatedAtMs+300000;
         after.checkpoint.blocker=observation.evidence; // Retain claim, do not hammer a rejecting native service.
     }
+    if(IsPartyBankTask(after) && request.kind=="bank_deposit" && observation.state==OperationState::Rejected) {
+        after.retryAtMs=executed?after.updatedAtMs+300000:0;
+        after.checkpoint.blocker=executed?observation.evidence:"";
+    }
     if(request.kind=="party_vendor_sale" && observation.state==OperationState::Rejected &&
         !PartyVendorFailureBackoff(executed,observation.state)) {
         // Recall or an obsolete action context did not attempt a sale. Preserve
@@ -4971,6 +4979,12 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     std::string gainReservation;
     Task recipientTask;
     try {
+        if(IsPartyBankTask(after) && request.kind=="bank_deposit" && proof.state==OperationState::Verified) {
+            NativeBankQuote quote;
+            if(!DecodeNativeBankQuote(request.beforeState,quote) || !quote.deposit || quote.actor!=after.actor ||
+                !AcknowledgePartyBankDeposit(after,{quote.guid,quote.entry,quote.quantity},request.itemTransfer,proof))
+                throw std::runtime_error("party_bank_native_receipt_invalid");
+        }
         if(IsPartyTrainingTask(after) && request.kind=="party_training_learn" && proof.state==OperationState::Verified) {
             TrainingLessonQuote quote;
             if(!DecodePartyTrainingQuote(request.beforeState,quote) || !AcknowledgePartyTraining(after,quote,proof))
@@ -5009,7 +5023,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
                 target.itemEntry!=request.itemTransfer.itemEntry || target.quantity<request.itemTransfer.quantity)
                 throw std::runtime_error("Verified native transfer identity missing");
             auto moved=ItemTransferWrite(after,saved->second.revision,proof,receipt,observation.afterState,
-                request.itemTransfer,target.itemGuid);
+                request.itemTransfer,target.itemGuid,IsPartyBankTask(after));
             const auto protectedTransfer=state->resources.ReserveTransferred(receipt,moved.changes.front(),target);
             if (protectedTransfer!=ClaimInstall::Installed && protectedTransfer!=ClaimInstall::Duplicate) {
                 state->resources.BlockProjection();state->claimRestoreFailed=true;
@@ -5059,6 +5073,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
         }
         pending.uncertain=true; pending.outcome=proof.state=OperationState::Reconciling;
         if(IsPartyVendorTask(after))after.checkpoint.data=saved->second.checkpoint.data;
+        if(IsPartyBankTask(after))after.checkpoint.data=saved->second.checkpoint.data;
         if(IsPartyTrainingTask(after))after.checkpoint.data=saved->second.checkpoint.data;
         proof.evidence="claim_outcome_requires_reconciliation";
         after.phase=Phase::Reconciling; after.checkpoint.blocker=proof.evidence;
@@ -5093,6 +5108,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
                 unsigned(write.plan.statements.size()),unsigned(largest),unsigned(write.plan.receiptQuery.size()));
             write.task.phase=Phase::Reconciling; write.task.checkpoint.blocker=proof.evidence;
             if(IsPartyVendorTask(write.task))write.task.checkpoint.data=saved->second.checkpoint.data;
+            if(IsPartyBankTask(write.task))write.task.checkpoint.data=saved->second.checkpoint.data;
             if(IsPartyTrainingTask(write.task))write.task.checkpoint.data=saved->second.checkpoint.data;
             write.claims.clear();
             write.recipientTask={};

@@ -4,6 +4,7 @@
 #include "LivingGuildProcurement.h"
 #include "LivingPartyRepair.h"
 #include "LivingPartyVendor.h"
+#include "LivingPartyBank.h"
 #include "LivingPartyTraining.h"
 #include <limits>
 #include <boost/property_tree/json_parser.hpp>
@@ -40,6 +41,7 @@ namespace LivingActivity {
         const Task& task = request.task;
         if(!ValidatePartyRepairTask(task,reason))return AdmissionCode::InvalidRequest;
         if(!ValidatePartyVendorTask(task,reason))return AdmissionCode::InvalidRequest;
+        if(!ValidatePartyBankTask(task,reason))return AdmissionCode::InvalidRequest;
         if(!ValidatePartyTrainingTask(task,reason))return AdmissionCode::InvalidRequest;
         if (!ValidateGuildProcurementTask(task, reason)) return AdmissionCode::InvalidRequest;
         if (!ValidateGuildDeliveryTask(task, reason)) return AdmissionCode::InvalidRequest;
@@ -79,6 +81,7 @@ namespace LivingActivity {
             }
         } else {
             if(!PreservePartyVendorIntent(*saved,task,reason))return AdmissionCode::InvalidRequest;
+            if(!PreservePartyBankIntent(*saved,task,reason))return AdmissionCode::InvalidRequest;
             if(!PreservePartyTrainingIntent(*saved,task,reason))return AdmissionCode::InvalidRequest;
             if(IsPartyRepairTask(*saved) && !IsPartyRepairTask(task)) {
                 reason="party_repair_intent_cannot_change";return AdmissionCode::InvalidRequest;
@@ -127,6 +130,7 @@ namespace LivingActivity {
         const WorldContext& current, uint64_t wallNow, std::string& reason) {
         if (!ValidateGuildProcurementTask(saved, reason) || !ValidatePartyRepairTask(saved,reason)) return false;
         if(!ValidatePartyVendorTask(saved,reason))return false;
+        if(!ValidatePartyBankTask(saved,reason))return false;
         if(!ValidatePartyTrainingTask(saved,reason))return false;
         // Procurement uses the same acknowledged revision/context/backoff
         // checks. Native domain adapters additionally revalidate the current

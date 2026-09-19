@@ -39,15 +39,22 @@ inline std::string ItemTransferIdentity(const ResourceClaim& c) {
 inline std::string TransferClaimPredicate(const ResourceClaim& c) {
     return "c.claim_id="+SqlValue(c.id)+" AND c.task_id="+SqlValue(c.task)+" AND c.actor_guid="+std::to_string(c.actor)+
         " AND c.item_guid="+std::to_string(c.itemGuid)+" AND c.item_entry="+std::to_string(c.itemEntry)+
-        " AND c.quantity="+std::to_string(c.quantity)+" AND c.copper=0 AND c.native_reference="+std::to_string(c.nativeReference)+" AND c.state='held'"
+        " AND c.quantity="+std::to_string(c.quantity)+" AND c.copper=0 AND c.native_reference="+std::to_string(c.nativeReference)+" AND c.state="+SqlValue(c.state)+
         " AND c.location="+SqlValue(c.location)+" AND c.revision="+std::to_string(c.revision);
 }
 inline ClaimedOutcome ItemTransferWrite(const Task& task,uint64_t expected,const OperationResult& result,
-    const std::string& receipt,const std::string& nativeAfter,const ResourceClaim& before,uint32_t survivingGuid=0) {
+    const std::string& receipt,const std::string& nativeAfter,const ResourceClaim& before,uint32_t survivingGuid=0,
+    bool releaseStorage=false) {
+    const bool partyStorage=releaseStorage && task.source=="party_bank" && task.kind==Kind::PartyErrand &&
+        task.root==task.id && task.parent.empty() && ValidBankDeposit(before) &&
+        result.evidence=="native_bank_stack_deposited" &&
+        result.nativeReference=="bank_item:"+std::to_string(before.itemGuid);
     if (!ValidItemTransfer(before) || before.task!=task.root || before.actor!=task.actor ||
-        result.kind!=ItemTransferKind(before) || result.state!=OperationState::Verified || task.phase!=Phase::Verifying)
+        (releaseStorage && !partyStorage) || result.kind!=ItemTransferKind(before) || result.state!=OperationState::Verified ||
+        (task.phase!=Phase::Verifying && !(partyStorage && task.phase==Phase::Completed)))
         throw std::invalid_argument("Verified same-root bank transfer required");
     auto after=before;++after.revision;after.location=ItemTransferDestination(before);after.nativeReference=0;
+    if(partyStorage)after.state="released"; // Storage is done; the items still belong to the character.
     if (survivingGuid) after.itemGuid=survivingGuid;
     ClaimedOutcome out;
     out.journal=OperationOutcomeWrite(task,expected,result,receipt,"{\"native\":"+nativeAfter+'}');
@@ -67,7 +74,8 @@ inline ClaimedOutcome ItemTransferWrite(const Task& task,uint64_t expected,const
     // These are fixed internal destinations. Preserve historical withdrawal
     // SQL bytes so retrying an old receipt keeps its exact fingerprint.
     const std::string destination=after.location=="bank"?"'bank'":"'bags'";
-    out.journal.statements.push_back("UPDATE living_activity_claim c SET "+identityUpdate+"c.location="+destination+",c.native_reference=0,c.revision="+
+    out.journal.statements.push_back("UPDATE living_activity_claim c SET "+identityUpdate+
+        (partyStorage?"c.state='released',":"")+"c.location="+destination+",c.native_reference=0,c.revision="+
         std::to_string(after.revision)+",c.updated_at_ms="+std::to_string(task.updatedAtMs)+" WHERE "+
         TransferClaimPredicate(before)+" AND EXISTS ("+accepted+')');
     out.journal.receiptQuery+=" AND EXISTS (SELECT 1 FROM living_activity_claim c WHERE "+TransferClaimPredicate(after)+')';

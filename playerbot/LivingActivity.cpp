@@ -3,6 +3,7 @@
 #include "LivingActivityJournal.h"
 #include "LivingPartyRepair.h"
 #include "LivingPartyVendor.h"
+#include "LivingPartyBank.h"
 #include "LivingPartyTraining.h"
 #include <algorithm>
 #include <limits>
@@ -340,7 +341,13 @@ namespace LivingActivity
             ValidatePartyTrainingTask(task,trainingBlocker) && DecodePartyTrainingJob(task.checkpoint.data,training) &&
             training.next==training.lessons.size() && outcome.taskRevision==expected && task.revision==expected+1 &&
             outcome.nativeReference=="trainer_lesson:"+std::to_string(training.lessons.back());
-        if (!expected || task.mode != Mode::Active || (!completedRepair && !completedVendor && !completedTraining && task.phase != (uncertain ? Phase::Reconciling : Phase::Verifying)) ||
+        PartyBankJob bank;std::string bankBlocker;
+        const bool completedBank=IsPartyBankTask(task) && task.phase==Phase::Completed && verified &&
+            outcome.kind=="bank_deposit" && outcome.evidence=="native_bank_stack_deposited" &&
+            ValidatePartyBankTask(task,bankBlocker) && DecodePartyBankJob(task.checkpoint.data,bank) &&
+            bank.next==bank.items.size() && outcome.taskRevision==expected && task.revision==expected+1 &&
+            outcome.nativeReference=="bank_item:"+std::to_string(bank.items.back().guid);
+        if (!expected || task.mode != Mode::Active || (!completedRepair && !completedVendor && !completedTraining && !completedBank && task.phase != (uncertain ? Phase::Reconciling : Phase::Verifying)) ||
             !IsUuid(outcome.id) || outcome.task != task.id || !outcome.taskRevision ||
             !IsToken(outcome.kind, 48) || !IsToken(outcome.evidence) || after.size() > 8192 ||
             outcome.nativeReference.size() > 160 || (verified && outcome.nativeReference.empty()) ||

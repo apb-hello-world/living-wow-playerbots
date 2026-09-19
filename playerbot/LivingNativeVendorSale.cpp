@@ -1,5 +1,6 @@
 #include "botpch.h"
 #include "LivingNativeVendorSale.h"
+#include "LivingPartyBank.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingNativeMailCollection.h"
@@ -108,7 +109,7 @@ bool NeededCapacity(Player& actor,const Task& task,const UnsettledClaimBatch& cl
     blocker="capacity_already_available";return false;
 }
 bool JobProtected(Player& actor,const Task& task,Item& item) {
-    if(IsPartyVendorTask(task))return false; // Other jobs, gear and quests are checked independently.
+    if(IsPartyVendorTask(task) || IsPartyBankTask(task))return false; // Other jobs, gear and quests are checked independently.
     if (IsGuildProcurementTask(task)) {
         GuildProcurementJob job;std::string blocker;
         if(!ValidateGuildProcurementTask(task,blocker) ||

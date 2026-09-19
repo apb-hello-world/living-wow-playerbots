@@ -3,6 +3,7 @@
 #include "LivingActivityEffects.h"
 #include "LivingPartyRepair.h"
 #include "LivingPartyVendor.h"
+#include "LivingPartyBank.h"
 #include "LivingPartyTraining.h"
 
 namespace LivingActivity {
@@ -13,7 +14,7 @@ struct PartyServiceBinding {
     std::string root, claim, session, receipt;
     uint32_t actor=0, human=0, entry=0;
     uint64_t sessionRevision=0, acceptedRevision=0;
-    enum class Service { Mail, Repair, Vendor, Training } service=Service::Mail;
+    enum class Service { Mail, Repair, Vendor, Training, Bank } service=Service::Mail;
 };
 struct PartyServiceWindow {
     uint32_t actor=0, human=0;
@@ -25,8 +26,10 @@ inline bool PartyServiceMatches(const PartyServiceBinding& binding,const Task& t
     const PartyServiceWindow& window) {
     const bool repair=binding.service==PartyServiceBinding::Service::Repair;
     const bool vendor=binding.service==PartyServiceBinding::Service::Vendor;
+    const bool bank=binding.service==PartyServiceBinding::Service::Bank;
     const bool training=binding.service==PartyServiceBinding::Service::Training;
     const bool subject=training ? IsPartyTrainingTask(task) && binding.claim.empty() && !binding.entry :
+        bank ? IsPartyBankTask(task) && binding.claim.empty() && !binding.entry :
         vendor ? IsPartyVendorTask(task) && binding.claim.empty() && !binding.entry :
         repair ? IsPartyRepairTask(task) && binding.claim.empty() && !binding.entry :
         !binding.claim.empty() && binding.entry;
@@ -40,6 +43,8 @@ inline bool PartyServiceMatches(const PartyServiceBinding& binding,const Task& t
         task.revision>=binding.acceptedRevision;
 }
 inline bool PartyServiceEffects(uint32_t effects,PartyServiceBinding::Service service=PartyServiceBinding::Service::Mail) {
+    if(service==PartyServiceBinding::Service::Bank)
+        return (effects & ~(Mask(Effect::Movement)|Mask(Effect::TravelTarget)|Mask(Effect::Inventory)))==0;
     if(service==PartyServiceBinding::Service::Training)
         return (effects & ~(Mask(Effect::Movement)|Mask(Effect::TravelTarget)|Mask(Effect::Spell)|Mask(Effect::Social)))==0;
     const uint32_t allowed=Mask(Effect::Movement)|Mask(Effect::TravelTarget)|
@@ -49,6 +54,8 @@ inline bool PartyServiceEffects(uint32_t effects,PartyServiceBinding::Service se
 }
 inline bool PartyServiceOperation(const PartyServiceBinding& binding,const std::string& kind,
     const ResourceClaim& claim) {
+    if(binding.service==PartyServiceBinding::Service::Bank)
+        return kind=="bank_deposit" && ValidBankDeposit(claim) && claim.task==binding.root && claim.actor==binding.actor;
     if(binding.service==PartyServiceBinding::Service::Training)
         return kind=="party_training_learn" && claim.id.empty() && !claim.copper && !claim.itemGuid && !claim.quantity;
     if(binding.service==PartyServiceBinding::Service::Vendor)
@@ -74,7 +81,8 @@ inline bool PartyServiceReceipt(PartyServiceBinding& binding,const Task& task,
     const bool vendor=binding.service==PartyServiceBinding::Service::Vendor;
     const bool training=binding.service==PartyServiceBinding::Service::Training;
     if(receipt.empty() || !binding.receipt.empty() ||
-        (training ? !IsPartyTrainingTask(task) || task.phase!=Phase::Completed :
+        (binding.service==PartyServiceBinding::Service::Bank ? !IsPartyBankTask(task) || task.phase!=Phase::Completed :
+         training ? !IsPartyTrainingTask(task) || task.phase!=Phase::Completed :
          vendor ? !IsPartyVendorTask(task) || task.phase!=Phase::Completed :
          repair ? !IsPartyRepairTask(task) || task.phase!=Phase::Completed : kind!="mail_collect") ||
         task.id!=binding.root || task.actor!=binding.actor || task.revision<binding.acceptedRevision ||
