@@ -65,7 +65,7 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
             for(const auto& row:state.cache)if(row.second.actor==f.actor && row.second.mode==Mode::Active && !Terminal(row.second.phase))
                 require(false,"existing_training_actor_obligation_preserved");
             if(!f.placed) {
-                require(bot->getClass()==CLASS_WARLOCK && bot->getLevel()>=20,"explicit_warlock_training_fixture_required");
+                require(bot->getClass()==CLASS_WARLOCK && bot->GetLevel()>=20,"explicit_warlock_training_fixture_required");
                 auto target=WorldDatabase.PQuery("SELECT c.guid,c.id,c.position_x,c.position_y,c.position_z,c.orientation FROM creature c JOIN creature_template t ON t.Entry=c.id WHERE t.TrainerClass='%u' AND t.TrainerType=0 AND c.map='%u' ORDER BY POW(c.position_x-%.4f,2)+POW(c.position_y-%.4f,2) LIMIT 1",
                     uint32_t(bot->getClass()),bot->GetMapId(),bot->GetPositionX(),bot->GetPositionY());
                 require(bool(target),"real_class_trainer_spawn_required");const auto* row=target->Fetch();
