@@ -244,7 +244,13 @@ PlayerbotAI::PlayerbotAI(Player* bot) :
 
     // Talent maintenance is safe for both autonomous and human-led bots. A
     // bot joining a human party must not retain unspent points indefinitely.
-    if (bot->GetFreeTalentPoints() > 0)
+    if (bot->GetFreeTalentPoints() > 0
+#ifdef LIVING_ISOLATED_NATIVE_TESTS
+        // Held copied actors must not mutate their spellbook in the AI
+        // constructor before the fixture's normal update guard can run.
+        && !sLivingActivityCoordinator.IsolatedGameplayActor(bot->GetGUIDLow())
+#endif
+    )
     {
         DoSpecificAction("auto talents");
     }
