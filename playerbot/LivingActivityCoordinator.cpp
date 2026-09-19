@@ -63,6 +63,8 @@
 #include "LivingGuildProcurementHandoff.h"
 #include "LivingNativeGuildProcurement.h"
 #include "LivingNativeGuildEvent.h"
+#include "LivingGuildEventSettlement.h"
+#include "PlayerbotGuildEventExecutor.h"
 #include "LivingGuildProcurementRecovery.h"
 #include "LivingGatherRecovery.h"
 #include "LivingGuildProcurementProjection.h"
@@ -683,6 +685,7 @@ struct LivingActivityCoordinator::State {
     }
     bool ScheduledExecution(const Task& task) const {
         if(task.mode!=Mode::Active || !task.accepted || Terminal(task.phase))return false;
+        if(IsGuildEventCommitment(task))return true;
         if(IsManagedGuildDelivery(task))return true;
         if(IsGuildProcurementTask(task))return true;
         if(IsRecipeLearningTask(task))return true;
@@ -1475,8 +1478,9 @@ void LivingActivityCoordinator::Update() {
                     (saved->second.phase!=Phase::Executing || saved->second.context.boot.empty()) &&
                     (saved->second.checkpoint.step=="commission_mail_send" || saved->second.checkpoint.step=="commission_mail_wait");
                 const auto location=receiptOnly?std::optional<ProfessionProgress>{}:ReconcilePersonalClaimLocation(saved->second.actor,id);
-                const auto preparation=location ? location : (receiptOnly || IsPartyRepairTask(saved->second) || IsPartyVendorTask(saved->second) || IsPartyBankTask(saved->second) || IsPartyAuctionTask(saved->second) || IsPartyTrainingTask(saved->second))?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
+                const auto preparation=location ? location : (receiptOnly || IsGuildEventCommitment(saved->second) || IsPartyRepairTask(saved->second) || IsPartyVendorTask(saved->second) || IsPartyBankTask(saved->second) || IsPartyAuctionTask(saved->second) || IsPartyTrainingTask(saved->second))?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
                 auto progress=preparation ? *preparation : IsPartyRepairTask(saved->second) ? AdvancePartyRepair(saved->second.actor,id) :
+                    IsGuildEventCommitment(saved->second) ? AdvanceGuildEvent(saved->second.actor,id) :
                     IsPartyVendorTask(saved->second) ? AdvancePartyVendor(saved->second.actor,id) :
                     IsPartyBankTask(saved->second) ? AdvancePartyBank(saved->second.actor,id) :
                     IsPartyAuctionTask(saved->second) ? AdvancePartyAuction(saved->second.actor,id) :
@@ -3927,6 +3931,132 @@ AdmissionResult LivingActivityCoordinator::SettleProfessionJobImpl(uint32_t acto
     // No new inventory reservation, timer, movement owner or native effect.
     if (owned.lease.rootTask==id) ReleaseTaskLease(owned.lease);
     state->nextWork=0;return reject(AdmissionCode::Pending);
+}
+
+AdmissionResult LivingActivityCoordinator::AdmitGuildEvent(uint32_t actor,const GuildEventCommitment& event) {
+    AdmissionResult result;std::string why;
+    if(!OnWorldThread() || !EffectEnforcementEnabled()) {result.code=AdmissionCode::Disabled;result.blocker="execution_disabled";return result;}
+    if(!ValidGuildEventCommitment(event) || !actor) {result.blocker="exact_guild_event_acceptance_required";return result;}
+    TaskRequest request;auto& task=request.task;task.source="guild_event_commitment";
+    task.sourceKey=GuildEventCommitmentKey(event,actor);task.id=task.root=SourceId(task.source,task.sourceKey);
+    result.task=task.id;
+    if(const auto saved=ReadSavedTask(task.id)) {
+        result.revision=saved->revision;
+        result.code=saved->checkpoint.data==EncodeGuildEventCommitment(event)?AdmissionCode::Saved:AdmissionCode::ConflictingWrite;
+        result.blocker=Name(result.code);return result;
+    }
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld()) {result.code=AdmissionCode::NotReady;result.blocker="actor_not_available";return result;}
+    task.actor=actor;task.kind=Kind::GuildEvent;task.mode=Mode::Active;task.phase=Phase::Queued;
+    task.priority=Priority::Scheduled;task.accepted=true;task.dueAtMs=uint64_t(event.starts)*1000;
+    task.createdAtMs=task.updatedAtMs=NowMs();task.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    task.checkpoint.step="guild_event_wait";task.checkpoint.data=EncodeGuildEventCommitment(event);
+    request.receipt=SourceId("guild_event_admission",task.id);return SubmitTask(request);
+}
+
+std::string LivingActivityCoordinator::ApproachGuildParticipant(const Task& task,const ActionContext& action,uint32_t coordinator) {
+    if(!OnWorldThread() || !EffectEnforcementEnabled() || !ExecutionScope::Matches(task,action) ||
+        state->executingTask!=task.id || !IsGuildEventCommitment(task))return "guild_event_due_queue_required";
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(task.actor);
+    auto* leader=sObjectAccessor.FindPlayer(ObjectGuid(HIGHGUID_PLAYER,coordinator));std::string why;
+    if(!bot || !bot->GetPlayerbotAI() || !leader || !bot->IsInWorld() || !leader->IsInWorld() ||
+        !bot->GetMap() || !leader->GetMap() || !bot->GetGroup() || bot->GetGroup()!=leader->GetGroup() ||
+        !ValidateNativeGuildEventTask(*bot,task,why))return why.empty()?"guild_event_group_changed":why;
+    if(NativeSafety(bot) || NativeSafety(leader) || bot->IsNonMeleeSpellCasted(false) || leader->IsNonMeleeSpellCasted(false) ||
+        bot->GetTradeData() || leader->GetTradeData())return "guild_event_approach_safety_pause";
+    if(bot->IsWithinDistInMap(leader,60.0f))return "guild_event_assembled";
+    const bool sameMap=bot->GetMap()==leader->GetMap();
+    if(!sameMap && (bot->GetMap()->IsDungeon() || leader->GetMap()->IsDungeon()))return "guild_event_shared_instance_required";
+    if(!PermitEffects(*bot->GetPlayerbotAI(),{Mask(Effect::Movement)|Mask(Effect::TravelTarget),Lane::Managed,true},"guild event approach"))
+        return "guild_event_approach_authority_changed";
+    // Existing visibility geometry and the ONE realm relocation slot, without
+    // registering the legacy rendezvous session or its competing movement owner.
+    if(sPlayerbotAIConfig.chatDirectorRendezvousCatchup && (!sameMap || bot->GetDistance(leader)>70.0f) &&
+        !bot->GetMap()->IsDungeon() && !leader->GetMap()->IsDungeon()) {
+        float x=0,y=0,z=0;
+        if(sPlayerbotRendezvousManager.FindSafeStagingPoint(bot,leader,x,y,z) &&
+            sPlayerbotRendezvousManager.CanRelocateUnobserved(bot,leader->GetMap(),x,y,z) &&
+            sPlayerbotRendezvousManager.ClaimRelocationSlot()) {
+            bot->GetPlayerbotAI()->StopMoving();
+            if(sameMap)bot->NearTeleportTo(x,y,z+0.1f,bot->GetOrientation());
+            else if(!bot->TeleportTo(leader->GetMapId(),x,y,z+0.1f,leader->GetOrientation()))return "guild_event_native_transfer_rejected";
+            return "guild_event_transfer_revalidation";
+        }
+    }
+    if(!sameMap)return "guild_event_cross_map_staging_unavailable";
+    if(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()!=FOLLOW_MOTION_TYPE ||
+        bot->GetMotionMaster()->GetCurrent()->GetCurrentTarget()!=leader)
+        bot->GetMotionMaster()->MoveFollow(leader,4.0f,0.0f,true,false);
+    return "guild_event_approaching_coordinator";
+}
+
+LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvanceGuildEvent(uint32_t actor,const std::string& id) {
+    ProfessionProgress result;auto stop=[&](const std::string& why){result.blocker=why;return result;};
+    if(!OnWorldThread() || !EffectEnforcementEnabled() || state->executingTask!=id)return stop("guild_event_due_queue_required");
+    const auto saved=ReadSavedTask(id);GuildEventCommitment event;std::string why;
+    if(!saved || saved->actor!=actor || !IsGuildEventCommitment(*saved) ||
+        !ValidateGuildEventCommitmentTask(*saved,why) || !DecodeGuildEventCommitment(saved->checkpoint.data,event))
+        return stop("guild_event_saved_commitment_required");
+    if(Terminal(saved->phase)) {result.completed=saved->phase==Phase::Completed;return result;}
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || bot->IsBeingTeleported())return stop("guild_event_actor_unavailable");
+    if(state->operationDispatching || DefersNativeSave(actor))return stop("guild_event_native_save_pending");
+    for(const auto& write:state->pending)if(write.task.actor==actor)return stop("guild_event_task_write_pending");
+    for(const auto& operation:state->operations)if(operation.second.request.transition.task.actor==actor)
+        return stop("guild_event_native_operation_pending");
+    UnsettledClaimBatch claims;
+    if(!ReadTaskClaims(actor,id,saved->revision,claims,why))return stop(why);
+    if(!claims.claims.empty())return stop("guild_event_resources_require_reconciliation");
+    const auto now=NowMs();const auto current=ReadNativeContext(*bot,state->policyRevision,state->boot);
+    auto checkpoint=[&](Phase phase,const std::string& step,const std::string& blocker,uint64_t retry=0) {
+        TaskRequest request;request.task=*saved;request.expectedRevision=saved->revision;++request.task.revision;
+        request.task.context=current;request.task.updatedAtMs=now;request.task.retryAtMs=retry;
+        request.task.phase=phase;request.task.checkpoint.step=step;request.task.checkpoint.blocker=blocker;
+        request.receipt=NewId();return stop(SubmitTask(request).blocker);
+    };
+    if(!(saved->context==current))return checkpoint(Phase::Reconciling,saved->checkpoint.step,"guild_event_context_reconciliation");
+    const auto native=CharacterDatabase.Query(GuildEventClosureQuery(*saved,event).c_str());
+    if(!native || native->GetFieldCount()!=6)return stop("guild_event_native_revision_unavailable");
+    const auto* row=native->Fetch();GuildEventClosure closure;
+    closure.state=row[0].GetCppString();closure.reason=row[1].GetCppString();closure.started=row[2].GetUInt32();
+    closure.finished=row[3].GetUInt32();closure.participantVerified=row[4].GetUInt32();closure.instance=row[5].GetUInt32();
+    if(closure.state=="completed" || closure.state=="failed" || closure.state=="cancelled") {
+        if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)return stop("task_admission_backpressure");
+        GuildEventSettlement settled;const auto receipt=SourceId("guild_event_settlement",id+":"+std::to_string(saved->revision));
+        if(!PrepareGuildEventSettlement(*saved,current,closure,now,receipt,settled,why))return stop(why);
+        State::Pending write;write.task=std::move(settled.task);write.plan=std::move(settled.plan);write.admissionReceipt=receipt;
+        const auto owned=state->authority.Read(actor);
+        if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+        state->pending.push_back(std::move(write));state->nextWork=0;
+        return stop("guild_event_terminal_receipt_pending");
+    }
+    if(saved->retryAtMs>now)return stop(saved->checkpoint.blocker);
+    if(const auto safety=NativeSafety(bot)) {
+        const auto reason=NativeSafetyReason(safety);
+        if(saved->phase==Phase::Paused && saved->checkpoint.blocker==reason)return stop(reason);
+        return checkpoint(Phase::Paused,saved->checkpoint.step,reason,now+1000);
+    }
+    if(saved->phase==Phase::Paused || saved->phase==Phase::Deferred || saved->phase==Phase::WaitingExternal)
+        return checkpoint(Phase::Reconciling,saved->checkpoint.step,"guild_event_wait_reconciliation");
+    if(!ValidateNativeGuildEventTask(*bot,*saved,why))return stop(why);
+    if(now<uint64_t(event.starts)*1000)
+        return checkpoint(Phase::WaitingExternal,"guild_event_wait","guild_event_scheduled_start",uint64_t(event.starts)*1000);
+    if(closure.state=="announced")return stop("guild_event_roster_formation_pending");
+    const std::string step=closure.state=="forming"?"guild_event_form":closure.state=="preparing"?"guild_event_prepare":
+        closure.state=="traveling"?"guild_event_travel":closure.state=="active"?"guild_event_objective":
+        closure.state=="returning"?"guild_event_return":"guild_event_verify";
+    // A restored/queued job first acknowledges its current context. Movement
+    // and membership never execute from a queued or previous-session record.
+    if(saved->phase==Phase::Queued || saved->phase==Phase::Reconciling)
+        return checkpoint(Phase::Preparing,step,"");
+    if(saved->checkpoint.step!=step)return checkpoint(Phase::Preparing,step,"");
+    if(saved->phase==Phase::Preparing && (step=="guild_event_travel" || step=="guild_event_objective" || step=="guild_event_return"))
+        return checkpoint(Phase::Traveling,step,"");
+    const uint32_t effects=Mask(Effect::Movement)|Mask(Effect::TravelTarget)|Mask(Effect::Group);
+    const auto grant=AcquireSavedTask(id,saved->revision,effects,60000,"guild_event_participant");
+    if(!grant.Permitted())return stop(grant.blocker);
+    ExecutionScope scope(grant.task,grant.action);
+    return stop(sGuildEventExecutor.ExecuteParticipant(grant.task,grant.action));
 }
 
 bool LivingActivityCoordinator::RecipeLearningAdmissionsEnabled() const {

@@ -4,6 +4,9 @@
 #include "GuildEventExecutionPolicy.h"
 #include "GuildActivityEvidence.h"
 #include "GuildRouteProposal.h"
+#include "LivingActivityCoordinator.h"
+#include "LivingActivityScope.h"
+#include "LivingNativeGuildEvent.h"
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotSocialActionBroker.h"
 #include "RandomPlayerbotMgr.h"
@@ -46,7 +49,7 @@ bool HasUncommittedHuman(Player* bot,const std::set<uint32>& accepted) {
 }
 struct CalendarEvent {
     std::string id,kind,state;
-    uint32 guild=0,target=0,revision=0,starts=0,ends=0,minimum=0,maximum=0,coordinator=0,phaseAt=0,started=0,instance=0;
+    uint32 guild=0,target=0,revision=0,starts=0,ends=0,minimum=0,maximum=0,coordinator=0,phaseAt=0,started=0,instance=0,completedMask=0;
 };
 struct DungeonObjective {
     struct Boss {uint32 entry=0,bit=0,order=0;};
@@ -180,6 +183,8 @@ struct PlayerbotGuildEventExecutor::State {
     std::map<uint32,Route> installed;
     std::map<std::string,uint32> routeRetry,inviteRetry;
     std::vector<Job> jobs;
+    std::map<uint32,std::pair<Job,std::vector<GuildRouteProposal>>> readyRoutes;
+    std::map<std::string,CalendarEvent> events;
     ActivityEvidenceQueue mailbox;
     std::vector<ActivityProof> pendingProofs;
     uint32 nextUpdate=0;
@@ -238,12 +243,13 @@ struct PlayerbotGuildEventExecutor::State {
             if(bot&&bot->GetPlayerbotAI()) {
                 TravelTarget* target=bot->GetPlayerbotAI()->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get();
                 // Never clear an explicit human command or a replacement route.
-                if(target&&target->GetDestination()==route->second.destination&&target->GetPosition()==route->second.point) {
+                if(!sLivingActivityCoordinator.EffectEnforcementEnabled() && target&&target->GetDestination()==route->second.destination&&target->GetPosition()==route->second.point) {
                     target->SetForced(false);target->SetStatus(TravelStatus::TRAVEL_STATUS_EXPIRED);
                 }
             }
             installed.erase(route);
         }
+        readyRoutes.erase(guid);
     }
 
     void ObjectiveRoute(const CalendarEvent& e,Player* coordinator,uint32 now,uint32 completedMask=0) {
@@ -260,7 +266,7 @@ struct PlayerbotGuildEventExecutor::State {
             coordinator->GetPlayerbotAI()->DoSpecificAction("move to travel target",Event("guild event objective","",coordinator),true);
             return;
         }
-        if(jobs.size()>=2||now<routeRetry[e.id]) return;
+        if(jobs.size()>=2||readyRoutes.count(coordinator->GetGUIDLow())||now<routeRetry[e.id]) return;
         for(const auto& job:jobs) if(job.event==e.id) return;
         routeRetry[e.id]=now+30;
         const uint32 purpose=e.kind=="dungeon"?uint32(TravelDestinationPurpose::Boss):
@@ -305,7 +311,8 @@ struct PlayerbotGuildEventExecutor::State {
             !owner->second.active || !bot || !FreshGuildRoute(job.epoch,RouteEpoch(bot)) ||
             !Safe(bot,bot->GetGuildId(),true) || !bot->GetPlayerbotAI() ||
             HasUncommittedHuman(bot,rosters[job.event]) ||
-            sPlayerbotRendezvousManager.GetPartyActivityOwner(job.guid)!=PlayerbotRendezvousManager::PartyActivityOwner::guild_event ||
+            (!sLivingActivityCoordinator.EffectEnforcementEnabled() &&
+             sPlayerbotRendezvousManager.GetPartyActivityOwner(job.guid)!=PlayerbotRendezvousManager::PartyActivityOwner::guild_event) ||
             !CharacterDatabase.PQuery("SELECT event_id FROM guild_society_event WHERE event_id='%s' AND state='active' AND revision=%u AND executor_guid=%u AND (event_type<>'dungeon' OR (target_id=%u OR %u=0)) AND (activity_instance_id=0 OR activity_instance_id=%u OR %u=0)",job.event.c_str(),job.revision,job.guid,bot->GetMapId(),bot->GetMap()->IsDungeon()?1:0,bot->GetInstanceId(),bot->GetMap()->IsDungeon()?1:0))return false;
         const PlayerTravelInfo currentInfo(bot);
         for(const auto& proposal:proposals) {
@@ -350,12 +357,61 @@ PlayerbotGuildEventExecutor::~PlayerbotGuildEventExecutor()=default;
 PlayerbotGuildEventExecutor& PlayerbotGuildEventExecutor::instance() { static PlayerbotGuildEventExecutor value;return value; }
 bool PlayerbotGuildEventExecutor::DungeonSupported(uint32 map) {return DungeonFor(map).valid;}
 bool PlayerbotGuildEventExecutor::DungeonParticipantReady(Player* player,uint32 map) {return DungeonReady(player,DungeonFor(map));}
+std::string PlayerbotGuildEventExecutor::ExecuteParticipant(const LivingActivity::Task& task,const LivingActivity::ActionContext& action) {
+    using namespace LivingActivity;
+    GuildEventCommitment definition;std::string why;
+    if(!sLivingActivityCoordinator.OnWorldThread() || !sLivingActivityCoordinator.EffectEnforcementEnabled() ||
+        !ExecutionScope::Matches(task,action) || !IsGuildEventCommitment(task) ||
+        (task.phase!=Phase::Preparing && task.phase!=Phase::Traveling) ||
+        !DecodeGuildEventCommitment(task.checkpoint.data,definition))return "guild_event_execution_scope_required";
+    auto* bot=Online(task.actor);const auto found=state_->events.find(definition.event);
+    if(!bot || found==state_->events.end() || !ValidateNativeGuildEventTask(*bot,task,why))
+        return why.empty()?"guild_event_current_snapshot_required":why;
+    const auto& event=found->second;
+    if(EncodeGuildEventCommitment({event.id,event.kind,event.guild,event.revision,event.target,event.starts,event.ends})!=task.checkpoint.data)
+        return "guild_event_current_revision_required";
+    if(!SavedEventState(event,event.state.c_str(),event.coordinator))return "guild_event_snapshot_changed";
+    const auto roster=state_->rosters.find(event.id);auto* coordinator=Online(event.coordinator);
+    if(roster==state_->rosters.end() || !roster->second.count(task.actor) || !roster->second.count(event.coordinator) ||
+        !EventSafe(bot,event) || !EventSafe(coordinator,event))return "guild_event_participant_safety_pause";
+    const auto& accepted=roster->second;
+    if(HasUncommittedHuman(bot,{}) || HasUncommittedHuman(coordinator,{}))return "guild_event_human_party_requires_session_authority";
+    if(!sLivingActivityCoordinator.PermitEffects(*bot->GetPlayerbotAI(),
+        {Mask(Effect::Group)|Mask(Effect::Movement)|Mask(Effect::TravelTarget),Lane::Managed,true},"guild event participant"))
+        return "guild_event_execution_authority_changed";
+    if(bot->GetGroup() && bot->GetGroup()==coordinator->GetGroup() && bot!=coordinator &&
+        bot->GetGroup()->GetLeaderGuid()==bot->GetObjectGuid()) {
+        bot->GetGroup()->ChangeLeader(coordinator->GetObjectGuid());return "guild_event_group_context_changed";
+    }
+    if(bot==coordinator && bot->GetGroup() && bot->GetGroup()->GetLeaderGuid()!=bot->GetObjectGuid() &&
+        accepted.count(bot->GetGroup()->GetLeaderGuid().GetCounter()))return "guild_event_leader_handoff_pending";
+    if(event.state=="forming" || event.state=="traveling") {
+        const auto formation=std::string(FormBotParticipant(event,coordinator,bot,accepted));
+        if(formation!="guild_formation_joined" && formation!="guild_formation_coordinator_ready")return formation;
+        if(bot==coordinator)return "guild_event_roster_assembly_pending";
+        return sLivingActivityCoordinator.ApproachGuildParticipant(task,action,event.coordinator);
+    }
+    if(event.state!="active")return "guild_event_phase_not_executable";
+    if(!bot->GetGroup() || bot->GetGroup()!=coordinator->GetGroup())return "guild_event_roster_recovery_pending";
+    if(bot!=coordinator)return sLivingActivityCoordinator.ApproachGuildParticipant(task,action,event.coordinator);
+    if(event.kind=="dungeon")for(uint32 guid:accepted)
+        if(!DungeonReady(Online(guid),DungeonFor(event.target)))return "guild_event_dungeon_preparation_required";
+    const auto ready=state_->readyRoutes.find(task.actor);
+    if(ready!=state_->readyRoutes.end()) {
+        const bool applied=state_->ApplyObjectiveRoute(ready->second.first,ready->second.second);
+        state_->readyRoutes.erase(ready);
+        return applied?"guild_event_route_installed":"guild_event_route_revalidation_required";
+    }
+    state_->ObjectiveRoute(event,bot,uint32(time(nullptr)),event.completedMask);
+    return "guild_event_objective_in_progress";
+}
 void PlayerbotGuildEventExecutor::RecordCredit(uint32 actor,uint32 guild,uint32 group,uint32 kind,
     uint32 entry,uint64_t source,uint32 map,uint32 instance,uint32 occurred) {
     state_->mailbox.Record(actor,guild,group,kind,entry,source,map,instance,occurred);
 }
 bool PlayerbotGuildEventExecutor::Reserved(uint32 guid) const { return state_->reservations.count(guid)!=0; }
 bool PlayerbotGuildEventExecutor::OwnsMovement(uint32 guid) const {
+    if(sLivingActivityCoordinator.EffectEnforcementEnabled())return false; // The acknowledged task owns it now.
     auto it=state_->reservations.find(guid);return it!=state_->reservations.end()&&it->second.moving;
 }
 bool PlayerbotGuildEventExecutor::CanRendezvous(uint32 guid,uint32 coordinator,const std::string& event) const {
@@ -414,6 +470,7 @@ void PlayerbotGuildEventExecutor::Update() {
     std::map<uint32,State::Reservation> previous=state_->reservations;
     state_->reservations.clear();
     state_->rosters.clear();
+    state_->events.clear();
     std::map<uint32,ActivityBinding> bindings;
     auto events=CharacterDatabase.PQuery("SELECT event_id,guild_id,event_type,state,target_id,revision,scheduled_at,COALESCE(ends_at,scheduled_at+3600),minimum_members,maximum_members,executor_guid,updated_at,started_at,activity_instance_id FROM guild_society_event WHERE origin<>'legacy' AND state IN ('announced','forming','traveling','active') AND scheduled_at<=%u ORDER BY scheduled_at,event_id LIMIT 24",now+900);
     if(events) do {
@@ -424,6 +481,7 @@ void PlayerbotGuildEventExecutor::Update() {
         e.phaseAt=f[11].GetUInt32();
         e.started=f[12].GetUInt32();e.instance=f[13].GetUInt32();
         if(!Id(e.id)||e.maximum>5||!e.minimum||e.minimum>e.maximum) continue;
+        struct RememberEvent {State& state;CalendarEvent& event;~RememberEvent(){state.events[event.id]=event;}} remember{*state_,e};
         Guild* guild=sGuildMgr.GetGuildById(e.guild);
         if(!guild) {Transition(e,"cancelled","guild_unavailable",now);continue;}
         // Other shared entries remain useful manual appointments. They do not
@@ -498,6 +556,12 @@ void PlayerbotGuildEventExecutor::Update() {
             if(!member||!member->IsAlive()||!DungeonReady(member,DungeonFor(e.target))) rolesReady=false;
         }
         state_->rosters[e.id]=accepted;
+        const bool managed=sLivingActivityCoordinator.EffectEnforcementEnabled();
+        if(managed)for(uint32 guid:accepted) {
+            auto* member=Online(guid);
+            if(member && member->GetPlayerbotAI() && !member->isRealPlayer())
+                sLivingActivityCoordinator.AdmitGuildEvent(guid,{e.id,e.kind,e.guild,e.revision,e.target,e.starts,e.ends});
+        }
         auto bindParticipants=[&]() {
             if(!coordinator||!coordinator->GetGroup()||HasUncommittedHuman(coordinator,accepted)) return;
             for(uint32 guid:accepted) {
@@ -552,8 +616,9 @@ void PlayerbotGuildEventExecutor::Update() {
         if(e.state=="forming"||e.state=="traveling") {
             // Revalidate each native mutation; no generic invitation helper
             // that can silently convert a full five-player group into a raid.
-            FormBotParticipant(e,coordinator,coordinator,accepted);
+            if(!managed)FormBotParticipant(e,coordinator,coordinator,accepted);
             for(uint32 guid:accepted) {
+                if(managed)break; // Shared due queue alone performs participant mutations.
                 Player* member=Online(guid);
                 if(member==coordinator||!EventSafe(member,e)||unavailable.count(guid)) continue;
                 if(coordinator->GetGroup()&&member->GetGroup()==coordinator->GetGroup()) continue;
@@ -576,7 +641,7 @@ void PlayerbotGuildEventExecutor::Update() {
                 if(!EventSafe(member,e)||!coordinator->GetGroup()||member->GetGroup()!=coordinator->GetGroup()) continue;
                 if(e.kind=="dungeon"&&!DungeonReady(member,DungeonFor(e.target))) continue;
                 if(member->IsWithinDistInMap(coordinator,60.0f)) ++assembled;
-                else if(!member->isRealPlayer()&&member->GetPlayerbotAI())
+                else if(!managed&&!member->isRealPlayer()&&member->GetPlayerbotAI())
                     sPlayerbotRendezvousManager.Request(member,coordinator,"guild-event:"+e.id,false);
             }
             if(rolesReady&&assembled>=e.minimum&&assembled==accepted.size()) {
@@ -609,7 +674,7 @@ void PlayerbotGuildEventExecutor::Update() {
                 if(!Transition(e,"active","quest_objective_leader_handoff",now,guid)) break;
                 auto old=state_->reservations.find(e.coordinator);
                 if(old!=state_->reservations.end()) state_->Release(e.coordinator,old->second);
-                coordinator->GetGroup()->ChangeLeader(next->GetObjectGuid());
+                if(!managed)coordinator->GetGroup()->ChangeLeader(next->GetObjectGuid());
                 coordinator=next;e.coordinator=guid;
                 for(uint32 member:accepted) {
                     auto r=state_->reservations.find(member);
@@ -638,6 +703,7 @@ void PlayerbotGuildEventExecutor::Update() {
                 if(e.instance==instance) {proofMasks[actor]|=boss.bit;completedMask|=boss.bit;}
             }
         } while(proofs->NextRow());
+        e.completedMask=completedMask;
         bindParticipants();
         // No direct MoveFollow calls on humans; native party/combat strategies
         // remain responsible for following, fighting and nearby quest use.
@@ -676,7 +742,7 @@ void PlayerbotGuildEventExecutor::Update() {
                     state_->Release(guid,owned->second);state_->reservations.erase(owned);previous.erase(guid);
                 }
             }
-        } else if(rolesReady) state_->ObjectiveRoute(e,coordinator,now,completedMask);
+        } else if(rolesReady) {if(!managed)state_->ObjectiveRoute(e,coordinator,now,completedMask);}
         else {
             auto owner=state_->reservations.find(e.coordinator);
             if(owner!=state_->reservations.end()) state_->Release(e.coordinator,owner->second);
@@ -695,7 +761,9 @@ void PlayerbotGuildEventExecutor::Update() {
         if(it->future.wait_for(std::chrono::seconds(0))!=std::future_status::ready) {++it;continue;}
         std::vector<GuildRouteProposal> proposals;
         try {proposals=it->future.get();} catch(...) {proposals.clear();}
-        state_->ApplyObjectiveRoute(*it,proposals);
+        if(sLivingActivityCoordinator.EffectEnforcementEnabled()) {
+            if(state_->readyRoutes.size()<64)state_->readyRoutes[it->guid]={std::move(*it),std::move(proposals)};
+        } else state_->ApplyObjectiveRoute(*it,proposals);
         it=state_->jobs.erase(it);
     }
     for(auto it=state_->routeRetry.begin();it!=state_->routeRetry.end();)

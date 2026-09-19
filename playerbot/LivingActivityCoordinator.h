@@ -18,7 +18,7 @@
 #include <optional>
 class PlayerbotAI;
 class WorldPacket;
-namespace LivingActivity { struct GuildProcurementStatus; struct CommissionContract; }
+namespace LivingActivity { struct GuildProcurementStatus; struct CommissionContract; struct GuildEventCommitment; }
 
 class LivingActivityCoordinator {
 public:
@@ -143,6 +143,8 @@ public:
     ProfessionProgress AdvanceGuildProcurement(uint32_t actor,const std::string& task);
     ProfessionProgress HandoffGuildProcurement(uint32_t actor,const std::string& task);
     LivingActivity::AdmissionResult AdmitGuildDelivery(uint32_t actor,const LivingActivity::GuildDeliveryJob& job);
+    LivingActivity::AdmissionResult AdmitGuildEvent(uint32_t actor,const LivingActivity::GuildEventCommitment& event);
+    std::string ApproachGuildParticipant(const LivingActivity::Task& task,const LivingActivity::ActionContext& action,uint32_t coordinator);
     bool OwnsGuildDelivery(uint32_t actor,const LivingActivity::GuildDeliveryJob& job) const;
     // World-thread cache only; does not execute, scan the DB or infer delivery.
     std::string GuildDeliveryBlocker(uint32_t actor,const LivingActivity::GuildDeliveryJob& job) const;
@@ -206,6 +208,7 @@ private:
     ProfessionProgress AdvancePartyBank(uint32_t actor,const std::string& task);
     ProfessionProgress AdvancePartyAuction(uint32_t actor,const std::string& task);
     ProfessionProgress AdvancePartyTraining(uint32_t actor,const std::string& task);
+    ProfessionProgress AdvanceGuildEvent(uint32_t actor,const std::string& task);
     std::optional<ProfessionProgress> ReconcilePersonalClaimLocation(uint32_t actor,const std::string& task);
     ProfessionProgress AdvanceItemPreparation(uint32_t actor,const std::string& task,
         LivingActivity::ProfessionStep step,const LivingActivity::ProfessionReagent& need={});

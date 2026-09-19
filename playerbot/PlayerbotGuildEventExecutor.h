@@ -4,12 +4,16 @@
 #include <memory>
 #include <string>
 class Player;
+namespace LivingActivity {struct Task;struct ActionContext;}
 // World-thread coordinator. The worker receives copied travel information only.
 // It never stores Player/Group/Map pointers across updates.
 class PlayerbotGuildEventExecutor {
 public:
     static PlayerbotGuildEventExecutor& instance();
     void Update();
+    // Only the shared due queue calls this with an acknowledged task grant.
+    // It performs one finite participant step, never schedules a second owner.
+    std::string ExecuteParticipant(const LivingActivity::Task& task,const LivingActivity::ActionContext& action);
     bool Reserved(uint32_t guid) const;
     bool OwnsMovement(uint32_t guid) const;
     bool CanRendezvous(uint32_t guid,uint32_t coordinator,const std::string& event) const;
