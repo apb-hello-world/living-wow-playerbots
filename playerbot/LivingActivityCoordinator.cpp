@@ -997,6 +997,10 @@ struct LivingActivityCoordinator::State {
                     if(it->recoverySaveHold) {
                         HoldNativeSave(it->task.actor,false);
                         executionBlockers[it->task.id]="guild_procurement_recovery_changed_refresh_pending";
+                        if(IsPartyAuctionTask(it->task)) {
+                            auto& read=auctionPostReads[it->task.id];read.complete=false;read.retryAt=NowMs()+30000;
+                            executionBlockers[it->task.id]="party_auction_recovery_native_guard_changed";
+                        }
                     }
                     it=pending.erase(it);++refreshed;
                 } else ++it;

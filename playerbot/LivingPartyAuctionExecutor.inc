@@ -119,7 +119,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             if(state->operationDispatching || state->ioPending || state->pending.size()>=state->batch ||
                 state->transitionCount+state->pending.size()>=200000)return stop("party_auction_recovery_backpressure");
             State::Pending write;write.task=std::move(recovery.task);write.plan=std::move(recovery.plan);
-            write.recoverySaveHold=true;write.closureRefreshRevision=saved->revision;
+            write.recoverySaveHold=true;write.closureRefreshRevision=saved->revision;write.closureRefreshPhase=Phase::Executing;
             const auto owned=state->authority.Read(actor);if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
             state->HoldNativeSave(actor,true);state->pending.push_back(std::move(write));state->nextWork=0;
             return stop("party_auction_recovery_receipt_pending");
