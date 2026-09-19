@@ -135,6 +135,40 @@ bool Transition(const CalendarEvent& e,const char* next,const char* reason,uint3
     // grouping/travel or release; a failed read leaves the next poll to reconcile.
     return SavedEventState(e,next,coordinator?coordinator:e.coordinator);
 }
+// One actor, at most one native membership mutation. Joining after a successful
+// leave is a NEW step: its map/group epoch must be inspected again, not reused
+// from the permission that authorized leaving the old party.
+const char* FormBotParticipant(const CalendarEvent& e,Player* coordinator,Player* member,
+    const std::set<uint32>& accepted) {
+    if(!EventSafe(coordinator,e) || !coordinator->GetPlayerbotAI() || coordinator->isRealPlayer() ||
+        !EventSafe(member,e) || !member->GetPlayerbotAI() || member->isRealPlayer() ||
+        !accepted.count(coordinator->GetGUIDLow()) || !accepted.count(member->GetGUIDLow()))
+        return "guild_formation_participant_unavailable";
+    if(HasUncommittedHuman(member,{}))return "guild_formation_human_party_protected";
+    if(member==coordinator) {
+        bool foreignMember=false;
+        if(member->GetGroup())for(const auto& slot:member->GetGroup()->GetMemberSlots())
+            if(!accepted.count(slot.guid.GetCounter()))foreignMember=true;
+        if(!member->GetGroup() || (!foreignMember &&
+            member->GetGroup()->GetLeaderGuid()==member->GetObjectGuid()))return "guild_formation_coordinator_ready";
+        if(accepted.size()<2)return "guild_formation_roster_incomplete";
+        uint32 other=*accepted.begin();if(other==member->GetGUIDLow())other=*accepted.rbegin();
+        auto* requester=Online(other);if(!requester)return "guild_formation_requester_unavailable";
+        member->GetPlayerbotAI()->DoSpecificAction("leave",Event("guild calendar","",requester),true);
+        return member->GetGroup()?"guild_formation_leave_rejected":"guild_formation_group_changed";
+    }
+    if(coordinator->GetGroup() && member->GetGroup()==coordinator->GetGroup())return "guild_formation_joined";
+    if(HasUncommittedHuman(coordinator,accepted))return "guild_formation_coordinator_human_party_protected";
+    if(coordinator->GetGroup() && (coordinator->GetGroup()->IsRaidGroup() || coordinator->GetGroup()->IsFull() ||
+        coordinator->GetGroup()->GetLeaderGuid()!=coordinator->GetObjectGuid()))return "guild_formation_coordinator_group_unavailable";
+    if(member->GetGroup()) {
+        member->GetPlayerbotAI()->DoSpecificAction("leave",Event("guild calendar","",coordinator),true);
+        return member->GetGroup()?"guild_formation_leave_rejected":"guild_formation_group_changed";
+    }
+    member->GetPlayerbotAI()->DoSpecificAction("join",Event("create group","",coordinator),true);
+    return member->GetGroup() && member->GetGroup()==coordinator->GetGroup()?
+        "guild_formation_group_changed":"guild_formation_join_rejected";
+}
 }
 
 struct PlayerbotGuildEventExecutor::State {
@@ -470,15 +504,7 @@ void PlayerbotGuildEventExecutor::Update() {
         if(e.state=="forming"||e.state=="traveling") {
             // Revalidate each native mutation; no generic invitation helper
             // that can silently convert a full five-player group into a raid.
-            bool needsFreshGroup=false;
-            if(coordinator->GetGroup()) for(const auto& slot:coordinator->GetGroup()->GetMemberSlots())
-                if(!accepted.count(slot.guid.GetCounter())) needsFreshGroup=true;
-            if(coordinator->GetGroup()&&(needsFreshGroup||coordinator->GetGroup()->GetLeaderGuid()!=coordinator->GetObjectGuid())) {
-                if(!HasUncommittedHuman(coordinator,{})&&accepted.size()>1) {
-                    uint32 other=*accepted.begin();if(other==e.coordinator) other=*accepted.rbegin();
-                    if(Player* requester=Online(other)) coordinator->GetPlayerbotAI()->DoSpecificAction("leave",Event("guild calendar", "",requester),true);
-                }
-            }
+            FormBotParticipant(e,coordinator,coordinator,accepted);
             for(uint32 guid:accepted) {
                 Player* member=Online(guid);
                 if(member==coordinator||!EventSafe(member,e)||unavailable.count(guid)) continue;
@@ -494,10 +520,7 @@ void PlayerbotGuildEventExecutor::Update() {
                     }
                     continue; // Only the human's normal accept opcode can join them.
                 }
-                if(!MayMutateEventMovement(member->GetPlayerbotAI()!=nullptr,accepted.count(guid)!=0,
-                    EventSafe(member,e),HasUncommittedHuman(member,{}))) continue;
-                if(member->GetGroup()) member->GetPlayerbotAI()->DoSpecificAction("leave",Event("guild calendar","",coordinator),true);
-                if(!member->GetGroup()) member->GetPlayerbotAI()->DoSpecificAction("join",Event("create group","",coordinator),true);
+                FormBotParticipant(e,coordinator,member,accepted);
             }
             uint32 assembled=0;
             for(uint32 guid:accepted) {
