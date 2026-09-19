@@ -1,0 +1,77 @@
+#include "botpch.h"
+#include "LivingNativeTraining.h"
+#include "PlayerbotTraining.h"
+#include "PlayerbotTrainingLesson.h"
+#include "LivingActivityCoordinator.h"
+namespace LivingActivity {
+bool PlanNativePartyTraining(Player& actor,const ObjectGuid& guid,PartyTrainingJob& out,std::string& why) {
+    out={};auto reject=[&](const char* code){why=code;return false;};
+    if(!sLivingActivityCoordinator.OnWorldThread() || !LivingWowFreeBotTraining(&actor))return reject("party_training_bot_required");
+    auto* trainer=actor.GetNPCIfCanInteractWith(guid,UNIT_NPC_FLAG_TRAINER);
+    if(!trainer || !trainer->IsTrainerOf(&actor,false) || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_CLASS ||
+        trainer->GetCreatureInfo()->TrainerClass!=actor.getClass())return reject("party_training_class_trainer_required");
+    std::set<uint32_t> lessons;bool cast=false;
+    for(const auto* list:{trainer->GetTrainerSpells(),trainer->GetTrainerTemplateSpells()})if(list)
+        for(const auto& row:list->spellList) {
+            TrainingLessonQuote q;std::string blocker;
+            if(!PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),guid,row.first,q,blocker))continue;
+            if(!DirectFreeTrainingQuote(q)){cast=true;continue;}
+            lessons.insert(row.first);
+        }
+    if(lessons.empty())return reject(cast?"party_training_cast_capture_required":"party_training_no_direct_lesson");
+    out.trainer=trainer->GetEntry();
+    for(auto lesson:lessons){out.lessons.push_back(lesson);if(out.lessons.size()==64)break;}
+    why.clear();return true;
+}
+bool QuoteNativePartyTraining(Player& actor,const Task& task,TrainingLessonQuote& quote,std::string& why) {
+    quote={};PartyTrainingJob job;
+    if(!sLivingActivityCoordinator.OnWorldThread() || !LivingWowFreeBotTraining(&actor) || actor.GetGUIDLow()!=task.actor ||
+        !ValidatePartyTrainingTask(task,why) || !IsPartyTrainingTask(task) ||
+        !DecodePartyTrainingJob(task.checkpoint.data,job) || job.next>=job.lessons.size()) {
+        why="party_training_saved_lesson_required";return false;
+    }
+    why="party_training_class_trainer_required";
+    for(auto guid:actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("nearest npcs no los")->Get()) {
+        if(guid.GetEntry()!=job.trainer)continue;
+        auto* trainer=actor.GetNPCIfCanInteractWith(guid,UNIT_NPC_FLAG_TRAINER);
+        if(!trainer || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_CLASS ||
+            trainer->GetCreatureInfo()->TrainerClass!=actor.getClass())continue;
+        if(PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),guid,job.lessons[job.next],quote,why) &&
+            PartyTrainingQuoteMatches(task,quote))return true;
+    }
+    return false;
+}
+bool NativePartyTraining::ValidateNative(Player& actor,const OperationRequest& r,std::string& why) {
+    const auto saved=sLivingActivityCoordinator.ReadSavedTask(r.transition.task.id);TrainingLessonQuote current;
+    if(!saved || r.beforeState!=EncodeDirectTrainingQuote(quote) || !r.consumption.empty() ||
+        !r.itemGain.Empty() || !r.mailGain.Empty() || !r.itemTransfer.id.empty() ||
+        !QuoteNativePartyTraining(actor,*saved,current,why) || !SameTrainingLessonQuote(quote,current)) {
+        if(why.empty())why="party_training_native_quote_changed";return false;
+    }
+    why.clear();return true;
+}
+NativeObservation NativePartyTraining::ExecuteNative(Player& actor,const OperationRequest& r) {
+    NativeObservation out;std::string why;
+    if(!ValidateNative(actor,r,why)){out.state=OperationState::Rejected;out.evidence=why;return out;}
+    const auto result=ExecuteNativeTrainingLesson(*actor.GetPlayerbotAI(),quote);
+    const auto it=actor.GetSpellMap().find(quote.lesson);
+    const bool known=it!=actor.GetSpellMap().end() && it->second.state!=PLAYERSPELL_REMOVED && !it->second.disabled;
+    out.nativeReference="trainer_lesson:"+std::to_string(quote.lesson);
+    out.afterState="{\"actor\":"+std::to_string(actor.GetGUIDLow())+",\"lesson\":"+std::to_string(quote.lesson)+
+        ",\"money\":"+std::to_string(actor.GetMoney())+",\"known\":"+(known?"true":"false")+'}';
+    if(result.outcome==TrainingLessonOutcome::Verified && known && actor.GetMoney()==quote.money) {
+        out.state=OperationState::Verified;out.evidence="native_training_exact_spellbook_and_unchanged_money";
+    } else if(result.outcome==TrainingLessonOutcome::Rejected && !known && actor.GetMoney()==quote.money) {
+        out.state=OperationState::Rejected;out.evidence=result.reason;
+    } else out.evidence="native_training_requires_reconciliation";
+    return out;
+}
+std::string NativePartyTraining::PersistedNativeProof(Player& actor,const OperationRequest&,const Task& after) const {
+    const auto it=actor.GetSpellMap().find(quote.lesson);
+    const bool known=it!=actor.GetSpellMap().end() && it->second.state!=PLAYERSPELL_REMOVED && !it->second.disabled;
+    return "SELECT "+SqlValue(after.id)+','+std::to_string(after.revision)+" FROM characters c WHERE c.guid="+
+        std::to_string(actor.GetGUIDLow())+" AND c.money="+std::to_string(actor.GetMoney())+
+        (known?" AND EXISTS(":" AND NOT EXISTS(")+"SELECT 1 FROM character_spell s WHERE s.guid=c.guid AND s.spell="+
+        std::to_string(quote.lesson)+" AND s.disabled=0)";
+}
+}

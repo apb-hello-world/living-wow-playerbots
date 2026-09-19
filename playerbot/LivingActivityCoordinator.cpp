@@ -25,6 +25,7 @@
 #include "LivingPreparationWait.h"
 #include "LivingNativeCraftCapture.h"
 #include "LivingNativeRecipeLearning.h"
+#include "LivingNativeTraining.h"
 #include "LivingNativeGathering.h"
 #include "LivingNativeLootCollection.h"
 #include "LivingRecipeLearningSettlement.h"
@@ -366,6 +367,7 @@ struct LivingActivityCoordinator::State {
     };
     std::map<std::string,RepairRead> repairReads;
     std::map<std::string,RepairRead> vendorReads; // Bounded receipt cache, not another scheduler.
+    std::map<std::string,RepairRead> trainingReads;
     std::atomic<uint64_t> publishedPolicyRevision{0};
     std::future<bool> projectionSend;
     std::set<std::string> projectionIds;
@@ -680,6 +682,7 @@ struct LivingActivityCoordinator::State {
         if(IsRecipeLearningTask(task))return true;
         if(IsPartyRepairTask(task))return true;
         if(IsPartyVendorTask(task))return true;
+        if(IsPartyTrainingTask(task))return true;
         if(!IsProfessionJob(task))return false;
 #ifdef LIVING_ISOLATED_NATIVE_TESTS
         // Historical fault fixtures explicitly drive individual native steps.
@@ -1456,9 +1459,10 @@ void LivingActivityCoordinator::Update() {
                     (saved->second.phase!=Phase::Executing || saved->second.context.boot.empty()) &&
                     (saved->second.checkpoint.step=="commission_mail_send" || saved->second.checkpoint.step=="commission_mail_wait");
                 const auto location=receiptOnly?std::optional<ProfessionProgress>{}:ReconcilePersonalClaimLocation(saved->second.actor,id);
-                const auto preparation=location ? location : (receiptOnly || IsPartyRepairTask(saved->second) || IsPartyVendorTask(saved->second))?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
+                const auto preparation=location ? location : (receiptOnly || IsPartyRepairTask(saved->second) || IsPartyVendorTask(saved->second) || IsPartyTrainingTask(saved->second))?std::optional<ProfessionProgress>{}:AdvanceCriticalPreparation(saved->second.actor,id);
                 auto progress=preparation ? *preparation : IsPartyRepairTask(saved->second) ? AdvancePartyRepair(saved->second.actor,id) :
                     IsPartyVendorTask(saved->second) ? AdvancePartyVendor(saved->second.actor,id) :
+                    IsPartyTrainingTask(saved->second) ? AdvancePartyTraining(saved->second.actor,id) :
                     IsManagedGuildDelivery(saved->second) ? AdvanceGuildDelivery(saved->second.actor,id) :
                     IsRecipeLearningTask(saved->second) ? AdvanceRecipeLearning(saved->second.actor,id) :
                     IsGuildProcurementTask(saved->second) ? AdvanceGuildProcurement(saved->second.actor,id) :
@@ -1969,6 +1973,7 @@ AdmissionResult LivingActivityCoordinator::AdmitEconomyProfession(uint32_t actor
 #include "LivingCriticalPreparation.inc"
 #include "LivingPartyRepairExecutor.inc"
 #include "LivingPartyVendorExecutor.inc"
+#include "LivingPartyTrainingExecutor.inc"
 
 std::optional<LivingActivityCoordinator::ProfessionProgress> LivingActivityCoordinator::DispatchPendingItemService(
     uint32_t actor,const std::string& id) {
@@ -4942,6 +4947,10 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
         observation.state==OperationState::Verified && !HasNativeDamagedEquipment(actor))
         after.phase=Phase::Completed; // Same native save/journal proves final durability AND payment.
     after.checkpoint.blocker = pending.uncertain ? observation.evidence : "";
+    if(request.kind=="party_training_learn" && observation.state==OperationState::Rejected) {
+        after.retryAtMs=executed?after.updatedAtMs+300000:0;
+        after.checkpoint.blocker=executed?observation.evidence:"";
+    }
     if((request.kind=="capacity_vendor_sale" || request.kind=="party_vendor_sale" || request.kind=="guild_bank_deposit" || request.kind=="gather_open" || request.kind=="loot_collect" || request.kind=="critical_equipment_repair" || request.kind=="commission_output_partition") && observation.state==OperationState::Rejected) {
         after.retryAtMs=after.updatedAtMs+300000;
         after.checkpoint.blocker=observation.evidence; // Retain claim, do not hammer a rejecting native service.
@@ -4962,6 +4971,11 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     std::string gainReservation;
     Task recipientTask;
     try {
+        if(IsPartyTrainingTask(after) && request.kind=="party_training_learn" && proof.state==OperationState::Verified) {
+            TrainingLessonQuote quote;
+            if(!DecodeDirectTrainingQuote(request.beforeState,quote) || !AcknowledgePartyTraining(after,quote,proof))
+                throw std::runtime_error("party_training_native_receipt_invalid");
+        }
         if(IsPartyVendorTask(after) && request.kind=="party_vendor_sale" && proof.state==OperationState::Verified) {
             NativeSaleQuote quote;
             if(!DecodeNativeSaleQuote(request.beforeState,quote) || !quote.partyCleanup ||
@@ -5045,6 +5059,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
         }
         pending.uncertain=true; pending.outcome=proof.state=OperationState::Reconciling;
         if(IsPartyVendorTask(after))after.checkpoint.data=saved->second.checkpoint.data;
+        if(IsPartyTrainingTask(after))after.checkpoint.data=saved->second.checkpoint.data;
         proof.evidence="claim_outcome_requires_reconciliation";
         after.phase=Phase::Reconciling; after.checkpoint.blocker=proof.evidence;
         changes.clear();
@@ -5078,6 +5093,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
                 unsigned(write.plan.statements.size()),unsigned(largest),unsigned(write.plan.receiptQuery.size()));
             write.task.phase=Phase::Reconciling; write.task.checkpoint.blocker=proof.evidence;
             if(IsPartyVendorTask(write.task))write.task.checkpoint.data=saved->second.checkpoint.data;
+            if(IsPartyTrainingTask(write.task))write.task.checkpoint.data=saved->second.checkpoint.data;
             write.claims.clear();
             write.recipientTask={};
             // A failed capture cannot acknowledge acquired claims separately.

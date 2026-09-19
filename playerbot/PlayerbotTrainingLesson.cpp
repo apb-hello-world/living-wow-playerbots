@@ -78,7 +78,7 @@ NativeTrainingLessonResult ExecuteNativeTrainingLesson(PlayerbotAI& ai,const Tra
     const ObjectGuid guid(quote.trainer);TrainingLessonQuote current;std::string reason;
     if(!PlanNativeTrainingLesson(ai,guid,quote.lesson,current,reason))return reject(reason.c_str());
     if(!SameTrainingLessonQuote(quote,current))return reject("training_quote_changed");
-    const Effects effects{Mask(Effect::Spell)|Mask(Effect::Money)|Mask(Effect::Social),Lane::Managed,true};
+    const Effects effects{Mask(Effect::Spell)|Mask(Effect::Social)|(quote.cost?Mask(Effect::Money):0),Lane::Managed,true};
     if(!sLivingActivityCoordinator.PermitEffects(ai,effects,"native trainer lesson"))return reject("training_authority_denied");
     auto* bot=ai.GetBot();
     const auto before=ReadLessonState(*bot);

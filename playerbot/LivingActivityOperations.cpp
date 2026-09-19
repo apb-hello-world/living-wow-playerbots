@@ -7,6 +7,7 @@
 #include "LivingLootQuote.h"
 #include "LivingGatherQuote.h"
 #include "LivingRepairQuote.h"
+#include "LivingPartyTraining.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <tuple>
@@ -22,6 +23,16 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(request.kind=="party_training_learn") {
+                TrainingLessonQuote quote;
+                if(!DecodeDirectTrainingQuote(request.beforeState,quote) ||
+                    !PartyTrainingQuoteMatches(request.transition.task,quote) ||
+                    request.transition.task.checkpoint.step!="party_training_learn" ||
+                    request.effects!=(Mask(Effect::Spell)|Mask(Effect::Social)) ||
+                    request.persistence!=NativePersistence::Profession || !request.consumption.empty() ||
+                    !request.itemGain.Empty() || !request.mailGain.Empty() || !request.itemTransfer.id.empty())
+                    throw std::invalid_argument("Exact free direct trainer lesson required");
+            }
             if(request.kind=="commission_output_partition") {
                 CommissionPartitionQuote quote;
                 if(!DecodeCommissionPartition(request.beforeState,quote) || !MatchesCommissionPartition(request.transition.task,quote) ||
@@ -123,6 +134,10 @@ namespace LivingActivity {
         auto reject=[&](const char* code){blocker=code;return false;};
         if(request.kind!=adapter.OperationKind() || request.effects!=adapter.OperationEffects() ||
             request.persistence!=adapter.PersistencePolicy())return reject("native_adapter_mismatch");
+        if(request.kind=="party_training_learn") {
+            if(adapter.DeferredNativeCast())return reject("direct_training_adapter_required");
+            try{NativeBefore(request);}catch(const std::exception&){return reject("invalid_native_training_contract");}
+        }
         const bool transfer=adapter.SupportsItemTransfer() && ValidItemTransfer(request.itemTransfer) &&
             request.kind==ItemTransferKind(request.itemTransfer) && request.effects==Mask(Effect::Inventory) &&
             request.persistence==NativePersistence::Inventory && request.consumption.empty() && request.itemGain.Empty();

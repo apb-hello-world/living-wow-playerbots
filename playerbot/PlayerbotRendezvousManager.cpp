@@ -1678,7 +1678,8 @@ std::optional<LivingActivity::PartyServiceBinding> PlayerbotRendezvousManager::R
     const auto service=session.managedService.service;
     if (!PartyServiceEffects(effects,service) || session.state!="free_time" ||
         session.currentErrand!=(service==PartyServiceBinding::Service::Repair?kErrandRepair:
-            service==PartyServiceBinding::Service::Vendor?kErrandVendor:kErrandMail) ||
+            service==PartyServiceBinding::Service::Vendor?kErrandVendor:
+            service==PartyServiceBinding::Service::Training?kErrandTraining:kErrandMail) ||
         session.freeTimeRecallRequested ||
         session.groupId!=bot->GetGroup()->GetId() ||
         (session.freeTimeUntil.time_since_epoch().count() && now>=session.freeTimeUntil) ||
@@ -2498,6 +2499,24 @@ bool PlayerbotRendezvousManager::StartNextVerifiedErrand(PartySession& session, 
     session.currentErrandId = taskRecord.taskId;
     taskRecord.phase = PartyActivityPhase::preparing;
     taskRecord.outcomeCode.clear();
+    if(session.currentErrand==kErrandTraining && sLivingActivityCoordinator.EffectEnforcementEnabled())
+    {
+        std::string blocker;
+        auto selected=sLivingActivityCoordinator.PreparePartyTrainingService(session.botGuid,taskRecord.taskId,0,blocker);
+        if(selected && bot && bot->GetGroup()) {
+            selected->human=session.playerGuid;
+            selected->session="group:"+std::to_string(bot->GetGroup()->GetId())+":"+
+                std::to_string(bot->GetGroup()->GetLivingActivityIdentity());
+            selected->sessionRevision=bot->GetGroup()->GetLivingActivityRevision();session.managedService=*selected;
+            const auto saved=sLivingActivityCoordinator.ReadSavedTask(selected->root);LivingActivity::PartyTrainingJob job;
+            if(saved && LivingActivity::DecodePartyTrainingJob(saved->checkpoint.data,job))session.currentErrandCapability=job.trainer;
+            session.errandBefore=ObserveErrandState(bot);taskRecord.before=session.errandBefore;
+            taskRecord.outcomeCode="shared_training_service_resumed";session.currentErrandLocal=true;
+            session.errandOperationAccepted=false;PersistPartySession(session);return true;
+        }
+        // No accepted lesson yet: existing party service travel chooses a real
+        // trainer. Admission snapshots its eligible offers only upon arrival.
+    }
     if(session.currentErrand==kErrandVendor && sLivingActivityCoordinator.EffectEnforcementEnabled())
     {
         std::string blocker;
@@ -2856,6 +2875,21 @@ bool PlayerbotRendezvousManager::ExecuteVerifiedErrand(PartySession& session, Pl
             if (!trainer || !trainer->IsTrainerOf(bot, false) ||
                 !LivingWowHasClassTraining(bot, trainer->GetEntry())) continue;
             session.currentErrandCapability = trainer->GetEntry();
+            if(sLivingActivityCoordinator.EffectEnforcementEnabled()) {
+                std::string blocker;
+                auto selected=sLivingActivityCoordinator.PreparePartyTrainingService(session.botGuid,
+                    session.currentErrandId,guid.GetRawValue(),blocker);
+                if(selected && bot->GetGroup()) {
+                    selected->human=session.playerGuid;
+                    selected->session="group:"+std::to_string(bot->GetGroup()->GetId())+":"+
+                        std::to_string(bot->GetGroup()->GetLivingActivityIdentity());
+                    selected->sessionRevision=bot->GetGroup()->GetLivingActivityRevision();session.managedService=*selected;
+                    session.currentErrandLocal=true;PersistPartySession(session);return true;
+                }
+                // Cast-based lessons have not migrated yet. They retain their
+                // native legacy path only when no accepted direct batch exists.
+                if(blocker!="party_training_cast_capture_required" && blocker!="party_training_no_direct_lesson")return false;
+            }
             return ai->DoSpecificAction("trainer", Event("living party training", guid), true);
         }
         return false;
@@ -2926,7 +2960,8 @@ void PlayerbotRendezvousManager::FinishCurrentErrand(PartySession& session, Play
         context->ClearValues("available trainers");
         continueTraining = FindSettlementErrandDestination(bot, kErrandTraining,
             nextTrainer, nextTrainerPosition) &&
-            nextTrainer->GetEntry() != int32(session.currentErrandCapability);
+            (session.managedService.service==LivingActivity::PartyServiceBinding::Service::Training ||
+             nextTrainer->GetEntry() != int32(session.currentErrandCapability));
     }
     if (completed && !continueTraining) session.completedErrandMask |= task;
     else if (!completed) session.deferredErrandMask |= task;
@@ -2999,10 +3034,11 @@ void PlayerbotRendezvousManager::UpdateVerifiedErrand(PartySession& session, Pla
                 bot->GetTransport() || bot->IsNonMeleeSpellCasted(false)) return;
             // Do not discard an atomic journal/save fence to satisfy recall.
             if (!sLivingActivityCoordinator.YieldPartyService(session.botGuid,session.managedService.root)) return;
-            session.freeTimeRecallRequested=true;
+            const bool training=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Training;
+            if(!training || !completed)session.freeTimeRecallRequested=true;
             const bool repair=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Repair;
             const bool vendor=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Vendor;
-            FinishCurrentErrand(session,bot,completed,completed ? (vendor?"verified_vendor_batch":repair?"verified_equipment_repairs":"verified_mail_collection") :
+            FinishCurrentErrand(session,bot,completed,completed ? (training?"verified_direct_training_batch":vendor?"verified_vendor_batch":repair?"verified_equipment_repairs":"verified_mail_collection") :
                 deferred ? "party_service_deferred" : "party_service_permission_ended");
         }
         return;
