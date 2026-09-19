@@ -76,8 +76,8 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
         std::string(requested)=="activity-party-training-cast-v1" ||
         std::string(requested)=="activity-party-training-tier-v1" ||
         std::string(requested)=="activity-party-training-tier-restart-v1" ||
-        std::string(requested)=="activity-party-training-pet-owner-v1" ||
-        std::string(requested)=="activity-party-training-pet-owner-restart-v1" ||
+        std::string(requested)=="activity-party-training-pet-v1" ||
+        std::string(requested)=="activity-party-training-pet-restart-v1" ||
         std::string(requested)=="activity-party-training-mount-v1" ||
         std::string(requested)=="activity-party-training-mount-restart-v1")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyTraining(*state);return;

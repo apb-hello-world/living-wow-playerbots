@@ -44,14 +44,34 @@ trainableSpellMap* TrainableSpellMapValue::Calculate()
 
         TrainerType trainerType = (TrainerType)firstTrainer->TrainerType;
 
-        uint32 spellRequirement;
+        uint32 baseRequirement = 0;
         if (trainerType == TRAINER_TYPE_CLASS || trainerType == TRAINER_TYPE_PETS)
-            spellRequirement = firstTrainer->TrainerClass;
+            baseRequirement = firstTrainer->TrainerClass;
         else if (trainerType == TRAINER_TYPE_MOUNTS)
-            spellRequirement = firstTrainer->TrainerRace;
+            baseRequirement = firstTrainer->TrainerRace;
 
         for (auto& [id, trainerSpell] : trainer_spells->spellList)
         {
+            // Determine this lesson's profession BEFORE looking for a shared
+            // offer. The old loop indexed the map with an uninitialized (then
+            // previous lesson's) requirement for tradeskill trainers.
+            uint32 spellRequirement = baseRequirement;
+            if (trainerType == TRAINER_TYPE_TRADESKILLS)
+            {
+                if (trainerSpell.reqSkill)
+                    spellRequirement = trainerSpell.reqSkill;
+                else
+                {
+#ifdef MANGOSBOT_ZERO
+                    const SpellEntry* spell = sSpellTemplate.LookupEntry<SpellEntry>(trainerSpell.learnedSpell);
+#else
+                    if (trainerSpell.learnedSpell.empty()) continue;
+                    const SpellEntry* spell = sSpellTemplate.LookupEntry<SpellEntry>(trainerSpell.learnedSpell[0]);
+#endif
+                    if (!spell) continue;
+                    spellRequirement = spell->EffectMiscValue[1];
+                }
+            }
             const TrainerSpell* sameTrainerSpell = &trainerSpell;
             for (auto& [otherTrainerSpell, trainers] : (*spellMap)[trainerType][spellRequirement])
             {
@@ -84,23 +104,6 @@ trainableSpellMap* TrainableSpellMapValue::Calculate()
                 break;
             }
 
-            if (trainerType == TRAINER_TYPE_TRADESKILLS)
-            {
-                if (trainerSpell.reqSkill)
-                    spellRequirement = trainerSpell.reqSkill;
-                else
-                {
-                    // exist, already checked at loading
-#ifdef MANGOSBOT_ZERO
-                    SpellEntry const* spell = sSpellTemplate.LookupEntry<SpellEntry>(trainerSpell.learnedSpell);
-#else
-                    SpellEntry const* spell = sSpellTemplate.LookupEntry<SpellEntry>(trainerSpell.learnedSpell[0]);
-#endif
-
-                    spellRequirement = spell->EffectMiscValue[1];
-                }
-            }
-
             for (auto& trainer : trainers)
                 (*spellMap)[trainerType][spellRequirement][sameTrainerSpell].push_back(trainer->Entry);
         }
@@ -124,7 +127,7 @@ std::vector<TrainerSpell const*> TrainableSpellsValue::Calculate()
 
         for (auto& [requirement, trainerSpellList] : spellReqList)
         {
-            if (trainerType == TRAINER_TYPE_CLASS && requirement != bot->getClass())
+            if ((trainerType == TRAINER_TYPE_CLASS || trainerType == TRAINER_TYPE_PETS) && requirement != bot->getClass())
                 continue;
             if (trainerType == TRAINER_TYPE_MOUNTS && requirement != bot->getRace())
                 continue;
@@ -179,7 +182,7 @@ std::vector<int32> AvailableTrainersValue::Calculate()
 
         for (auto& [requirement, trainerSpellList] : spellReqList)
         {
-            if (trainerType == TRAINER_TYPE_CLASS && requirement != bot->getClass())
+            if ((trainerType == TRAINER_TYPE_CLASS || trainerType == TRAINER_TYPE_PETS) && requirement != bot->getClass())
                 continue;
             if (trainerType == TRAINER_TYPE_MOUNTS && requirement != bot->getRace())
                 continue;

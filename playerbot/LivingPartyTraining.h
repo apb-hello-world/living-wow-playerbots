@@ -55,15 +55,18 @@ inline bool PreservePartyTrainingIntent(const Task& before,const Task& after,std
     }
     return true;
 }
+inline bool OwnerOnlyTrainingQuote(const TrainingLessonQuote& q) {
+    return !q.petNumber && !q.petEntry && !q.petLevel && !q.petReplacedSpell && !q.petPoints && !q.petPointCost;
+}
 inline bool DirectFreeTrainingQuote(const TrainingLessonQuote& q) {
-    return ValidTrainingLesson(q) && !q.cast && !q.cost && !q.skill.id && q.skill==TrainingSkillTransition{} && q.teachingSpell==q.lesson &&
+    return OwnerOnlyTrainingQuote(q) && ValidTrainingLesson(q) && !q.cast && !q.cost && !q.skill.id && q.skill==TrainingSkillTransition{} && q.teachingSpell==q.lesson &&
         q.playerSpells==std::vector<uint32_t>{q.lesson} && q.petSpells.empty();
 }
 // Upgrade an already-owned skill only. Native admission supplies the exact
 // DBC tier; no new profession choice, free skill points, or guessed maximum.
 inline bool DirectSkillTrainingQuote(const TrainingLessonQuote& q) {
     const auto& s=q.skill;
-    return ValidTrainingLesson(q) && !q.cast && !q.cost && q.teachingSpell==q.lesson &&
+    return OwnerOnlyTrainingQuote(q) && ValidTrainingLesson(q) && !q.cast && !q.cost && q.teachingSpell==q.lesson &&
         q.playerSpells==std::vector<uint32_t>{q.lesson} && q.petSpells.empty() && s.id &&
         s.before.value && s.before.step && s.before.value<=s.before.maximum &&
         s.after.value==s.before.value && s.after.maximum>s.before.maximum &&
@@ -93,12 +96,18 @@ inline bool FreePlayerTrainingCastQuote(const TrainingLessonQuote& q) {
             s.before.value>s.before.maximum || s.after.value>s.after.maximum ||
             s.after.maximum<s.before.maximum || s.after.value<s.before.value)return false;
     } else if(!(s==TrainingSkillTransition{}))return false;
-    return ValidTrainingLesson(q) && q.cast && !q.cost && q.teachingSpell==q.lesson &&
+    return OwnerOnlyTrainingQuote(q) && ValidTrainingLesson(q) && q.cast && !q.cost && q.teachingSpell==q.lesson &&
         !q.playerSpells.empty() && q.petSpells.empty() &&
         std::find(q.playerSpells.begin(),q.playerSpells.end(),q.lesson)==q.playerSpells.end();
 }
+inline bool FreePetTrainingQuote(const TrainingLessonQuote& q) {
+    return ValidTrainingLesson(q) && q.cast && !q.cost && q.teachingSpell==q.lesson &&
+        q.playerSpells.empty() && q.petSpells.size()==1 && q.petSpells[0]!=q.lesson &&
+        q.skill==TrainingSkillTransition{} && q.petNumber && q.petEntry && q.petLevel && q.petLevel<=70 &&
+        q.petPoints>=0 && q.petPointCost>=0 && q.petPointCost<=q.petPoints && q.petReplacedSpell!=q.petSpells[0];
+}
 inline bool ManagedTrainingQuote(const TrainingLessonQuote& q) {
-    return DirectFreeTrainingQuote(q) || DirectSkillTrainingQuote(q) || FreePlayerTrainingCastQuote(q);
+    return DirectFreeTrainingQuote(q) || DirectSkillTrainingQuote(q) || FreePlayerTrainingCastQuote(q) || FreePetTrainingQuote(q);
 }
 // Native _SaveSpells omits dependent abilities. Each omitted target must be
 // reachable through native non-auto learning edges from a saved quoted target.
@@ -115,6 +124,12 @@ inline bool TrainingPersistenceTargets(const std::set<uint32_t>& present,const s
     return reached==present;
 }
 inline std::string EncodePartyTrainingQuote(const TrainingLessonQuote& q) {
+    if(!q.petSpells.empty())return "{\"workflow\":\"training_pet_v1\",\"actor\":"+std::to_string(q.actor)+
+        ",\"trainer\":"+std::to_string(q.trainer)+",\"lesson\":"+std::to_string(q.lesson)+",\"money\":"+std::to_string(q.money)+
+        ",\"pet\":"+std::to_string(q.pet)+",\"pet_number\":"+std::to_string(q.petNumber)+",\"pet_entry\":"+std::to_string(q.petEntry)+
+        ",\"pet_level\":"+std::to_string(q.petLevel)+",\"pet_points\":"+std::to_string(q.petPoints)+
+        ",\"pet_point_cost\":"+std::to_string(q.petPointCost)+",\"replaced\":"+std::to_string(q.petReplacedSpell)+
+        ",\"learned\":"+std::to_string(q.petSpells[0])+'}';
     if(!q.cast && !q.skill.id)return EncodeDirectTrainingQuote(q); // Historical journal fingerprint.
     std::string out="{\"workflow\":\""+std::string(!q.cast?"training_direct_skill_v1":q.skill.id?"training_cast_v2":"training_cast_v1")+"\",\"actor\":"+std::to_string(q.actor)+
         ",\"trainer\":"+std::to_string(q.trainer)+",\"lesson\":"+std::to_string(q.lesson)+
@@ -136,6 +151,15 @@ inline bool DecodePartyTrainingQuote(const std::string& value,TrainingLessonQuot
     try {
         boost::property_tree::ptree p;std::istringstream in(value);boost::property_tree::read_json(in,p);
         const auto workflow=p.get<std::string>("workflow");
+        if(workflow=="training_pet_v1") {
+            TrainingLessonQuote q;q.cast=true;q.actor=p.get<uint32_t>("actor");q.trainer=p.get<uint64_t>("trainer");
+            q.lesson=q.teachingSpell=p.get<uint32_t>("lesson");q.money=p.get<uint32_t>("money");q.pet=p.get<uint64_t>("pet");
+            q.petNumber=p.get<uint32_t>("pet_number");q.petEntry=p.get<uint32_t>("pet_entry");q.petLevel=p.get<uint32_t>("pet_level");
+            q.petPoints=p.get<int32_t>("pet_points");q.petPointCost=p.get<int32_t>("pet_point_cost");
+            q.petReplacedSpell=p.get<uint32_t>("replaced");q.petSpells={p.get<uint32_t>("learned")};
+            if(!FreePetTrainingQuote(q) || EncodePartyTrainingQuote(q)!=value)return false;
+            out=std::move(q);return true;
+        }
         if(workflow!="training_cast_v1" && workflow!="training_cast_v2" && workflow!="training_direct_skill_v1")return false;
         TrainingLessonQuote q;q.cast=workflow!="training_direct_skill_v1";q.actor=p.get<uint32_t>("actor");q.trainer=p.get<uint64_t>("trainer");
         q.lesson=q.teachingSpell=p.get<uint32_t>("lesson");q.money=p.get<uint32_t>("money");q.pet=p.get<uint64_t>("pet");
@@ -153,16 +177,30 @@ inline bool DecodePartyTrainingQuote(const std::string& value,TrainingLessonQuot
     }catch(...){return false;}
 }
 inline const char* PartyTrainingEvidence(const TrainingLessonQuote& q) {
+    if(!q.petSpells.empty())return "native_training_exact_pet_spellbook_and_points";
     return !q.cast && q.skill.id?"native_training_exact_direct_skill_and_spellbook":q.skill.id?"native_training_exact_cast_skill_and_spellbook":
         q.cast?"native_training_exact_cast_and_spellbook":"native_training_exact_spellbook_and_unchanged_money";
 }
 inline bool VerifiedPartyTrainingEvidence(const std::string& evidence) {
-    return evidence=="native_training_exact_direct_skill_and_spellbook" || evidence=="native_training_exact_cast_skill_and_spellbook" || evidence=="native_training_exact_cast_and_spellbook" ||
+    return evidence=="native_training_exact_pet_spellbook_and_points" || evidence=="native_training_exact_direct_skill_and_spellbook" || evidence=="native_training_exact_cast_skill_and_spellbook" || evidence=="native_training_exact_cast_and_spellbook" ||
         evidence=="native_training_exact_spellbook_and_unchanged_money";
 }
 inline bool SameTrainingState(const TrainingLessonState& a,const TrainingLessonState& b) {
     return a.actor==b.actor && a.money==b.money && a.pet==b.pet &&
         a.playerSpells==b.playerSpells && a.petSpells==b.petSpells;
+}
+inline OperationState VerifyPetTraining(const TrainingLessonQuote& q,const TrainingLessonState& before,
+    const TrainingLessonState& after,uint32_t numberBefore,uint32_t numberAfter,int32_t pointsBefore,int32_t pointsAfter,std::string& why) {
+    why="native_training_pet_requires_reconciliation";
+    if(!FreePetTrainingQuote(q) || !TrainingLessonReady(q,before) || q.petNumber!=numberBefore ||
+        numberBefore!=numberAfter || q.petPoints!=pointsBefore ||
+        (q.petReplacedSpell && !before.petSpells.count(q.petReplacedSpell)))return OperationState::Reconciling;
+    if(SameTrainingState(before,after) && pointsBefore==pointsAfter) {
+        why="native_training_pet_rejected_without_effect";return OperationState::Rejected;
+    }
+    auto expected=before;expected.petSpells.erase(q.petReplacedSpell);expected.petSpells.insert(q.petSpells[0]);
+    if(!SameTrainingState(expected,after) || pointsAfter!=pointsBefore-q.petPointCost)return OperationState::Reconciling;
+    why=PartyTrainingEvidence(q);return OperationState::Verified;
 }
 inline OperationState VerifyDirectTrainingSkill(const TrainingLessonQuote& q,
     const TrainingLessonState& before,const TrainingLessonState& after,

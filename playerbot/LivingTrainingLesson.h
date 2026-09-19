@@ -22,6 +22,10 @@ struct TrainingLessonQuote {
     bool cast=false;
     std::vector<uint32_t> playerSpells, petSpells;
     TrainingSkillTransition skill;
+    // Stable database pet identity and exact native training-point/rank delta.
+    // Empty for historical owner lessons; never inferred from a pet GUID alone.
+    uint32_t petNumber=0,petEntry=0,petLevel=0,petReplacedSpell=0;
+    int32_t petPoints=0,petPointCost=0;
 };
 struct TrainingLessonState {
     uint32_t actor=0, money=0;
@@ -42,7 +46,9 @@ inline bool ValidTrainingLesson(const TrainingLessonQuote& q) {
 inline bool SameTrainingLessonQuote(const TrainingLessonQuote& a,const TrainingLessonQuote& b) {
     return a.actor==b.actor && a.lesson==b.lesson && a.teachingSpell==b.teachingSpell &&
         a.money==b.money && a.cost==b.cost && a.trainer==b.trainer && a.pet==b.pet &&
-        a.cast==b.cast && a.playerSpells==b.playerSpells && a.petSpells==b.petSpells && a.skill==b.skill;
+        a.cast==b.cast && a.playerSpells==b.playerSpells && a.petSpells==b.petSpells && a.skill==b.skill &&
+        a.petNumber==b.petNumber && a.petEntry==b.petEntry && a.petLevel==b.petLevel &&
+        a.petReplacedSpell==b.petReplacedSpell && a.petPoints==b.petPoints && a.petPointCost==b.petPointCost;
 }
 inline bool TrainingLessonSubjectMatches(const TrainingLessonQuote& q,const TrainingLessonState& s) {
     return s.actor==q.actor && (q.petSpells.empty() || s.pet==q.pet);

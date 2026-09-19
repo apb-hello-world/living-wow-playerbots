@@ -43,6 +43,7 @@ bool SupportedNativeTrainingCast(const TrainingLessonQuote& q,std::string& why) 
 }
 bool CompleteNativeTrainingSkillQuote(Player& actor,TrainingLessonQuote& quote,std::string& why) {
     quote.skill={};
+    if(!quote.petSpells.empty())return CompleteNativePetTrainingQuote(actor,quote,why);
     if(!quote.cast) {
         const auto* trainer=actor.GetMap()?actor.GetMap()->GetCreature(ObjectGuid(quote.trainer)):nullptr;
         if(!trainer || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_TRADESKILLS)return true;

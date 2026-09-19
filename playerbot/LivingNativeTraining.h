@@ -8,13 +8,16 @@ bool QuoteNativePartyTraining(Player&,const Task&,TrainingLessonQuote&,std::stri
 bool SupportedNativeTrainingCast(const TrainingLessonQuote&,std::string&);
 bool CompleteNativeTrainingSkillQuote(Player&,TrainingLessonQuote&,std::string&);
 NativeObservation ExecuteNativeDirectTrainingSkill(Player&,const TrainingLessonQuote&);
+bool CompleteNativePetTrainingQuote(Player&,TrainingLessonQuote&,std::string&);
+NativeObservation ExecuteNativePetTraining(Player&,const TrainingLessonQuote&);
+std::string PersistedPetTrainingProof(Player&,const TrainingLessonQuote&,const Task&);
 class NativePartyTraining final:public NativeOperationAdapter {
 public:
     explicit NativePartyTraining(TrainingLessonQuote value):quote(std::move(value)){}
     const char* OperationKind() const override{return "party_training_learn";}
     uint32_t OperationEffects() const override{return Mask(Effect::Spell)|Mask(Effect::Social);}
     NativePersistence PersistencePolicy() const override{return NativePersistence::Profession;}
-    bool DeferredNativeCast() const override{return quote.cast;}
+    bool DeferredNativeCast() const override{return quote.cast && quote.petSpells.empty();}
     std::shared_ptr<NativeCraftCast> ReserveNativeCast(const OperationRequest&,const Task&,const ActionContext&) const override;
     bool ValidateNative(Player&,const OperationRequest&,std::string&) override;
     NativeObservation ExecuteNative(Player&,const OperationRequest&) override;

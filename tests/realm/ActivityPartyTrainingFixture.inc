@@ -18,8 +18,8 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
     const bool mountReplay=suite=="activity-party-training-mount-restart-v1";
     const bool tierReplay=suite=="activity-party-training-tier-restart-v1";
     const bool tier=tierReplay || suite=="activity-party-training-tier-v1";
-    const bool petReplay=suite=="activity-party-training-pet-owner-restart-v1";
-    const bool petOwner=petReplay || suite=="activity-party-training-pet-owner-v1";
+    const bool petReplay=suite=="activity-party-training-pet-restart-v1";
+    const bool petOwner=petReplay || suite=="activity-party-training-pet-v1"; // Historical local name; this is actual pet learning.
     const bool mount=mountReplay || suite=="activity-party-training-mount-v1";
     const bool cast=mount || suite=="activity-party-training-cast-v1";
     const bool restart=travel || suite=="activity-party-training-resume-v1";
@@ -30,12 +30,19 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
         for(const auto& row:bot->GetSpellMap())if(row.second.state!=PLAYERSPELL_REMOVED && !row.second.disabled)known.insert(row.first);
         std::string out;for(auto id:known){if(!out.empty())out+=',';out+=std::to_string(id);}return out;
     };
+    auto petSpells=[&]() {
+        std::string out;if(auto* pet=bot->GetPet())for(const auto& row:pet->m_spells)if(row.second.state!=PETSPELL_REMOVED) {
+            if(!out.empty())out+=',';out+=std::to_string(row.first);
+        }
+        return out;
+    };
     auto emit=[&](bool passed,const std::string& why) {
         f.report.put("suite",suite);f.report.put("boot",state.boot);f.report.put("actor",f.actor);
         f.report.put("leader",f.leader);f.report.put("task",f.task);f.report.put("failure",why);f.report.put("blocker",f.blocker);
         f.report.put("outcome",passed?((restart || cast || tier || petOwner)?"passed":"checkpoint"):"failed");
         f.report.put("test_only",true);f.report.put("independent_audit_required",true);
-        if(bot){f.report.put("money_after",bot->GetMoney());f.report.put("spells_after",spells());}
+        if(bot){f.report.put("money_after",bot->GetMoney());f.report.put("spells_after",spells());
+            if(petOwner && bot->GetPet()){f.report.put("pet_spells_after",petSpells());f.report.put("pet_points_after",bot->GetPet()->m_TrainingPoints);}}
         if(passed)state.enforceEffects.store(false);
         if(!PartyMailFixture().done && (!passed || restart || cast || tier || petOwner))PartyMailFixture().Close();
         std::ofstream out("/isolated/evidence/activity-party-training-"+state.boot+".json");out<<Json(f.report);out.close();
@@ -98,8 +105,10 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
             require(row && DecodeTaskProjection(row->Fetch()[0].GetCppString(),saved,decode) && saved.id==f.task &&
                 saved.actor==f.actor && saved.source=="party_training" && saved.phase==Phase::Completed &&
                 !bot->GetGroup() && !leader->GetGroup(),"pet_owner_completed_task_and_party_cleanup_required");
-            require(spells()==f.report.template get<std::string>("spells_after") &&
-                bot->GetMoney()==f.report.template get<uint32_t>("money_after"),"pet_owner_restart_preserves_spells_and_money");
+            require(spells()==f.report.template get<std::string>("spells_after") && bot->GetPet() &&
+                bot->GetMoney()==f.report.template get<uint32_t>("money_after") && petSpells()==f.report.template get<std::string>("pet_spells_after") &&
+                bot->GetPet()->m_TrainingPoints==f.report.template get<int32_t>("pet_points_after") &&
+                bot->GetPet()->GetCharmInfo()->GetPetNumber()==f.report.template get<uint32_t>("pet_number"),"pet_restart_preserves_exact_subject_and_spells");
             f.report.put("pet_owner_prior_boot",f.report.template get<std::string>("boot"));
             f.report.put("pet_owner_restart_verified",true);emit(true,"");return;
         }
@@ -153,6 +162,14 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
                     bot->GetSkillValuePure(SKILL_ALCHEMY)>0 && bot->GetSkillMaxPure(SKILL_ALCHEMY)==75):
                     cast?(bot->getClass()==CLASS_PALADIN && bot->GetLevel()>=4):
                     (bot->getClass()==CLASS_WARLOCK && bot->GetLevel()>=20),"explicit_class_training_fixture_required");
+                if(petOwner) {
+                    auto* pet=bot->GetPet();require(pet && pet->IsAlive() && pet->GetCharmInfo() && pet->HasSpell(4187),"existing_known_pet_fixture_required");
+                    f.report.put("test_pet_spells_before_unlearning",petSpells());f.report.put("pet_number",pet->GetCharmInfo()->GetPetNumber());
+                    f.report.put("pet_points_before",pet->m_TrainingPoints);f.report.put("test_unlearned_pet_spell",4187);
+                    require(pet->unlearnSpell(4187,false,false),"test_pet_spell_unlearn_required");
+                    pet->SavePetToDB(PET_SAVE_AS_CURRENT,bot); // Explicit copied fixture input, not gameplay.
+                    f.report.put("pet_spells_before",petSpells());
+                }
                 auto target=(tier || petOwner)?WorldDatabase.PQuery("SELECT c.guid,c.id,c.position_x,c.position_y,c.position_z,c.orientation FROM creature c JOIN creature_template t ON t.Entry=c.id WHERE t.TrainerType=%u AND t.TrainerTemplateId=%u AND c.map='%u' ORDER BY POW(c.position_x-%.4f,2)+POW(c.position_y-%.4f,2) LIMIT 1",
                     petOwner?3u:2u,petOwner?100u:1050u,
                     bot->GetMapId(),bot->GetPositionX(),bot->GetPositionY()):
@@ -223,8 +240,9 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
                 for(auto lesson:planned.lessons) {
                     TrainingLessonQuote q;
                     require(PlanNativeTrainingLesson(*bot->GetPlayerbotAI(),ObjectGuid(f.trainer),lesson,q,f.blocker) &&
-                        DirectFreeTrainingQuote(q),"pet_trainer_teaches_owner_not_pet");
+                        CompleteNativeTrainingSkillQuote(*bot,q,f.blocker) && FreePetTrainingQuote(q),"pet_trainer_requires_exact_pet_contract");
                 }
+                require(planned.lessons==std::vector<uint32_t>{4195},"single_copied_pet_lesson_required");
                 f.report.put("pet_owner_native_offer",true);
             }
             require(petOwner || tier || mount || (cast?std::find(planned.lessons.begin(),planned.lessons.end(),10321)!=planned.lessons.end():

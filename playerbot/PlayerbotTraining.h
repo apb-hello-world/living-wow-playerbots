@@ -20,9 +20,9 @@ inline bool LivingWowCanTrainSpell(Player* bot, TrainerSpell const* spell, Unit*
     for (uint32 learned : spell->learnedSpell)
         if (learned && !sPlayerbotOrganicEconomy.CanLearnProfessionSpell(bot, learned)) return false;
 #endif
-    // Direct TBC pet-trainer offers teach the OWNER a Beast Training ability.
-    // Its eventual cast targets a pet, but that is not this trainer operation.
-    // Only a teaching cast which actually affects the pet needs pet eligibility.
+    // Inspect native cast mode, not the NPC's label. The pinned core treats
+    // LEARN_SPELL-to-pet offers as casts; those require a living eligible pet.
+    // A genuine direct owner lesson must not borrow future cast prerequisites.
     const SpellEntry* teaching = sSpellTemplate.LookupEntry<SpellEntry>(spell->spell);
     if (!teaching) return false;
 #ifdef MANGOSBOT_ZERO

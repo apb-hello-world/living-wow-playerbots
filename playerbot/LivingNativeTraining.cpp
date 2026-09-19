@@ -17,7 +17,7 @@ bool PlanNativePartyTraining(Player& actor,const ObjectGuid& guid,PartyTrainingJ
             TrainingLessonQuote q;std::string blocker;
             if(!PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),guid,row.first,q,blocker))continue;
             if(!CompleteNativeTrainingSkillQuote(actor,q,blocker)){cast=true;continue;}
-            if(!DirectFreeTrainingQuote(q) && !DirectSkillTrainingQuote(q) && !SupportedNativeTrainingCast(q,blocker)){cast=true;continue;}
+            if(!DirectFreeTrainingQuote(q) && !DirectSkillTrainingQuote(q) && !FreePetTrainingQuote(q) && !SupportedNativeTrainingCast(q,blocker)){cast=true;continue;}
             lessons.insert(row.first);
         }
     if(lessons.empty())return reject(cast?"party_training_cast_capture_required":"party_training_no_direct_lesson");
@@ -44,7 +44,7 @@ bool QuoteNativePartyTraining(Player& actor,const Task& task,TrainingLessonQuote
                 why="party_training_existing_profession_tier_required";return false;
             }
             if(PartyTrainingQuoteMatches(task,quote) &&
-                (DirectFreeTrainingQuote(quote) || DirectSkillTrainingQuote(quote) || SupportedNativeTrainingCast(quote,why)))return true;
+                (DirectFreeTrainingQuote(quote) || DirectSkillTrainingQuote(quote) || FreePetTrainingQuote(quote) || SupportedNativeTrainingCast(quote,why)))return true;
             why="party_training_native_quote_changed";
         }
     }
@@ -61,8 +61,9 @@ bool NativePartyTraining::ValidateNative(Player& actor,const OperationRequest& r
 }
 NativeObservation NativePartyTraining::ExecuteNative(Player& actor,const OperationRequest& r) {
     NativeObservation out;std::string why;
-    if(quote.cast){out.state=OperationState::Rejected;out.evidence="training_cast_requires_deferred_dispatch";return out;}
+    if(quote.cast && quote.petSpells.empty()){out.state=OperationState::Rejected;out.evidence="training_cast_requires_deferred_dispatch";return out;}
     if(!ValidateNative(actor,r,why)){out.state=OperationState::Rejected;out.evidence=why;return out;}
+    if(!quote.petSpells.empty())return ExecuteNativePetTraining(actor,quote);
     if(quote.skill.id)return ExecuteNativeDirectTrainingSkill(actor,quote);
     const auto result=ExecuteNativeTrainingLesson(*actor.GetPlayerbotAI(),quote);
     const auto it=actor.GetSpellMap().find(quote.lesson);
@@ -78,6 +79,7 @@ NativeObservation NativePartyTraining::ExecuteNative(Player& actor,const Operati
     return out;
 }
 std::string NativePartyTraining::PersistedNativeProof(Player& actor,const OperationRequest&,const Task& after) const {
+    if(!quote.petSpells.empty())return PersistedPetTrainingProof(actor,quote,after);
     const auto it=actor.GetSpellMap().find(quote.lesson);
     const bool known=it!=actor.GetSpellMap().end() && it->second.state!=PLAYERSPELL_REMOVED && !it->second.disabled;
     std::string proof="SELECT "+SqlValue(after.id)+','+std::to_string(after.revision)+" FROM characters c WHERE c.guid="+
