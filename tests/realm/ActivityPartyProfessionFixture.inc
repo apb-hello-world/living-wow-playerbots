@@ -4,7 +4,7 @@ namespace {
 template<class State> void RunIsolatedPartyProfession(State& state) {
     struct Fixture {
         uint32_t actor=0,leader=0;uint64_t deadline=0,waitAt=0,diagnosticAt=0;
-        bool logged=false,prepared=false,authorized=false,recalled=false,reauthorized=false,restored=false,left=false;
+        bool logged=false,prepared=false,authorized=false,recalled=false,reauthorized=false,restored=false,left=false,castRecalled=false;
         std::string task,blocker;boost::property_tree::ptree report;
     };
     static Fixture f;
@@ -12,7 +12,8 @@ template<class State> void RunIsolatedPartyProfession(State& state) {
     state.fixtureNext=NowMs()+250;
     const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     const bool restart=suite=="activity-party-profession-resume-v1";
-    const bool localComplete=suite=="activity-party-profession-complete-v1";
+    const bool inFlightRecall=suite=="activity-party-profession-recall-v1";
+    const bool localComplete=suite=="activity-party-profession-complete-v1" || inFlightRecall;
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     Player* bot=nullptr;
     auto inventory=[&]() {
@@ -148,6 +149,24 @@ template<class State> void RunIsolatedPartyProfession(State& state) {
             if(!sPlayerbotRendezvousManager.BeginPartyFreeTime(bot,leader,"isolated_craft_fresh_permission"))return;
             f.report.put("pre_cast_recall_wait_ms",NowMs()-f.waitAt);f.reauthorized=true;return;
         }
+        if(inFlightRecall && !f.castRecalled) {
+            for(const auto& row:state.operations) {
+                const auto& pending=row.second;
+                if(pending.request.transition.task.id!=f.task || !pending.dispatched || !pending.craftAwaiting || !pending.craft)continue;
+                const auto capture=std::dynamic_pointer_cast<NativeProfessionCraftCast>(pending.craft);
+                require(capture && capture->Capture()->Phase()==CraftCapturePhase::Casting &&
+                    bot->GetCurrentSpell(CURRENT_GENERIC_SPELL) && bot->GetCurrentSpell(CURRENT_GENERIC_SPELL)->m_spellInfo->Id==2330,
+                    "recall_targets_actual_pending_native_craft");
+                require(sLivingActivityCoordinator.DefersNativeSave(f.actor),"pending_native_craft_save_fenced");
+                require(sPlayerbotRendezvousManager.ResumePartyAssist(bot,leader,"isolated_craft_during_native_cast"),"native_in_flight_recall");
+                require(!sPlayerbotRendezvousManager.ReadPartyService(bot,*saved) &&
+                    !sLivingActivityCoordinator.YieldPartyService(f.actor,f.task),"recall_revokes_new_work_without_discarding_atomic_cast");
+                f.castRecalled=true;f.waitAt=NowMs();f.report.put("in_flight_recalled_operation",row.first);
+                return;
+            }
+            require(saved->phase!=Phase::Verifying && saved->phase!=Phase::Completed,"in_flight_recall_must_not_miss_cast");
+            return;
+        }
         if(saved->phase!=(localComplete?Phase::Completed:Phase::Verifying) || !state.operations.empty() || sLivingActivityCoordinator.DefersNativeSave(f.actor))return;
         require(operations()==1 && bot->GetItemCount(118,true)==f.report.template get<uint32_t>("output_before")+1 &&
             bot->GetMoney()==f.report.template get<uint32_t>("money_before"),"one_native_craft_no_money_change");
@@ -155,6 +174,11 @@ template<class State> void RunIsolatedPartyProfession(State& state) {
         if(localComplete) {
             require(bot->GetGroup() && bot->GetGroup()==leader->GetGroup() && leader->isRealPlayer(),"settles_without_leaving_human_party");
             f.report.put("completed_in_same_human_party",true);
+        }
+        if(inFlightRecall) {
+            require(!sPlayerbotRendezvousManager.ReadPartyService(bot,*saved),"no_new_craft_permission_after_in_flight_recall");
+            if(NowMs()-f.waitAt<10000)return;
+            f.report.put("in_flight_recall_wait_ms",NowMs()-f.waitAt);
         }
         f.report.put("checkpoint_revision",saved->revision);f.report.put("checkpoint_phase",Name(saved->phase));
         bot->SaveToDB();leader->SaveToDB();emit(true,"");

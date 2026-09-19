@@ -702,6 +702,7 @@ struct LivingActivityCoordinator::State {
             std::string(mode)!="activity-party-profession-checkpoint-v1" &&
             std::string(mode)!="activity-party-profession-resume-v1" &&
             std::string(mode)!="activity-party-profession-complete-v1" &&
+            std::string(mode)!="activity-party-profession-recall-v1" &&
             std::string(mode)!="activity-profession-cohort-v1" &&
             std::string(mode)!="activity-commission-mail-v1" &&
             std::string(mode)!="activity-commission-broker-v1" &&
