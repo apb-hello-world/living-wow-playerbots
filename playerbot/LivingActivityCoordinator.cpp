@@ -701,6 +701,7 @@ struct LivingActivityCoordinator::State {
             std::string(mode)!="activity-profession-auction-partial-v1" &&
             std::string(mode)!="activity-party-profession-checkpoint-v1" &&
             std::string(mode)!="activity-party-profession-resume-v1" &&
+            std::string(mode)!="activity-party-profession-complete-v1" &&
             std::string(mode)!="activity-profession-cohort-v1" &&
             std::string(mode)!="activity-commission-mail-v1" &&
             std::string(mode)!="activity-commission-broker-v1" &&
@@ -3214,6 +3215,16 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         return advance(Phase::Reconciling);
     }
     if(saved->phase==Phase::Reconciling) return advance(Phase::Preparing);
+    // Finishing bookkeeping for an already verified personal craft is not
+    // permission to cast again. A consumed party window must not strand its
+    // earned result until the bot leaves the party or the realm restarts.
+    if(saved->source=="profession_job" && saved->phase==Phase::Verifying &&
+        NativePartyProtection(*bot)==PartyProtection::Human) {
+        ProfessionSnapshot settled;std::string why;
+        if(!ReadProfessionSnapshot(actor,id,saved->revision,settled,why))return stop(why);
+        if(NextProfessionStep(*saved,settled).step==ProfessionStep::Finalize)
+            return stop(SettleProfessionJob(actor,id,saved->revision,NewId()).blocker);
+    }
     if(NativePartyProtection(*bot)==PartyProtection::Human) {
         const auto scope=sPlayerbotRendezvousManager.ReadPartyService(bot,*saved);
         if(!scope)return stop("human_party_executor_not_migrated");

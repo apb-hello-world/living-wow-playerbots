@@ -88,6 +88,7 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyAuction(*state);return;
     }
     if(requested && (std::string(requested)=="activity-party-profession-checkpoint-v1" ||
+        std::string(requested)=="activity-party-profession-complete-v1" ||
         std::string(requested)=="activity-party-profession-resume-v1")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyProfession(*state);return;
     }

@@ -12,6 +12,7 @@ template<class State> void RunIsolatedPartyProfession(State& state) {
     state.fixtureNext=NowMs()+250;
     const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     const bool restart=suite=="activity-party-profession-resume-v1";
+    const bool localComplete=suite=="activity-party-profession-complete-v1";
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     Player* bot=nullptr;
     auto inventory=[&]() {
@@ -29,15 +30,15 @@ template<class State> void RunIsolatedPartyProfession(State& state) {
     };
     auto emit=[&](bool passed,const std::string& why) {
         f.report.put("suite",suite);f.report.put("boot",state.boot);f.report.put("actor",f.actor);f.report.put("leader",f.leader);
-        f.report.put("task",f.task);f.report.put("outcome",passed?(restart?"passed":"checkpoint"):"failed");
+        f.report.put("task",f.task);f.report.put("outcome",passed?((restart || localComplete)?"passed":"checkpoint"):"failed");
         f.report.put("failure",why);f.report.put("blocker",f.blocker);f.report.put("test_only",true);
         f.report.put("independent_audit_required",true);
         if(bot){f.report.put("money_after",bot->GetMoney());f.report.put("inventory_after",inventory());
             f.report.put("skill_after",bot->GetSkillValuePure(SKILL_ALCHEMY));f.report.put("activity_json",sLivingActivityCoordinator.ActorJson(f.actor));}
         if(passed)state.enforceEffects.store(false);
-        if(!PartyMailFixture().done && !passed)PartyMailFixture().Close();
+        if(!PartyMailFixture().done && (!passed || localComplete))PartyMailFixture().Close();
         std::ofstream out("/isolated/evidence/activity-party-profession-"+state.boot+".json");out<<Json(f.report);out.close();
-        if(passed && !restart){std::ofstream checkpoint("/isolated/evidence/party-profession-checkpoint.json");checkpoint<<Json(f.report);checkpoint.close();
+        if(passed && !restart && !localComplete){std::ofstream checkpoint("/isolated/evidence/party-profession-checkpoint.json");checkpoint<<Json(f.report);checkpoint.close();
             if(!checkpoint)sLog.outError("Party profession checkpoint write failed");}
         state.fixtureFinished=true;sLog.outString("Living isolated party profession: %s",Json(f.report).c_str());
     };
@@ -147,10 +148,14 @@ template<class State> void RunIsolatedPartyProfession(State& state) {
             if(!sPlayerbotRendezvousManager.BeginPartyFreeTime(bot,leader,"isolated_craft_fresh_permission"))return;
             f.report.put("pre_cast_recall_wait_ms",NowMs()-f.waitAt);f.reauthorized=true;return;
         }
-        if(saved->phase!=Phase::Verifying || !state.operations.empty() || sLivingActivityCoordinator.DefersNativeSave(f.actor))return;
+        if(saved->phase!=(localComplete?Phase::Completed:Phase::Verifying) || !state.operations.empty() || sLivingActivityCoordinator.DefersNativeSave(f.actor))return;
         require(operations()==1 && bot->GetItemCount(118,true)==f.report.template get<uint32_t>("output_before")+1 &&
             bot->GetMoney()==f.report.template get<uint32_t>("money_before"),"one_native_craft_no_money_change");
         require(bot->GetSkillValuePure(SKILL_ALCHEMY)>f.report.template get<uint32_t>("skill_before"),"actual_native_skill_gain");
+        if(localComplete) {
+            require(bot->GetGroup() && bot->GetGroup()==leader->GetGroup() && leader->isRealPlayer(),"settles_without_leaving_human_party");
+            f.report.put("completed_in_same_human_party",true);
+        }
         f.report.put("checkpoint_revision",saved->revision);f.report.put("checkpoint_phase",Name(saved->phase));
         bot->SaveToDB();leader->SaveToDB();emit(true,"");
     } catch(const std::exception& error){emit(false,error.what());}
