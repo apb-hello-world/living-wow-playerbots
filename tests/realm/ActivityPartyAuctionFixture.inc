@@ -133,7 +133,11 @@ template<class State> void RunIsolatedPartyAuction(State& state) {
                 return;
             }
             if(!party.recovered){if(!party.Restore(bot,f.report.template get<uint32_t>("party_group"),f.leader))return;
-                require(party.restoredReason=="realm_restart_errands_deferred","auction_old_consent_deferred");}
+                const bool saleRestart=bool(f.report.get_child_optional("test_native_sale"));
+                require(party.restoredReason=="realm_restart_errands_deferred" ||
+                    (saleRestart && party.restoredReason=="realm_restart_party_recovered"),
+                    "auction_old_consent_deferred:"+party.restoredReason);
+                f.report.put("restart_party_reason",party.restoredReason);}
             if(f.report.template get<bool>("test_sell_first_listing",false)) {
                 // Explicit isolated human buyout input. No seller receipt, mail,
                 // gold or item is fabricated. Stop before resuming the seller so
