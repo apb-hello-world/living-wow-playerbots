@@ -111,9 +111,10 @@ public:
         if(!result.finished || result.uncertain || !SameTrainingState(ReadTrainingFrame(actor),result.after))
             throw std::runtime_error("training_cast_native_proof_missing");
         std::string proof="SELECT "+SqlValue(after.id)+','+std::to_string(after.revision)+" FROM characters c WHERE c.guid="+
-            std::to_string(task.actor)+" AND c.money="+std::to_string(result.after.money)+
-            " AND (SELECT COUNT(*) FROM character_spell s WHERE s.guid=c.guid AND s.disabled=0)="+
-            std::to_string(result.after.playerSpells.size());
+            std::to_string(task.actor)+" AND c.money="+std::to_string(result.after.money);
+        // Login-provided default spells need not have character_spell rows.
+        // Full runtime spellbook conservation was checked above; the durable
+        // predicate proves each promised target, not an invalid global count.
         for(auto id:quote.playerSpells)proof+=(result.after.playerSpells.count(id)?" AND EXISTS(":" AND NOT EXISTS(")+
             std::string("SELECT 1 FROM character_spell s WHERE s.guid=c.guid AND s.spell=")+std::to_string(id)+" AND s.disabled=0)";
         return proof;

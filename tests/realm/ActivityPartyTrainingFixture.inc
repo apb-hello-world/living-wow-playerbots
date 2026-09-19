@@ -100,6 +100,7 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
             const auto binding=sPlayerbotRendezvousManager.PartyServiceStatus(f.actor);
             if(!binding){f.blocker="training_native_admission_pending";return;}
             require(binding->service==PartyServiceBinding::Service::Training,"training_only_binding_required");f.task=binding->root;
+            f.report.put("party_group",bot->GetGroup()->GetId());
         }
         const auto saved=sLivingActivityCoordinator.ReadSavedTask(f.task);if(!saved)return;
         PartyTrainingJob job;
