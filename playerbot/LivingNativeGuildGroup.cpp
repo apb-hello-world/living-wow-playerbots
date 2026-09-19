@@ -15,6 +15,7 @@ bool SafeGroupActor(Player* p) {
         !p->IsInCombat() && !p->IsBeingTeleported() && !p->IsTaxiFlying() && !p->GetTransport() &&
         !p->InBattleGround() && !p->InBattleGroundQueue() && !p->GetMap()->IsDungeon() &&
         !p->GetTradeData() && !p->IsNonMeleeSpellCasted(false) && !p->GetGroupInvite() &&
+        !sLivingActivityCoordinator.DefersNativeSave(p->GetGUIDLow()) &&
         !sPlayerbotSocialActionBroker.ReservedForPlayer(p->GetGUIDLow());
 }
 bool BotOnlyGroup(Player* p) {
@@ -84,6 +85,7 @@ bool PlanNativeGuildGroup(Player& actor,const Task& task,uint32_t coordinator,Gu
 }
 bool NativeGuildGroup::ValidateNative(Player& actor,const OperationRequest& request,std::string& why) {
     GuildGroupQuote fresh,encoded;
+    why="guild_event_group_intent_invalid";
     if(request.transition.task.actor!=quote.actor || request.transition.task.checkpoint.step!="guild_event_group" ||
         !DecodeGuildGroupQuote(request.beforeState,encoded) || EncodeGuildGroupQuote(encoded)!=EncodeGuildGroupQuote(quote) ||
         !PlanNativeGuildGroup(actor,request.transition.task,quote.coordinator,fresh,why))return false;
