@@ -33,6 +33,7 @@ namespace {
 #include "ActivityPartyMailSession.inc"
 #include "ActivityPartyRepairFixture.inc"
 #include "ActivityPartyVendorFixture.inc"
+#include "ActivityPartyTrainingFixture.inc"
 #include "ActivityProfessionFixture.inc"
 #include "ActivityUsefulRecipeFixture.inc"
 #include "ActivityManagedRecipeFixture.inc"
@@ -54,6 +55,10 @@ namespace {
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(requested && (std::string(requested)=="activity-party-training-checkpoint-v1" ||
+        std::string(requested)=="activity-party-training-resume-v1")) {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyTraining(*state);return;
+    }
     if(requested && (std::string(requested)=="activity-party-vendor-checkpoint-v1" ||
         std::string(requested)=="activity-party-vendor-resume-v1")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyVendor(*state);return;

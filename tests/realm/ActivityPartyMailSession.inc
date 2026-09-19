@@ -9,6 +9,7 @@ bool LivingIsolatedPartyReconnectHuman(uint32_t member) {
     if(!mode || (std::string(mode)!="activity-profession-mail-party-resume-v1" &&
         std::string(mode)!="activity-profession-mail-party-roster-v1" &&
         std::string(mode)!="activity-party-repair-resume-v1" &&
+        std::string(mode)!="activity-party-training-resume-v1" &&
         std::string(mode)!="activity-party-vendor-resume-v1") || !leader)return false;
     RequireIsolatedNativeFixtureEnvironment();
     return member==std::stoul(leader);

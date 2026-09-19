@@ -36,8 +36,10 @@ bool QuoteNativePartyTraining(Player& actor,const Task& task,TrainingLessonQuote
         auto* trainer=actor.GetNPCIfCanInteractWith(guid,UNIT_NPC_FLAG_TRAINER);
         if(!trainer || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_CLASS ||
             trainer->GetCreatureInfo()->TrainerClass!=actor.getClass())continue;
-        if(PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),guid,job.lessons[job.next],quote,why) &&
-            PartyTrainingQuoteMatches(task,quote))return true;
+        if(PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),guid,job.lessons[job.next],quote,why)) {
+            if(PartyTrainingQuoteMatches(task,quote))return true;
+            why="party_training_native_quote_changed";
+        }
     }
     return false;
 }
