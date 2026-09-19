@@ -3,6 +3,7 @@
 #include "LivingGuildDelivery.h"
 #include "LivingPartyRepair.h"
 #include "LivingGuildEventCommitment.h"
+#include "LivingGuildEventSettlement.h"
 #include <cassert>
 #include <limits>
 using namespace LivingActivity;
@@ -71,6 +72,38 @@ int main() {
         auto legacy=saved;legacy.mode=Mode::Observe;legacy.source="guild_event";legacy.checkpoint.data="{}";
         assert(ValidateGuildEventCommitmentTask(legacy,why));legacy.mode=Mode::Active;
         assert(!ValidateGuildEventCommitmentTask(legacy,why));
+        auto settlementTask=saved;settlementTask.phase=Phase::Preparing;
+        GuildEventClosure closure{"completed","quest_reward_verified",1000,1300,1200,0};
+        GuildEventSettlement settlement;
+        assert(PrepareGuildEventSettlement(settlementTask,settlementTask.context,closure,1300000,Receipt,settlement,why));
+        assert(settlement.task.phase==Phase::Completed && settlement.task.revision==saved.revision+1);
+        assert(settlement.task.checkpoint.data==saved.checkpoint.data && settlement.task.checkpoint.step=="guild_event_closed");
+        const auto& guard=settlement.plan.statements.front();
+        for(const auto* required:{"guild_society_activity_proof","p.kind=2 AND p.entry=42","p.began_incomplete=1",
+            "guild_society_credit","guild_society_event_participant","living_activity_operation","living_activity_claim",
+            "child.phase NOT IN ('completed','cancelled','failed')"})assert(guard.find(required)!=std::string::npos);
+        for(unsigned field=0;field<8;++field) {
+            auto invalid=closure;auto context=settlementTask.context;
+            switch(field){case 0:invalid.state="active";break;case 1:invalid.participantVerified=0;break;
+                case 2:invalid.reason="timer_finished";break;case 3:invalid.finished=0;break;
+                case 4:invalid.started=999;break;case 5:invalid.participantVerified=4600;break;
+                case 6:++context.actorGeneration;break;case 7:invalid.finished=1301;break;}
+            assert(!PrepareGuildEventSettlement(settlementTask,context,invalid,1300000,Receipt,settlement,why));
+        }
+        closure.state="cancelled";closure.reason="authority_revoked";closure.participantVerified=0;
+        assert(PrepareGuildEventSettlement(settlementTask,settlementTask.context,closure,1300000,Receipt,settlement,why));
+        assert(settlement.task.phase==Phase::Cancelled && settlement.plan.statements.front().find("guild_society_credit")==std::string::npos);
+        closure.state="failed";closure.reason="assembly_timeout";
+        assert(PrepareGuildEventSettlement(settlementTask,settlementTask.context,closure,1300000,Receipt,settlement,why));
+        assert(settlement.task.phase==Phase::Failed);
+        auto dungeon=definition;dungeon.kind="dungeon";dungeon.target=33;
+        settlementTask.sourceKey=GuildEventCommitmentKey(dungeon,settlementTask.actor);
+        settlementTask.checkpoint.data=EncodeGuildEventCommitment(dungeon);
+        closure={"completed","dungeon_encounters_verified",1000,1300,1200,0};
+        assert(!PrepareGuildEventSettlement(settlementTask,settlementTask.context,closure,1300000,Receipt,settlement,why));
+        closure.instance=700;
+        assert(PrepareGuildEventSettlement(settlementTask,settlementTask.context,closure,1300000,Receipt,settlement,why));
+        assert(settlement.plan.statements.front().find("p.kind=1 AND p.map_id=33 AND p.instance_id=700")!=std::string::npos);
     }
     {
         auto repair=Request();repair.task.kind=Kind::PartyErrand;repair.task.source="party_repair";
