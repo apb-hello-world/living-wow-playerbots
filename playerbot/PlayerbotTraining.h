@@ -20,12 +20,19 @@ inline bool LivingWowCanTrainSpell(Player* bot, TrainerSpell const* spell, Unit*
     for (uint32 learned : spell->learnedSpell)
         if (learned && !sPlayerbotOrganicEconomy.CanLearnProfessionSpell(bot, learned)) return false;
 #endif
-    // Pet-directed trainer spells must be eligible for the living pet, not
-    // repeatedly offered because they are absent from its owner's spellbook.
+    // Direct TBC pet-trainer offers teach the OWNER a Beast Training ability.
+    // Its eventual cast targets a pet, but that is not this trainer operation.
+    // Only a teaching cast which actually affects the pet needs pet eligibility.
     const SpellEntry* teaching = sSpellTemplate.LookupEntry<SpellEntry>(spell->spell);
     if (!teaching) return false;
+#ifdef MANGOSBOT_ZERO
+    const bool trainerCasts = !spell->learnedSpell;
+#else
+    const bool trainerCasts = spell->IsCastable();
+#endif
     for (unsigned effect = 0; effect < 3; ++effect)
     {
+        if (!trainerCasts) break;
         if (teaching->Effect[effect] != SPELL_EFFECT_LEARN_PET_SPELL &&
             !(teaching->Effect[effect] == SPELL_EFFECT_LEARN_SPELL &&
               (teaching->EffectImplicitTargetA[effect] == TARGET_UNIT_CASTER_PET ||
@@ -68,7 +75,8 @@ inline bool LivingWowHasClassTraining(Player* bot, int32 entry)
 }
 
 inline bool LivingWowPartyTrainerMatches(Player* bot,const CreatureInfo* trainer) {
-    return bot && trainer && ((trainer->TrainerType==TRAINER_TYPE_CLASS && trainer->TrainerClass==bot->getClass()) ||
+    return bot && trainer && (((trainer->TrainerType==TRAINER_TYPE_CLASS || trainer->TrainerType==TRAINER_TYPE_PETS) &&
+        trainer->TrainerClass==bot->getClass()) ||
         trainer->TrainerType==TRAINER_TYPE_TRADESKILLS);
 }
 inline bool LivingWowExistingSkillTier(Player* bot,const TrainerSpell* offered) {
@@ -90,6 +98,7 @@ inline bool LivingWowHasPartyTraining(Player* bot,int32 entry) {
     for(const auto* list:{sObjectMgr.GetNpcTrainerSpells(entry),trainer->TrainerTemplateId?
         sObjectMgr.GetNpcTrainerTemplateSpells(trainer->TrainerTemplateId):nullptr})if(list)
         for(const auto& row:list->spellList)
-            if(LivingWowExistingSkillTier(bot,&row.second) && LivingWowCanTrainSpell(bot,&row.second))return true;
+            if((trainer->TrainerType==TRAINER_TYPE_PETS || LivingWowExistingSkillTier(bot,&row.second)) &&
+                LivingWowCanTrainSpell(bot,&row.second))return true;
     return false;
 }
