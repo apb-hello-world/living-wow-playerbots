@@ -114,4 +114,22 @@ int main() {
     vendor.phase=Phase::Completed;
     assert(PartyServiceReceipt(vendorBinding,vendor,"party_vendor_sale",sale,"native-final-sale"));
     assert(!PartyServiceReceipt(vendorBinding,vendor,"party_vendor_sale",sale,"duplicate-sale"));
+    auto auction=task;auction.kind=Kind::PartyErrand;auction.source="party_auction";
+    auction.checkpoint.data=EncodePartyAuctionJob({{{123,765,2,100,720}},0});
+    auto auctionBinding=repairBinding;auctionBinding.service=PartyServiceBinding::Service::Auction;auctionBinding.receipt.clear();
+    assert(PartyServiceMatches(auctionBinding,auction,window));
+    assert(!PartyServiceMatches(auctionBinding,vendor,window));
+    assert(!PartyServiceMatches(vendorBinding,auction,window));
+    changed=window;changed.authorized=false;assert(!PartyServiceMatches(auctionBinding,auction,changed));
+    changed=window;++changed.sessionRevision;assert(!PartyServiceMatches(auctionBinding,auction,changed));
+    assert(PartyServiceOperation(auctionBinding,"party_auction_post",sale));
+    for(const auto kind:{"auction_purchase","party_vendor_sale","mail_collect","bank_deposit","vendor_purchase"})
+        assert(!PartyServiceOperation(auctionBinding,kind,sale));
+    assert(!PartyServiceEffects(Mask(Effect::Spell)|Mask(Effect::Equipment),auctionBinding.service));
+    wrong=sale;wrong.task="wrong";assert(!PartyServiceOperation(auctionBinding,"party_auction_post",wrong));
+    wrong=sale;wrong.location="bank";assert(!PartyServiceOperation(auctionBinding,"party_auction_post",wrong));
+    assert(!PartyServiceReceipt(auctionBinding,auction,"party_auction_post",sale,"partial-post"));
+    auction.phase=Phase::Completed;
+    assert(PartyServiceReceipt(auctionBinding,auction,"party_auction_post",sale,"native-final-post"));
+    assert(!PartyServiceReceipt(auctionBinding,auction,"party_auction_post",sale,"duplicate-post"));
 }

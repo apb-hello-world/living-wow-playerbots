@@ -4949,7 +4949,8 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     pending.uncertain = observation.state == OperationState::Reconciling;
     if(pending.uncertain && pending.relatedGuild)pending.saveBlocked=true;
     if (pending.uncertain && (!request.itemGain.Empty() || !request.mailGain.Empty() || request.kind=="guild_mail_send" ||
-        request.kind=="commission_mail_send" || request.kind=="commission_trade" || request.kind=="commission_output_partition")) pending.saveBlocked=true;
+        request.kind=="commission_mail_send" || request.kind=="commission_trade" || request.kind=="commission_output_partition" ||
+        request.kind=="party_auction_post")) pending.saveBlocked=true;
     if (pending.uncertain && !request.itemTransfer.id.empty()) {
         // An uncertain merge may have consumed the old GUID. Protecting that
         // GUID alone is insufficient; stop consumers until native evidence is

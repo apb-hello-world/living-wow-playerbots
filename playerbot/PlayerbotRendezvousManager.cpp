@@ -1,5 +1,6 @@
 #include "botpch.h"
 #include "PlayerbotRendezvousManager.h"
+#include "LivingNativeAuctionPost.h"
 #include "LivingNativeRepair.h"
 #include "LivingNativeVendorSale.h"
 #include "LivingNativeBankWithdrawal.h"
@@ -230,7 +231,14 @@ namespace
 
         std::string goal = sPlayerbotOrganicEconomy.CurrentGoalType(bot->GetGUIDLow());
         if(sLivingActivityCoordinator.HasPendingPartyAuctionService(bot->GetGUIDLow()))errands|=kErrandAuction;
-        if ((pressure.auctionStacks || goal == "list_surplus") &&
+        if(sLivingActivityCoordinator.EffectEnforcementEnabled() && sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands) {
+            // Party follow suppresses autonomous AH strategies; that is not
+            // a veto on this explicitly permitted, exact-stack service batch.
+            if(!sLivingActivityCoordinator.HasPendingPartyAuctionService(bot->GetGUIDLow())) {
+                LivingActivity::PartyAuctionJob posting;std::string blocker;
+                if(LivingActivity::PlanNativePartyAuctionBatch(*bot,posting,blocker))errands|=kErrandAuction;
+            }
+        } else if ((pressure.auctionStacks || goal == "list_surplus") &&
             sPlayerbotOrganicEconomy.IsAuctionPostingEnabled() &&
             context->GetValue<bool>("can ah sell")->Get())
             errands |= kErrandAuction;
