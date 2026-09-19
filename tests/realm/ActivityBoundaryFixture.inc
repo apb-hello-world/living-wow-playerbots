@@ -57,7 +57,8 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     if(requested && (std::string(requested)=="activity-party-training-checkpoint-v1" ||
         std::string(requested)=="activity-party-training-resume-v1" ||
-        std::string(requested)=="activity-party-training-travel-resume-v1")) {
+        std::string(requested)=="activity-party-training-travel-resume-v1" ||
+        std::string(requested)=="activity-party-training-cast-v1")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyTraining(*state);return;
     }
     if(requested && (std::string(requested)=="activity-party-vendor-checkpoint-v1" ||

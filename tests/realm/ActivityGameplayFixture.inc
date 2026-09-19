@@ -14,6 +14,7 @@ bool LivingActivityCoordinator::IsolatedGameplayActor(uint32_t actor) const {
         std::string(mode)=="activity-party-training-checkpoint-v1" ||
         std::string(mode)=="activity-party-training-resume-v1" ||
         std::string(mode)=="activity-party-training-travel-resume-v1" ||
+        std::string(mode)=="activity-party-training-cast-v1" ||
         std::string(mode)=="activity-party-vendor-checkpoint-v1" ||
         std::string(mode)=="activity-party-vendor-resume-v1")) {
         const char* selected=std::getenv("LIVING_WOW_NATIVE_FIXTURE_ACTOR");

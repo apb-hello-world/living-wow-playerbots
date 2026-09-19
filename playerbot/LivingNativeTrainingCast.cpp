@@ -20,7 +20,7 @@ bool SupportedNativeTrainingCast(const TrainingLessonQuote& q,std::string& why) 
     std::set<uint32_t> targets;
     for(unsigned i=0;i<MAX_EFFECT_INDEX;++i)if(spell->Effect[i]) {
         if(spell->Effect[i]!=SPELL_EFFECT_LEARN_SPELL || !spell->EffectTriggerSpell[i] ||
-            spell->EffectImplicitTargetA[i]!=TARGET_UNIT_CASTER || spell->EffectImplicitTargetB[i] ||
+            (spell->EffectImplicitTargetA[i] && spell->EffectImplicitTargetA[i]!=TARGET_UNIT_CASTER) || spell->EffectImplicitTargetB[i] ||
             !sSpellTemplate.LookupEntry<SpellEntry>(spell->EffectTriggerSpell[i]))
             return reject("training_exact_player_learning_effect_required");
         targets.insert(spell->EffectTriggerSpell[i]);

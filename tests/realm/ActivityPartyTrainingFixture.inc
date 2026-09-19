@@ -13,6 +13,7 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
     state.fixtureNext=NowMs()+250;
     const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     const bool travel=suite=="activity-party-training-travel-resume-v1";
+    const bool cast=suite=="activity-party-training-cast-v1";
     const bool restart=travel || suite=="activity-party-training-resume-v1";
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     Player* bot=nullptr;
@@ -24,13 +25,13 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
     auto emit=[&](bool passed,const std::string& why) {
         f.report.put("suite",suite);f.report.put("boot",state.boot);f.report.put("actor",f.actor);
         f.report.put("leader",f.leader);f.report.put("task",f.task);f.report.put("failure",why);f.report.put("blocker",f.blocker);
-        f.report.put("outcome",passed?(restart?"passed":"checkpoint"):"failed");
+        f.report.put("outcome",passed?((restart || cast)?"passed":"checkpoint"):"failed");
         f.report.put("test_only",true);f.report.put("independent_audit_required",true);
         if(bot){f.report.put("money_after",bot->GetMoney());f.report.put("spells_after",spells());}
         if(passed)state.enforceEffects.store(false);
-        if(!PartyMailFixture().done && (!passed || restart))PartyMailFixture().Close();
+        if(!PartyMailFixture().done && (!passed || restart || cast))PartyMailFixture().Close();
         std::ofstream out("/isolated/evidence/activity-party-training-"+state.boot+".json");out<<Json(f.report);out.close();
-        if(passed && !restart){std::ofstream copy("/isolated/evidence/party-training-checkpoint.json");copy<<Json(f.report);}
+        if(passed && !restart && !cast){std::ofstream copy("/isolated/evidence/party-training-checkpoint.json");copy<<Json(f.report);}
         state.fixtureFinished=true;
         sLog.outString("Living isolated training fixture: %s",Json(f.report).c_str());
     };
@@ -66,7 +67,8 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
             for(const auto& row:state.cache)if(row.second.actor==f.actor && row.second.mode==Mode::Active && !Terminal(row.second.phase))
                 require(false,"existing_training_actor_obligation_preserved");
             if(!f.placed) {
-                require(bot->getClass()==CLASS_WARLOCK && bot->GetLevel()>=20,"explicit_warlock_training_fixture_required");
+                require(cast?(bot->getClass()==CLASS_PALADIN && bot->GetLevel()>=4):
+                    (bot->getClass()==CLASS_WARLOCK && bot->GetLevel()>=20),"explicit_class_training_fixture_required");
                 auto target=WorldDatabase.PQuery("SELECT c.guid,c.id,c.position_x,c.position_y,c.position_z,c.orientation FROM creature c JOIN creature_template t ON t.Entry=c.id WHERE t.TrainerClass='%u' AND t.TrainerType=0 AND c.map='%u' ORDER BY POW(c.position_x-%.4f,2)+POW(c.position_y-%.4f,2) LIMIT 1",
                     uint32_t(bot->getClass()),bot->GetMapId(),bot->GetPositionX(),bot->GetPositionY());
                 require(bool(target),"real_class_trainer_spawn_required");const auto* row=target->Fetch();
@@ -74,17 +76,20 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
                 f.report.put("test_service_placement",true);f.report.put("trainer_guid",f.trainer);
                 f.report.put("test_spells_before_unlearning",spells());
                 // Test setup only, never production admission. No spell grant.
-                for(uint32_t lesson:{5782u,5697u,698u}) {
+                const std::vector<uint32_t> removed=cast?std::vector<uint32_t>{20271}:std::vector<uint32_t>{5782,5697,698};
+                if(cast)require(bot->HasSpell(21084),"training_cast_preknown_target_required");
+                for(uint32_t lesson:removed) {
                     require(bot->HasSpell(lesson),"fixture_existing_lesson_required");bot->removeSpell(lesson,false,false);
                 }
-                f.report.put("test_unlearned_spells","5782,5697,698");
+                f.report.put("test_unlearned_spells",cast?"20271":"5782,5697,698");
                 bot->StopMoving();bot->GetMotionMaster()->Clear();
                 bot->NearTeleportTo(row[2].GetFloat()+1.0f,row[3].GetFloat(),row[4].GetFloat(),row[5].GetFloat());
                 f.placed=true;return;
             }
             PartyTrainingJob planned;
             if(!PlanNativePartyTraining(*bot,ObjectGuid(f.trainer),planned,f.blocker))return;
-            require(planned.lessons.size()>=3,"three_native_direct_lessons_required");
+            require(cast?std::find(planned.lessons.begin(),planned.lessons.end(),10321)!=planned.lessons.end():
+                planned.lessons.size()>=3,"native_training_lesson_manifest_required");
             f.report.put("accepted_manifest",EncodePartyTrainingJob(planned));f.report.put("spells_before",spells());
             f.report.put("money_before",bot->GetMoney());f.report.put("money_grants",0);f.report.put("item_grants",0);
             bot->SaveToDB();f.prepared=true;state.enforceEffects.store(true);
@@ -109,7 +114,7 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
             f.diagnosticAt=NowMs()+10000;
             std::ofstream progress("/isolated/evidence/party-training-progress-"+state.boot+".json");progress<<sLivingActivityCoordinator.ActorJson(f.actor);
         }
-        if(!restart && next==1 && saved->phase==Phase::Verifying && state.operations.empty()) {
+        if(!restart && !cast && next==1 && saved->phase==Phase::Verifying && state.operations.empty()) {
             f.report.put("checkpoint_revision",saved->revision);f.report.put("checkpoint_at_ms",NowMs());
             f.report.put("checkpoint_spells",spells());f.report.put("party_group",bot->GetGroup()->GetId());
             bot->SaveToDB();leader->SaveToDB();emit(true,"");return;
@@ -172,14 +177,17 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
             f.report.put("paused_spellbook_unchanged",true);f.reauthorized=true;
         }
         if(saved->phase==Phase::Completed) {
-            require(restart && f.recalled && f.reauthorized && next==job.lessons.size(),"training_all_interruptions_required");
+            require((cast || (restart && f.recalled && f.reauthorized)) && next==job.lessons.size(),"training_all_interruptions_required");
             if(travel) {
                 require(f.report.template get<bool>("saved_trainer_travel_observed",false),"saved_training_travel_phase_required");
                 const ObjectGuid trainer(f.report.template get<uint64_t>("trainer_guid"));
                 require(bot->GetNPCIfCanInteractWith(trainer,UNIT_NPC_FLAG_TRAINER)!=nullptr,"native_training_walk_arrival_required");
                 f.report.put("native_walk_arrival_verified",true);
             }
-            for(auto lesson:job.lessons)require(bot->HasSpell(lesson),"training_actual_spellbook_required");
+            for(auto lesson:job.lessons) {
+                if(cast && lesson==10321)require(bot->HasSpell(20271) && bot->HasSpell(21084),"training_all_cast_targets_required");
+                else require(bot->HasSpell(lesson),"training_actual_spellbook_required");
+            }
             f.report.put("final_revision",saved->revision);emit(true,"");
         }
     }catch(const std::exception& error){emit(false,error.what());}
