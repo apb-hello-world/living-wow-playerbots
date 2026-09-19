@@ -7,6 +7,7 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
     struct Fixture {
         uint32_t actor=0,leader=0;uint64_t deadline=0,recalledAt=0,diagnosticAt=0,trainer=0;
         bool logged=false,placed=false,prepared=false,resumed=false,recalled=false,reauthorized=false,leaderJoined=false;
+        bool mountTrainerSpawned=false;
         std::string task,blocker,pausedSpells,selectedTask;boost::property_tree::ptree report;
     };
     static Fixture f;
@@ -109,6 +110,21 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
                 bot->StopMoving();bot->GetMotionMaster()->Clear();
                 bot->NearTeleportTo(row[2].GetFloat()+1.0f,row[3].GetFloat(),row[4].GetFloat(),row[5].GetFloat());
                 f.placed=true;return;
+            }
+            if(mount && !f.mountTrainerSpawned) {
+                // This teaching-cast template is not normally spawned in the
+                // pinned world. Supply a temporary native NPC only in this
+                // isolated case; do not claim organic trainer availability.
+                RequireIsolatedNativeFixtureEnvironment();
+                const auto* info=sObjectMgr.GetCreatureTemplate(4988);
+                require(info && info->TrainerClass==CLASS_PALADIN && info->TrainerTemplateId==2010,
+                    "mount_native_test_trainer_template_required");
+                auto* trainer=bot->SummonCreature(4988,bot->GetPositionX()+1.0f,bot->GetPositionY(),bot->GetPositionZ(),
+                    bot->GetOrientation(),TEMPSPAWN_TIMED_DESPAWN,600000);
+                require(trainer!=nullptr,"mount_native_test_trainer_spawn_failed");
+                f.trainer=trainer->GetObjectGuid().GetRawValue();f.mountTrainerSpawned=true;
+                f.report.put("trainer_guid",f.trainer);f.report.put("test_temporary_trainer_entry",4988);
+                f.report.put("organic_trainer_availability",false);return;
             }
             PartyTrainingJob planned;
             if(!PlanNativePartyTraining(*bot,ObjectGuid(f.trainer),planned,f.blocker))return;
