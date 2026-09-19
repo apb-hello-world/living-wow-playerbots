@@ -82,6 +82,7 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyBank(*state);return;
     }
     if(requested && (std::string(requested)=="activity-party-auction-checkpoint-v1" ||
+        std::string(requested)=="activity-party-auction-intent-resume-v1" ||
         std::string(requested)=="activity-party-auction-resume-v1")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyAuction(*state);return;
     }

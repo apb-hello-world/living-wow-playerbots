@@ -104,7 +104,8 @@ int main() {
     assert(recovery.task.checkpoint.data==interrupted.checkpoint.data); // Cursor did NOT advance.
     assert(recovery.plan.statements.size()>=3);
     std::string sql;for(const auto& statement:recovery.plan.statements)sql+=statement;
-    for(const auto* guard:{"native_auction_post_intent_not_committed","o.state='intent'","o.after_state='{}'",
+    assert(sql.find(SqlValue("native_auction_post_intent_not_committed"))!=std::string::npos);
+    for(const auto* guard:{"o.state='intent'","o.after_state='{}'",
                           "FROM auction WHERE itemguid=100","FROM mail_items WHERE item_guid=100",
                           "FROM guild_bank_item WHERE item_guid=100","FROM organic_economy_auction_history",
                           "i.count=5","money=10000","c.revision=1"})assert(sql.find(guard)!=std::string::npos);

@@ -10,7 +10,8 @@ template<class State> void RunIsolatedPartyAuction(State& state) {
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
     state.fixtureNext=NowMs()+500;
     const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
-    const bool restart=suite=="activity-party-auction-resume-v1";
+    const bool recovery=suite=="activity-party-auction-intent-resume-v1";
+    const bool restart=suite=="activity-party-auction-resume-v1" || recovery;
     auto require=[](bool ok,const std::string& why){if(!ok)throw std::runtime_error(why);};
     Player* bot=nullptr;
     auto inventory=[&]() {
@@ -54,9 +55,11 @@ template<class State> void RunIsolatedPartyAuction(State& state) {
             if(!restart)if(const auto* retry=std::getenv("LIVING_WOW_NATIVE_FIXTURE_TASK"))f.retryRoot=retry;
             require(f.retryRoot.empty() || IsUuid(f.retryRoot),"retry_requires_explicit_task_uuid");
             if(restart) {
-                std::ifstream input("/isolated/evidence/party-auction-checkpoint.json");boost::property_tree::read_json(input,f.report);
-                require(f.report.template get<std::string>("outcome")=="checkpoint" &&
-                    f.report.template get<std::string>("suite")=="activity-party-auction-checkpoint-v1" &&
+                std::ifstream input(recovery?"/isolated/evidence/party-auction-interrupted-input.json":
+                    "/isolated/evidence/party-auction-checkpoint.json");boost::property_tree::read_json(input,f.report);
+                require((recovery ? f.report.template get<std::string>("source")=="preserved_native_crash" :
+                    f.report.template get<std::string>("outcome")=="checkpoint" &&
+                    f.report.template get<std::string>("suite")=="activity-party-auction-checkpoint-v1") &&
                     f.report.template get<uint32_t>("actor")==f.actor && f.report.template get<uint32_t>("leader")==f.leader,
                     "matching_auction_checkpoint_required");
                 f.task=f.report.template get<std::string>("task");require(IsUuid(f.task),"auction_checkpoint_uuid_required");
@@ -115,7 +118,7 @@ template<class State> void RunIsolatedPartyAuction(State& state) {
             f.report.put("party_group",bot->GetGroup()->GetId());bot->SaveToDB();leader->SaveToDB();emit(true,"");return;
         }
         if(restart && !f.resumed) {
-            require(next==1 && bot->GetMoney()==f.report.template get<uint32_t>("checkpoint_money") &&
+            require(next==(recovery?0:1) && bot->GetMoney()==f.report.template get<uint32_t>("checkpoint_money") &&
                 inventory()==f.report.template get<std::string>("checkpoint_inventory"),"auction_restart_possessions_unchanged");
             auto& party=PartyMailFixture();
             if(!f.leaderJoinedAuction) {
@@ -164,6 +167,15 @@ template<class State> void RunIsolatedPartyAuction(State& state) {
         if(saved->phase==Phase::Completed) {
             require(restart && f.recalled && f.reauthorized && next==job.items.size(),"auction_all_interruptions_required");
             require(bot->GetMoney()<=f.report.template get<uint32_t>("money_before"),"auction_deposit_debits_only");
+            if(recovery) {
+                const auto operation=f.report.template get<std::string>("interrupted_operation");
+                require(IsUuid(operation),"original_interrupted_operation_required");
+                auto proof=CharacterDatabase.PQuery("SELECT COUNT(*) FROM living_activity_operation WHERE task_id='%s' "
+                    "AND operation_id='%s' AND state='rejected' AND evidence_code='native_auction_post_intent_not_committed'",
+                    f.task.c_str(),operation.c_str());
+                require(proof && proof->Fetch()[0].GetUInt32()==1,"interrupted_auction_rejection_receipt_required");
+                f.report.put("interrupted_intent_reconciled",true);
+            }
             f.report.put("final_revision",saved->revision);emit(true,"");
         }
     }catch(const std::exception& error){emit(false,error.what());}
