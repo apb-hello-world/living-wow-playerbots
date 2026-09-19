@@ -15,7 +15,7 @@ bool PlanNativePartyTraining(Player& actor,const ObjectGuid& guid,PartyTrainingJ
         for(const auto& row:list->spellList) {
             TrainingLessonQuote q;std::string blocker;
             if(!PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),guid,row.first,q,blocker))continue;
-            if(!DirectFreeTrainingQuote(q)){cast=true;continue;}
+            if(!DirectFreeTrainingQuote(q) && !SupportedNativeTrainingCast(q,blocker)){cast=true;continue;}
             lessons.insert(row.first);
         }
     if(lessons.empty())return reject(cast?"party_training_cast_capture_required":"party_training_no_direct_lesson");
@@ -37,7 +37,8 @@ bool QuoteNativePartyTraining(Player& actor,const Task& task,TrainingLessonQuote
         if(!trainer || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_CLASS ||
             trainer->GetCreatureInfo()->TrainerClass!=actor.getClass())continue;
         if(PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),guid,job.lessons[job.next],quote,why)) {
-            if(PartyTrainingQuoteMatches(task,quote))return true;
+            if(PartyTrainingQuoteMatches(task,quote) &&
+                (DirectFreeTrainingQuote(quote) || SupportedNativeTrainingCast(quote,why)))return true;
             why="party_training_native_quote_changed";
         }
     }
@@ -45,7 +46,7 @@ bool QuoteNativePartyTraining(Player& actor,const Task& task,TrainingLessonQuote
 }
 bool NativePartyTraining::ValidateNative(Player& actor,const OperationRequest& r,std::string& why) {
     const auto saved=sLivingActivityCoordinator.ReadSavedTask(r.transition.task.id);TrainingLessonQuote current;
-    if(!saved || r.beforeState!=EncodeDirectTrainingQuote(quote) || !r.consumption.empty() ||
+    if(!saved || r.beforeState!=EncodePartyTrainingQuote(quote) || !r.consumption.empty() ||
         !r.itemGain.Empty() || !r.mailGain.Empty() || !r.itemTransfer.id.empty() ||
         !QuoteNativePartyTraining(actor,*saved,current,why) || !SameTrainingLessonQuote(quote,current)) {
         if(why.empty())why="party_training_native_quote_changed";return false;
@@ -54,6 +55,7 @@ bool NativePartyTraining::ValidateNative(Player& actor,const OperationRequest& r
 }
 NativeObservation NativePartyTraining::ExecuteNative(Player& actor,const OperationRequest& r) {
     NativeObservation out;std::string why;
+    if(quote.cast){out.state=OperationState::Rejected;out.evidence="training_cast_requires_deferred_dispatch";return out;}
     if(!ValidateNative(actor,r,why)){out.state=OperationState::Rejected;out.evidence=why;return out;}
     const auto result=ExecuteNativeTrainingLesson(*actor.GetPlayerbotAI(),quote);
     const auto it=actor.GetSpellMap().find(quote.lesson);

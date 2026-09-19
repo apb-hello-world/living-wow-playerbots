@@ -1,4 +1,4 @@
-// Finite direct lessons on the existing queue. Admission occurs at a real
+// Finite verified lessons on the existing queue. Admission occurs at a real
 // trainer; route discovery stays with the existing party service travel.
 std::optional<LivingActivity::PartyServiceBinding> LivingActivityCoordinator::PreparePartyTrainingService(
     uint32_t actor,const std::string& sourceKey,uint64_t trainer,std::string& blocker) {
@@ -48,7 +48,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(row.second.request.transition.task.id!=id || row.second.request.kind!="party_training_learn")
             return stop("party_training_other_operation_pending");
         TrainingLessonQuote quote;
-        if(!DecodeDirectTrainingQuote(row.second.request.beforeState,quote))return stop("party_training_intent_invalid");
+        if(!DecodePartyTrainingQuote(row.second.request.beforeState,quote))return stop("party_training_intent_invalid");
         NativePartyTraining adapter(quote);
         const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"party_training_learn");
         if(!grant.Permitted())return stop(grant.blocker);
@@ -94,7 +94,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             return stop("party_training_receipt_pending");
         }
         if(read.unresolved)return stop("party_training_native_operation_requires_reconciliation");
-        if(read.outcome!="rejected" && (read.outcome!="verified" || read.evidence!="native_training_exact_spellbook_and_unchanged_money"))
+        if(read.outcome!="rejected" && (read.outcome!="verified" || !VerifiedPartyTrainingEvidence(read.evidence)))
             return stop("party_training_native_receipt_invalid");
         if(saved->retryAtMs>NowMs())return stop("party_training_native_retry_wait");
         if(!(current==saved->context))return advance(Phase::Reconciling,"party_training_learn");
@@ -136,5 +136,5 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     ++r.transition.task.revision;r.transition.task.phase=Phase::Executing;r.transition.task.checkpoint.step="party_training_learn";
     r.transition.task.updatedAtMs=NowMs();r.transition.receipt=NewId();r.authorization=grant.action;
     r.kind=adapter.OperationKind();r.effects=adapter.OperationEffects();r.persistence=adapter.PersistencePolicy();
-    r.beforeState=EncodeDirectTrainingQuote(quote);return stop(SubmitOperationIntent(r,adapter).blocker);
+    r.beforeState=EncodePartyTrainingQuote(quote);return stop(SubmitOperationIntent(r,adapter).blocker);
 }

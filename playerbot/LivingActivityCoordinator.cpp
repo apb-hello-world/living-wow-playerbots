@@ -4784,7 +4784,7 @@ DispatchResult LivingActivityCoordinator::DispatchSavedOperation(const std::stri
                 ExecutionScope scope(executing, action);
                 if (adapter.DeferredNativeCast()) {
                     if (request.persistence!=NativePersistence::Profession ||
-                        (request.kind!="profession_craft" && request.kind!="recipe_learning" && request.kind!="gather_open") ||
+                        (request.kind!="profession_craft" && request.kind!="recipe_learning" && request.kind!="gather_open" && request.kind!="party_training_learn") ||
                         CharacterDatabase.HasOpenTransaction()) {
                         observation.state=OperationState::Rejected;
                         observation.evidence="native_craft_dispatch_contract_unavailable";
@@ -4973,7 +4973,7 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     try {
         if(IsPartyTrainingTask(after) && request.kind=="party_training_learn" && proof.state==OperationState::Verified) {
             TrainingLessonQuote quote;
-            if(!DecodeDirectTrainingQuote(request.beforeState,quote) || !AcknowledgePartyTraining(after,quote,proof))
+            if(!DecodePartyTrainingQuote(request.beforeState,quote) || !AcknowledgePartyTraining(after,quote,proof))
                 throw std::runtime_error("party_training_native_receipt_invalid");
         }
         if(IsPartyVendorTask(after) && request.kind=="party_vendor_sale" && proof.state==OperationState::Verified) {

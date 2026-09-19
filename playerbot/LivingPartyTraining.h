@@ -4,6 +4,7 @@
 #include "LivingServiceTravel.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
+#include <algorithm>
 namespace LivingActivity {
 struct PartyTrainingJob {uint32_t trainer=0,next=0;std::vector<uint32_t> lessons;};
 inline bool ValidPartyTrainingJob(const PartyTrainingJob& job) {
@@ -72,18 +73,77 @@ inline bool DecodeDirectTrainingQuote(const std::string& value,TrainingLessonQuo
         out=std::move(q);return true;
     }catch(...){return false;}
 }
+// Shape only. Native admission additionally validates every teaching effect,
+// its target and resources. Skill tiers and pet lessons need different proofs.
+inline bool FreePlayerTrainingCastQuote(const TrainingLessonQuote& q) {
+    return ValidTrainingLesson(q) && q.cast && !q.cost && q.teachingSpell==q.lesson &&
+        !q.playerSpells.empty() && q.petSpells.empty() &&
+        std::find(q.playerSpells.begin(),q.playerSpells.end(),q.lesson)==q.playerSpells.end();
+}
+inline bool ManagedTrainingQuote(const TrainingLessonQuote& q) {
+    return DirectFreeTrainingQuote(q) || FreePlayerTrainingCastQuote(q);
+}
+inline std::string EncodePartyTrainingQuote(const TrainingLessonQuote& q) {
+    if(!q.cast)return EncodeDirectTrainingQuote(q); // Historical journal fingerprint.
+    std::string out="{\"workflow\":\"training_cast_v1\",\"actor\":"+std::to_string(q.actor)+
+        ",\"trainer\":"+std::to_string(q.trainer)+",\"lesson\":"+std::to_string(q.lesson)+
+        ",\"money\":"+std::to_string(q.money)+",\"pet\":"+std::to_string(q.pet)+",\"targets\":[";
+    for(size_t i=0;i<q.playerSpells.size();++i){if(i)out+=',';out+=std::to_string(q.playerSpells[i]);}
+    return out+"]}";
+}
+inline bool DecodePartyTrainingQuote(const std::string& value,TrainingLessonQuote& out) {
+    if(DecodeDirectTrainingQuote(value,out))return true;
+    out={};if(value.size()>512)return false;
+    try {
+        boost::property_tree::ptree p;std::istringstream in(value);boost::property_tree::read_json(in,p);
+        if(p.get<std::string>("workflow")!="training_cast_v1")return false;
+        TrainingLessonQuote q;q.cast=true;q.actor=p.get<uint32_t>("actor");q.trainer=p.get<uint64_t>("trainer");
+        q.lesson=q.teachingSpell=p.get<uint32_t>("lesson");q.money=p.get<uint32_t>("money");q.pet=p.get<uint64_t>("pet");
+        for(const auto& row:p.get_child("targets")) {
+            if(!row.first.empty() || q.playerSpells.size()>=3)return false;
+            q.playerSpells.push_back(row.second.get_value<uint32_t>());
+        }
+        if(!FreePlayerTrainingCastQuote(q) || EncodePartyTrainingQuote(q)!=value)return false;
+        out=std::move(q);return true;
+    }catch(...){return false;}
+}
+inline const char* PartyTrainingEvidence(const TrainingLessonQuote& q) {
+    return q.cast?"native_training_exact_cast_and_spellbook":"native_training_exact_spellbook_and_unchanged_money";
+}
+inline bool VerifiedPartyTrainingEvidence(const std::string& evidence) {
+    return evidence=="native_training_exact_cast_and_spellbook" || evidence=="native_training_exact_spellbook_and_unchanged_money";
+}
+inline bool SameTrainingState(const TrainingLessonState& a,const TrainingLessonState& b) {
+    return a.actor==b.actor && a.money==b.money && a.pet==b.pet &&
+        a.playerSpells==b.playerSpells && a.petSpells==b.petSpells;
+}
+struct TrainingCastResult {
+    TrainingLessonState before,after;
+    bool started=false,effect=false,finished=false,succeeded=false,uncertain=false;
+};
+inline OperationState VerifyTrainingCast(const TrainingLessonQuote& q,const TrainingCastResult& r,std::string& why) {
+    why="native_training_cast_requires_reconciliation";
+    if(!FreePlayerTrainingCastQuote(q) || !TrainingLessonReady(q,r.before) || !r.started || !r.finished || r.uncertain)
+        return OperationState::Reconciling;
+    if(!r.effect && !r.succeeded && SameTrainingState(r.before,r.after)) {
+        why="native_training_cast_rejected_without_effect";return OperationState::Rejected;
+    }
+    auto expected=r.before;expected.playerSpells.insert(q.playerSpells.begin(),q.playerSpells.end());
+    if(!r.effect || !r.succeeded || !SameTrainingState(expected,r.after))return OperationState::Reconciling;
+    why=PartyTrainingEvidence(q);return OperationState::Verified;
+}
 inline bool PartyTrainingQuoteMatches(const Task& task,const TrainingLessonQuote& quote) {
     PartyTrainingJob job;std::string why;
     return IsPartyTrainingTask(task) && ValidatePartyTrainingTask(task,why) &&
         DecodePartyTrainingJob(task.checkpoint.data,job) && job.next<job.lessons.size() &&
-        quote.actor==task.actor && DirectFreeTrainingQuote(quote) && job.lessons[job.next]==quote.lesson;
+        quote.actor==task.actor && ManagedTrainingQuote(quote) && job.lessons[job.next]==quote.lesson;
 }
 inline bool AcknowledgePartyTraining(Task& after,const TrainingLessonQuote& quote,const OperationResult& proof) {
     if(after.phase!=Phase::Verifying || !PartyTrainingQuoteMatches(after,quote) || !IsUuid(proof.id) ||
         proof.task!=after.id || !after.revision || proof.taskRevision!=after.revision-1 ||
         proof.kind!="party_training_learn" || proof.state!=OperationState::Verified ||
         proof.nativeReference!="trainer_lesson:"+std::to_string(quote.lesson) ||
-        proof.evidence!="native_training_exact_spellbook_and_unchanged_money")return false;
+        proof.evidence!=PartyTrainingEvidence(quote))return false;
     PartyTrainingJob job;if(!DecodePartyTrainingJob(after.checkpoint.data,job))return false;
     ++job.next;after.checkpoint.data=EncodePartyTrainingJob(job);
     if(job.next==job.lessons.size())after.phase=Phase::Completed;

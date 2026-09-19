@@ -72,4 +72,47 @@ int main() {
     assert(!PartyServiceOperation(binding,"profession_craft",{}));
     assert(PartyServiceReceipt(binding,after,"party_training_learn",{},proof.id));
     assert(!PartyServiceReceipt(binding,after,"party_training_learn",{},proof.id));
+
+    // Direct journal fingerprints remain byte-for-byte compatible.
+    q.lesson=q.teachingSpell=100;q.playerSpells={100};
+    assert(EncodePartyTrainingQuote(q)==EncodeDirectTrainingQuote(q));
+    assert(DecodePartyTrainingQuote(EncodeDirectTrainingQuote(q),copy) && SameTrainingLessonQuote(q,copy));
+    q.cast=true;q.lesson=q.teachingSpell=10321;q.playerSpells={20271,21084};
+    assert(FreePlayerTrainingCastQuote(q) && !DirectFreeTrainingQuote(q));
+    assert(DecodePartyTrainingQuote(EncodePartyTrainingQuote(q),copy) && SameTrainingLessonQuote(q,copy));
+    assert(!DecodeDirectTrainingQuote(EncodePartyTrainingQuote(q),copy));
+    assert(!DecodePartyTrainingQuote(EncodePartyTrainingQuote(q)+"{}",copy));
+    invalid=q;invalid.playerSpells={21084,20271};assert(!FreePlayerTrainingCastQuote(invalid));
+    invalid=q;invalid.petSpells={7};invalid.pet=9;assert(!FreePlayerTrainingCastQuote(invalid));
+    invalid=q;invalid.cost=1;assert(!FreePlayerTrainingCastQuote(invalid));
+    invalid=q;invalid.playerSpells={10321};assert(!FreePlayerTrainingCastQuote(invalid));
+    invalid=q;invalid.playerSpells={20271,20271};assert(!FreePlayerTrainingCastQuote(invalid));
+    assert(!DecodePartyTrainingQuote(EncodePartyTrainingQuote(invalid),copy));
+    TrainingCastResult cast;cast.before.actor=q.actor;cast.before.money=q.money;
+    cast.before.playerSpells={17,21084}; // A previously known second target is valid.
+    cast.after=cast.before;cast.after.playerSpells.insert(20271);
+    cast.started=cast.effect=cast.finished=cast.succeeded=true;
+    assert(VerifyTrainingCast(q,cast,why)==OperationState::Verified && why==PartyTrainingEvidence(q));
+    auto broken=cast;broken.after.playerSpells.erase(20271);
+    assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;broken.after.playerSpells.insert(99);assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;broken.after.playerSpells.erase(17);assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;--broken.after.money;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;++broken.after.actor;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;++broken.after.pet;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;broken.finished=false;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;broken.uncertain=true;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;broken.effect=false;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;broken.succeeded=false;assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    broken=cast;broken.effect=broken.succeeded=false;broken.after=broken.before;
+    assert(VerifyTrainingCast(q,broken,why)==OperationState::Rejected);
+    broken=cast;broken.before.playerSpells.insert(20271);assert(VerifyTrainingCast(q,broken,why)==OperationState::Reconciling);
+    job={123,0,{10321}};task.checkpoint.data=EncodePartyTrainingJob(job);
+    after=task;++after.revision;after.phase=Phase::Verifying;after.checkpoint.step="party_training_learn";
+    proof.taskRevision=task.revision;proof.nativeReference="trainer_lesson:10321";
+    proof.evidence="native_training_exact_spellbook_and_unchanged_money";
+    assert(!AcknowledgePartyTraining(after,q,proof)); // Direct evidence cannot acknowledge a cast.
+    proof.evidence=PartyTrainingEvidence(q);assert(AcknowledgePartyTraining(after,q,proof));
+    assert(after.phase==Phase::Completed);
+    assert(!OperationOutcomeWrite(after,task.revision,proof,task.id,"{}").statements.empty());
 }

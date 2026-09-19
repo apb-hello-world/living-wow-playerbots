@@ -25,13 +25,13 @@ namespace LivingActivity {
         std::string NativeBefore(const OperationRequest& request) {
             if(request.kind=="party_training_learn") {
                 TrainingLessonQuote quote;
-                if(!DecodeDirectTrainingQuote(request.beforeState,quote) ||
+                if(!DecodePartyTrainingQuote(request.beforeState,quote) ||
                     !PartyTrainingQuoteMatches(request.transition.task,quote) ||
                     request.transition.task.checkpoint.step!="party_training_learn" ||
                     request.effects!=(Mask(Effect::Spell)|Mask(Effect::Social)) ||
                     request.persistence!=NativePersistence::Profession || !request.consumption.empty() ||
                     !request.itemGain.Empty() || !request.mailGain.Empty() || !request.itemTransfer.id.empty())
-                    throw std::invalid_argument("Exact free direct trainer lesson required");
+                    throw std::invalid_argument("Exact free trainer lesson required");
             }
             if(request.kind=="commission_output_partition") {
                 CommissionPartitionQuote quote;
@@ -135,7 +135,9 @@ namespace LivingActivity {
         if(request.kind!=adapter.OperationKind() || request.effects!=adapter.OperationEffects() ||
             request.persistence!=adapter.PersistencePolicy())return reject("native_adapter_mismatch");
         if(request.kind=="party_training_learn") {
-            if(adapter.DeferredNativeCast())return reject("direct_training_adapter_required");
+            TrainingLessonQuote quote;
+            if(!DecodePartyTrainingQuote(request.beforeState,quote) || adapter.DeferredNativeCast()!=quote.cast)
+                return reject("exact_training_adapter_required");
             try{NativeBefore(request);}catch(const std::exception&){return reject("invalid_native_training_contract");}
         }
         const bool transfer=adapter.SupportsItemTransfer() && ValidItemTransfer(request.itemTransfer) &&

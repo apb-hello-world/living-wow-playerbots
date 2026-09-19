@@ -336,7 +336,7 @@ namespace LivingActivity
             outcome.nativeReference=="vendor_sale:"+std::to_string(vendor.items.back().guid);
         PartyTrainingJob training;std::string trainingBlocker;
         const bool completedTraining=IsPartyTrainingTask(task) && task.phase==Phase::Completed && verified &&
-            outcome.kind=="party_training_learn" && outcome.evidence=="native_training_exact_spellbook_and_unchanged_money" &&
+            outcome.kind=="party_training_learn" && VerifiedPartyTrainingEvidence(outcome.evidence) &&
             ValidatePartyTrainingTask(task,trainingBlocker) && DecodePartyTrainingJob(task.checkpoint.data,training) &&
             training.next==training.lessons.size() && outcome.taskRevision==expected && task.revision==expected+1 &&
             outcome.nativeReference=="trainer_lesson:"+std::to_string(training.lessons.back());
