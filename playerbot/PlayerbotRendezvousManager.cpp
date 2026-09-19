@@ -190,6 +190,9 @@ namespace
         if (!context->GetValue<std::vector<TrainerSpell const*>>(
             "trainable spells", std::to_string(TRAINER_TYPE_CLASS))->Get().empty())
             errands |= kErrandTraining;
+        if(sLivingActivityCoordinator.EffectEnforcementEnabled())
+            for(auto entry:context->GetValue<std::vector<int32>>("available trainers",std::to_string(TRAINER_TYPE_TRADESKILLS))->Get())
+                if(LivingWowHasPartyTraining(bot,entry)){errands|=kErrandTraining;break;}
         if (sLivingActivityCoordinator.EffectEnforcementEnabled() &&
             sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands)
         {
@@ -300,6 +303,12 @@ namespace
         {
             entries = bot->GetPlayerbotAI()->GetAiObjectContext()->
                 GetValue<std::vector<int32>>("available trainers", std::to_string(TRAINER_TYPE_CLASS))->Get();
+            if(sLivingActivityCoordinator.EffectEnforcementEnabled()) {
+                const auto trades=bot->GetPlayerbotAI()->GetAiObjectContext()->
+                    GetValue<std::vector<int32>>("available trainers",std::to_string(TRAINER_TYPE_TRADESKILLS))->Get();
+                for(auto entry:trades)if(LivingWowHasPartyTraining(bot,entry))entries.push_back(entry);
+                std::sort(entries.begin(),entries.end());entries.erase(std::unique(entries.begin(),entries.end()),entries.end());
+            }
             // An empty filter means ALL destinations to TravelMgr.
             if (entries.empty()) return false;
         }
@@ -315,7 +324,8 @@ namespace
             const int32 entry = destination->GetEntry();
             if (GuidPosition(entry > 0 ? HIGHGUID_UNIT : HIGHGUID_GAMEOBJECT,
                 uint32(std::abs(entry))).IsHostileTo(bot)) continue;
-            if (errand == kErrandTraining && !LivingWowHasClassTraining(bot, entry)) continue;
+            if (errand == kErrandTraining && !(sLivingActivityCoordinator.EffectEnforcementEnabled()?
+                LivingWowHasPartyTraining(bot,entry):LivingWowHasClassTraining(bot,entry))) continue;
             // Evaluate actual spawns rather than choosing a random far square.
             // WorldPosition::distance includes known map-transfer links; FLT_MAX
             // means no connection. MovementAction resolves the detailed route.

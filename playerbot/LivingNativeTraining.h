@@ -7,6 +7,7 @@ bool PlanNativePartyTraining(Player&,const ObjectGuid&,PartyTrainingJob&,std::st
 bool QuoteNativePartyTraining(Player&,const Task&,TrainingLessonQuote&,std::string&);
 bool SupportedNativeTrainingCast(const TrainingLessonQuote&,std::string&);
 bool CompleteNativeTrainingSkillQuote(Player&,TrainingLessonQuote&,std::string&);
+NativeObservation ExecuteNativeDirectTrainingSkill(Player&,const TrainingLessonQuote&);
 class NativePartyTraining final:public NativeOperationAdapter {
 public:
     explicit NativePartyTraining(TrainingLessonQuote value):quote(std::move(value)){}

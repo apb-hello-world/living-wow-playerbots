@@ -8,15 +8,16 @@ bool PlanNativePartyTraining(Player& actor,const ObjectGuid& guid,PartyTrainingJ
     out={};auto reject=[&](const char* code){why=code;return false;};
     if(!sLivingActivityCoordinator.OnWorldThread() || !LivingWowFreeBotTraining(&actor))return reject("party_training_bot_required");
     auto* trainer=actor.GetNPCIfCanInteractWith(guid,UNIT_NPC_FLAG_TRAINER);
-    if(!trainer || !trainer->IsTrainerOf(&actor,false) || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_CLASS ||
-        trainer->GetCreatureInfo()->TrainerClass!=actor.getClass())return reject("party_training_class_trainer_required");
+    if(!trainer || !trainer->IsTrainerOf(&actor,false) || !LivingWowPartyTrainerMatches(&actor,trainer->GetCreatureInfo()))
+        return reject("party_training_class_trainer_required"); // Historical retry code, same saved trainer route.
     std::set<uint32_t> lessons;bool cast=false;
     for(const auto* list:{trainer->GetTrainerSpells(),trainer->GetTrainerTemplateSpells()})if(list)
         for(const auto& row:list->spellList) {
+            if(trainer->GetCreatureInfo()->TrainerType==TRAINER_TYPE_TRADESKILLS && !LivingWowExistingSkillTier(&actor,&row.second))continue;
             TrainingLessonQuote q;std::string blocker;
             if(!PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),guid,row.first,q,blocker))continue;
             if(!CompleteNativeTrainingSkillQuote(actor,q,blocker)){cast=true;continue;}
-            if(!DirectFreeTrainingQuote(q) && !SupportedNativeTrainingCast(q,blocker)){cast=true;continue;}
+            if(!DirectFreeTrainingQuote(q) && !DirectSkillTrainingQuote(q) && !SupportedNativeTrainingCast(q,blocker)){cast=true;continue;}
             lessons.insert(row.first);
         }
     if(lessons.empty())return reject(cast?"party_training_cast_capture_required":"party_training_no_direct_lesson");
@@ -35,12 +36,15 @@ bool QuoteNativePartyTraining(Player& actor,const Task& task,TrainingLessonQuote
     for(auto guid:actor.GetPlayerbotAI()->GetAiObjectContext()->GetValue<std::list<ObjectGuid>>("nearest npcs no los")->Get()) {
         if(guid.GetEntry()!=job.trainer)continue;
         auto* trainer=actor.GetNPCIfCanInteractWith(guid,UNIT_NPC_FLAG_TRAINER);
-        if(!trainer || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_CLASS ||
-            trainer->GetCreatureInfo()->TrainerClass!=actor.getClass())continue;
+        if(!trainer || !LivingWowPartyTrainerMatches(&actor,trainer->GetCreatureInfo()))continue;
         if(PlanNativeTrainingLesson(*actor.GetPlayerbotAI(),guid,job.lessons[job.next],quote,why)) {
             if(!CompleteNativeTrainingSkillQuote(actor,quote,why))return false;
+            if(trainer->GetCreatureInfo()->TrainerType==TRAINER_TYPE_TRADESKILLS &&
+                (!quote.skill.id || !quote.skill.before.value || quote.skill.after.step<=quote.skill.before.step)) {
+                why="party_training_existing_profession_tier_required";return false;
+            }
             if(PartyTrainingQuoteMatches(task,quote) &&
-                (DirectFreeTrainingQuote(quote) || SupportedNativeTrainingCast(quote,why)))return true;
+                (DirectFreeTrainingQuote(quote) || DirectSkillTrainingQuote(quote) || SupportedNativeTrainingCast(quote,why)))return true;
             why="party_training_native_quote_changed";
         }
     }
@@ -59,6 +63,7 @@ NativeObservation NativePartyTraining::ExecuteNative(Player& actor,const Operati
     NativeObservation out;std::string why;
     if(quote.cast){out.state=OperationState::Rejected;out.evidence="training_cast_requires_deferred_dispatch";return out;}
     if(!ValidateNative(actor,r,why)){out.state=OperationState::Rejected;out.evidence=why;return out;}
+    if(quote.skill.id)return ExecuteNativeDirectTrainingSkill(actor,quote);
     const auto result=ExecuteNativeTrainingLesson(*actor.GetPlayerbotAI(),quote);
     const auto it=actor.GetSpellMap().find(quote.lesson);
     const bool known=it!=actor.GetSpellMap().end() && it->second.state!=PLAYERSPELL_REMOVED && !it->second.disabled;
@@ -75,9 +80,13 @@ NativeObservation NativePartyTraining::ExecuteNative(Player& actor,const Operati
 std::string NativePartyTraining::PersistedNativeProof(Player& actor,const OperationRequest&,const Task& after) const {
     const auto it=actor.GetSpellMap().find(quote.lesson);
     const bool known=it!=actor.GetSpellMap().end() && it->second.state!=PLAYERSPELL_REMOVED && !it->second.disabled;
-    return "SELECT "+SqlValue(after.id)+','+std::to_string(after.revision)+" FROM characters c WHERE c.guid="+
+    std::string proof="SELECT "+SqlValue(after.id)+','+std::to_string(after.revision)+" FROM characters c WHERE c.guid="+
         std::to_string(actor.GetGUIDLow())+" AND c.money="+std::to_string(actor.GetMoney())+
         (known?" AND EXISTS(":" AND NOT EXISTS(")+"SELECT 1 FROM character_spell s WHERE s.guid=c.guid AND s.spell="+
         std::to_string(quote.lesson)+" AND s.disabled=0)";
+    if(quote.skill.id)proof+=" AND EXISTS(SELECT 1 FROM character_skills s WHERE s.guid=c.guid AND s.skill="+
+        std::to_string(quote.skill.id)+" AND s.value="+std::to_string(actor.GetSkillValuePure(quote.skill.id))+
+        " AND s.max="+std::to_string(actor.GetSkillMaxPure(quote.skill.id))+')';
+    return proof;
 }
 }

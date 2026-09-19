@@ -17,6 +17,7 @@
 #include "LivingNativeGathering.h"
 #include "LivingGatheringTravel.h"
 #include "PlayerbotInventoryPressure.h"
+#include "PlayerbotTraining.h"
 #include "PlayerbotActionBroker.h"
 #include "PlayerbotGuildSupplies.h"
 
@@ -935,8 +936,8 @@ LivingActivity::ServiceTravelResult PlayerbotOrganicEconomy::DriveRecipeService(
             (!purchaseItem || std::binary_search(purchaseVendors.begin(),purchaseVendors.end(),int32(id.GetEntry())))) candidate=npc;}
         if(candidate && trainerEntry) {
             auto* trainer=bot->GetMap()->GetCreature(id);
-            if(id.GetEntry()!=trainerEntry || !trainer || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_CLASS ||
-                trainer->GetCreatureInfo()->TrainerClass!=bot->getClass() || !trainer->IsTrainerOf(bot,false))candidate=nullptr;
+            if(id.GetEntry()!=trainerEntry || !trainer || !LivingWowPartyTrainerMatches(bot,trainer->GetCreatureInfo()) ||
+                !trainer->IsTrainerOf(bot,false))candidate=nullptr;
         }
         if(candidate && candidate->GetMap()==bot->GetMap() && bot->GetDistance(candidate)<distance) {
             service=candidate;distance=bot->GetDistance(candidate);

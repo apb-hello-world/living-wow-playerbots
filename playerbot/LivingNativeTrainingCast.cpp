@@ -42,7 +42,29 @@ bool SupportedNativeTrainingCast(const TrainingLessonQuote& q,std::string& why) 
     why.clear();return true;
 }
 bool CompleteNativeTrainingSkillQuote(Player& actor,TrainingLessonQuote& quote,std::string& why) {
-    quote.skill={};if(!quote.cast)return true;
+    quote.skill={};
+    if(!quote.cast) {
+        const auto* trainer=actor.GetMap()?actor.GetMap()->GetCreature(ObjectGuid(quote.trainer)):nullptr;
+        if(!trainer || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_TRADESKILLS)return true;
+        const auto* learned=sSpellMgr.GetSpellLearnSkill(quote.lesson);
+        if(!learned)return true;
+        why="training_existing_skill_tier_required";
+        if(!actor.HasSkill(learned->skill) || !learned->step || learned->step>MAX_SKILL_STEP)return false;
+        auto& skill=quote.skill;skill.id=learned->skill;
+        skill.before={actor.GetSkillValuePure(skill.id),actor.GetSkillMaxPure(skill.id),actor.GetSkillStep(skill.id)};
+        uint16_t maximum=0;
+        const auto* native=actor.GetSkillInfo(skill.id,[&](const SkillRaceClassInfoEntry& entry) {
+            const auto* tiers=sSkillTiersStore.LookupEntry(entry.skillTierId);
+            if(!tiers || !tiers->maxSkillValue[learned->step-1])return false;
+            maximum=uint16_t(tiers->maxSkillValue[learned->step-1]);return true;
+        });
+        // Player::SetSkillStep uses the same DBC maximum and retains the real
+        // earned value. Maximized skills need their separate cast contract.
+        if(!native || !maximum || (native->flags&SKILL_FLAG_MAXIMIZED))return false;
+        skill.after={skill.before.value,maximum,learned->step};
+        if(!DirectSkillTrainingQuote(quote))return false;
+        why.clear();return true;
+    }
     auto reject=[&](const char* code){why=code;return false;};
     const auto* info=sSpellTemplate.LookupEntry<SpellEntry>(quote.teachingSpell);
     if(!info || SpellScriptMgr::GetSpellScript(quote.teachingSpell) || IsChanneledSpell(info))
@@ -134,8 +156,9 @@ bool TrainingCastOfferReady(Player& actor,const TrainingLessonQuote& quote,std::
         !actor.IsStopped() || actor.GetTradeData() || actor.GetVictim() || !actor.getAttackers().empty() ||
         ReadNativeSafety(actor,MovementFlags(MOVEFLAG_FALLING|MOVEFLAG_FALLINGFAR)))return false;
     auto* trainer=actor.GetNPCIfCanInteractWith(ObjectGuid(quote.trainer),UNIT_NPC_FLAG_TRAINER);
-    if(!trainer || !trainer->IsTrainerOf(&actor,false) || trainer->GetCreatureInfo()->TrainerType!=TRAINER_TYPE_CLASS ||
-        trainer->GetCreatureInfo()->TrainerClass!=actor.getClass())return false;
+    if(!trainer || !trainer->IsTrainerOf(&actor,false) || !LivingWowPartyTrainerMatches(&actor,trainer->GetCreatureInfo()))return false;
+    if(trainer->GetCreatureInfo()->TrainerType==TRAINER_TYPE_TRADESKILLS &&
+        (!quote.skill.id || !quote.skill.before.value || quote.skill.after.step<=quote.skill.before.step))return false;
     for(const auto* list:{trainer->GetTrainerSpells(),trainer->GetTrainerTemplateSpells()})if(list) {
         const auto found=list->spellList.find(quote.lesson);if(found==list->spellList.end())continue;
         auto current=quote;
@@ -248,5 +271,24 @@ std::shared_ptr<NativeCraftCast> NativePartyTraining::ReserveNativeCast(const Op
     if(request.kind!=OperationKind() || request.beforeState!=EncodePartyTrainingQuote(quote))
         throw std::invalid_argument("training_cast_exact_operation_required");
     return std::make_shared<NativeTrainingCast>(executing,action,quote);
+}
+NativeObservation ExecuteNativeDirectTrainingSkill(Player& actor,const TrainingLessonQuote& quote) {
+    NativeObservation out;out.nativeReference="trainer_lesson:"+std::to_string(quote.lesson);
+    if(!sLivingActivityCoordinator.OnWorldThread() || !DirectSkillTrainingQuote(quote)) {
+        out.state=OperationState::Rejected;out.evidence="training_direct_skill_quote_required";return out;
+    }
+    const auto before=ReadTrainingFrame(actor);const auto skillsBefore=ReadTrainingSkills(actor);
+    // The enclosing adapter just revalidated the complete skill quote. The
+    // shared legacy primitive re-quotes native offer/subject/fee itself; its
+    // quote has no managed skill projection. Execution is synchronous under
+    // the same world-thread operation and save transaction.
+    auto nativeQuote=quote;nativeQuote.skill={};
+    ExecuteNativeTrainingLesson(*actor.GetPlayerbotAI(),nativeQuote);
+    const auto after=ReadTrainingFrame(actor);const auto skillsAfter=ReadTrainingSkills(actor);
+    out.state=VerifyDirectTrainingSkill(quote,before,after,skillsBefore,skillsAfter,out.evidence);
+    out.afterState="{\"lesson\":"+std::to_string(quote.lesson)+",\"before\":"+TrainingFrameJson(before,quote)+
+        ",\"after\":"+TrainingFrameJson(after,quote)+",\"skills_before\":"+TrainingSkillsJson(skillsBefore)+
+        ",\"skills_after\":"+TrainingSkillsJson(skillsAfter)+'}';
+    return out;
 }
 }

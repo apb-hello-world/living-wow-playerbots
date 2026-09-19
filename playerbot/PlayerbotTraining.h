@@ -66,3 +66,30 @@ inline bool LivingWowHasClassTraining(Player* bot, int32 entry)
                     return true;
     return false;
 }
+
+inline bool LivingWowPartyTrainerMatches(Player* bot,const CreatureInfo* trainer) {
+    return bot && trainer && ((trainer->TrainerType==TRAINER_TYPE_CLASS && trainer->TrainerClass==bot->getClass()) ||
+        trainer->TrainerType==TRAINER_TYPE_TRADESKILLS);
+}
+inline bool LivingWowExistingSkillTier(Player* bot,const TrainerSpell* offered) {
+    if(!bot || !offered)return false;
+#ifdef MANGOSBOT_ZERO
+    const std::vector<uint32_t> learned={offered->learnedSpell};
+#else
+    const auto& learned=offered->learnedSpell;
+#endif
+    for(auto id:learned)if(const auto* skill=sSpellMgr.GetSpellLearnSkill(id))
+        if(bot->GetSkillValuePure(skill->skill)>0 && skill->step>bot->GetSkillStep(skill->skill))return true;
+    return false;
+}
+inline bool LivingWowHasPartyTraining(Player* bot,int32 entry) {
+    if(!bot || entry<=0)return false;
+    const auto* trainer=sObjectMgr.GetCreatureTemplate(entry);
+    if(!LivingWowPartyTrainerMatches(bot,trainer))return false;
+    if(trainer->TrainerType==TRAINER_TYPE_CLASS)return LivingWowHasClassTraining(bot,entry);
+    for(const auto* list:{sObjectMgr.GetNpcTrainerSpells(entry),trainer->TrainerTemplateId?
+        sObjectMgr.GetNpcTrainerTemplateSpells(trainer->TrainerTemplateId):nullptr})if(list)
+        for(const auto& row:list->spellList)
+            if(LivingWowExistingSkillTier(bot,&row.second) && LivingWowCanTrainSpell(bot,&row.second))return true;
+    return false;
+}

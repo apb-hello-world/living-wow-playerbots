@@ -59,6 +59,16 @@ inline bool DirectFreeTrainingQuote(const TrainingLessonQuote& q) {
     return ValidTrainingLesson(q) && !q.cast && !q.cost && !q.skill.id && q.skill==TrainingSkillTransition{} && q.teachingSpell==q.lesson &&
         q.playerSpells==std::vector<uint32_t>{q.lesson} && q.petSpells.empty();
 }
+// Upgrade an already-owned skill only. Native admission supplies the exact
+// DBC tier; no new profession choice, free skill points, or guessed maximum.
+inline bool DirectSkillTrainingQuote(const TrainingLessonQuote& q) {
+    const auto& s=q.skill;
+    return ValidTrainingLesson(q) && !q.cast && !q.cost && q.teachingSpell==q.lesson &&
+        q.playerSpells==std::vector<uint32_t>{q.lesson} && q.petSpells.empty() && s.id &&
+        s.before.value && s.before.step && s.before.value<=s.before.maximum &&
+        s.after.value==s.before.value && s.after.maximum>s.before.maximum &&
+        s.after.value<=s.after.maximum && s.after.step>s.before.step && s.after.step<=6;
+}
 inline std::string EncodeDirectTrainingQuote(const TrainingLessonQuote& q) {
     return "{\"actor\":"+std::to_string(q.actor)+",\"trainer\":"+std::to_string(q.trainer)+
         ",\"lesson\":"+std::to_string(q.lesson)+",\"money\":"+std::to_string(q.money)+",\"pet\":"+std::to_string(q.pet)+'}';
@@ -88,7 +98,7 @@ inline bool FreePlayerTrainingCastQuote(const TrainingLessonQuote& q) {
         std::find(q.playerSpells.begin(),q.playerSpells.end(),q.lesson)==q.playerSpells.end();
 }
 inline bool ManagedTrainingQuote(const TrainingLessonQuote& q) {
-    return DirectFreeTrainingQuote(q) || FreePlayerTrainingCastQuote(q);
+    return DirectFreeTrainingQuote(q) || DirectSkillTrainingQuote(q) || FreePlayerTrainingCastQuote(q);
 }
 // Native _SaveSpells omits dependent abilities. Each omitted target must be
 // reachable through native non-auto learning edges from a saved quoted target.
@@ -105,8 +115,8 @@ inline bool TrainingPersistenceTargets(const std::set<uint32_t>& present,const s
     return reached==present;
 }
 inline std::string EncodePartyTrainingQuote(const TrainingLessonQuote& q) {
-    if(!q.cast)return EncodeDirectTrainingQuote(q); // Historical journal fingerprint.
-    std::string out="{\"workflow\":\""+std::string(q.skill.id?"training_cast_v2":"training_cast_v1")+"\",\"actor\":"+std::to_string(q.actor)+
+    if(!q.cast && !q.skill.id)return EncodeDirectTrainingQuote(q); // Historical journal fingerprint.
+    std::string out="{\"workflow\":\""+std::string(!q.cast?"training_direct_skill_v1":q.skill.id?"training_cast_v2":"training_cast_v1")+"\",\"actor\":"+std::to_string(q.actor)+
         ",\"trainer\":"+std::to_string(q.trainer)+",\"lesson\":"+std::to_string(q.lesson)+
         ",\"money\":"+std::to_string(q.money)+",\"pet\":"+std::to_string(q.pet)+",\"targets\":[";
     for(size_t i=0;i<q.playerSpells.size();++i){if(i)out+=',';out+=std::to_string(q.playerSpells[i]);}
@@ -126,33 +136,49 @@ inline bool DecodePartyTrainingQuote(const std::string& value,TrainingLessonQuot
     try {
         boost::property_tree::ptree p;std::istringstream in(value);boost::property_tree::read_json(in,p);
         const auto workflow=p.get<std::string>("workflow");
-        if(workflow!="training_cast_v1" && workflow!="training_cast_v2")return false;
-        TrainingLessonQuote q;q.cast=true;q.actor=p.get<uint32_t>("actor");q.trainer=p.get<uint64_t>("trainer");
+        if(workflow!="training_cast_v1" && workflow!="training_cast_v2" && workflow!="training_direct_skill_v1")return false;
+        TrainingLessonQuote q;q.cast=workflow!="training_direct_skill_v1";q.actor=p.get<uint32_t>("actor");q.trainer=p.get<uint64_t>("trainer");
         q.lesson=q.teachingSpell=p.get<uint32_t>("lesson");q.money=p.get<uint32_t>("money");q.pet=p.get<uint64_t>("pet");
         for(const auto& row:p.get_child("targets")) {
             if(!row.first.empty() || q.playerSpells.size()>=3)return false;
             q.playerSpells.push_back(row.second.get_value<uint32_t>());
         }
-        if(workflow=="training_cast_v2") {
+        if(workflow=="training_cast_v2" || workflow=="training_direct_skill_v1") {
             const auto& s=p.get_child("skill");q.skill.id=s.get<uint16_t>("id");
             q.skill.before={s.get<uint16_t>("before_value"),s.get<uint16_t>("before_maximum"),s.get<uint16_t>("before_step")};
             q.skill.after={s.get<uint16_t>("after_value"),s.get<uint16_t>("after_maximum"),s.get<uint16_t>("after_step")};
         }
-        if(!FreePlayerTrainingCastQuote(q) || EncodePartyTrainingQuote(q)!=value)return false;
+        if(!(FreePlayerTrainingCastQuote(q) || DirectSkillTrainingQuote(q)) || EncodePartyTrainingQuote(q)!=value)return false;
         out=std::move(q);return true;
     }catch(...){return false;}
 }
 inline const char* PartyTrainingEvidence(const TrainingLessonQuote& q) {
-    return q.skill.id?"native_training_exact_cast_skill_and_spellbook":
+    return !q.cast && q.skill.id?"native_training_exact_direct_skill_and_spellbook":q.skill.id?"native_training_exact_cast_skill_and_spellbook":
         q.cast?"native_training_exact_cast_and_spellbook":"native_training_exact_spellbook_and_unchanged_money";
 }
 inline bool VerifiedPartyTrainingEvidence(const std::string& evidence) {
-    return evidence=="native_training_exact_cast_skill_and_spellbook" || evidence=="native_training_exact_cast_and_spellbook" ||
+    return evidence=="native_training_exact_direct_skill_and_spellbook" || evidence=="native_training_exact_cast_skill_and_spellbook" || evidence=="native_training_exact_cast_and_spellbook" ||
         evidence=="native_training_exact_spellbook_and_unchanged_money";
 }
 inline bool SameTrainingState(const TrainingLessonState& a,const TrainingLessonState& b) {
     return a.actor==b.actor && a.money==b.money && a.pet==b.pet &&
         a.playerSpells==b.playerSpells && a.petSpells==b.petSpells;
+}
+inline OperationState VerifyDirectTrainingSkill(const TrainingLessonQuote& q,
+    const TrainingLessonState& before,const TrainingLessonState& after,
+    const std::map<uint16_t,TrainingSkillState>& skillsBefore,
+    const std::map<uint16_t,TrainingSkillState>& skillsAfter,std::string& why) {
+    why="native_training_direct_skill_requires_reconciliation";
+    const auto skill=skillsBefore.find(q.skill.id);
+    if(!DirectSkillTrainingQuote(q) || !TrainingLessonReady(q,before) ||
+        skill==skillsBefore.end() || !(skill->second==q.skill.before))return OperationState::Reconciling;
+    if(SameTrainingState(before,after) && skillsBefore==skillsAfter) {
+        why="native_training_direct_skill_rejected_without_effect";return OperationState::Rejected;
+    }
+    auto expected=before;expected.playerSpells.insert(q.lesson);
+    auto expectedSkills=skillsBefore;expectedSkills[q.skill.id]=q.skill.after;
+    if(!SameTrainingState(expected,after) || expectedSkills!=skillsAfter)return OperationState::Reconciling;
+    why=PartyTrainingEvidence(q);return OperationState::Verified;
 }
 struct TrainingCastResult {
     TrainingLessonState before,after;

@@ -16,6 +16,8 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
     const std::string suite=std::getenv("LIVING_WOW_NATIVE_FIXTURE");
     const bool travel=suite=="activity-party-training-travel-resume-v1";
     const bool mountReplay=suite=="activity-party-training-mount-restart-v1";
+    const bool tierReplay=suite=="activity-party-training-tier-restart-v1";
+    const bool tier=tierReplay || suite=="activity-party-training-tier-v1";
     const bool mount=mountReplay || suite=="activity-party-training-mount-v1";
     const bool cast=mount || suite=="activity-party-training-cast-v1";
     const bool restart=travel || suite=="activity-party-training-resume-v1";
@@ -29,14 +31,15 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
     auto emit=[&](bool passed,const std::string& why) {
         f.report.put("suite",suite);f.report.put("boot",state.boot);f.report.put("actor",f.actor);
         f.report.put("leader",f.leader);f.report.put("task",f.task);f.report.put("failure",why);f.report.put("blocker",f.blocker);
-        f.report.put("outcome",passed?((restart || cast)?"passed":"checkpoint"):"failed");
+        f.report.put("outcome",passed?((restart || cast || tier)?"passed":"checkpoint"):"failed");
         f.report.put("test_only",true);f.report.put("independent_audit_required",true);
         if(bot){f.report.put("money_after",bot->GetMoney());f.report.put("spells_after",spells());}
         if(passed)state.enforceEffects.store(false);
-        if(!PartyMailFixture().done && (!passed || restart || cast))PartyMailFixture().Close();
+        if(!PartyMailFixture().done && (!passed || restart || cast || tier))PartyMailFixture().Close();
         std::ofstream out("/isolated/evidence/activity-party-training-"+state.boot+".json");out<<Json(f.report);out.close();
-        if(passed && !restart && !cast){std::ofstream copy("/isolated/evidence/party-training-checkpoint.json");copy<<Json(f.report);}
+        if(passed && !restart && !cast && !tier){std::ofstream copy("/isolated/evidence/party-training-checkpoint.json");copy<<Json(f.report);}
         if(passed && mount && !mountReplay){std::ofstream copy("/isolated/evidence/party-training-mount-completed.json");copy<<Json(f.report);}
+        if(passed && tier && !tierReplay){std::ofstream copy("/isolated/evidence/party-training-tier-completed.json");copy<<Json(f.report);}
         state.fixtureFinished=true;
         sLog.outString("Living isolated training fixture: %s",Json(f.report).c_str());
     };
@@ -73,6 +76,24 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
             if(!sRandomPlayerbotMgr.GetPlayerBot(id))sRandomPlayerbotMgr.AddRandomBot(id);}
         auto* leader=sRandomPlayerbotMgr.GetPlayerBot(f.leader);
         if(!bot || !leader || !bot->IsInWorld() || !leader->IsInWorld() || NativeSafety(bot) || NativeSafety(leader))return;
+        if(tierReplay) {
+            std::ifstream input("/isolated/evidence/party-training-tier-completed.json");boost::property_tree::read_json(input,f.report);
+            require(f.report.template get<std::string>("outcome")=="passed" &&
+                f.report.template get<uint32_t>("actor")==f.actor && f.report.template get<uint32_t>("leader")==f.leader,
+                "matching_tier_completion_required");
+            f.task=f.report.template get<std::string>("task");require(IsUuid(f.task),"tier_completion_uuid_required");
+            const auto row=CharacterDatabase.Query(("SELECT "+PersistedTaskProjection()+" FROM living_activity_task WHERE task_id="+SqlValue(f.task)).c_str());
+            Task saved;std::string decode;
+            require(row && DecodeTaskProjection(row->Fetch()[0].GetCppString(),saved,decode) && saved.id==f.task &&
+                saved.actor==f.actor && saved.source=="party_training" && saved.phase==Phase::Completed &&
+                !bot->GetGroup() && !leader->GetGroup(),"tier_completed_task_and_party_cleanup_required");
+            require(spells()==f.report.template get<std::string>("spells_after") &&
+                bot->GetMoney()==f.report.template get<uint32_t>("money_after") &&
+                bot->GetSkillValuePure(SKILL_ALCHEMY)==50 && bot->GetSkillMaxPure(SKILL_ALCHEMY)==150 &&
+                bot->GetSkillStep(SKILL_ALCHEMY)==2,"tier_restart_preserves_spellbook_money_and_skill");
+            f.report.put("tier_prior_boot",f.report.template get<std::string>("boot"));
+            f.report.put("tier_restart_verified",true);emit(true,"");return;
+        }
         if(mountReplay) {
             std::ifstream input("/isolated/evidence/party-training-mount-completed.json");boost::property_tree::read_json(input,f.report);
             require(f.report.template get<std::string>("outcome")=="passed" &&
@@ -101,9 +122,13 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
             for(const auto& row:state.cache)if(row.second.actor==f.actor && row.second.mode==Mode::Active && !Terminal(row.second.phase))
                 require(false,"existing_training_actor_obligation_preserved");
             if(!f.placed) {
-                require(cast?(bot->getClass()==CLASS_PALADIN && bot->GetLevel()>=4):
+                require(tier?(bot->HasSpell(2259) && !bot->HasSpell(3101) && bot->GetLevel()>=10 &&
+                    bot->GetSkillValuePure(SKILL_ALCHEMY)>0 && bot->GetSkillMaxPure(SKILL_ALCHEMY)==75):
+                    cast?(bot->getClass()==CLASS_PALADIN && bot->GetLevel()>=4):
                     (bot->getClass()==CLASS_WARLOCK && bot->GetLevel()>=20),"explicit_class_training_fixture_required");
-                auto target=WorldDatabase.PQuery("SELECT c.guid,c.id,c.position_x,c.position_y,c.position_z,c.orientation FROM creature c JOIN creature_template t ON t.Entry=c.id WHERE t.TrainerClass='%u' AND t.TrainerType=0 AND c.map='%u' ORDER BY POW(c.position_x-%.4f,2)+POW(c.position_y-%.4f,2) LIMIT 1",
+                auto target=tier?WorldDatabase.PQuery("SELECT c.guid,c.id,c.position_x,c.position_y,c.position_z,c.orientation FROM creature c JOIN creature_template t ON t.Entry=c.id WHERE t.TrainerType=2 AND t.TrainerTemplateId=1050 AND c.map='%u' ORDER BY POW(c.position_x-%.4f,2)+POW(c.position_y-%.4f,2) LIMIT 1",
+                    bot->GetMapId(),bot->GetPositionX(),bot->GetPositionY()):
+                    WorldDatabase.PQuery("SELECT c.guid,c.id,c.position_x,c.position_y,c.position_z,c.orientation FROM creature c JOIN creature_template t ON t.Entry=c.id WHERE t.TrainerClass='%u' AND t.TrainerType=0 AND c.map='%u' ORDER BY POW(c.position_x-%.4f,2)+POW(c.position_y-%.4f,2) LIMIT 1",
                     uint32_t(bot->getClass()),bot->GetMapId(),bot->GetPositionX(),bot->GetPositionY());
                 require(bool(target),"real_class_trainer_spawn_required");const auto* row=target->Fetch();
                 f.trainer=ObjectGuid(HIGHGUID_UNIT,row[1].GetUInt32(),row[0].GetUInt32()).GetRawValue();
@@ -115,12 +140,16 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
                     f.report.put("test_original_level",bot->GetLevel());f.report.put("test_level_input",40);
                     bot->GiveLevel(40); // Explicit copied-character level fixture, never organic advancement.
                 }
-                const std::vector<uint32_t> removed=mount?std::vector<uint32_t>{}:cast?std::vector<uint32_t>{20271}:std::vector<uint32_t>{5782,5697,698};
+                if(tier) {
+                    f.report.put("test_original_skill",bot->GetSkillValuePure(SKILL_ALCHEMY));f.report.put("test_skill_input",50);
+                    bot->SetSkill(SKILL_ALCHEMY,50,75,1); // Copied prerequisite fixture, not earned skill credit.
+                }
+                const std::vector<uint32_t> removed=(mount || tier)?std::vector<uint32_t>{}:cast?std::vector<uint32_t>{20271}:std::vector<uint32_t>{5782,5697,698};
                 if(cast && !mount)require(bot->HasSpell(21084),"training_cast_preknown_target_required");
                 for(uint32_t lesson:removed) {
                     require(bot->HasSpell(lesson),"fixture_existing_lesson_required");bot->removeSpell(lesson,false,false);
                 }
-                f.report.put("test_unlearned_spells",mount?"":cast?"20271":"5782,5697,698");
+                f.report.put("test_unlearned_spells",(mount || tier)?"":cast?"20271":"5782,5697,698");
                 bot->StopMoving();bot->GetMotionMaster()->Clear();
                 bot->NearTeleportTo(row[2].GetFloat()+1.0f,row[3].GetFloat(),row[4].GetFloat(),row[5].GetFloat());
                 f.placed=true;return;
@@ -154,7 +183,14 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
                 require(selected,"native_apprentice_mount_offer_required");planned.lessons={selected};
                 f.report.put("test_selected_native_offer",true);
             }
-            require(mount || (cast?std::find(planned.lessons.begin(),planned.lessons.end(),10321)!=planned.lessons.end():
+            if(tier) {
+                require(planned.lessons==std::vector<uint32_t>{3101},"exact_existing_alchemy_tier_only");
+                TrainingLessonQuote q;
+                require(PlanNativeTrainingLesson(*bot->GetPlayerbotAI(),ObjectGuid(f.trainer),3101,q,f.blocker) &&
+                    CompleteNativeTrainingSkillQuote(*bot,q,f.blocker) && DirectSkillTrainingQuote(q),"native_direct_tier_quote_required");
+                f.report.put("test_tier_quote",EncodePartyTrainingQuote(q));
+            }
+            require(tier || mount || (cast?std::find(planned.lessons.begin(),planned.lessons.end(),10321)!=planned.lessons.end():
                 planned.lessons.size()>=3),"native_training_lesson_manifest_required");
             f.report.put("accepted_manifest",EncodePartyTrainingJob(planned));f.report.put("spells_before",spells());
             f.report.put("money_before",bot->GetMoney());f.report.put("money_grants",0);f.report.put("item_grants",0);
@@ -193,7 +229,7 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
         f.blocker=state.executionBlockers[f.task];
         if(travel && saved->phase==Phase::Traveling && saved->checkpoint.step==ServiceStep(ServiceDestination::ClassTrainer))
             f.report.put("saved_trainer_travel_observed",true);
-        if(!restart && !cast && next==1 && saved->phase==Phase::Verifying && state.operations.empty()) {
+        if(!restart && !cast && !tier && next==1 && saved->phase==Phase::Verifying && state.operations.empty()) {
             f.report.put("checkpoint_revision",saved->revision);f.report.put("checkpoint_at_ms",NowMs());
             f.report.put("checkpoint_spells",spells());f.report.put("party_group",bot->GetGroup()->GetId());
             bot->SaveToDB();leader->SaveToDB();emit(true,"");return;
@@ -256,7 +292,12 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
             f.report.put("paused_spellbook_unchanged",true);f.reauthorized=true;
         }
         if(saved->phase==Phase::Completed) {
-            require((cast || (restart && f.recalled && f.reauthorized)) && next==job.lessons.size(),"training_all_interruptions_required");
+            require((tier || cast || (restart && f.recalled && f.reauthorized)) && next==job.lessons.size(),"training_all_interruptions_required");
+            if(tier) {
+                require(bot->GetSkillValuePure(SKILL_ALCHEMY)==50 && bot->GetSkillMaxPure(SKILL_ALCHEMY)==150 &&
+                    bot->GetSkillStep(SKILL_ALCHEMY)==2,"native_tier_changes_capacity_not_earned_skill");
+                f.report.put("tier_native_skill_value",50);f.report.put("tier_native_skill_maximum",150);f.report.put("tier_native_skill_step",2);
+            }
             if(travel) {
                 require(f.report.template get<bool>("saved_trainer_travel_observed",false),"saved_training_travel_phase_required");
                 const ObjectGuid trainer(f.report.template get<uint64_t>("trainer_guid"));
