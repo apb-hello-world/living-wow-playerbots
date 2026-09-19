@@ -165,10 +165,17 @@ template<class State> void RunIsolatedPartyAuction(State& state) {
                 f.report.put("test_native_sale.buyer_money_after",leader->GetMoney());
                 f.report.put("test_native_sale.started_at_ms",started);
                 f.report.put("test_native_sale.boot",state.boot);
-                std::ofstream checkpoint("/isolated/evidence/party-auction-checkpoint.json");
-                checkpoint<<Json(f.report);checkpoint.close();
                 std::ofstream sale("/isolated/evidence/party-auction-sale-"+state.boot+".json");
-                sale<<Json(f.report);sale.close();
+                require(bool(sale),"sale_report_writable");sale<<Json(f.report);sale.flush();
+                require(bool(sale),"sale_report_saved");sale.close();
+                // Prepared inputs may be root-owned. Replace through a new
+                // file in the fixture-owned directory, never silently fail an
+                // in-place overwrite and repeat the native buyout on restart.
+                std::ofstream checkpoint("/isolated/evidence/party-auction-sale-checkpoint.tmp");
+                require(bool(checkpoint),"sale_checkpoint_writable");checkpoint<<Json(f.report);checkpoint.flush();
+                require(bool(checkpoint),"sale_checkpoint_saved");checkpoint.close();
+                require(std::rename("/isolated/evidence/party-auction-sale-checkpoint.tmp",
+                    "/isolated/evidence/party-auction-checkpoint.json")==0,"sale_checkpoint_replaced");
                 state.fixtureFinished=true;state.enforceEffects.store(false);return;
             }
             state.enforceEffects.store(true);
