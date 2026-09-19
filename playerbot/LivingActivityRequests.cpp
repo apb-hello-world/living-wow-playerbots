@@ -7,6 +7,7 @@
 #include "LivingPartyBank.h"
 #include "LivingPartyAuction.h"
 #include "LivingPartyTraining.h"
+#include "LivingGuildEventCommitment.h"
 #include <limits>
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
@@ -40,6 +41,7 @@ namespace LivingActivity {
     AdmissionCode ValidateTaskRequest(const TaskRequest& request, const Task* saved,
         const WorldContext& current, std::string& reason, const Task* root) {
         const Task& task = request.task;
+        if(!ValidateGuildEventCommitmentTask(task,reason))return AdmissionCode::InvalidRequest;
         if(!ValidatePartyRepairTask(task,reason))return AdmissionCode::InvalidRequest;
         if(!ValidatePartyVendorTask(task,reason))return AdmissionCode::InvalidRequest;
         if(!ValidatePartyBankTask(task,reason))return AdmissionCode::InvalidRequest;
@@ -82,6 +84,7 @@ namespace LivingActivity {
                 reason = "new_task_must_be_queued"; return AdmissionCode::InvalidRequest;
             }
         } else {
+            if(!PreserveGuildEventCommitment(*saved,task,reason))return AdmissionCode::InvalidRequest;
             if(!PreservePartyVendorIntent(*saved,task,reason))return AdmissionCode::InvalidRequest;
             if(!PreservePartyBankIntent(*saved,task,reason))return AdmissionCode::InvalidRequest;
             if(!PreservePartyAuctionIntent(*saved,task,reason))return AdmissionCode::InvalidRequest;
@@ -131,6 +134,7 @@ namespace LivingActivity {
     }
     bool SavedTaskExecutable(const Task& saved, uint64_t revision,
         const WorldContext& current, uint64_t wallNow, std::string& reason) {
+        if(!ValidateGuildEventCommitmentTask(saved,reason))return false;
         if (!ValidateGuildProcurementTask(saved, reason) || !ValidatePartyRepairTask(saved,reason)) return false;
         if(!ValidatePartyVendorTask(saved,reason))return false;
         if(!ValidatePartyBankTask(saved,reason))return false;

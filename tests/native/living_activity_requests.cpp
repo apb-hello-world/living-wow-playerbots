@@ -2,6 +2,7 @@
 #include "LivingProfessionJob.h"
 #include "LivingGuildDelivery.h"
 #include "LivingPartyRepair.h"
+#include "LivingGuildEventCommitment.h"
 #include <cassert>
 #include <limits>
 using namespace LivingActivity;
@@ -23,6 +24,54 @@ static TaskRequest Request() {
 #include "fixtures/GuildDeliveryRequests.inc"
 int main() {
     GuildDeliveryRequests();
+    {
+        GuildEventCommitment definition{"calendar:earned:7","quest",4,3,42,1000,4600};
+        const auto encoded=EncodeGuildEventCommitment(definition);GuildEventCommitment decoded;
+        assert(DecodeGuildEventCommitment(encoded,decoded));
+        assert(EncodeGuildEventCommitment(decoded)==encoded);
+        assert(GuildEventCommitmentKey(definition,497)=="calendar:earned:7:3:497");
+        for(const auto& malformed:std::vector<std::string>{"{}",encoded+" ",encoded.substr(0,encoded.size()-1)+",\"target\":99}",
+            encoded.substr(0,encoded.size()-1)+",\"invented\":1}"})assert(!DecodeGuildEventCommitment(malformed,decoded));
+        auto guild=Request();auto& task=guild.task;
+        task.source="guild_event_commitment";task.sourceKey=GuildEventCommitmentKey(definition,task.actor);
+        task.kind=Kind::GuildEvent;task.priority=Priority::Scheduled;task.dueAtMs=1000000;
+        task.checkpoint.data=encoded;task.checkpoint.step="guild_event_wait";
+        std::string why;
+        assert(ValidateTaskRequest(guild,nullptr,task.context,why)==AdmissionCode::Pending);
+        for(unsigned field=0;field<8;++field) {
+            auto bad=guild;
+            switch(field){case 0:bad.task.source="guild_event";break;case 1:bad.task.priority=Priority::Human;break;
+                case 2:bad.task.kind=Kind::Profession;break;case 3:bad.task.accepted=false;break;
+                case 4:bad.task.sourceKey="calendar:earned:7:2:497";break;case 5:++bad.task.dueAtMs;break;
+                case 6:bad.task.checkpoint.step="profession_prepare";break;case 7:bad.task.checkpoint.data="{}";break;}
+            assert(ValidateTaskRequest(bad,nullptr,bad.task.context,why)==AdmissionCode::InvalidRequest);
+        }
+        const auto saved=task;guild.expectedRevision=1;++task.revision;task.phase=Phase::Preparing;task.checkpoint.step="guild_event_form";
+        assert(ValidateTaskRequest(guild,&saved,task.context,why)==AdmissionCode::Pending);
+        assert(SavedTaskExecutable(task,task.revision,task.context,1001,why));
+        auto revised=definition;++revised.target;task.checkpoint.data=EncodeGuildEventCommitment(revised);
+        assert(ValidateTaskRequest(guild,&saved,task.context,why)==AdmissionCode::InvalidRequest);
+        assert(why=="accepted_guild_event_revision_is_immutable");task.checkpoint.data=encoded;
+        task.phase=Phase::Completed;
+        assert(ValidateTaskRequest(guild,&saved,task.context,why)==AdmissionCode::ReconciliationRequired);
+        GuildEventAcceptance native{definition,497,4,3,true,true,false};
+        assert(std::string(GuildEventAcceptanceBlocker(definition,497,native)).empty());
+        native.memberGuild=5;assert(std::string(GuildEventAcceptanceBlocker(definition,497,native))=="guild_event_membership_changed");
+        native.memberGuild=4;native.delegated=false;assert(std::string(GuildEventAcceptanceBlocker(definition,497,native))=="guild_event_delegation_revoked");
+        native.delegated=true;++native.definition.eventRevision;
+        assert(std::string(GuildEventAcceptanceBlocker(definition,497,native))=="guild_event_revision_requires_renewal");
+        native.definition=definition;native.acceptedRevision=2;
+        assert(std::string(GuildEventAcceptanceBlocker(definition,497,native))=="guild_event_acceptance_withdrawn");
+        native.acceptedRevision=3;native.terminal=true;
+        assert(std::string(GuildEventAcceptanceBlocker(definition,497,native))=="guild_event_terminal_requires_reconciliation");
+        native.terminal=false;native.actor=498;
+        assert(std::string(GuildEventAcceptanceBlocker(definition,497,native))=="guild_event_native_record_unavailable");
+        // Read-only legacy imports are not rewritten, but switching their mode
+        // cannot activate an untyped observer checkpoint.
+        auto legacy=saved;legacy.mode=Mode::Observe;legacy.source="guild_event";legacy.checkpoint.data="{}";
+        assert(ValidateGuildEventCommitmentTask(legacy,why));legacy.mode=Mode::Active;
+        assert(!ValidateGuildEventCommitmentTask(legacy,why));
+    }
     {
         auto repair=Request();repair.task.kind=Kind::PartyErrand;repair.task.source="party_repair";
         repair.task.checkpoint.data="{\"workflow\":\"party_repair_v1\"}";
