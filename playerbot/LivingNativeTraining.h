@@ -17,7 +17,7 @@ public:
     const char* OperationKind() const override{return "party_training_learn";}
     uint32_t OperationEffects() const override{return Mask(Effect::Spell)|Mask(Effect::Social);}
     NativePersistence PersistencePolicy() const override{return NativePersistence::Profession;}
-    bool DeferredNativeCast() const override{return quote.cast && quote.petSpells.empty();}
+    bool DeferredNativeCast() const override{return DeferredPartyTrainingQuote(quote);}
     std::shared_ptr<NativeCraftCast> ReserveNativeCast(const OperationRequest&,const Task&,const ActionContext&) const override;
     bool ValidateNative(Player&,const OperationRequest&,std::string&) override;
     NativeObservation ExecuteNative(Player&,const OperationRequest&) override;

@@ -151,7 +151,7 @@ namespace LivingActivity {
         }
         if(request.kind=="party_training_learn") {
             TrainingLessonQuote quote;
-            if(!DecodePartyTrainingQuote(request.beforeState,quote) || adapter.DeferredNativeCast()!=quote.cast)
+            if(!DecodePartyTrainingQuote(request.beforeState,quote) || adapter.DeferredNativeCast()!=DeferredPartyTrainingQuote(quote))
                 return reject("exact_training_adapter_required");
             try{NativeBefore(request);}catch(const std::exception&){return reject("invalid_native_training_contract");}
         }

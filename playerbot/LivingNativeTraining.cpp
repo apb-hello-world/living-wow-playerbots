@@ -61,7 +61,7 @@ bool NativePartyTraining::ValidateNative(Player& actor,const OperationRequest& r
 }
 NativeObservation NativePartyTraining::ExecuteNative(Player& actor,const OperationRequest& r) {
     NativeObservation out;std::string why;
-    if(quote.cast && quote.petSpells.empty()){out.state=OperationState::Rejected;out.evidence="training_cast_requires_deferred_dispatch";return out;}
+    if(DeferredPartyTrainingQuote(quote)){out.state=OperationState::Rejected;out.evidence="training_cast_requires_deferred_dispatch";return out;}
     if(!ValidateNative(actor,r,why)){out.state=OperationState::Rejected;out.evidence=why;return out;}
     if(!quote.petSpells.empty())return ExecuteNativePetTraining(actor,quote);
     if(quote.skill.id)return ExecuteNativeDirectTrainingSkill(actor,quote);

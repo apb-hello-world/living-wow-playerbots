@@ -2,6 +2,7 @@
 #include "LivingActivityTransfer.h"
 #include "LivingLootQuote.h"
 #include "LivingGatherQuote.h"
+#include "LivingPartyTraining.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <cassert>
@@ -29,6 +30,26 @@ struct TestAdapter final : NativeOperationAdapter {
 #include "LivingPartyAuction.h"
 #include "fixtures/CommissionTrade.h"
 int main() {
+    {
+        OperationRequest r;r.kind="party_training_learn";r.effects=Mask(Effect::Spell)|Mask(Effect::Social);
+        r.persistence=NativePersistence::Profession;
+        auto& t=r.transition.task;t.id=t.root="11111111-1111-4111-8111-111111111111";t.source="party_training";
+        t.kind=Kind::PartyErrand;t.actor=7;t.phase=Phase::Executing;t.checkpoint.step="party_training_learn";
+        t.checkpoint.data=EncodePartyTrainingJob({3306,0,{4195}});
+        TrainingLessonQuote q;q.actor=7;q.trainer=1234;q.lesson=q.teachingSpell=4195;q.money=100;
+        q.cast=true;q.pet=55;q.petNumber=104;q.petEntry=3098;q.petLevel=10;
+        q.petPoints=45;q.petPointCost=5;q.petSpells={4187};
+        r.beforeState=EncodePartyTrainingQuote(q);TestAdapter adapter(r);std::string why;
+        assert(ValidateOperationAdapter(r,adapter,why)); // Real instant pet lesson is not a deferred owner cast.
+        adapter.cast=true;assert(!ValidateOperationAdapter(r,adapter,why)&&why=="exact_training_adapter_required");
+        q.petSpells.clear();q.petNumber=q.petEntry=q.petLevel=q.petReplacedSpell=0;q.petPoints=q.petPointCost=0;
+        q.playerSpells={4187};r.beforeState=EncodePartyTrainingQuote(q);
+        assert(ValidateOperationAdapter(r,adapter,why));
+        adapter.cast=false;assert(!ValidateOperationAdapter(r,adapter,why));
+        q.cast=false;q.playerSpells={4195};r.beforeState=EncodePartyTrainingQuote(q);
+        assert(ValidateOperationAdapter(r,adapter,why));
+        adapter.cast=true;assert(!ValidateOperationAdapter(r,adapter,why));
+    }
     {
         OperationRequest r;r.kind="party_auction_post";r.effects=Mask(Effect::Inventory)|Mask(Effect::Money);
         r.persistence=NativePersistence::Inventory;

@@ -360,7 +360,11 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
                 f.report.put("native_walk_arrival_verified",true);
             }
             for(auto lesson:job.lessons) {
-                if(mount) {
+                if(petOwner) {
+                    require(lesson==4195 && bot->GetPet() && bot->GetPet()->HasSpell(4187),"training_actual_pet_spellbook_required");
+                    require(!bot->HasSpell(lesson) && spells()==f.report.template get<std::string>("spells_before"),"pet_training_owner_unchanged");
+                }
+                else if(mount) {
                     TrainingLessonQuote q;require(DecodePartyTrainingQuote(f.report.template get<std::string>("test_mount_quote"),q),"mount_native_quote_required");
                     for(auto spell:q.playerSpells)require(bot->HasSpell(spell),"mount_all_native_targets_required");
                     require(bot->GetSkillValuePure(SKILL_RIDING)==75 && bot->GetSkillMaxPure(SKILL_RIDING)==75 &&

@@ -109,6 +109,12 @@ inline bool FreePetTrainingQuote(const TrainingLessonQuote& q) {
 inline bool ManagedTrainingQuote(const TrainingLessonQuote& q) {
     return DirectFreeTrainingQuote(q) || DirectSkillTrainingQuote(q) || FreePlayerTrainingCastQuote(q) || FreePetTrainingQuote(q);
 }
+// Instant pet teaching executes synchronously under the retained native pet
+// save transaction. Owner teaching uses the asynchronous cast/save fence.
+// Both journal admission and the adapter must agree on this distinction.
+inline bool DeferredPartyTrainingQuote(const TrainingLessonQuote& q) {
+    return q.cast && q.petSpells.empty();
+}
 // Native _SaveSpells omits dependent abilities. Each omitted target must be
 // reachable through native non-auto learning edges from a saved quoted target.
 // No arbitrary known spell, unrooted cycle or missing row counts as proof.
