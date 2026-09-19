@@ -44,7 +44,6 @@ std::optional<LivingActivity::PartyServiceBinding> LivingActivityCoordinator::Pr
     if(admitted.code!=AdmissionCode::Pending && admitted.code!=AdmissionCode::Saved)return {};
     return binding(task);
 }
-
 LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::AdvancePartyAuction(uint32_t actor,const std::string& id) {
     auto stop=[](const std::string& why){return ProfessionProgress{false,why};};
     const auto saved=ReadSavedTask(id);std::string blocker;PartyAuctionJob job;
@@ -160,4 +159,3 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     r.beforeState=EncodeAuctionPostQuote(quote);r.consumption=held;
     return stop(SubmitOperationIntent(r,adapter).blocker);
 }
-

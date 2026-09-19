@@ -1561,6 +1561,9 @@ bool PlayerbotRendezvousManager::BeginPartyFreeTime(Player* bot, Player* player,
     if(fixture && environment && (std::string(fixture)=="activity-party-bank-checkpoint-v1" ||
         std::string(fixture)=="activity-party-bank-resume-v1") &&
         std::string(environment)=="isolated-migration")session.automaticErrandScopeMask &= kErrandBank;
+    if(fixture && environment && (std::string(fixture)=="activity-party-auction-checkpoint-v1" ||
+        std::string(fixture)=="activity-party-auction-resume-v1") &&
+        std::string(environment)=="isolated-migration")session.automaticErrandScopeMask &= kErrandAuction;
 #endif
     session.automaticErrandMask = session.automaticErrandScopeMask;
     session.completedErrandMask = 0;

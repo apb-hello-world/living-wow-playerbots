@@ -145,6 +145,10 @@ namespace LivingActivity {
         auto reject=[&](const char* code){blocker=code;return false;};
         if(request.kind!=adapter.OperationKind() || request.effects!=adapter.OperationEffects() ||
             request.persistence!=adapter.PersistencePolicy())return reject("native_adapter_mismatch");
+        if(request.kind=="party_auction_post") {
+            if(adapter.DeferredNativeCast())return reject("synchronous_auction_post_adapter_required");
+            try{NativeBefore(request);}catch(const std::exception&){return reject("invalid_native_auction_post_contract");}
+        }
         if(request.kind=="party_training_learn") {
             TrainingLessonQuote quote;
             if(!DecodePartyTrainingQuote(request.beforeState,quote) || adapter.DeferredNativeCast()!=quote.cast)
