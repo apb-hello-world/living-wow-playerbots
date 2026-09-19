@@ -1562,7 +1562,7 @@ TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Uni
 
     std::vector<TravelNodeStub*> open, closed;
 
-    std::vector<TravelNode*> portNodes;
+    std::vector<std::shared_ptr<TravelNode>> portNodes;
 
     Player* bot = dynamic_cast<Player*>(unit);
     if (bot)
@@ -1604,10 +1604,10 @@ TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Uni
                 TravelNode* homeNode = sTravelNodeMap.getNode(AI_VALUE(WorldPosition, "home bind"), nullptr, 50.0f);
                 if (homeNode)
                 {
-                    PortalNode* portNode = new PortalNode(start);
+                    auto portNode = std::make_shared<PortalNode>(start);
                     portNode->SetPortal(start, homeNode, 8690);
 
-                    childNode = &m_stubs.insert(std::make_pair(portNode, TravelNodeStub(portNode))).first->second;
+                    childNode = &m_stubs.insert(std::make_pair(portNode.get(), TravelNodeStub(portNode.get()))).first->second;
 
                     childNode->m_g = std::max((uint32)2, (10 - AI_VALUE(uint32, "death count")) * MINUTE); //If we can walk there in 10 minutes, walk instead.
                     childNode->m_h = childNode->dataNode->fDist(goal) / unitSpeed;
@@ -1655,10 +1655,10 @@ TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Uni
             if (!homeNode)
                 continue;
 
-            PortalNode* portNode = new PortalNode(start);
+            auto portNode = std::make_shared<PortalNode>(start);
             portNode->SetPortal(start, homeNode, spellId);
 
-            childNode = &m_stubs.insert(std::make_pair(portNode, TravelNodeStub(portNode))).first->second;
+            childNode = &m_stubs.insert(std::make_pair(portNode.get(), TravelNodeStub(portNode.get()))).first->second;
 
             childNode->m_g = MINUTE; //If we can walk there in a minute. Walk instead.
             childNode->m_h = childNode->dataNode->fDist(goal) / unitSpeed;
@@ -1672,7 +1672,6 @@ TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Uni
 
     if (open.size() == 0 && !start->hasRouteTo(goal))
     {
-        for (auto node : portNodes) delete node;
         return TravelNodeRoute();
     }
 
@@ -1744,8 +1743,6 @@ TravelNodeRoute TravelNodeMap::getRoute(TravelNode* start, TravelNode* goal, Uni
             }
         }
     }
-
-    for (auto node : portNodes) delete node;
 
     return TravelNodeRoute();
 }
@@ -1905,16 +1902,16 @@ TravelNodeRoute TravelNodeMap::getRoute(WorldPosition startPos, WorldPosition en
         if (AI_VALUE2(bool, "action useful", "hearthstone"))
         {
             startPath.clear();
-            TravelNode* botNode = new TravelNode(startPos, "Bot Pos", false);
+            auto botNode = std::make_shared<TravelNode>(startPos, "Bot Pos", false);
             botNode->setPoint(startPos);
             
             for (auto& endNode : endNodes)
             {
-                TravelNodeRoute route = getRoute(botNode, endNode, bot);
-                route.addTempNodes({botNode});
+                TravelNodeRoute route = getRoute(botNode.get(), endNode, bot);
 
                 if (!route.isEmpty())
                 {
+                    route.addTempNode(botNode);
                     std::vector<WorldPosition> routePoints;
                     for (auto& p : route.getNodes())
                         routePoints.push_back(*p->getPosition());

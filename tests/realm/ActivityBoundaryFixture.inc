@@ -51,10 +51,22 @@ namespace {
 #include "ActivitySkinningSourceFixture.inc"
 #include "ActivityServicesObservation.inc"
 #include "ActivityProgressionHandoffFixture.inc"
+#include "ActivityRouteOwnershipFixture.inc"
 
 void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
     MANGOS_ASSERT(OnWorldThread());
     const char* requested = std::getenv("LIVING_WOW_NATIVE_FIXTURE");
+    if(requested && std::string(requested)=="activity-route-ownership-v1") {
+        RequireIsolatedNativeFixtureEnvironment();
+        if(state->fixtureFinished)return;
+        state->fixtureFinished=true;
+        boost::property_tree::ptree report;report.put("suite",requested);report.put("boot",state->boot);
+        report.put("test_only",true);report.put("native_routes",2002);
+        try {VerifyNativeRouteOwnership();report.put("outcome","passed");}
+        catch(const std::exception& error){report.put("outcome","failed");report.put("failure",error.what());}
+        std::ofstream out("/isolated/evidence/route-ownership-"+state->boot+".json");out<<Json(report);out.close();
+        sLog.outString("Living isolated route ownership: %s",Json(report).c_str());return;
+    }
     if(requested && (std::string(requested)=="activity-party-training-checkpoint-v1" ||
         std::string(requested)=="activity-party-training-resume-v1" ||
         std::string(requested)=="activity-party-training-travel-resume-v1" ||

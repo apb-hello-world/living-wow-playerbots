@@ -1,6 +1,7 @@
 #pragma once
 
 #include <shared_mutex>
+#include <memory>
 #include "WorldPosition.h"
 #include "MotionGenerators/PathFinder.h"
 
@@ -312,7 +313,8 @@ namespace ai
     {
     public:
         TravelNodeRoute() {}
-        TravelNodeRoute(std::vector<TravelNode*> nodes1, std::vector<TravelNode*> tempNodes) { nodes = nodes1; if (tempNodes.size()) addTempNodes(tempNodes); }
+        TravelNodeRoute(std::vector<TravelNode*> nodes1, std::vector<std::shared_ptr<TravelNode>> temporary)
+            : nodes(std::move(nodes1)), tempNodes(std::move(temporary)) {}
 
         bool isEmpty() { return nodes.empty(); }
 
@@ -322,8 +324,10 @@ namespace ai
         void setNodes(std::vector<TravelNode*> nodes1) { nodes = nodes1; }
         std::vector<TravelNode*>& getNodes() { return nodes; }
 
-        void addTempNodes(std::vector<TravelNode*> nodes) { tempNodes.insert(tempNodes.end(), nodes.begin(), nodes.end()); }
-        void cleanTempNodes() { for (auto node : tempNodes) delete node; }
+        void addTempNode(std::shared_ptr<TravelNode> node) { tempNodes.push_back(std::move(node)); }
+        // Route copies share temporary node lifetime. Failed approaches, early
+        // returns and exceptions release automatically; graph nodes are borrowed.
+        void cleanTempNodes() { nodes.clear(); tempNodes.clear(); }
 
         TravelPath buildPath(std::vector<WorldPosition> pathToStart = {}, std::vector<WorldPosition> pathToEnd = {}, Unit* bot = nullptr);
 
@@ -331,7 +335,7 @@ namespace ai
     private:
         std::vector<TravelNode*>::iterator findNode(TravelNode* node) { return std::find(nodes.begin(), nodes.end(), node); }
         std::vector<TravelNode*> nodes;
-        std::vector<TravelNode*> tempNodes;
+        std::vector<std::shared_ptr<TravelNode>> tempNodes;
     };
 
     //A node container to aid A* calculations with nodes.
