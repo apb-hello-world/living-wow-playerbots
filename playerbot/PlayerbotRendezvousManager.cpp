@@ -1570,6 +1570,7 @@ bool PlayerbotRendezvousManager::BeginPartyFreeTime(Player* bot, Player* player,
         std::string(fixture)=="activity-party-bank-resume-v1") &&
         std::string(environment)=="isolated-migration")session.automaticErrandScopeMask &= kErrandBank;
     if(fixture && environment && (std::string(fixture)=="activity-party-auction-checkpoint-v1" ||
+        std::string(fixture)=="activity-party-auction-intent-resume-v1" ||
         std::string(fixture)=="activity-party-auction-resume-v1") &&
         std::string(environment)=="isolated-migration")session.automaticErrandScopeMask &= kErrandAuction;
 #endif
