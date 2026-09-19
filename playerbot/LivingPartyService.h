@@ -55,7 +55,9 @@ inline bool PartyServiceEffects(uint32_t effects,PartyServiceBinding::Service se
 inline bool PartyServiceOperation(const PartyServiceBinding& binding,const std::string& kind,
     const ResourceClaim& claim) {
     if(binding.service==PartyServiceBinding::Service::Bank)
-        return kind=="bank_deposit" && ValidBankDeposit(claim) && claim.task==binding.root && claim.actor==binding.actor;
+        return kind=="bank_deposit" && IsUuid(claim.id) && claim.task==binding.root && claim.actor==binding.actor &&
+            claim.state=="held" && claim.location=="bags" && claim.itemGuid && claim.itemEntry && claim.quantity &&
+            !claim.copper && !claim.nativeReference;
     if(binding.service==PartyServiceBinding::Service::Training)
         return kind=="party_training_learn" && claim.id.empty() && !claim.copper && !claim.itemGuid && !claim.quantity;
     if(binding.service==PartyServiceBinding::Service::Vendor)

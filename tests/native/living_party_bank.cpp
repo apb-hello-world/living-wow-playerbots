@@ -111,18 +111,18 @@ int main() {
     assert(book.RestoreBatch({claim})==ClaimInstall::Installed && book.FinishRestore());
     NativeResourceBalance balance{7,200,7073,1,0,"bank"};
     assert(book.ReserveTransferred(task.context.boot,transfer.changes.front(),balance)==ClaimInstall::Installed);
-    assert(book.Protection().ProtectedItem(200)==1);
+    assert(book.Protection().ProtectedItem(7,200,7073)==1);
     assert(book.CommitReservation(task.context.boot)==ClaimInstall::Installed);
-    assert(book.Protection().ProtectedItem(200)==0);
+    assert(book.Protection().ProtectedItem(7,200,7073)==0);
     // A merge needs protection on the surviving bank identity until save ACK.
     ResourceClaimBook merged(16);
     assert(merged.RestoreBatch({claim})==ClaimInstall::Installed && merged.FinishRestore());
     auto remapped=transfer.changes.front();remapped.after.itemGuid=300;
     balance.itemGuid=300;balance.quantity=5;
     assert(merged.ReserveTransferred(task.context.boot,remapped,balance)==ClaimInstall::Installed);
-    assert(merged.Protection().ProtectedItem(200)==1 && merged.Protection().ProtectedItem(300)==1);
+    assert(merged.Protection().ProtectedItem(7,200,7073)==1 && merged.Protection().ProtectedItem(7,300,7073)==1);
     assert(merged.CommitReservation(task.context.boot)==ClaimInstall::Installed);
-    assert(!merged.Protection().ProtectedItem(200) && !merged.Protection().ProtectedItem(300));
+    assert(!merged.Protection().ProtectedItem(7,200,7073) && !merged.Protection().ProtectedItem(7,300,7073));
     PartyServiceBinding binding;binding.root=task.id;binding.actor=7;binding.human=1;
     binding.session="group:1:2";binding.sessionRevision=3;binding.acceptedRevision=1;
     binding.service=PartyServiceBinding::Service::Bank;
