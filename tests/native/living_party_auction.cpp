@@ -1,4 +1,5 @@
 #include "LivingPartyAuction.h"
+#include "LivingAuctionPostRecovery.h"
 #include "LivingActivityRequests.h"
 #include <cassert>
 using namespace LivingActivity;
@@ -78,4 +79,48 @@ int main() {
     assert(AcknowledgePartyAuctionPost(after,q,uses,proof,r) && after.phase==Phase::Completed);
     assert(ValidatePartyAuctionTask(after,why));
     assert(!AcknowledgePartyAuctionPost(after,q,uses,proof,r));
+    // An interrupted durable intent can be rejected as uncommitted only from
+    // unchanged native stock plus exact journal/claims, never by reposting.
+    auto interrupted=t;interrupted.phase=Phase::Executing;interrupted.checkpoint.step="party_auction_post";
+    interrupted.sourceKey="fixture:auction";interrupted.createdAtMs=1;interrupted.updatedAtMs=1000;
+    interrupted.context={};interrupted.context.actor=7;
+    WorldContext current;current.actor=7;current.boot=proof.id;current.actorGeneration=1;
+    current.mapGeneration=1;current.policyRevision=1;
+    StoredCraftOperation operation;operation.acknowledged=true;operation.receipt=proof;
+    operation.receipt.state=OperationState::Intent;operation.receipt.evidence.clear();operation.receipt.nativeReference.clear();
+    operation.afterState="{}";
+    operation.beforeState="{\"effects\":"+std::to_string(Mask(Effect::Inventory)|Mask(Effect::Money))+
+        ",\"persistence\":1,\"native\":"+ClaimedNativeState(EncodeAuctionPostQuote(q),uses)+'}';
+    AuctionPostRecoverySnapshot native;native.unchanged=q;native.escrowAbsent=true;
+    UnsettledClaimBatch claims;claims.complete=true;claims.bookRevision=1;claims.claims={item,money};
+    AuctionPostRecovery recovery;
+    const auto recover=[&](const Task& saved,const StoredCraftOperation& op,const AuctionPostRecoverySnapshot& observed,
+                          const UnsettledClaimBatch& held,uint32_t unresolved=1) {
+        return PrepareInterruptedAuctionPost(saved,current,op,unresolved,held,observed,2000,
+            "44444444-4444-4444-8444-444444444444",recovery,why);
+    };
+    assert(recover(interrupted,operation,native,claims));
+    assert(recovery.task.phase==Phase::Verifying && recovery.task.revision==5);
+    assert(recovery.task.checkpoint.data==interrupted.checkpoint.data); // Cursor did NOT advance.
+    assert(recovery.plan.statements.size()>=3);
+    std::string sql;for(const auto& statement:recovery.plan.statements)sql+=statement;
+    for(const auto* guard:{"native_auction_post_intent_not_committed","o.state='intent'","o.after_state='{}'",
+                          "FROM auction WHERE itemguid=100","FROM mail_items WHERE item_guid=100",
+                          "FROM guild_bank_item WHERE item_guid=100","FROM organic_economy_auction_history",
+                          "i.count=5","money=10000","c.revision=1"})assert(sql.find(guard)!=std::string::npos);
+    assert(sql.find("UPDATE living_activity_claim")==std::string::npos);
+    assert(sql.find("UPDATE characters")==std::string::npos);
+    assert(sql.find("UPDATE item_instance")==std::string::npos);
+    auto observed=native;observed.unchanged.money-=q.deposit;assert(!recover(interrupted,operation,observed,claims));
+    observed=native;--observed.unchanged.item.quantity;assert(!recover(interrupted,operation,observed,claims));
+    observed=native;++observed.unchanged.from;assert(!recover(interrupted,operation,observed,claims));
+    observed=native;observed.escrowAbsent=false;assert(!recover(interrupted,operation,observed,claims));
+    auto altered=operation;altered.afterState="{\"partial\":true}";assert(!recover(interrupted,altered,native,claims));
+    altered=operation;altered.receipt.state=OperationState::Reconciling;assert(!recover(interrupted,altered,native,claims));
+    altered=operation;altered.receipt.taskRevision=3;assert(!recover(interrupted,altered,native,claims));
+    altered=operation;altered.beforeState+=" ";assert(!recover(interrupted,altered,native,claims));
+    auto held=claims;++held.claims[0].revision;assert(!recover(interrupted,operation,native,held));
+    held=claims;held.claims.pop_back();assert(!recover(interrupted,operation,native,held));
+    auto sameBoot=interrupted;sameBoot.context=current;assert(!recover(sameBoot,operation,native,claims));
+    assert(!recover(interrupted,operation,native,claims,2));
 }

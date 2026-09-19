@@ -27,6 +27,7 @@
 #include "LivingNativeRecipeLearning.h"
 #include "LivingNativeTraining.h"
 #include "LivingNativeAuctionPost.h"
+#include "LivingAuctionPostRecovery.h"
 #include "LivingNativeGathering.h"
 #include "LivingNativeLootCollection.h"
 #include "LivingRecipeLearningSettlement.h"
@@ -369,7 +370,8 @@ struct LivingActivityCoordinator::State {
     std::map<std::string,RepairRead> repairReads;
     std::map<std::string,RepairRead> vendorReads; // Bounded receipt cache, not another scheduler.
     std::map<std::string,RepairRead> bankReads;
-    std::map<std::string,RepairRead> auctionPostReads;
+    struct AuctionPostRead : RepairRead {StoredCraftOperation operation;};
+    std::map<std::string,AuctionPostRead> auctionPostReads;
     std::map<std::string,RepairRead> trainingReads;
     std::atomic<uint64_t> publishedPolicyRevision{0};
     std::future<bool> projectionSend;

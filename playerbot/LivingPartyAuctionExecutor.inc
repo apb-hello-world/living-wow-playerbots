@@ -79,7 +79,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
                 else ++it;
             }
             if(state->auctionPostReads.size()>=64)return stop("party_auction_receipt_queue_full");
-            found=state->auctionPostReads.emplace(id,State::RepairRead{}).first;
+            found=state->auctionPostReads.emplace(id,State::AuctionPostRead{}).first;
         }
         auto& read=found->second;if(read.pending)return stop("party_auction_receipt_pending");
         if(read.revision!=saved->revision)read={};
@@ -88,19 +88,42 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
             read.pending=state->ioPending=true;read.revision=saved->revision;const auto revision=saved->revision;
             const auto sql="SELECT o.state,o.evidence_code,(SELECT COUNT(*) FROM living_activity_operation u"
                 " JOIN living_activity_task t ON t.task_id=u.task_id WHERE t.actor_guid="+std::to_string(actor)+
-                " AND u.state IN ('intent','reconciling')) FROM living_activity_operation o WHERE o.task_id="+SqlValue(id)+
+                " AND u.state IN ('intent','reconciling')),o.operation_id,o.task_revision,o.native_reference,o.before_state,o.after_state"
+                " FROM living_activity_operation o WHERE o.task_id="+SqlValue(id)+
                 " AND o.kind='party_auction_post' AND o.task_revision<="+std::to_string(revision)+
                 " ORDER BY o.task_revision DESC LIMIT 1";
             if(!CharacterDatabase.AsyncQuery([this,id,revision](QueryResult* rows) {
                 state->ioPending=false;const auto found=state->auctionPostReads.find(id);if(found==state->auctionPostReads.end())return;
                 auto& read=found->second;read.pending=false;if(read.revision!=revision)return;
-                if(!rows || rows->GetFieldCount()!=3){read.retryAt=NowMs()+30000;return;}
+                if(!rows || rows->GetFieldCount()!=8){read.retryAt=NowMs()+30000;return;}
                 const auto* f=rows->Fetch();read.outcome=f[0].GetCppString();read.evidence=f[1].GetCppString();
                 read.unresolved=f[2].GetUInt32();read.complete=true;
+                auto& op=read.operation;op.acknowledged=true;op.receipt.id=f[3].GetCppString();
+                op.receipt.task=id;op.receipt.taskRevision=f[4].GetUInt64();op.receipt.kind="party_auction_post";
+                op.receipt.state=read.outcome=="intent"?OperationState::Intent:OperationState::Reconciling;
+                op.receipt.nativeReference=f[5].GetCppString();op.receipt.evidence=read.evidence;
+                op.beforeState=f[6].GetCppString();op.afterState=f[7].GetCppString();
             },sql.c_str())) {state->ioPending=read.pending=false;read.retryAt=NowMs()+30000;}
             return stop("party_auction_receipt_pending");
         }
-        if(read.unresolved)return stop("party_auction_native_operation_requires_reconciliation");
+        if(read.unresolved) {
+            if(NativeSafety(bot) || bot->GetMap()->IsDungeon() || bot->GetTradeData() || LivingServiceExecution::Busy(bot))
+                return stop("party_auction_recovery_safety_pause");
+            const auto party=SavedPartyBlocker(*bot,*saved,Mask(Effect::Inventory));if(*party)return stop(party);
+            AuctionPostQuote quote;AuctionPostRecoverySnapshot native;UnsettledClaimBatch claims;AuctionPostRecovery recovery;
+            if(!DecodeInterruptedAuctionPost(*saved,read.operation,quote,blocker) ||
+                !ReadTaskClaims(actor,id,saved->revision,claims,blocker) ||
+                !ReadUnpostedNativeAuction(*bot,quote,native,blocker) ||
+                !PrepareInterruptedAuctionPost(*saved,current,read.operation,read.unresolved,claims,native,
+                    NowMs(),NewId(),recovery,blocker))return stop(blocker);
+            if(state->operationDispatching || state->ioPending || state->pending.size()>=state->batch ||
+                state->transitionCount+state->pending.size()>=200000)return stop("party_auction_recovery_backpressure");
+            State::Pending write;write.task=std::move(recovery.task);write.plan=std::move(recovery.plan);
+            write.recoverySaveHold=true;write.closureRefreshRevision=saved->revision;
+            const auto owned=state->authority.Read(actor);if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+            state->HoldNativeSave(actor,true);state->pending.push_back(std::move(write));state->nextWork=0;
+            return stop("party_auction_recovery_receipt_pending");
+        }
         if(read.outcome!="rejected" && (read.outcome!="verified" || read.evidence!="native_auction_post_escrow_and_deposit_observed"))
             return stop("party_auction_native_receipt_invalid");
         if(saved->retryAtMs>NowMs())return stop("party_auction_native_retry_wait");

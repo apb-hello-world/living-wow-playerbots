@@ -3,6 +3,8 @@
 #include "LivingActivityOperations.h"
 #include "LivingActivityReservations.h"
 namespace LivingActivity {
+struct AuctionPostRecoverySnapshot;
+bool ReadUnpostedNativeAuction(Player&,const AuctionPostQuote&,AuctionPostRecoverySnapshot&,std::string&);
 bool PlanNativePartyAuctionBatch(Player&,PartyAuctionJob&,std::string&);
 bool PlanNativePartyAuctionPost(Player&,const Task&,AuctionPostQuote&,std::vector<ClaimConsumption>&,std::string&);
 class NativeAuctionPostReservation final:public NativeReservationAdapter {

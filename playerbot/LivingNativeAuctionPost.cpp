@@ -1,5 +1,6 @@
 #include "botpch.h"
 #include "LivingNativeAuctionPost.h"
+#include "LivingAuctionPostRecovery.h"
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityNativeContext.h"
 #include "LivingNativeVendorSale.h"
@@ -10,6 +11,19 @@
 #include <mutex>
 
 namespace LivingActivity {
+bool ReadUnpostedNativeAuction(Player& p,const AuctionPostQuote& quote,AuctionPostRecoverySnapshot& out,std::string& why) {
+    out={};auto reject=[&](const char* value){why=value;return false;};
+    if(!sLivingActivityCoordinator.OnWorldThread() || p.GetGUIDLow()!=quote.actor || !p.IsInWorld())
+        return reject("auction_recovery_actor_unavailable");
+    const auto* item=p.GetItemByGuid(ObjectGuid(HIGHGUID_ITEM,quote.item.guid));
+    if(!item || item->GetOwnerGuid()!=p.GetObjectGuid() || !Player::IsInventoryPos(item->GetPos()) ||
+        sAuctionMgr.GetAItem(quote.item.guid))return reject("auction_recovery_original_stack_unavailable");
+    out.unchanged=quote;auto& native=out.unchanged;
+    native.money=p.GetMoney();native.from=item->GetPos();native.property=item->GetItemRandomPropertyId();
+    native.item.guid=item->GetGUIDLow();native.item.entry=item->GetEntry();native.item.quantity=item->GetCount();
+    out.bagGuid=item->GetContainer()?item->GetContainer()->GetGUIDLow():0;
+    out.escrowAbsent=true;why.clear();return true;
+}
 namespace {
 bool Safe(Player& p) {
     return sLivingActivityCoordinator.OnWorldThread() && p.GetPlayerbotAI() && p.GetSession() && p.IsInWorld() &&
