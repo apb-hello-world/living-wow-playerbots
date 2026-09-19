@@ -699,6 +699,8 @@ struct LivingActivityCoordinator::State {
         if(mode && *mode && std::string(mode)!="activity-profession-auction-v1" &&
             std::string(mode)!="activity-profession-auction-restart-v1" &&
             std::string(mode)!="activity-profession-auction-partial-v1" &&
+            std::string(mode)!="activity-party-profession-checkpoint-v1" &&
+            std::string(mode)!="activity-party-profession-resume-v1" &&
             std::string(mode)!="activity-profession-cohort-v1" &&
             std::string(mode)!="activity-commission-mail-v1" &&
             std::string(mode)!="activity-commission-broker-v1" &&

@@ -35,6 +35,7 @@ namespace {
 #include "ActivityPartyVendorFixture.inc"
 #include "ActivityPartyBankFixture.inc"
 #include "ActivityPartyAuctionFixture.inc"
+#include "ActivityPartyProfessionFixture.inc"
 #include "ActivityPartyTrainingFixture.inc"
 #include "ActivityProfessionFixture.inc"
 #include "ActivityUsefulRecipeFixture.inc"
@@ -85,6 +86,10 @@ void LivingActivityCoordinator::RunIsolatedBoundaryFixture() {
         std::string(requested)=="activity-party-auction-intent-resume-v1" ||
         std::string(requested)=="activity-party-auction-resume-v1")) {
         RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyAuction(*state);return;
+    }
+    if(requested && (std::string(requested)=="activity-party-profession-checkpoint-v1" ||
+        std::string(requested)=="activity-party-profession-resume-v1")) {
+        RequireIsolatedNativeFixtureEnvironment();RunIsolatedPartyProfession(*state);return;
     }
     if(requested && (std::string(requested)=="activity-party-vendor-checkpoint-v1" ||
         std::string(requested)=="activity-party-vendor-resume-v1")) {
