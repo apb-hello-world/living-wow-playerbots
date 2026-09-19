@@ -2503,6 +2503,19 @@ bool PlayerbotRendezvousManager::StartNextVerifiedErrand(PartySession& session, 
     {
         std::string blocker;
         auto selected=sLivingActivityCoordinator.PreparePartyTrainingService(session.botGuid,taskRecord.taskId,0,blocker);
+        // Being at a usable trainer is already service arrival. Admit the
+        // finite lesson batch before installing a legacy travel target: an
+        // already-arrived party member must not depend on an unrelated route
+        // mutation to start its authoritative service operation.
+        if(!selected && bot && bot->GetPlayerbotAI()) {
+            for(const auto guid:bot->GetPlayerbotAI()->GetAiObjectContext()->
+                GetValue<std::list<ObjectGuid>>("nearest npcs no los")->Get()) {
+                if(!bot->GetNPCIfCanInteractWith(guid,UNIT_NPC_FLAG_TRAINER))continue;
+                selected=sLivingActivityCoordinator.PreparePartyTrainingService(session.botGuid,
+                    taskRecord.taskId,guid.GetRawValue(),blocker);
+                if(selected)break;
+            }
+        }
         if(selected && bot && bot->GetGroup()) {
             selected->human=session.playerGuid;
             selected->session="group:"+std::to_string(bot->GetGroup()->GetId())+":"+
