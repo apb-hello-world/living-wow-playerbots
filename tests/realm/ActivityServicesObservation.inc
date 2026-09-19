@@ -39,6 +39,13 @@ void RunIsolatedServicesObservation(FixtureState& state) {
             actor.put("ai_state",bot->GetPlayerbotAI()->HandleRemoteCommand("state"));
             actor.put("last_action",bot->GetPlayerbotAI()->HandleRemoteCommand("action"));
             actor.put("strategies",bot->GetPlayerbotAI()->HandleRemoteCommand("strategy"));
+            const auto quest=f.setup.template get<uint32_t>("guild_fixture_quest",0);
+            if(quest) {
+                actor.put("quest_status",uint32_t(bot->GetQuestStatus(quest)));
+                actor.put("quest_rewarded",bot->GetQuestRewardStatus(quest));
+                actor.put("group_id",bot->GetGroup()?bot->GetGroup()->GetId():0);
+                actor.put("group_leader",bot->GetGroup()?bot->GetGroup()->GetLeaderGuid().GetCounter():0);
+            }
             actor.put("attackers",bot->getAttackers().size());
             auto unitSnapshot=[&](Unit* unit) {
                 boost::property_tree::ptree native;
@@ -107,9 +114,9 @@ void RunIsolatedServicesObservation(FixtureState& state) {
             // Private, value-only diagnostic for this marked copied realm.
             // A generic travel blocker must not hide the exact failing native
             // destination/leg. Reading this never installs or advances a route.
-            ServiceDestination service;
+            ServiceDestination service{};
             auto* bot=sRandomPlayerbotMgr.GetPlayerBot(task.actor);
-            if(bot && bot->GetPlayerbotAI() && ParseServiceStep(task.checkpoint.step,service)) {
+            if(bot && bot->GetPlayerbotAI() && (ParseServiceStep(task.checkpoint.step,service) || IsGuildEventCommitment(task))) {
                 boost::property_tree::ptree route;
                 route.put("actor_map",bot->GetMapId());route.put("actor_x",bot->GetPositionX());
                 route.put("actor_y",bot->GetPositionY());route.put("actor_z",bot->GetPositionZ());
@@ -197,6 +204,37 @@ void RunIsolatedServicesObservation(FixtureState& state) {
         state.fixtureFinished=true;return;
     }
     if(!state.loaded || !state.incoming.empty() || !state.resources.Protection().ready)return;
+    const auto* selection=std::getenv("LIVING_WOW_NATIVE_FIXTURE_TASK");
+    if(selection && std::string(selection)=="guild-event-observe-v1") {
+        // Existing characters and their existing quest state only. The private
+        // case prepares an explicit calendar appointment; ordinary guild code
+        // admits/executes it. No fixture task, group, relocation or quest reward.
+        RequireIsolatedNativeFixtureEnvironment();
+        const auto number=[](const char* name)->uint32_t {
+            const auto* raw=std::getenv(name);const std::string value=raw?raw:"";
+            if(value.empty() || value.size()>9 || value.find_first_not_of("0123456789")!=std::string::npos)
+                throw std::runtime_error("explicit_guild_observation_ids_required");
+            return uint32_t(std::stoul(value));
+        };
+        try {
+            const auto quest=number("LIVING_WOW_NATIVE_FIXTURE_ITEM");
+            if(!sObjectMgr.GetQuestTemplate(quest))throw std::runtime_error("native_quest_required");
+            f.setup.put("guild_fixture_quest",quest);bool online=true;
+            for(const auto actor:{number("LIVING_WOW_NATIVE_FIXTURE_ACTOR"),number("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT")}) {
+                if(!actor || !sPlayerbotAIConfig.IsInRandomAccountList(sObjectMgr.GetPlayerAccountIdByGUID(ObjectGuid(HIGHGUID_PLAYER,actor))))
+                    throw std::runtime_error("existing_random_bot_required");
+                auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+                if(bot && bot->IsInWorld())continue;
+                online=false;const auto key="guild_fixture_login_"+std::to_string(actor);
+                if(!f.setup.template get<bool>(key,false)) {
+                    f.setup.put(key,true);sRandomPlayerbotMgr.AddRandomBot(actor);
+                }
+            }
+            if(!online)return;
+        } catch(const std::exception& error) {
+            report("stopped",error.what());state.fixtureFinished=true;return;
+        }
+    }
     if(!f.started) {
         f.started=true;f.deadline=NowMs()+1200000;
         f.setup.put("started_at_ms",NowMs());f.setup.put("duration_seconds",1200);
