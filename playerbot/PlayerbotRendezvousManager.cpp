@@ -242,7 +242,9 @@ namespace
             sPlayerbotOrganicEconomy.IsAuctionPostingEnabled() &&
             context->GetValue<bool>("can ah sell")->Get())
             errands |= kErrandAuction;
-        if (goal == "profession_skill_up" && FindExecutableProfessionSpell(bot))
+        if(sLivingActivityCoordinator.EffectEnforcementEnabled() && sPlayerbotAIConfig.chatDirectorPartyVerifiedErrands) {
+            if(sLivingActivityCoordinator.SelectPartyProfessionService(bot->GetGUIDLow()))errands|=kErrandProfession;
+        } else if (goal == "profession_skill_up" && FindExecutableProfessionSpell(bot))
             errands |= kErrandProfession;
         return errands;
     }
@@ -1702,6 +1704,7 @@ std::optional<LivingActivity::PartyServiceBinding> PlayerbotRendezvousManager::R
             service==PartyServiceBinding::Service::Vendor?kErrandVendor:
             service==PartyServiceBinding::Service::Bank?kErrandBank:
             service==PartyServiceBinding::Service::Auction?kErrandAuction:
+            service==PartyServiceBinding::Service::Profession?kErrandProfession:
             service==PartyServiceBinding::Service::Training?kErrandTraining:kErrandMail) ||
         session.freeTimeRecallRequested ||
         session.groupId!=bot->GetGroup()->GetId() ||
@@ -2553,6 +2556,22 @@ bool PlayerbotRendezvousManager::StartNextVerifiedErrand(PartySession& session, 
         // No accepted lesson yet: existing party service travel chooses a real
         // trainer. Admission snapshots its eligible offers only upon arrival.
     }
+    if(session.currentErrand==kErrandProfession && sLivingActivityCoordinator.EffectEnforcementEnabled())
+    {
+        auto selected=sLivingActivityCoordinator.SelectPartyProfessionService(session.botGuid);
+        if(!selected || !bot || !bot->GetGroup()) {
+            FinishCurrentErrand(session,bot,false,"party_profession_no_ready_saved_job");
+            return session.currentErrand!=0;
+        }
+        selected->human=session.playerGuid;
+        selected->session="group:"+std::to_string(bot->GetGroup()->GetId())+":"+
+            std::to_string(bot->GetGroup()->GetLivingActivityIdentity());
+        selected->sessionRevision=bot->GetGroup()->GetLivingActivityRevision();session.managedService=*selected;
+        session.currentErrandCapability=selected->entry;session.errandBefore=ObserveErrandState(bot);
+        taskRecord.before=session.errandBefore;taskRecord.outcomeCode="shared_profession_attempt_admitted";
+        session.currentErrandLocal=true;session.errandOperationAccepted=false;
+        PersistPartySession(session);return true; // Existing profession executor owns the only cast.
+    }
     if(session.currentErrand==kErrandAuction && sLivingActivityCoordinator.EffectEnforcementEnabled())
     {
         std::string blocker;
@@ -3116,7 +3135,8 @@ void PlayerbotRendezvousManager::UpdateVerifiedErrand(PartySession& session, Pla
             const bool vendor=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Vendor;
             const bool bank=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Bank;
             const bool auction=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Auction;
-            FinishCurrentErrand(session,bot,completed,completed ? (auction?"verified_auction_post_batch":bank?"verified_bank_batch":training?"verified_direct_training_batch":vendor?"verified_vendor_batch":repair?"verified_equipment_repairs":"verified_mail_collection") :
+            const bool profession=session.managedService.service==LivingActivity::PartyServiceBinding::Service::Profession;
+            FinishCurrentErrand(session,bot,completed,completed ? (profession?"verified_profession_attempt":auction?"verified_auction_post_batch":bank?"verified_bank_batch":training?"verified_direct_training_batch":vendor?"verified_vendor_batch":repair?"verified_equipment_repairs":"verified_mail_collection") :
                 deferred ? "party_service_deferred" : "party_service_permission_ended");
         }
         return;

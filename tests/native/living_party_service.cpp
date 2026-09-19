@@ -132,4 +132,34 @@ int main() {
     auction.phase=Phase::Completed;
     assert(PartyServiceReceipt(auctionBinding,auction,"party_auction_post",sale,"native-final-post"));
     assert(!PartyServiceReceipt(auctionBinding,auction,"party_auction_post",sale,"duplicate-post"));
+    // One exact step of the original profession root. A party window cannot
+    // become a second craft task, a shopping trip, or permission for more casts.
+    auto profession=task;profession.source="profession_job";
+    profession.checkpoint.data="{\"recipe\":2330,\"purpose\":\"skill_gain\"}";
+    auto craftBinding=binding;craftBinding.receipt.clear();craftBinding.claim.clear();
+    craftBinding.service=PartyServiceBinding::Service::Profession;craftBinding.entry=2330;
+    craftBinding.craftCheckpoint=profession.checkpoint.data;
+    assert(PartyServiceMatches(craftBinding,profession,window));
+    other=profession;other.checkpoint.data="another_recipe";assert(!PartyServiceMatches(craftBinding,other,window));
+    other=profession;other.source="guild_procurement";assert(!PartyServiceMatches(craftBinding,other,window));
+    other=profession;other.kind=Kind::PartyErrand;assert(!PartyServiceMatches(craftBinding,other,window));
+    other=profession;other.parent="another_root";assert(!PartyServiceMatches(craftBinding,other,window));
+    changed=window;++changed.sessionRevision;assert(!PartyServiceMatches(craftBinding,profession,changed));
+    changed=window;changed.authorized=false;assert(!PartyServiceMatches(craftBinding,profession,changed));
+    assert(PartyServiceEffects(Mask(Effect::Spell)|Mask(Effect::Inventory)|Mask(Effect::Movement),craftBinding.service));
+    for(auto effect:{Effect::Money,Effect::TravelTarget,Effect::Group,Effect::Guild,Effect::Equipment,Effect::Social})
+        assert(!PartyServiceEffects(Mask(effect),craftBinding.service));
+    assert(PartyServiceOperation(craftBinding,"profession_craft",{}));
+    for(const auto kind:{"mail_collect","capacity_vendor_sale","bank_deposit","bank_withdraw","vendor_purchase",
+        "auction_purchase","recipe_learning","party_training_learn"})
+        assert(!PartyServiceOperation(craftBinding,kind,{}));
+    assert(!PartyServiceOperation(craftBinding,"profession_craft",claim));
+    assert(!PartyServiceReceipt(craftBinding,profession,"profession_craft",{},"not_yet_observed"));
+    profession.phase=Phase::Verifying;
+    window.authorized=false;
+    assert(PartyServiceReceipt(craftBinding,profession,"profession_craft",{},"saved_native_cast"));
+    window.authorized=true;
+    assert(!PartyServiceMatches(craftBinding,profession,window));
+    assert(!PartyServiceReceipt(craftBinding,profession,"profession_craft",{},"second_cast"));
+    assert(profession.phase==Phase::Verifying); // Operation success is not skill-goal completion.
 }

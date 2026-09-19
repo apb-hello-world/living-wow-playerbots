@@ -55,6 +55,8 @@ public:
     // Admission uses acknowledged task/claim cache and real delivered mail;
     // selecting a candidate performs no native effect or task reassignment.
     std::optional<LivingActivity::PartyServiceBinding> SelectPartyMailService(uint32_t actor) const;
+    // One ready cast of an existing profession root; never a second craft job.
+    std::optional<LivingActivity::PartyServiceBinding> SelectPartyProfessionService(uint32_t actor);
     std::optional<LivingActivity::PartyServiceBinding> PreparePartyRepairService(uint32_t actor,const std::string& sourceKey);
     std::optional<LivingActivity::PartyServiceBinding> PreparePartyVendorService(uint32_t actor,const std::string& sourceKey,std::string& blocker);
     std::optional<LivingActivity::PartyServiceBinding> PreparePartyBankService(uint32_t actor,const std::string& sourceKey,std::string& blocker);

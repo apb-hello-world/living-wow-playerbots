@@ -3215,11 +3215,16 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(NativePartyProtection(*bot)==PartyProtection::Human) {
         const auto scope=sPlayerbotRendezvousManager.ReadPartyService(bot,*saved);
         if(!scope)return stop("human_party_executor_not_migrated");
-        return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{scope->entry,1}).blocker);
+        if(scope->service!=PartyServiceBinding::Service::Profession)
+            return stop(AdvanceItemPreparation(actor,id,ProfessionStep::Collect,{scope->entry,1}).blocker);
     }
     ProfessionSnapshot snapshot;std::string blocker;
     if (!ReadProfessionSnapshot(actor,id,saved->revision,snapshot,blocker)) return stop(blocker);
     const auto next=NextProfessionStep(*saved,snapshot);
+    // A party craft window authorizes the already-ready local attempt, not
+    // procurement, banking, station travel or a replacement preparation recipe.
+    if(NativePartyProtection(*bot)==PartyProtection::Human && next.step!=ProfessionStep::Execute)
+        return stop("party_profession_local_readiness_changed");
     if (next.step==ProfessionStep::Finalize)
         return stop(SettleProfessionJob(actor,id,saved->revision,NewId()).blocker);
     if(next.blocker=="profession_tool_source_unavailable" && snapshot.safe && snapshot.retryReady) {
@@ -3293,6 +3298,38 @@ bool LivingActivityCoordinator::MovementCommitmentBlocksRecovery(uint32_t actor)
     if(!EffectEnforcementEnabled())return false;
     if(!OnWorldThread())return true;
     return LivingActivity::MovementCommitmentBlocksRecovery(state->authority.Read(actor));
+}
+
+std::optional<PartyServiceBinding> LivingActivityCoordinator::SelectPartyProfessionService(uint32_t actor) {
+    if(!OnWorldThread() || !EffectEnforcementEnabled() || !state->loaded ||
+        !state->resources.Protection().ready || DefersNativeSave(actor))return {};
+    auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
+    if(!bot || !bot->IsInWorld() || !bot->GetPlayerbotAI() || NativeSafety(bot) || bot->GetMap()->IsDungeon())return {};
+    for(const auto& write:state->pending)if(write.task.actor==actor)return {};
+    for(const auto& op:state->operations)if(op.second.request.transition.task.actor==actor)return {};
+    const auto indexed=state->cachedByActor.find(actor);
+    if(indexed==state->cachedByActor.end())return {};
+    const Task* chosen=nullptr;uint32_t recipe=0;
+    for(const auto& id:indexed->second) {
+        const auto found=state->cache.find(id);if(found==state->cache.end())continue;
+        const auto& task=found->second;ProfessionJob job;std::string why;
+        if(task.actor!=actor || task.root!=task.id || !task.parent.empty() || !task.accepted || task.mode!=Mode::Active ||
+            Terminal(task.phase) || task.kind!=Kind::Profession || task.source!="profession_job" ||
+            !DecodeProfessionJob(task.checkpoint.data,job,why) || HasActiveProfessionTool(task.checkpoint.data) ||
+            (job.operation!=ProfessionOperation::CreateItem && job.operation!=ProfessionOperation::TransformMaterial))continue;
+        const auto* spell=sSpellTemplate.LookupEntry<SpellEntry>(job.recipe);
+        if(!spell || spell->RequiresSpellFocus)continue;
+        ProfessionHistory history;ProfessionSnapshot snapshot;
+        if(!ReadProfessionHistory(actor,id,task.revision,history,why))continue;
+        auto rebound=task;rebound.context=ReadNativeContext(*bot,state->policyRevision,state->boot);
+        if(!InspectNativeProfessionSnapshot(*bot,rebound,history,NowMs(),snapshot,why) ||
+            NextProfessionStep(rebound,snapshot).step!=ProfessionStep::Execute)continue;
+        if(!chosen || Before(task,*chosen)){chosen=&task;recipe=job.recipe;}
+    }
+    if(!chosen)return {};
+    PartyServiceBinding selected;selected.service=PartyServiceBinding::Service::Profession;
+    selected.actor=actor;selected.root=chosen->id;selected.acceptedRevision=chosen->revision;
+    selected.entry=recipe;selected.craftCheckpoint=chosen->checkpoint.data;return selected;
 }
 
 std::optional<PartyServiceBinding> LivingActivityCoordinator::SelectPartyMailService(uint32_t actor) const {
