@@ -119,11 +119,21 @@ bool DungeonReady(Player* p,const DungeonObjective& d) {
     }
     return true;
 }
+bool SavedEventState(const CalendarEvent& e,const char* next,uint32 coordinator) {
+    const auto saved=CharacterDatabase.PQuery("SELECT state,revision,executor_guid FROM guild_society_event WHERE event_id='%s'",e.id.c_str());
+    if(!saved)return false;
+    const auto* row=saved->Fetch();
+    return row[0].GetCppString()==next && row[1].GetUInt32()==e.revision && row[2].GetUInt32()==coordinator;
+}
 bool Transition(const CalendarEvent& e,const char* next,const char* reason,uint32 now,uint32 coordinator=0) {
     if(!CharacterDatabase.BeginTransaction()) return false;
     CharacterDatabase.PExecute("UPDATE guild_society_event SET state='%s',failure_reason='%s',executor_guid=%u,updated_at=%u,started_at=IF('%s'='active' AND started_at=0,%u,started_at),finished_at=IF('%s' IN ('failed','cancelled','completed'),%u,finished_at) WHERE event_id='%s' AND revision=%u AND state='%s'",
         next,reason,coordinator?coordinator:e.coordinator,now,next,now,next,now,e.id.c_str(),e.revision,e.state.c_str());
-    return CharacterDatabase.CommitTransactionDirect();
+    if(!CharacterDatabase.CommitTransactionDirect())return false;
+    // This core's transaction API can report dispatch success after a native
+    // SQL failure. Only an independent saved-state read permits follow-up
+    // grouping/travel or release; a failed read leaves the next poll to reconcile.
+    return SavedEventState(e,next,coordinator?coordinator:e.coordinator);
 }
 }
 
@@ -371,7 +381,11 @@ void PlayerbotGuildEventExecutor::Update() {
                 if(e.kind=="dungeon"&&roleCount(role)>=(std::string(role)=="damage"?3u:1u)) continue;
                 if(!CharacterDatabase.BeginTransaction()) break;
                 CharacterDatabase.PExecute("INSERT INTO guild_society_rsvp (event_id,character_guid,response,role,human,accepted_revision,updated_at) VALUES ('%s',%u,'accepted','%s',0,%u,%u)",e.id.c_str(),guid,role,e.revision,now);
-                if(CharacterDatabase.CommitTransactionDirect()) accepted.insert(guid);
+                if(CharacterDatabase.CommitTransactionDirect()) {
+                    const auto saved=CharacterDatabase.PQuery("SELECT response,accepted_revision FROM guild_society_rsvp WHERE event_id='%s' AND character_guid=%u",e.id.c_str(),guid);
+                    if(saved && saved->Fetch()[0].GetCppString()=="accepted" && saved->Fetch()[1].GetUInt32()==e.revision)
+                        accepted.insert(guid);
+                }
             }
         }
         Player* coordinator=Online(e.coordinator);
@@ -529,6 +543,8 @@ void PlayerbotGuildEventExecutor::Update() {
                     if(!CharacterDatabase.BeginTransaction()) break;
                     CharacterDatabase.PExecute("UPDATE guild_society_event SET activity_instance_id=%u WHERE event_id='%s' AND revision=%u AND state='active' AND activity_instance_id=0",instance,e.id.c_str(),e.revision);
                     if(!CharacterDatabase.CommitTransactionDirect()) break;
+                    const auto saved=CharacterDatabase.PQuery("SELECT activity_instance_id,revision FROM guild_society_event WHERE event_id='%s'",e.id.c_str());
+                    if(!saved || saved->Fetch()[1].GetUInt32()!=e.revision || saved->Fetch()[0].GetUInt32()!=instance)break;
                     e.instance=instance;
                 }
                 if(e.instance==instance) {proofMasks[actor]|=boss.bit;completedMask|=boss.bit;}
@@ -562,7 +578,7 @@ void PlayerbotGuildEventExecutor::Update() {
             if(!CharacterDatabase.BeginTransaction()) continue;
             CharacterDatabase.PExecute("UPDATE guild_society_event SET state='completed',failure_reason='%s',finished_at=%u,updated_at=%u WHERE event_id='%s' AND state='active' AND revision=%u",e.kind=="quest"?"quest_reward_verified":"dungeon_encounters_verified",now,now,e.id.c_str(),e.revision);
             CharacterDatabase.PExecute("INSERT IGNORE INTO guild_society_credit (guild_id,character_guid,source_id,source_type,earned_at) SELECT %u,p.character_guid,CONCAT('event:',p.event_id),'%s',p.verified_at FROM guild_society_event_participant p JOIN guild_member m ON m.guid=p.character_guid AND m.guildid=%u WHERE p.event_id='%s' AND p.revision=%u AND p.verified_at>0",e.guild,e.kind=="quest"?"verified_quest":"verified_dungeon",e.guild,e.id.c_str(),e.revision);
-            if(CharacterDatabase.CommitTransactionDirect()) for(uint32 guid:accepted) {
+            if(CharacterDatabase.CommitTransactionDirect() && SavedEventState(e,"completed",e.coordinator)) for(uint32 guid:accepted) {
                 bindings.erase(guid);
                 auto owned=state_->reservations.find(guid);
                 if(owned!=state_->reservations.end()&&owned->second.event==e.id) {
