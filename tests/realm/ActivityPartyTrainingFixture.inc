@@ -71,6 +71,14 @@ template<class State> void RunIsolatedPartyTraining(State& state) {
         if(NowMs()>=f.diagnosticAt) {
             f.diagnosticAt=NowMs()+10000;
             std::ofstream progress("/isolated/evidence/party-training-progress-"+state.boot+".json");progress<<sLivingActivityCoordinator.ActorJson(f.actor);
+            boost::property_tree::ptree diagnostic;
+            diagnostic.put("boot",state.boot);diagnostic.put("actor",f.actor);diagnostic.put("blocker",f.blocker);
+            diagnostic.put("placed",f.placed);diagnostic.put("prepared",f.prepared);diagnostic.put("task",f.task);
+            diagnostic.put("loaded",state.loaded);diagnostic.put("io_pending",state.ioPending);
+            diagnostic.put("pending",state.pending.size());diagnostic.put("incoming",state.incoming.size());
+            if(bot){diagnostic.put("safety",NativeSafety(bot));diagnostic.put("stopped",bot->IsStopped());diagnostic.put("spells",spells());}
+            if(auto* human=sRandomPlayerbotMgr.GetPlayerBot(f.leader))diagnostic.put("leader_safety",NativeSafety(human));
+            std::ofstream detail("/isolated/evidence/party-training-fixture-progress-"+state.boot+".json");detail<<Json(diagnostic);
         }
         if(NowMs()>f.deadline){emit(false,"training_deadline_preserved_obligation");return;}
         if(sWorld.GetActiveAndQueuedSessionCount() || !state.loaded || state.ioPending ||
