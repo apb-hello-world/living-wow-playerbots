@@ -32,7 +32,7 @@ int main() {
         authority.Observe(travel.context,0);
         const auto moving=authority.Acquire(travel,Movement|Mask(Effect::Group),1000,60000);
         assert(moving.Granted());
-        const uint32_t reward=Mask(Effect::Inventory)|Mask(Effect::Money)|Mask(Effect::Quest);
+        const uint32_t reward=Mask(Effect::Inventory)|Mask(Effect::Money)|Mask(Effect::Spell);
         assert(authority.Acquire(travel,reward,1001,60000).code==AuthorityCode::StaleRevision);
         auto ready=travel;++ready.revision;ready.phase=Phase::Preparing;ready.checkpoint.step="guild_quest_reward_ready";
         const auto grant=authority.Acquire(ready,reward,1002,60000);
