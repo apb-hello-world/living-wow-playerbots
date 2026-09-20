@@ -264,8 +264,15 @@ struct PlayerbotGuildEventExecutor::State {
         auto context=coordinator->GetPlayerbotAI()->GetAiObjectContext();
         TravelTarget* target=context->GetValue<TravelTarget*>("travel target")->Get();
         const auto installedRoute=installed.find(coordinator->GetGUIDLow());
-        if(installedRoute!=installed.end()&&target->GetDestination()==installedRoute->second.destination&&
-            target->GetPosition()==installedRoute->second.point&&target->IsActive()&&target->IsDestinationActive()) {
+        const bool ownsRoute=installedRoute!=installed.end()&&target->GetDestination()==installedRoute->second.destination&&
+            target->GetPosition()==installedRoute->second.point;
+        // Native status maintenance is also owned work. If an exhausted WORK
+        // route is checked only after IsDestinationActive succeeds, it never
+        // enters cooldown and rejects every replacement spawn of the same mob.
+        // Never maintain a human/replacement route that this event did not install.
+        if(ownsRoute)target->CheckStatus();
+        if(ownsRoute&&target->GetStatus()!=TravelStatus::TRAVEL_STATUS_COOLDOWN&&
+            target->IsActive()&&target->IsDestinationActive()) {
             // This accepted commitment owns the route, but still uses normal
             // guarded movement. Do not wait for the optional-action lottery.
             coordinator->GetPlayerbotAI()->DoSpecificAction("travel",Event("guild event objective","",coordinator),true);
