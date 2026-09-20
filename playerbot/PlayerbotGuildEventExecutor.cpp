@@ -122,11 +122,12 @@ bool DungeonReady(Player* p,const DungeonObjective& d) {
     }
     return true;
 }
-bool SavedEventState(const CalendarEvent& e,const char* next,uint32 coordinator) {
-    const auto saved=CharacterDatabase.PQuery("SELECT state,revision,executor_guid FROM guild_society_event WHERE event_id='%s'",e.id.c_str());
+bool SavedEventState(const CalendarEvent& e,const char* next,uint32 coordinator,uint32 expectedAt=0,const char* reason=nullptr) {
+    const auto saved=CharacterDatabase.PQuery("SELECT state,revision,executor_guid,updated_at,failure_reason FROM guild_society_event WHERE event_id='%s'",e.id.c_str());
     if(!saved)return false;
     const auto* row=saved->Fetch();
-    return row[0].GetCppString()==next && row[1].GetUInt32()==e.revision && row[2].GetUInt32()==coordinator;
+    return row[0].GetCppString()==next && row[1].GetUInt32()==e.revision && row[2].GetUInt32()==coordinator &&
+        (!expectedAt || row[3].GetUInt32()==expectedAt) && (!reason || row[4].GetCppString()==reason);
 }
 bool Transition(const CalendarEvent& e,const char* next,const char* reason,uint32 now,uint32 coordinator=0) {
     if(!CharacterDatabase.BeginTransaction()) return false;
@@ -136,7 +137,7 @@ bool Transition(const CalendarEvent& e,const char* next,const char* reason,uint3
     // This core's transaction API can report dispatch success after a native
     // SQL failure. Only an independent saved-state read permits follow-up
     // grouping/travel or release; a failed read leaves the next poll to reconcile.
-    return SavedEventState(e,next,coordinator?coordinator:e.coordinator);
+    return SavedEventState(e,next,coordinator?coordinator:e.coordinator,now,reason);
 }
 // One actor, at most one native membership mutation. Joining after a successful
 // leave is a NEW step: its map/group epoch must be inspected again, not reused
@@ -188,6 +189,7 @@ struct PlayerbotGuildEventExecutor::State {
     ActivityEvidenceQueue mailbox;
     std::vector<ActivityProof> pendingProofs;
     uint32 nextUpdate=0;
+    const uint32 bootAt=uint32(time(nullptr));
 
     void FlushProofs() {
         // Backpressure remains in the bounded mailbox rather than draining and
@@ -602,6 +604,18 @@ void PlayerbotGuildEventExecutor::Update() {
             }
             if(Transition(e,"forming","",now,e.coordinator)) {e.state="forming";e.phaseAt=now;}
             else continue;
+        }
+        // A restored formation cannot spend its work window while the realm
+        // is stopped or its accepted actors are still loading. Refresh only
+        // after the whole roster is safely available, with saved readback.
+        // The original event deadline still bounds this external wait; normal
+        // in-process assembly failures retain their existing timeout.
+        if((e.state=="forming" || e.state=="traveling") && e.phaseAt<state_->bootAt) {
+            bool available=EventSafe(coordinator,e)&&!HasUncommittedHuman(coordinator,accepted);
+            for(uint32 guid:accepted)
+                if(!EventSafe(Online(guid),e)||HasUncommittedHuman(Online(guid),accepted))available=false;
+            if(!available || !Transition(e,e.state.c_str(),"restart_roster_recovery",now))continue;
+            e.phaseAt=now;
         }
         if(!EventSafe(coordinator,e)||HasUncommittedHuman(coordinator,accepted)) {
             if(e.state!="active"&&EventFormationExpired(e.phaseAt,now)) Transition(e,"failed","coordinator_unavailable",now);
