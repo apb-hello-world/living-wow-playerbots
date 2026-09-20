@@ -4108,9 +4108,10 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     ExecutionScope scope(grant.task,grant.action);
     const auto coordinator=sGuildEventExecutor.ParticipantCoordinator(*saved);
     if(!coordinator)return stop("guild_event_coordinator_snapshot_required");
-    // Only forming/traveling repairs membership. Once in a dungeon, preserve
+    // Open-world quests can hand leadership to the next unfinished member
+    // while active. Keep that change journalled too. Active dungeons preserve
     // the existing group and let the ordinary objective executor proceed.
-    if(closure.state=="forming" || closure.state=="traveling") {
+    if(closure.state=="forming" || closure.state=="traveling" || (closure.state=="active" && event.kind=="quest")) {
         GuildGroupQuote quote;
         if(!PlanNativeGuildGroup(*bot,*saved,coordinator,quote,why))return stop(why);
         if(!quote.change.empty()) {

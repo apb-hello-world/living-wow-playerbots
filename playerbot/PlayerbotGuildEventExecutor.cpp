@@ -252,9 +252,9 @@ struct PlayerbotGuildEventExecutor::State {
         readyRoutes.erase(guid);
     }
 
-    void ObjectiveRoute(const CalendarEvent& e,Player* coordinator,uint32 now,uint32 completedMask=0) {
+    std::string ObjectiveRoute(const CalendarEvent& e,Player* coordinator,uint32 now,uint32 completedMask=0) {
         if(!coordinator||!EventSafe(coordinator,e)||!coordinator->GetPlayerbotAI()||
-            (e.kind=="quest"&&coordinator->GetQuestRewardStatus(e.target))) return;
+            (e.kind=="quest"&&coordinator->GetQuestRewardStatus(e.target))) return "guild_event_objective_actor_unavailable";
         auto context=coordinator->GetPlayerbotAI()->GetAiObjectContext();
         TravelTarget* target=context->GetValue<TravelTarget*>("travel target")->Get();
         const auto installedRoute=installed.find(coordinator->GetGUIDLow());
@@ -264,10 +264,15 @@ struct PlayerbotGuildEventExecutor::State {
             // guarded movement. Do not wait for the optional-action lottery.
             coordinator->GetPlayerbotAI()->DoSpecificAction("travel",Event("guild event objective","",coordinator),true);
             coordinator->GetPlayerbotAI()->DoSpecificAction("move to travel target",Event("guild event objective","",coordinator),true);
-            return;
+            // Native action booleans are not movement receipts: travel returns
+            // false after status evaluation, and movement can safely wait for
+            // an off-screen travel leg. Position/status telemetry proves motion.
+            return "guild_event_native_travel_step_evaluated";
         }
-        if(jobs.size()>=2||readyRoutes.count(coordinator->GetGUIDLow())||now<routeRetry[e.id]) return;
-        for(const auto& job:jobs) if(job.event==e.id) return;
+        if(jobs.size()>=2)return "guild_event_route_worker_capacity";
+        if(readyRoutes.count(coordinator->GetGUIDLow()))return "guild_event_route_result_wait";
+        if(now<routeRetry[e.id])return "guild_event_route_retry_wait";
+        for(const auto& job:jobs) if(job.event==e.id)return "guild_event_route_planning";
         routeRetry[e.id]=now+30;
         const uint32 purpose=e.kind=="dungeon"?uint32(TravelDestinationPurpose::Boss):
             coordinator->GetQuestStatus(e.target)==QUEST_STATUS_COMPLETE?
@@ -279,7 +284,7 @@ struct PlayerbotGuildEventExecutor::State {
         if(dungeon) {
             for(const auto& boss:DungeonFor(objective).bosses) if(!(completedMask&boss.bit)) entries.push_back(int32(boss.entry));
         } else entries.push_back(int32(objective));
-        const auto epoch=RouteEpoch(coordinator);if(!epoch.Valid())return;
+        const auto epoch=RouteEpoch(coordinator);if(!epoch.Valid())return "guild_event_route_context_unavailable";
         jobs.push_back({e.id,e.revision,coordinator->GetGUIDLow(),epoch,std::async(std::launch::async,[info,center,purpose,objective,dungeon,entries]() {
             std::vector<GuildRouteProposal> result;
             // Keep native encounter order; never route to an arbitrary grind
@@ -300,6 +305,7 @@ struct PlayerbotGuildEventExecutor::State {
             }
             return result;
         })});
+        return "guild_event_route_planning";
     }
 
     // One world-thread route installation, separable from async completion and
@@ -408,8 +414,7 @@ std::string PlayerbotGuildEventExecutor::ExecuteParticipant(const LivingActivity
         state_->readyRoutes.erase(ready);
         return applied?"guild_event_route_installed":"guild_event_route_revalidation_required";
     }
-    state_->ObjectiveRoute(event,bot,uint32(time(nullptr)),event.completedMask);
-    return "guild_event_objective_in_progress";
+    return state_->ObjectiveRoute(event,bot,uint32(time(nullptr)),event.completedMask);
 }
 void PlayerbotGuildEventExecutor::RecordCredit(uint32 actor,uint32 guild,uint32 group,uint32 kind,
     uint32 entry,uint64_t source,uint32 map,uint32 instance,uint32 occurred) {
