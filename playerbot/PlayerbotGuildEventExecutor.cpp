@@ -319,18 +319,26 @@ struct PlayerbotGuildEventExecutor::State {
     // One world-thread route installation, separable from async completion and
     // calendar planning. The shared executor can invoke this under its actor's
     // current task grant; a worker result alone never supplies that grant.
-    bool ApplyObjectiveRoute(const Job& job,const std::vector<GuildRouteProposal>& proposals) {
+    bool ApplyObjectiveRoute(const Job& job,const std::vector<GuildRouteProposal>& proposals,std::string* failure=nullptr) {
+        auto reject=[&](const char* reason){if(failure)*failure=reason;return false;};
         auto owner=reservations.find(job.guid);Player* bot=Online(job.guid);
         if(owner==reservations.end() || owner->second.event!=job.event || owner->second.revision!=job.revision ||
-            !owner->second.active || !bot || !FreshGuildRoute(job.epoch,RouteEpoch(bot)) ||
-            !Safe(bot,bot->GetGuildId(),true) || !bot->GetPlayerbotAI() ||
-            HasUncommittedHuman(bot,rosters[job.event]) ||
-            (!sLivingActivityCoordinator.EffectEnforcementEnabled() &&
-             sPlayerbotRendezvousManager.GetPartyActivityOwner(job.guid)!=PlayerbotRendezvousManager::PartyActivityOwner::guild_event) ||
-            !CharacterDatabase.PQuery("SELECT event_id FROM guild_society_event WHERE event_id='%s' AND state='active' AND revision=%u AND executor_guid=%u AND (event_type<>'dungeon' OR (target_id=%u OR %u=0)) AND (activity_instance_id=0 OR activity_instance_id=%u OR %u=0)",job.event.c_str(),job.revision,job.guid,bot->GetMapId(),bot->GetMap()->IsDungeon()?1:0,bot->GetInstanceId(),bot->GetMap()->IsDungeon()?1:0))return false;
+            !owner->second.active)return reject("guild_event_route_reservation_changed");
+        if(!bot || !bot->GetPlayerbotAI())return reject("guild_event_route_actor_unavailable");
+        if(!FreshGuildRoute(job.epoch,RouteEpoch(bot)))return reject("guild_event_route_epoch_changed");
+        if(!Safe(bot,bot->GetGuildId(),true))return reject("guild_event_route_safety_pause");
+        if(HasUncommittedHuman(bot,rosters[job.event]))return reject("guild_event_route_human_commitment");
+        if(!sLivingActivityCoordinator.EffectEnforcementEnabled() &&
+             sPlayerbotRendezvousManager.GetPartyActivityOwner(job.guid)!=PlayerbotRendezvousManager::PartyActivityOwner::guild_event)
+            return reject("guild_event_route_owner_changed");
+        if(!CharacterDatabase.PQuery("SELECT event_id FROM guild_society_event WHERE event_id='%s' AND state='active' AND revision=%u AND executor_guid=%u AND (event_type<>'dungeon' OR (target_id=%u OR %u=0)) AND (activity_instance_id=0 OR activity_instance_id=%u OR %u=0)",job.event.c_str(),job.revision,job.guid,bot->GetMapId(),bot->GetMap()->IsDungeon()?1:0,bot->GetInstanceId(),bot->GetMap()->IsDungeon()?1:0))
+            return reject("guild_event_route_calendar_changed_or_unavailable");
+        if(proposals.empty())return reject("guild_event_route_no_supported_destination");
+        const char* unresolved="guild_event_route_proposal_invalid";
         const PlayerTravelInfo currentInfo(bot);
         for(const auto& proposal:proposals) {
             if(!proposal.Valid())continue;
+            unresolved="guild_event_route_destination_no_longer_available";
             Route route;
             // Resolve current metadata locally; never retain a pointer supplied
             // by a worker across a map, login, roster or leader change.
@@ -338,7 +346,9 @@ struct PlayerbotGuildEventExecutor::State {
                 {proposal.quest?int32(proposal.quest):proposal.entry},true,10000)) {
                 auto* quest=dynamic_cast<QuestTravelDestination*>(destination);
                 if(uint32(destination->GetPurpose())!=proposal.purpose || destination->GetEntry()!=proposal.entry ||
-                    (quest?quest->GetQuestId():0)!=proposal.quest || !destination->IsActive(bot,currentInfo))continue;
+                    (quest?quest->GetQuestId():0)!=proposal.quest)continue;
+                if(!destination->IsActive(bot,currentInfo)){unresolved="guild_event_route_objective_not_active";continue;}
+                unresolved="guild_event_route_spawn_point_changed";
                 auto* point=destination->GetClosestPoint(WorldPosition(proposal.map,proposal.x,proposal.y,proposal.z));
                 if(point && point->getMapId()==proposal.map && point->getX()==proposal.x &&
                     point->getY()==proposal.y && point->getZ()==proposal.z)route={destination,point};
@@ -348,13 +358,13 @@ struct PlayerbotGuildEventExecutor::State {
             auto context=bot->GetPlayerbotAI()->GetAiObjectContext();
             auto* previousFuture=context->GetValue<FutureDestinations*>("future travel destinations")->Get();
             if(previousFuture&&previousFuture->valid()) {
-                if(previousFuture->wait_for(std::chrono::seconds(0))!=std::future_status::ready)return false;
+                if(previousFuture->wait_for(std::chrono::seconds(0))!=std::future_status::ready)return reject("guild_event_route_prior_worker_pending");
                 try {previousFuture->get();} catch(...) {}
             }
             TravelTarget* target=context->GetValue<TravelTarget*>("travel target")->Get();
             target->SetTarget(route.destination,route.point);
             if(!FreshGuildRoute(job.epoch,RouteEpoch(bot)) || target->GetDestination()!=route.destination ||
-                target->GetPosition()!=route.point)return false;
+                target->GetPosition()!=route.point)return reject("guild_event_route_installation_rejected");
             target->SetForced(false);target->SetConditions({});
             target->SetRelevance(199); // Population load shedding, not movement safety.
             target->SetStatus(TravelStatus::TRAVEL_STATUS_READY);
@@ -362,7 +372,7 @@ struct PlayerbotGuildEventExecutor::State {
             context->GetValue<bool>("travel target active")->Reset();
             installed[job.guid]=route;return true;
         }
-        return false;
+        return reject(unresolved);
     }
 };
 
@@ -418,9 +428,10 @@ std::string PlayerbotGuildEventExecutor::ExecuteParticipant(const LivingActivity
         if(!DungeonReady(Online(guid),DungeonFor(event.target)))return "guild_event_dungeon_preparation_required";
     const auto ready=state_->readyRoutes.find(task.actor);
     if(ready!=state_->readyRoutes.end()) {
-        const bool applied=state_->ApplyObjectiveRoute(ready->second.first,ready->second.second);
+        std::string failure;
+        const bool applied=state_->ApplyObjectiveRoute(ready->second.first,ready->second.second,&failure);
         state_->readyRoutes.erase(ready);
-        return applied?"guild_event_route_installed":"guild_event_route_revalidation_required";
+        return applied?"guild_event_route_installed":failure;
     }
     return state_->ObjectiveRoute(event,bot,uint32(time(nullptr)),event.completedMask,&task,&action);
 }
