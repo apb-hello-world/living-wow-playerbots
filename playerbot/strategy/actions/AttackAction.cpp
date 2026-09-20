@@ -264,8 +264,7 @@ bool AttackAction::PetAttack(Player* requester, Unit* target)
     const auto permit = LivingActivity::NativeEngagedAttackPermit(*ai, target);
     std::unique_ptr<LivingActivity::ExecutionScope> nativeScope;
     if (permit.validated) nativeScope.reset(new LivingActivity::ExecutionScope(permit));
-    const LivingActivity::Effects effects{LivingActivity::AttackEffectMask(),
-        permit.validated ? permit.lane : LivingActivity::Lane::Managed, true};
+    const auto effects=LivingActivity::ExecutionScope::MutationEffects(bot->GetGUIDLow(),LivingActivity::AttackEffectMask());
     if (!sLivingActivityCoordinator.PermitEffects(*ai, effects, "native pet attack")) return false;
     // If we're done waiting to attack and there's mobs to cc, we can't use defensive/aggressive
     // because non passive pets will ignore our cc

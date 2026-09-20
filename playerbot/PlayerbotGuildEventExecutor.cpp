@@ -184,6 +184,7 @@ struct PlayerbotGuildEventExecutor::State {
     std::map<std::string,std::set<uint32>> rosters;
     std::map<uint32,Route> installed;
     std::map<std::string,uint32> routeRetry,inviteRetry;
+    std::map<std::string,std::string> routeFailure;
     std::vector<Job> jobs;
     std::map<uint32,std::pair<Job,std::vector<GuildRouteProposal>>> readyRoutes;
     std::map<std::string,CalendarEvent> events;
@@ -279,9 +280,13 @@ struct PlayerbotGuildEventExecutor::State {
         }
         if(jobs.size()>=2)return "guild_event_route_worker_capacity";
         if(readyRoutes.count(coordinator->GetGUIDLow()))return "guild_event_route_result_wait";
-        if(now<routeRetry[e.id])return "guild_event_route_retry_wait";
+        if(now<routeRetry[e.id]) {
+            const auto failed=routeFailure.find(e.id);
+            return failed==routeFailure.end()?"guild_event_route_retry_wait":failed->second;
+        }
         for(const auto& job:jobs) if(job.event==e.id)return "guild_event_route_planning";
         routeRetry[e.id]=now+30;
+        routeFailure.erase(e.id);
         const uint32 purpose=e.kind=="dungeon"?uint32(TravelDestinationPurpose::Boss):
             coordinator->GetQuestStatus(e.target)==QUEST_STATUS_COMPLETE?
             uint32(TravelDestinationPurpose::QuestTaker):uint32(TravelDestinationPurpose::QuestAllObjective);
@@ -430,6 +435,7 @@ std::string PlayerbotGuildEventExecutor::ExecuteParticipant(const LivingActivity
     if(ready!=state_->readyRoutes.end()) {
         std::string failure;
         const bool applied=state_->ApplyObjectiveRoute(ready->second.first,ready->second.second,&failure);
+        if(!applied)state_->routeFailure[event.id]=failure;
         state_->readyRoutes.erase(ready);
         return applied?"guild_event_route_installed":failure;
     }
@@ -809,7 +815,7 @@ void PlayerbotGuildEventExecutor::Update() {
         it=state_->jobs.erase(it);
     }
     for(auto it=state_->routeRetry.begin();it!=state_->routeRetry.end();)
-        if(uint64_t(it->second)+86400<now) it=state_->routeRetry.erase(it);else ++it;
+        if(uint64_t(it->second)+86400<now) {state_->routeFailure.erase(it->first);it=state_->routeRetry.erase(it);}else ++it;
     for(auto it=state_->inviteRetry.begin();it!=state_->inviteRetry.end();)
         if(uint64_t(it->second)+86400<now) it=state_->inviteRetry.erase(it);else ++it;
 }
