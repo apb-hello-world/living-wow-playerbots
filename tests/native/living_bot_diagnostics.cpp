@@ -2,7 +2,7 @@
 #include <cassert>
 
 int main() {
-    for(const char* query : {"state", "position", "tpos", "target", "hp", "combat", "strategy", "action", "travelpath"})
+    for(const char* query : {"state", "position", "tpos", "target", "hp", "combat", "strategy", "action", "travelpath", "questtravel"})
         assert(LivingActivity::IsReadOnlyBotDiagnostic(query));
     for(const char* mutation : {"", "values", "nc", "position teleport", "position teleport 0 1 2 3",
                                "combat reset", "strategy +dps", "action cast", "travelpath reset",

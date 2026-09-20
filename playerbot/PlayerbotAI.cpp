@@ -7034,6 +7034,33 @@ std::string PlayerbotAI::HandleRemoteCommand(std::string command)
     {
         return currentEngine->GetLastAction();
     }
+    else if (command == "questtravel")
+    {
+        // Bounded world-thread inspection of the same native predicates used
+        // by route installation. It does not change targets or quest progress.
+        std::ostringstream out;
+        const PlayerTravelInfo info(bot);
+        unsigned printed = 0;
+        out << "following=" << GetAiObjectContext()->GetValue<bool>("following party")->Get();
+        for (const auto& quest : bot->getQuestStatusMap())
+        {
+            if (quest.second.m_status != QUEST_STATUS_INCOMPLETE) continue;
+            for (auto* destination : sTravelMgr.GetDestinations(info, uint32(TravelDestinationPurpose::QuestAllObjective), {int32(quest.first)}, true, 10000))
+            {
+                auto* objective = dynamic_cast<QuestObjectiveTravelDestination*>(destination);
+                if (!objective) continue;
+                const std::string qualifier = std::to_string(quest.first) + "," + std::to_string(objective->GetObjective());
+                const std::vector<std::string> parts = {std::to_string(quest.first), std::to_string(objective->GetObjective())};
+                out << "\nquest=" << quest.first << " entry=" << destination->GetEntry()
+                    << " objective=" << unsigned(objective->GetObjective())
+                    << " personal=" << GetAiObjectContext()->GetValue<bool>("need quest objective", qualifier)->Get()
+                    << " group=" << GetAiObjectContext()->GetValue<bool>("group or", "following party,need quest objective::" + Qualified::MultiQualify(parts, ","))->Get()
+                    << " active=" << destination->IsActive(bot, info);
+                if (++printed >= 32) return out.str();
+            }
+        }
+        return out.str();
+    }
     else if (command == "values")
     {
         return GetAiObjectContext()->FormatValues();

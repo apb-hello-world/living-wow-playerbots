@@ -8,6 +8,6 @@ namespace LivingActivity {
     inline bool IsReadOnlyBotDiagnostic(const std::string& command) {
         return command=="state" || command=="position" || command=="tpos" ||
             command=="target" || command=="hp" || command=="combat" ||
-            command=="strategy" || command=="action" || command=="travelpath";
+            command=="strategy" || command=="action" || command=="travelpath" || command=="questtravel";
     }
 }
