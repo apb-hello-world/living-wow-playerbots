@@ -129,6 +129,7 @@ int main() {
     assert(check(travel)==AuthorityCode::StaleLease); // Lease release is not cancellation.
     auto human=task;human.id=human.root=receipt;human.priority=Priority::Human;
     auto humanLease=authority.Acquire(human,travel.mask,100,1000);assert(humanLease.Granted());
+    human.ownerGeneration=humanLease.lease.generation;
     auto humanAction=action;humanAction.task=humanAction.rootTask=receipt;
     humanAction.ownerGeneration=humanLease.lease.generation;publish();
     {ExecutionScope acceptedHuman(human,humanAction);assert(check(travel)==AuthorityCode::Allowed);}
