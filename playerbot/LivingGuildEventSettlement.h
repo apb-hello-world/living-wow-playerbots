@@ -10,14 +10,56 @@ struct GuildEventClosure {
     uint32_t started=0,finished=0,participantVerified=0,instance=0;
 };
 struct GuildEventSettlement {Task task;WritePlan plan;};
+// Always returns a row on a successful read. Missing/revised authority is an
+// explicit cancellation fact, never confused with a failed database query.
+inline std::string GuildEventInvalidationExpression(const Task& task,const GuildEventCommitment& c) {
+    const auto event=SqlValue(c.event),guild=std::to_string(c.guild),actor=std::to_string(task.actor);
+    return "CASE WHEN NOT EXISTS(SELECT 1 FROM guild_society_event changed WHERE changed.event_id="+event+
+        ") THEN 'guild_event_removed' WHEN EXISTS(SELECT 1 FROM guild_society_event changed WHERE changed.event_id="+event+
+        " AND (changed.guild_id<>"+guild+" OR changed.revision<>"+std::to_string(c.eventRevision)+
+        " OR changed.event_type<>"+SqlValue(c.kind)+" OR changed.target_id<>"+std::to_string(c.target)+
+        " OR changed.scheduled_at<>"+std::to_string(c.starts)+" OR COALESCE(changed.ends_at,changed.scheduled_at+3600)<>"+
+        std::to_string(c.ends)+")) THEN 'guild_event_revision_requires_renewal'"
+        " WHEN NOT EXISTS(SELECT 1 FROM guild_member member WHERE member.guid="+actor+" AND member.guildid="+guild+
+        ") THEN 'guild_event_membership_changed' WHEN NOT EXISTS(SELECT 1 FROM guild_society_rsvp accepted WHERE accepted.event_id="+event+
+        " AND accepted.character_guid="+actor+" AND accepted.response='accepted' AND accepted.accepted_revision="+
+        std::to_string(c.eventRevision)+") THEN 'guild_event_acceptance_withdrawn' ELSE '' END";
+}
 inline std::string GuildEventClosureQuery(const Task& task,const GuildEventCommitment& c) {
-    return "SELECT e.state,e.failure_reason,e.started_at,e.finished_at,COALESCE(p.verified_at,0),e.activity_instance_id"
-        " FROM guild_society_event e LEFT JOIN guild_society_event_participant p ON p.event_id=e.event_id"
-        " AND p.revision=e.revision AND p.character_guid="+std::to_string(task.actor)+
-        " WHERE e.event_id="+SqlValue(c.event)+" AND e.guild_id="+std::to_string(c.guild)+
+    return "SELECT e.state,e.failure_reason,e.started_at,e.finished_at,COALESCE(p.verified_at,0),e.activity_instance_id,"+
+        GuildEventInvalidationExpression(task,c)+
+        " FROM (SELECT 1) probe LEFT JOIN guild_society_event e ON e.event_id="+SqlValue(c.event)+" AND e.guild_id="+std::to_string(c.guild)+
         " AND e.revision="+std::to_string(c.eventRevision)+" AND e.event_type="+SqlValue(c.kind)+
         " AND e.target_id="+std::to_string(c.target)+" AND e.scheduled_at="+std::to_string(c.starts)+
-        " AND COALESCE(e.ends_at,e.scheduled_at+3600)="+std::to_string(c.ends);
+        " AND COALESCE(e.ends_at,e.scheduled_at+3600)="+std::to_string(c.ends)+
+        " LEFT JOIN guild_society_event_participant p ON p.event_id=e.event_id"
+        " AND p.revision=e.revision AND p.character_guid="+std::to_string(task.actor);
+}
+inline bool PrepareGuildEventInvalidation(const Task& saved,const WorldContext& current,
+    const std::string& reason,uint64_t now,const std::string& receipt,GuildEventSettlement& out,std::string& why) {
+    out={};GuildEventCommitment c;
+    if(!Validate(saved,why) || !IsGuildEventCommitment(saved) || !ValidateGuildEventCommitmentTask(saved,why) ||
+        !DecodeGuildEventCommitment(saved.checkpoint.data,c) || Terminal(saved.phase) ||
+        current.actor!=saved.actor || !current.actorGeneration || !current.mapGeneration || !current.policyRevision ||
+        !IsUuid(current.boot) || !IsUuid(receipt) || now<saved.updatedAtMs || saved.revision>=UINT64_MAX-1) {
+        why="guild_event_invalidation_context_invalid";return false;
+    }
+    if(reason!="guild_event_removed" && reason!="guild_event_revision_requires_renewal" &&
+        reason!="guild_event_membership_changed" && reason!="guild_event_acceptance_withdrawn") {
+        why="guild_event_invalidation_evidence_required";return false;
+    }
+    out.task=saved;auto& next=out.task;++next.revision;next.context=current;next.updatedAtMs=now;next.retryAtMs=0;
+    next.phase=Phase::Cancelled;next.checkpoint.step="guild_event_closed";next.checkpoint.blocker=reason;
+    out.plan=Detail::TaskTransitionWrite(next,saved.revision,receipt,"guild_event_native_acceptance_invalidated",reason);
+    out.plan.statements.front()+=" AND checkpoint="+SqlValue(saved.checkpoint.data)+
+        " AND ("+GuildEventInvalidationExpression(saved,c)+")="+SqlValue(reason)+
+        " AND NOT EXISTS(SELECT 1 FROM living_activity_operation o JOIN living_activity_task t ON t.task_id=o.task_id"
+        " WHERE t.actor_guid=living_activity_task.actor_guid AND o.state IN ('intent','reconciling'))"
+        " AND NOT EXISTS(SELECT 1 FROM living_activity_claim c WHERE c.task_id=living_activity_task.task_id"
+        " AND c.state NOT IN ('consumed','released'))"
+        " AND NOT EXISTS(SELECT 1 FROM living_activity_task child WHERE child.root_task_id=living_activity_task.task_id"
+        " AND child.task_id<>living_activity_task.task_id AND child.phase NOT IN ('completed','cancelled','failed'))";
+    why.clear();return true;
 }
 inline bool PrepareGuildEventSettlement(const Task& saved,const WorldContext& current,
     const GuildEventClosure& native,uint64_t now,const std::string& receipt,GuildEventSettlement& out,std::string& why) {

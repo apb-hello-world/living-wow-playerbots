@@ -4100,8 +4100,19 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     }
     if(!(saved->context==current))return checkpoint(Phase::Reconciling,saved->checkpoint.step,"guild_event_context_reconciliation");
     const auto native=CharacterDatabase.Query(GuildEventClosureQuery(*saved,event).c_str());
-    if(!native || native->GetFieldCount()!=6)return stop("guild_event_native_revision_unavailable");
+    if(!native || native->GetFieldCount()!=7)return stop("guild_event_native_revision_unavailable");
     const auto* row=native->Fetch();GuildEventClosure closure;
+    const auto invalidation=row[6].GetCppString();
+    if(!invalidation.empty()) {
+        if(state->pending.size()>=state->batch || state->transitionCount+state->pending.size()>=200000)return stop("task_admission_backpressure");
+        GuildEventSettlement settled;const auto receipt=SourceId("guild_event_invalidation",id+":"+std::to_string(saved->revision));
+        if(!PrepareGuildEventInvalidation(*saved,current,invalidation,now,receipt,settled,why))return stop(why);
+        State::Pending write;write.task=std::move(settled.task);write.plan=std::move(settled.plan);write.admissionReceipt=receipt;
+        const auto owned=state->authority.Read(actor);
+        if(owned.lease.rootTask==id)ReleaseTaskLease(owned.lease);
+        state->pending.push_back(std::move(write));state->nextWork=0;
+        return stop("guild_event_invalidation_receipt_pending");
+    }
     closure.state=row[0].GetCppString();closure.reason=row[1].GetCppString();closure.started=row[2].GetUInt32();
     closure.finished=row[3].GetUInt32();closure.participantVerified=row[4].GetUInt32();closure.instance=row[5].GetUInt32();
     if(closure.state=="completed" || closure.state=="failed" || closure.state=="cancelled") {

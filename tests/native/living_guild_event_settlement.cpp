@@ -19,6 +19,18 @@ int main(int argc,char** argv) {
     GuildEventSettlement result;std::string why;
     assert(PrepareGuildEventSettlement(task,task.context,closure,1300000,
         "ff2efbdf-f0ec-4539-b840-299847970c03",result,why));
+    const auto completed=result;
+    auto restart=task.context;++restart.actorGeneration;
+    const std::vector<std::string> invalidations={"guild_event_removed","guild_event_revision_requires_renewal",
+        "guild_event_membership_changed","guild_event_acceptance_withdrawn"};
+    for(const auto& reason:invalidations) {
+        assert(PrepareGuildEventInvalidation(task,restart,reason,1300000,
+            "ff2efbdf-f0ec-4539-b840-299847970c04",result,why));
+        assert(result.task.phase==Phase::Cancelled && result.task.context==restart && result.task.revision==3);
+        assert(result.task.checkpoint.blocker==reason && result.task.checkpoint.data==task.checkpoint.data);
+    }
+    assert(!PrepareGuildEventInvalidation(task,restart,"database_unavailable",1300000,
+        "ff2efbdf-f0ec-4539-b840-299847970c04",result,why));
     if(argc>1) {
         boost::property_tree::ptree output;
         auto add=[&](const char* key,const WritePlan& plan){
@@ -26,7 +38,12 @@ int main(int argc,char** argv) {
             for(const auto& sql:plan.statements){boost::property_tree::ptree item;item.put_value(sql);array.push_back({"",item});}
             entry.add_child("statements",array);entry.put("receipt",plan.receiptQuery);output.add_child(key,entry);
         };
-        add("admit",admitted);add("prepare",preparing);add("complete",result.plan);
+        add("admit",admitted);add("prepare",preparing);add("complete",completed.plan);
+        for(const auto& reason:invalidations) {
+            assert(PrepareGuildEventInvalidation(task,restart,reason,1300000,
+                "ff2efbdf-f0ec-4539-b840-299847970c04",result,why));
+            add(reason.c_str(),result.plan);
+        }
         output.put("projection",GuildEventClosureQuery(task,c));output.put("kind",c.kind);
         boost::property_tree::write_json(std::cout,output,false);
     }
