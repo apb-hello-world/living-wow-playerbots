@@ -41,8 +41,20 @@ int main() {
         t.actor=7;t.kind=Kind::GuildEvent;t.mode=Mode::Active;t.priority=Priority::Scheduled;t.dueAtMs=100000;
         t.source="guild_event_commitment";t.sourceKey=GuildEventCommitmentKey(event,7);t.phase=Phase::Executing;
         t.checkpoint.step="guild_quest_reward";t.checkpoint.data=EncodeGuildEventCommitment(event);
+        t.accepted=true;t.context.actor=7;t.revision=2;t.createdAtMs=t.updatedAtMs=1000;
+        r.transition.expectedRevision=1;r.transition.receipt="22222222-2222-4222-8222-222222222222";
         QuestRewardQuote q;q.actor=7;q.quest=47;q.giver=123;q.level=10;q.money=100;q.moneyDelta=175;
         q.items={{773,10,10,0},{1191,0,0,1}};r.beforeState=EncodeQuestRewardQuote(q);
+        // Run the real durable writer, not only adapter eligibility. Character
+        // persistence must survive both checks before any native reward runs.
+        const auto persisted=OperationRequestWrite(r);
+        assert(!persisted.statements.empty()&&persisted.receiptQuery.find(SqlValue(r.kind))!=std::string::npos);
+        for(const bool unknown:{false,true}) {
+            auto invalid=r;
+            if(unknown)invalid.persistence=NativePersistence(99);else invalid.kind="vendor_purchase";
+            bool rejected=false;try{OperationRequestWrite(invalid);}catch(const std::invalid_argument&){rejected=true;}
+            assert(rejected);
+        }
         TestAdapter adapter(r);adapter.questReward=true;std::string why;
         assert(ValidateOperationAdapter(r,adapter,why));
         adapter.questReward=false;assert(!ValidateOperationAdapter(r,adapter,why));adapter.questReward=true;

@@ -236,7 +236,7 @@ namespace LivingActivity {
     }
     WritePlan OperationRequestWrite(const OperationRequest& request) {
         if (!JsonObject(request.beforeState, 4096) || !request.effects || (request.effects & ~AllEffects) ||
-            unsigned(request.persistence) > unsigned(NativePersistence::Profession))
+            unsigned(request.persistence) > unsigned(NativePersistence::Character))
             throw std::invalid_argument("Invalid native operation state/effects");
         const std::string gain = !request.mailGain.Empty() ? ",\"mail_gain\":"+MailGainSpecJson(request.mailGain) :
             request.itemGain.Empty() ? "" : ",\"item_gain\":"+ItemGainSpecJson(request.itemGain);
