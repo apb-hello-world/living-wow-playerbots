@@ -7,6 +7,7 @@
 #include "LivingActivityCoordinator.h"
 #include "LivingActivityScope.h"
 #include "LivingNativeGuildEvent.h"
+#include "LivingNativeGuildObjective.h"
 #include "PlayerbotRendezvousManager.h"
 #include "PlayerbotSocialActionBroker.h"
 #include "RandomPlayerbotMgr.h"
@@ -255,7 +256,8 @@ struct PlayerbotGuildEventExecutor::State {
         readyRoutes.erase(guid);
     }
 
-    std::string ObjectiveRoute(const CalendarEvent& e,Player* coordinator,uint32 now,uint32 completedMask=0) {
+    std::string ObjectiveRoute(const CalendarEvent& e,Player* coordinator,uint32 now,uint32 completedMask=0,
+        const LivingActivity::Task* task=nullptr,const LivingActivity::ActionContext* action=nullptr) {
         if(!coordinator||!EventSafe(coordinator,e)||!coordinator->GetPlayerbotAI()||
             (e.kind=="quest"&&coordinator->GetQuestRewardStatus(e.target))) return "guild_event_objective_actor_unavailable";
         auto context=coordinator->GetPlayerbotAI()->GetAiObjectContext();
@@ -266,6 +268,9 @@ struct PlayerbotGuildEventExecutor::State {
             // This accepted commitment owns the route, but still uses normal
             // guarded movement. Do not wait for the optional-action lottery.
             coordinator->GetPlayerbotAI()->DoSpecificAction("travel",Event("guild event objective","",coordinator),true);
+            if(task && action && e.kind=="quest" && coordinator->GetQuestStatus(e.target)==QUEST_STATUS_INCOMPLETE &&
+                target->GetStatus()==TravelStatus::TRAVEL_STATUS_WORK)
+                return LivingActivity::AdvanceNativeGuildQuestObjective(*coordinator,*task,*action,*target);
             coordinator->GetPlayerbotAI()->DoSpecificAction("move to travel target",Event("guild event objective","",coordinator),true);
             // Native action booleans are not movement receipts: travel returns
             // false after status evaluation, and movement can safely wait for
@@ -417,7 +422,7 @@ std::string PlayerbotGuildEventExecutor::ExecuteParticipant(const LivingActivity
         state_->readyRoutes.erase(ready);
         return applied?"guild_event_route_installed":"guild_event_route_revalidation_required";
     }
-    return state_->ObjectiveRoute(event,bot,uint32(time(nullptr)),event.completedMask);
+    return state_->ObjectiveRoute(event,bot,uint32(time(nullptr)),event.completedMask,&task,&action);
 }
 void PlayerbotGuildEventExecutor::RecordCredit(uint32 actor,uint32 guild,uint32 group,uint32 kind,
     uint32 entry,uint64_t source,uint32 map,uint32 instance,uint32 occurred) {

@@ -3985,7 +3985,10 @@ std::string LivingActivityCoordinator::ApproachGuildParticipant(const Task& task
         !ValidateNativeGuildEventTask(*bot,task,why))return why.empty()?"guild_event_group_changed":why;
     if(NativeSafety(bot) || NativeSafety(leader) || bot->IsNonMeleeSpellCasted(false) || leader->IsNonMeleeSpellCasted(false) ||
         bot->GetTradeData() || leader->GetTradeData())return "guild_event_approach_safety_pause";
-    if(bot->IsWithinDistInMap(leader,60.0f))return "guild_event_assembled";
+    // Assembly radius is not an active-follow distance. Stopping fifty yards
+    // behind the puller leaves ranged members outside useful assist/loot range.
+    const float followDistance=task.checkpoint.step=="guild_event_objective"?12.0f:60.0f;
+    if(bot->IsWithinDistInMap(leader,followDistance))return "guild_event_assembled";
     const bool sameMap=bot->GetMap()==leader->GetMap();
     if(!sameMap && (bot->GetMap()->IsDungeon() || leader->GetMap()->IsDungeon()))return "guild_event_shared_instance_required";
     if(!PermitEffects(*bot->GetPlayerbotAI(),{Mask(Effect::Movement)|Mask(Effect::TravelTarget),Lane::Managed,true},"guild event approach"))
@@ -4163,7 +4166,8 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         }
         if(why!="quest_reward_giver_travel_required")return stop(why);
     }
-    const uint32_t effects=Mask(Effect::Movement)|Mask(Effect::TravelTarget)|Mask(Effect::Group);
+    const uint32_t effects=Mask(Effect::Movement)|Mask(Effect::TravelTarget)|Mask(Effect::Group)|
+        ((closure.state=="active" && event.kind=="quest")?Mask(Effect::Spell):0);
     const auto grant=AcquireSavedTask(id,saved->revision,effects,60000,"guild_event_participant");
     if(!grant.Permitted())return stop(grant.blocker);
     ExecutionScope scope(grant.task,grant.action);
