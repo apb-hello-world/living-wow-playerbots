@@ -36,7 +36,15 @@ int main() {
     assert(MovementCommitmentBlocksRecovery(authority.Read(497)));
     authority.Observe(human.context,0);
     assert(authority.Release(party.lease).code==AuthorityCode::Released);
-    // Accepted tasks in the durable queue are not effective owners.
+    // Queued work is not an effective owner; started acknowledged work remains
+    // a watchdog barrier even between leases/context revalidation.
+    assert(!MovementCommitmentBlocksRecovery(authority.Read(497)));
+    authority.SetCommitmentEffects(497,ExecutionAuthority::NativeCommitmentEffects(service));
+    assert(MovementCommitmentBlocksRecovery(authority.Read(497)));
+    auto moved=service.context;++moved.mapGeneration;authority.Observe(moved,0);
+    assert(MovementCommitmentBlocksRecovery(authority.Read(497)));
+    service.phase=Phase::WaitingExternal;
+    authority.SetCommitmentEffects(497,ExecutionAuthority::NativeCommitmentEffects(service));
     assert(!MovementCommitmentBlocksRecovery(authority.Read(497)));
     RecoveryPauseClock clock;
     assert(UpdateRecoveryPause(clock,100,true)==0);

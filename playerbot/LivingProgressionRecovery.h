@@ -8,7 +8,7 @@ inline bool MovementCommitmentBlocksRecovery(const AuthoritySnapshot& owner) {
     // Match the common native action boundary: an expired but still held lease
     // is not permission for the watchdog to mutate or charge a route failure.
     // Even an inventory-only atomic step owns its commitment's execution.
-    return owner.lease.actor || owner.invalidated || owner.compatibility ||
+    return owner.commitmentEffects || owner.lease.actor || owner.invalidated || owner.compatibility ||
         !owner.operation.empty() || owner.operationExecuting || owner.operationDispatched;
 }
 struct RecoveryPauseClock { uint64_t since=0;bool paused=false; };

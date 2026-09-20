@@ -102,6 +102,51 @@ int main() {
     assert(claims.InstallReceipt({{money,1}})==ClaimInstall::Installed);
     assert(check({})==AuthorityCode::Allowed);
     assert(pending->NativeBlockedEffects(actor)); // Prior immutable view unchanged.
+    // Reproduce a native map/session transition between durable task steps:
+    // no item claims, but the acknowledged activity still owns route intent.
+    const auto committed=ExecutionAuthority::NativeCommitmentEffects(task);
+    assert(committed==(travel.mask|Mask(Effect::Group)));
+    assert(authority.SetCommitmentEffects(actor,committed));publish();
+    assert(check(travel)==AuthorityCode::StaleLease && check({})==AuthorityCode::UnknownAction);
+    assert(check(inventory)==AuthorityCode::Allowed); // Resource protection is separate.
+    auto oldWorld=world;++world.mapGeneration;
+    authority.Observe(world,0);publish();
+    assert(authority.Read(actor).commitmentEffects==committed);
+    assert(check(travel)==AuthorityCode::StaleLease);
+    assert(ExecutionScope::Check(reader,travel,oldWorld,200,0,0)==AuthorityCode::StaleContext);
+    for(auto lane:{Lane::Combat,Lane::Healing,Lane::Loot,Lane::Safety}) {
+        NativePermit valid{world,lane,Mask(Effect::Movement),0,true};
+        ExecutionScope exception(valid);
+        assert(check({valid.effects,lane,true})==AuthorityCode::Allowed);
+        assert(check(travel)==AuthorityCode::StaleLease);
+    }
+    task.context=world;
+    auto renewed=authority.Acquire(task,travel.mask,100,1000);assert(renewed.Granted());
+    action.world=world;action.ownerGeneration=renewed.lease.generation;
+    task.ownerGeneration=renewed.lease.generation;publish();
+    {ExecutionScope resumed(task,action);assert(check(travel)==AuthorityCode::Allowed);}
+    assert(authority.Release(renewed.lease).code==AuthorityCode::Released);publish();
+    assert(check(travel)==AuthorityCode::StaleLease); // Lease release is not cancellation.
+    auto human=task;human.id=human.root=receipt;human.priority=Priority::Human;
+    auto humanLease=authority.Acquire(human,travel.mask,100,1000);assert(humanLease.Granted());
+    auto humanAction=action;humanAction.task=humanAction.rootTask=receipt;
+    humanAction.ownerGeneration=humanLease.lease.generation;publish();
+    {ExecutionScope acceptedHuman(human,humanAction);assert(check(travel)==AuthorityCode::Allowed);}
+    assert(authority.Release(humanLease.lease).code==AuthorityCode::Released);
+    for(auto phase:{Phase::Preparing,Phase::Traveling,Phase::Executing,Phase::Verifying,Phase::Paused,Phase::Reconciling}) {
+        auto saved=task;saved.phase=phase;
+        assert(ExecutionAuthority::NativeCommitmentEffects(saved)==committed);
+        saved.accepted=false;assert(!ExecutionAuthority::NativeCommitmentEffects(saved));
+        saved.accepted=true;saved.mode=Mode::Observe;assert(!ExecutionAuthority::NativeCommitmentEffects(saved));
+    }
+    for(auto phase:{Phase::Queued,Phase::WaitingExternal,Phase::Deferred,Phase::Completed,Phase::Cancelled,Phase::Failed}) {
+        auto saved=task;saved.phase=phase;
+        assert(!ExecutionAuthority::NativeCommitmentEffects(saved));
+    }
+    assert(!authority.SetCommitmentEffects(actor,1024));
+    assert(authority.Read(actor).commitmentEffects==committed);
+    assert(authority.SetCommitmentEffects(actor,0));publish();
+    assert(check(travel)==AuthorityCode::Allowed); // Acknowledged wait/closure frees it.
     // A physical handoff protects the recipient, not only the former owner.
     // An unresolved item identity and money already in mail escrow still count.
     auto parcel=item;parcel.id="ff2efbdf-f0ec-4539-b840-299847970c04";

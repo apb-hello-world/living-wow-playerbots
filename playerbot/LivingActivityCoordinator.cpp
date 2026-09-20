@@ -611,6 +611,7 @@ struct LivingActivityCoordinator::State {
     std::deque<Incoming> incoming;
     std::map<std::string, Task> cache;
     std::map<uint32_t,std::set<std::string>> cachedByActor;
+    std::map<uint32_t,uint32_t> commitmentEffects;
     uint64_t nextRetirement=0, retiredObservations=0, retirementRechecks=0;
     // In-memory execution index within this coordinator, not a bot timer or
     // DB scan. Add domain adapters here as their old execution path is retired.
@@ -724,9 +725,23 @@ struct LivingActivityCoordinator::State {
 #endif
         return true;
     }
+    void RefreshCommitmentEffects(uint32_t actor) {
+        // Transition-time projection, not a per-tick task/database scan. Only
+        // acknowledged records enter this cache; rejected writes cannot clear it.
+        uint32_t effects=0;
+        const auto indexed=cachedByActor.find(actor);
+        if(indexed!=cachedByActor.end())for(const auto& id:indexed->second)
+            effects|=ExecutionAuthority::NativeCommitmentEffects(cache.at(id));
+        if(effects)commitmentEffects[actor]=effects;else commitmentEffects.erase(actor);
+        if(authority.SetCommitmentEffects(actor,effects)) {
+            const auto binding=bindings.find(actor);
+            if(binding!=bindings.end())binding->second.publisher.Publish(authority.Read(actor));
+        }
+    }
     void Remember(const Task& task) {
         cache[task.id] = task;
         cachedByActor[task.actor].insert(task.id);
+        RefreshCommitmentEffects(task.actor);
         const auto queued=executionTimes.find(task.id);
         if (queued!=executionTimes.end()) {executionDue.erase({queued->second,task.id});executionTimes.erase(queued);}
         if (ScheduledExecution(task)) {
@@ -761,6 +776,7 @@ struct LivingActivityCoordinator::State {
             }
         }
         if(actor!=cachedByActor.end() && actor->second.empty()) cachedByActor.erase(actor);
+        RefreshCommitmentEffects(task.actor);
         ++retiredObservations;
     }
     void Queue(Task task, uint64_t expected, const std::string& code) {
@@ -1620,6 +1636,7 @@ std::string LivingActivityCoordinator::ActorJson(uint32_t guid) const {
         }
     }
     const auto lease=state->authority.Read(guid);
+    p.put("durable_commitment.blocked_native_effects",lease.commitmentEffects);
     if(lease.lease.actor) {
         const uint64_t now=std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -1778,6 +1795,8 @@ void LivingActivityCoordinator::RefreshPermission(uint32_t guid, uint64_t actorE
     const auto prior = ai->activityPermissions.Inspect();
     if (prior && prior->current == current && prior->safety == safety) return;
     const auto observed = state->authority.Observe(current, safety);
+    const auto committed=state->commitmentEffects.find(guid);
+    state->authority.SetCommitmentEffects(guid,committed==state->commitmentEffects.end()?0:committed->second);
     if(!state->authority.Read(guid).compatibility) state->compatibilityActors.erase(guid);
     if (observed.code == AuthorityCode::InvalidRequest || observed.code == AuthorityCode::Capacity) {
         entry.publisher.Revoke(); return;

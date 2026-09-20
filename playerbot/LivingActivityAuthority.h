@@ -21,6 +21,9 @@ namespace LivingActivity {
     struct AuthoritySnapshot {
         WorldContext current;
         uint32_t safety = 0, effects = 0;
+        // Projection of acknowledged, started obligations. A context change
+        // releases a lease, not the durable commitment to its route/group.
+        uint32_t commitmentEffects = 0;
         Task root;
         // Volatile arbitration only; never rewrites the saved task definition.
         Priority admissionPriority = Priority::Progression;
@@ -47,6 +50,8 @@ namespace LivingActivity {
     public:
         explicit ExecutionAuthority(size_t actorLimit = 20000) : limit(actorLimit) {}
         AuthorityResult Observe(const WorldContext& current, uint32_t safety);
+        bool SetCommitmentEffects(uint32_t actor, uint32_t effects);
+        static uint32_t NativeCommitmentEffects(const Task& task);
         AuthorityResult Acquire(const Task& root, uint32_t effects, uint64_t now, uint64_t duration);
         AuthorityResult AcquirePrioritized(const Task& root, uint32_t effects, uint64_t now,
             uint64_t duration, Priority priority);

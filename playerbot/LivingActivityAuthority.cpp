@@ -53,6 +53,22 @@ namespace LivingActivity {
         return t.mode == Mode::Active && (t.phase == Phase::Preparing || t.phase == Phase::Traveling ||
             t.phase == Phase::Executing);
     }
+    uint32_t ExecutionAuthority::NativeCommitmentEffects(const Task& task) {
+        if(!task.accepted || task.mode!=Mode::Active)return 0;
+        switch(task.phase) {
+        case Phase::Preparing: case Phase::Traveling: case Phase::Executing:
+        case Phase::Verifying: case Phase::Paused: case Phase::Reconciling:
+            return Mask(Effect::Movement)|Mask(Effect::TravelTarget)|Mask(Effect::Group);
+        // Queued appointments and external waits do not monopolize travel.
+        // Inventory/money protection remains in the independent claim book.
+        default:return 0;
+        }
+    }
+    bool ExecutionAuthority::SetCommitmentEffects(uint32_t actor,uint32_t effects) {
+        const auto found=actors.find(actor);
+        if(found==actors.end() || (effects&~AllEffects))return false;
+        found->second.commitmentEffects=effects;return true;
+    }
     bool ExecutionAuthority::SameDefinition(const Task& a, const Task& b) {
         // Ephemeral lease generation and elapsed diagnostic time are not a task
         // definition. Changing an objective/step/effectful checkpoint is.
@@ -294,7 +310,7 @@ namespace LivingActivity {
         if (!task && !action && !permit && !a.lease.actor && !a.invalidated &&
             !a.compatibility && a.operation.empty() && !a.operationExecuting && !a.operationDispatched) {
             const uint32_t possible = effects.classified ? effects.mask : AllEffects;
-            if (!(possible & nativeBlockedEffects) &&
+            if (!(possible & (nativeBlockedEffects|a.commitmentEffects)) &&
                 (!effects.classified || effects.lane == Lane::Managed ||
                     (effects.lane == Lane::Inspection && !effects.mask)))
                 return AuthorityCode::Allowed;

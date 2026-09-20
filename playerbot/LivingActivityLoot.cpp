@@ -12,7 +12,7 @@
 namespace LivingActivity {
 NativePermit NativeLootBookkeepingPermit(PlayerbotAI& ai) {
     auto* actor=ai.GetBot();const auto view=ai.ActivityPermissions().Inspect();
-    if(!actor || !actor->IsInWorld() || !view || !view->lease.actor)return {};
+    if(!actor || !actor->IsInWorld() || !view || (!view->lease.actor && !view->commitmentEffects))return {};
     auto permit=sLivingActivityCoordinator.NativeActionContext(ai,Lane::State,0,127);
     permit.validated=permit.world.actor!=0;return permit;
 }
