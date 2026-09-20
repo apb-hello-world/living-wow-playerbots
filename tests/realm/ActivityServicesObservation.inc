@@ -21,10 +21,13 @@ void RunIsolatedServicesObservation(FixtureState& state) {
         result.put("verified_native_results",state.nativeVerifiedResults);result.put("task_admissions",state.taskAdmissions);
         result.put("pending_writes",state.pending.size());result.put("pending_operations",state.operations.size());
         boost::property_tree::ptree actors;unsigned actorCount=0;
-        for(const auto& binding:state.bindings) {
-            auto* bot=sRandomPlayerbotMgr.GetPlayerBot(binding.first);
+        // Show selected online actors even before admission. Otherwise a
+        // rejected dungeon roster has no readiness diagnostics at all.
+        for(const auto& online:sRandomPlayerbotMgr.GetAllBots()) {
+            auto* bot=online.second;
             if(!bot || !bot->GetPlayerbotAI() || !bot->IsInWorld() || ++actorCount>50)continue;
-            boost::property_tree::ptree actor;actor.put("actor",binding.first);
+            const auto actorId=bot->GetGUIDLow();
+            boost::property_tree::ptree actor;actor.put("actor",actorId);
             actor.put("alive",bot->IsAlive());actor.put("combat",bot->IsInCombat());
             actor.put("ghost",bot->HasFlag(PLAYER_FLAGS,PLAYER_FLAGS_GHOST));
             actor.put("corpse_present",bot->GetCorpse()!=nullptr);
@@ -101,9 +104,11 @@ void RunIsolatedServicesObservation(FixtureState& state) {
             }
             actor.put("transport",bool(bot->GetTransport()));actor.put("taxi",bot->IsTaxiFlying());
             actor.put("execution_owner",PlayerbotRendezvousManager::PartyActivityOwnerName(
-                sPlayerbotRendezvousManager.GetPartyActivityOwner(binding.first)));
+                sPlayerbotRendezvousManager.GetPartyActivityOwner(actorId)));
             boost::property_tree::ptree admissions;
-            for(const auto& candidate:binding.second.procurementCandidates)admissions.push_back({"",candidate.second});
+            const auto binding=state.bindings.find(actorId);
+            if(binding!=state.bindings.end())
+                for(const auto& candidate:binding->second.procurementCandidates)admissions.push_back({"",candidate.second});
             actor.add_child("guild_procurement_admissions",admissions);actors.push_back({"",actor});
         }
         result.put("actor_snapshot_truncated",actorCount>50);result.add_child("actors",actors);
@@ -258,8 +263,11 @@ void RunIsolatedServicesObservation(FixtureState& state) {
         }
     }
     if(!f.started) {
-        f.started=true;f.deadline=NowMs()+1200000;
-        f.setup.put("started_at_ms",NowMs());f.setup.put("duration_seconds",1200);
+        // Dungeon runs may outlast a short service sample. Still bounded and
+        // test-only; an elapsed window never credits encounter completion.
+        const uint32_t duration=f.setup.template get<uint32_t>("guild_fixture_dungeon",0)?7200:1200;
+        f.started=true;f.deadline=NowMs()+uint64_t(duration)*1000;
+        f.setup.put("started_at_ms",NowMs());f.setup.put("duration_seconds",duration);
         f.setup.put("initial_native_dispatches",state.nativeDispatches);
         f.setup.put("initial_verified_results",state.nativeVerifiedResults);
         f.setup.put("initial_task_admissions",state.taskAdmissions);
