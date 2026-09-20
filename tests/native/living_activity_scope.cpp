@@ -81,6 +81,26 @@ int main() {
         assert(check() == AuthorityCode::StaleLease);
     }
     assert(ExecutionScope::Origin(task.actor) == "unscoped");
+    // A managed commitment may coexist with an independently validated native
+    // corpse-loot approach. The engine and nested MoveTo must use the SAME lane.
+    assert(authority.SetCommitmentEffects(task.actor,Mask(Effect::Movement)));
+    publisher.Publish(authority.Read(task.actor));
+    NativePermit loot{task.context,Lane::Loot,Mask(Effect::Movement),0,true};
+    {
+        ExecutionScope corpse(loot);
+        assert(check()==AuthorityCode::StaleLease); // Reproduces old nested-boundary bug.
+        const auto attributed=ExecutionScope::MutationEffects(task.actor,movement.mask);
+        assert(attributed.lane==Lane::Loot);
+        assert(ExecutionScope::Check(reader,attributed,task.context,200)==AuthorityCode::Allowed);
+        assert(ExecutionScope::Check(reader,attributed,task.context,200,uint32_t(Safety::Combat))==AuthorityCode::SafetyPaused);
+        auto changed=task.context;++changed.mapGeneration;
+        assert(ExecutionScope::Check(reader,attributed,changed,200)==AuthorityCode::StaleContext);
+        assert(ExecutionScope::Check(reader,ExecutionScope::MutationEffects(task.actor,Mask(Effect::TravelTarget)),task.context,200)!=AuthorityCode::Allowed);
+        assert(ExecutionScope::Check(reader,ExecutionScope::MutationEffects(task.actor,Mask(Effect::Inventory)),task.context,200)!=AuthorityCode::Allowed);
+        { ExecutionScope other(NativePermit{WorldContext{},Lane::Loot,movement.mask,0,true});
+          assert(ExecutionScope::Check(reader,attributed,task.context,200)==AuthorityCode::StaleLease); }
+    }
+    assert(check()==AuthorityCode::StaleLease); // No residual loot permission.
     NativePermit native{task.context, Lane::Combat, Mask(Effect::Movement), 0, true};
     {
         ExecutionScope combat(native);
