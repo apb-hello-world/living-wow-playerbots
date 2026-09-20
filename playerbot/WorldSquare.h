@@ -248,6 +248,7 @@ namespace ai
         void clear()
         {
             subSquares.clear();
+            pointCount = 0;
         }
 
         virtual float sqInDistance(const WorldPosition& point) const override
@@ -373,6 +374,7 @@ namespace ai
         virtual void AddPoint(WorldPosition* point) override {
             subSquares[GetSubSquareId(*point)].AddPoint(point);
             WorldPointSquare::AddPoint(point);
+            ++pointCount;
         }
 
         const std::vector<WorldPosition*> GetPoints() const {
@@ -391,7 +393,10 @@ namespace ai
                 sq.printWKT(out, squares);
         }
 
-        virtual uint32 GetSize() const override { return subSquares.begin()->second.GetSize(); }
+        // A destination is unique only when the entire spatial tree contains
+        // one point, not when an arbitrary first cell happens to contain one.
+        // Cache the aggregate during construction: eligibility is a hot path.
+        virtual uint32 GetSize() const override { return pointCount; }
     protected:
         virtual uint32 GetSubSquareId(const WorldPosition& point) const = 0;
 
@@ -400,6 +405,7 @@ namespace ai
         const T& GetSubSquare(uint32 id) const { return subSquares.at(id); }
     private:
         std::unordered_map<uint32, T> subSquares;
+        uint32 pointCount = 0;
     };
 
     //Contains all locations in a single cell. 

@@ -7055,7 +7055,8 @@ std::string PlayerbotAI::HandleRemoteCommand(std::string command)
                     << " objective=" << unsigned(objective->GetObjective())
                     << " personal=" << GetAiObjectContext()->GetValue<bool>("need quest objective", qualifier)->Get()
                     << " group=" << GetAiObjectContext()->GetValue<bool>("group or", "following party,need quest objective::" + Qualified::MultiQualify(parts, ","))->Get()
-                    << " active=" << destination->IsActive(bot, info);
+                    << " active=" << destination->IsActive(bot, info)
+                    << " spawns=" << destination->GetSize();
                 if (++printed >= 32) return out.str();
             }
         }
