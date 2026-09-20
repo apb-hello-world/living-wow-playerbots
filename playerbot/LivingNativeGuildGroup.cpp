@@ -51,7 +51,10 @@ bool PlanNativeGuildGroup(Player& actor,const Task& task,uint32_t coordinator,Gu
     q={};GuildEventCommitment event;
     if(!ValidateNativeGuildEventTask(actor,task,why) || !DecodeGuildEventCommitment(task.checkpoint.data,event))return false;
     auto* target=sRandomPlayerbotMgr.GetPlayerBot(coordinator);
-    if(!SafeGroupActor(&actor) || !SafeGroupActor(target) || !BotOnlyGroup(&actor) || !BotOnlyGroup(target)) {
+    if(!target || !target->GetPlayerbotAI() || target->isRealPlayer() ||
+        !BotOnlyGroup(&actor) || !BotOnlyGroup(target) ||
+        sPlayerbotSocialActionBroker.ReservedForPlayer(actor.GetGUIDLow()) ||
+        sPlayerbotSocialActionBroker.ReservedForPlayer(target->GetGUIDLow())) {
         why="guild_event_group_safety_or_human_commitment";return false;
     }
     GuildEventAcceptance accepted;
@@ -77,6 +80,12 @@ bool PlanNativeGuildGroup(Player& actor,const Task& task,uint32_t coordinator,Gu
             why="guild_event_coordinator_group_unavailable";return false;
         }
         q.change=q.group?"leave":"join";
+    }
+    // Observing suitable membership is not a group mutation. A fighting
+    // coordinator must not prevent an already-grouped follower from reaching
+    // the encounter. Actual leave/join/leadership changes keep full safety.
+    if(!q.change.empty() && (!SafeGroupActor(&actor) || !SafeGroupActor(target))) {
+        why="guild_event_group_safety_or_human_commitment";return false;
     }
     if(q.change=="join" && LivingWowDeferBotPartyForTraining(&actor,target)) {
         why="guild_event_class_training_preparation_required";return false;

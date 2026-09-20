@@ -33,9 +33,9 @@ GuildRouteEpoch RouteEpoch(Player* bot) {
     e.groupIdentity=bot->GetGroup()->GetLivingActivityIdentity();
     e.groupRevision=bot->GetGroup()->GetLivingActivityRevision();return e;
 }
-bool Safe(Player* p,uint32 guild,bool allowDungeon=false) {
+bool Safe(Player* p,uint32 guild,bool allowDungeon=false,bool allowCombat=false) {
     return p && p->IsInWorld() && p->GetMap() && p->GetSession() && p->GetGuildId()==guild &&
-        p->IsAlive() && !p->IsInCombat() && !p->IsBeingTeleported() && !p->IsTaxiFlying() &&
+        p->IsAlive() && (allowCombat||!p->IsInCombat()) && !p->IsBeingTeleported() && !p->IsTaxiFlying() &&
         !p->GetTransport() && !p->InBattleGround() && (allowDungeon||!p->GetMap()->IsDungeon());
 }
 bool HasUncommittedHuman(Player* bot,const std::set<uint32>& accepted) {
@@ -91,8 +91,8 @@ const DungeonObjective& DungeonFor(uint32 map) {
     d.valid=supported&&d.required&&d.final&&d.hasEntrance&&d.approach.isValid();
     return cache.emplace(map,std::move(d)).first->second;
 }
-bool EventSafe(Player* p,const CalendarEvent& e) {
-    return Safe(p,e.guild,e.kind=="dungeon")&&(!p->GetMap()->IsDungeon()||
+bool EventSafe(Player* p,const CalendarEvent& e,bool allowCombat=false) {
+    return Safe(p,e.guild,e.kind=="dungeon",allowCombat)&&(!p->GetMap()->IsDungeon()||
         (p->GetMapId()==e.target&&p->GetMap()->IsRegularDifficulty()&&
          (!e.instance||p->GetInstanceId()==e.instance)));
 }
@@ -414,8 +414,10 @@ std::string PlayerbotGuildEventExecutor::ExecuteParticipant(const LivingActivity
         return "guild_event_current_revision_required";
     if(!SavedEventState(event,event.state.c_str(),event.coordinator))return "guild_event_snapshot_changed";
     const auto roster=state_->rosters.find(event.id);auto* coordinator=Online(event.coordinator);
+    const bool combatFollow=event.state=="active" && bot!=coordinator && coordinator &&
+        bot->GetGroup() && bot->GetGroup()==coordinator->GetGroup() && bot->GetMap()==coordinator->GetMap();
     if(roster==state_->rosters.end() || !roster->second.count(task.actor) || !roster->second.count(event.coordinator) ||
-        !EventSafe(bot,event) || !EventSafe(coordinator,event))return "guild_event_participant_safety_pause";
+        !EventSafe(bot,event) || !EventSafe(coordinator,event,combatFollow))return "guild_event_participant_safety_pause";
     const auto& accepted=roster->second;
     if(HasUncommittedHuman(bot,{}) || HasUncommittedHuman(coordinator,{}))return "guild_event_human_party_requires_session_authority";
     if(!sLivingActivityCoordinator.PermitEffects(*bot->GetPlayerbotAI(),

@@ -3983,19 +3983,26 @@ std::string LivingActivityCoordinator::ApproachGuildParticipant(const Task& task
     if(!bot || !bot->GetPlayerbotAI() || !leader || !bot->IsInWorld() || !leader->IsInWorld() ||
         !bot->GetMap() || !leader->GetMap() || !bot->GetGroup() || bot->GetGroup()!=leader->GetGroup() ||
         !ValidateNativeGuildEventTask(*bot,task,why))return why.empty()?"guild_event_group_changed":why;
-    if(NativeSafety(bot) || NativeSafety(leader) || bot->IsNonMeleeSpellCasted(false) || leader->IsNonMeleeSpellCasted(false) ||
+    const bool sameMap=bot->GetMap()==leader->GetMap();
+    const bool combatFollow=task.checkpoint.step=="guild_event_objective" && sameMap && leader->IsInCombat();
+    const uint32_t leaderSafety=NativeSafety(leader);
+    const uint32_t allowedLeaderSafety=combatFollow?uint32_t(Safety::Combat):0;
+    if(NativeSafety(bot) || (leaderSafety&~allowedLeaderSafety) || bot->IsNonMeleeSpellCasted(false) ||
+        (!combatFollow && leader->IsNonMeleeSpellCasted(false)) ||
         bot->GetTradeData() || leader->GetTradeData())return "guild_event_approach_safety_pause";
     // Assembly radius is not an active-follow distance. Stopping fifty yards
     // behind the puller leaves ranged members outside useful assist/loot range.
     const float followDistance=task.checkpoint.step=="guild_event_objective"?12.0f:60.0f;
     if(bot->IsWithinDistInMap(leader,followDistance))return "guild_event_assembled";
-    const bool sameMap=bot->GetMap()==leader->GetMap();
     if(!sameMap && (bot->GetMap()->IsDungeon() || leader->GetMap()->IsDungeon()))return "guild_event_shared_instance_required";
     if(!PermitEffects(*bot->GetPlayerbotAI(),{Mask(Effect::Movement)|Mask(Effect::TravelTarget),Lane::Managed,true},"guild event approach"))
         return "guild_event_approach_authority_changed";
     // Existing visibility geometry and the ONE realm relocation slot, without
     // registering the legacy rendezvous session or its competing movement owner.
-    if(sPlayerbotAIConfig.chatDirectorRendezvousCatchup && (!sameMap || bot->GetDistance(leader)>70.0f) &&
+    // Supporting existing combat means ordinary same-map walking only. It is
+    // never permission to relocate into an encounter or interrupt a cast.
+    if(!leaderSafety && !leader->IsNonMeleeSpellCasted(false) && sPlayerbotAIConfig.chatDirectorRendezvousCatchup &&
+        (!sameMap || bot->GetDistance(leader)>70.0f) &&
         !bot->GetMap()->IsDungeon() && !leader->GetMap()->IsDungeon()) {
         float x=0,y=0,z=0;
         if(sPlayerbotRendezvousManager.FindSafeStagingPoint(bot,leader,x,y,z) &&
