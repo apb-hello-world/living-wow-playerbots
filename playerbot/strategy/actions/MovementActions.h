@@ -135,6 +135,7 @@ namespace ai
     {
     public:
         MoveToLootAction(PlayerbotAI* ai) : MovementAction(ai, "move to loot") {}
+        LivingActivity::NativePermit GetNativeActivityPermit(Event&) override;
         virtual bool Execute(Event& event) override;
     };
 

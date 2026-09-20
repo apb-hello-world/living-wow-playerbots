@@ -7,6 +7,8 @@ namespace ai
     {
     public:
         AddLootAction(PlayerbotAI* ai) : ChatCommandAction(ai, "add loot") {}
+        LivingActivity::Effects GetActivityEffects() const override { return {0,LivingActivity::Lane::Managed,true}; }
+        LivingActivity::NativePermit GetNativeActivityPermit(Event&) override;
         virtual bool isUseful() override;
 
     private:
@@ -28,6 +30,8 @@ namespace ai
     {
     public:
         AddAllLootAction(PlayerbotAI* ai, std::string name = "add all loot") : ChatCommandAction(ai, name) {}
+        LivingActivity::Effects GetActivityEffects() const override { return {0,LivingActivity::Lane::Managed,true}; }
+        LivingActivity::NativePermit GetNativeActivityPermit(Event&) override;
         virtual bool isUseful() override;
 
     protected:
