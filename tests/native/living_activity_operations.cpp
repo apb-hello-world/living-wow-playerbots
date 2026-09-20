@@ -3,13 +3,15 @@
 #include "LivingLootQuote.h"
 #include "LivingGatherQuote.h"
 #include "LivingPartyTraining.h"
+#include "LivingQuestReward.h"
+#include "LivingGuildEventCommitment.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <cassert>
 using namespace LivingActivity;
 struct TestAdapter final : NativeOperationAdapter {
     std::string kind;uint32_t effects=0;NativePersistence persistence=NativePersistence::Inventory;
-    bool consumes=false,gains=false,transfers=false,mail=false,guildMail=false,cast=false,trade=false,offer=false,partition=false;
+    bool consumes=false,gains=false,transfers=false,mail=false,guildMail=false,cast=false,trade=false,offer=false,partition=false,questReward=false;
     explicit TestAdapter(const OperationRequest& r):kind(r.kind),effects(r.effects),persistence(r.persistence) {}
     const char* OperationKind()const override{return kind.c_str();}
     uint32_t OperationEffects()const override{return effects;}
@@ -22,6 +24,7 @@ struct TestAdapter final : NativeOperationAdapter {
     bool SupportsCommissionTrade()const override{return trade;}
     bool SupportsCommissionOffer()const override{return offer;}
     bool SupportsCommissionPartition()const override{return partition;}
+    bool SupportsQuestReward()const override{return questReward;}
     bool DeferredNativeCast()const override{return cast;}
     bool ValidateNative(Player&,const OperationRequest&,std::string&)override{assert(false);return false;}
     NativeObservation ExecuteNative(Player&,const OperationRequest&)override{assert(false);return {};}
@@ -30,6 +33,25 @@ struct TestAdapter final : NativeOperationAdapter {
 #include "LivingPartyAuction.h"
 #include "fixtures/CommissionTrade.h"
 int main() {
+    {
+        GuildEventCommitment event{"quest-native","quest",3,1,47,100,1000};
+        OperationRequest r;r.kind="guild_quest_reward";r.effects=Mask(Effect::Inventory)|Mask(Effect::Money)|Mask(Effect::Spell);
+        r.persistence=NativePersistence::Character;
+        auto& t=r.transition.task;t.id=t.root="11111111-1111-4111-8111-111111111111";
+        t.actor=7;t.kind=Kind::GuildEvent;t.mode=Mode::Active;t.priority=Priority::Scheduled;t.dueAtMs=100000;
+        t.source="guild_event_commitment";t.sourceKey=GuildEventCommitmentKey(event,7);t.phase=Phase::Executing;
+        t.checkpoint.step="guild_quest_reward";t.checkpoint.data=EncodeGuildEventCommitment(event);
+        QuestRewardQuote q;q.actor=7;q.quest=47;q.giver=123;q.level=10;q.money=100;q.moneyDelta=175;
+        q.items={{773,10,10,0},{1191,0,0,1}};r.beforeState=EncodeQuestRewardQuote(q);
+        TestAdapter adapter(r);adapter.questReward=true;std::string why;
+        assert(ValidateOperationAdapter(r,adapter,why));
+        adapter.questReward=false;assert(!ValidateOperationAdapter(r,adapter,why));adapter.questReward=true;
+        auto bad=r;bad.persistence=NativePersistence::Inventory;assert(!ValidateOperationAdapter(bad,adapter,why));
+        bad=r;bad.transition.task.checkpoint.step="guild_event_objective";assert(!ValidateOperationAdapter(bad,adapter,why));
+        bad=r;q.quest=48;bad.beforeState=EncodeQuestRewardQuote(q);assert(!ValidateOperationAdapter(bad,adapter,why));
+        bad=r;bad.itemGain={1191,1};assert(!ValidateOperationAdapter(bad,adapter,why));
+        adapter.cast=true;assert(!ValidateOperationAdapter(r,adapter,why));
+    }
     {
         OperationRequest r;r.kind="party_training_learn";r.effects=Mask(Effect::Spell)|Mask(Effect::Social);
         r.persistence=NativePersistence::Profession;

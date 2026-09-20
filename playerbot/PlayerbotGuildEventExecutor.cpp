@@ -200,6 +200,7 @@ struct PlayerbotGuildEventExecutor::State {
         if(pendingProofs.empty()||!CharacterDatabase.BeginTransaction()) return;
         std::map<uint32,bool> authority;
         for(const auto& p:pendingProofs) {
+            if(sLivingActivityCoordinator.DefersNativeSave(p.actor))continue;
             if(!authority.count(p.binding.guild)) {
                 Guild* guild=sGuildMgr.GetGuildById(p.binding.guild);
                 authority[p.binding.guild]=guild&&sGuildGovernance.Allows(guild,"events");

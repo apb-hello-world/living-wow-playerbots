@@ -64,6 +64,7 @@
 #include "LivingNativeGuildProcurement.h"
 #include "LivingNativeGuildEvent.h"
 #include "LivingNativeGuildGroup.h"
+#include "LivingNativeQuestReward.h"
 #include "LivingGuildEventSettlement.h"
 #include "PlayerbotGuildEventExecutor.h"
 #include "LivingGuildProcurementRecovery.h"
@@ -4024,7 +4025,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     for(const auto& write:state->pending)if(write.task.actor==actor)return stop("guild_event_task_write_pending");
     for(const auto& operation:state->operations)if(operation.second.request.transition.task.actor==actor) {
         const auto& request=operation.second.request;
-        if(request.transition.task.id!=id || request.kind!="guild_event_group")return stop("guild_event_other_operation_pending");
+        if(request.transition.task.id!=id || (request.kind!="guild_event_group" && request.kind!="guild_quest_reward"))return stop("guild_event_other_operation_pending");
         // The first async membership save may not be readable in the same
         // world update. Once that uncertainty itself is acknowledged, inspect
         // the native rows below; never try to dispatch this intent again.
@@ -4034,6 +4035,13 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         if(operation.second.ready && !operation.second.dispatched &&
             (!(saved->context==ReadNativeContext(*bot,state->policyRevision,state->boot)) ||
              !ValidateNativeGuildEventTask(*bot,*saved,why)))break;
+        if(request.kind=="guild_quest_reward") {
+            QuestRewardQuote quote;if(!DecodeQuestRewardQuote(request.beforeState,quote))return stop("quest_reward_intent_invalid");
+            NativeQuestReward adapter(quote);
+            const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"guild_quest_reward");
+            if(!grant.Permitted())return stop(grant.blocker);
+            return stop(DispatchSavedOperation(operation.first,grant,adapter).admission.blocker);
+        }
         GuildGroupQuote quote;if(!DecodeGuildGroupQuote(request.beforeState,quote))return stop("guild_event_group_intent_invalid");
         NativeGuildGroup adapter(quote);
         const auto grant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"guild_event_group");
@@ -4050,26 +4058,33 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         request.task.phase=phase;request.task.checkpoint.step=step;request.task.checkpoint.blocker=blocker;
         request.receipt=NewId();return stop(SubmitTask(request).blocker);
     };
-    if(saved->checkpoint.step=="guild_event_group") {
+    if(saved->checkpoint.step=="guild_event_group" || saved->checkpoint.step=="guild_quest_reward") {
+        const std::string kind=saved->checkpoint.step;
         // Never replay a saved invitation after restart. Reconcile the desired
         // native membership and the exact intent before admitting a new step.
         const auto rows=CharacterDatabase.Query(("SELECT operation_id,task_revision,state,before_state FROM living_activity_operation"
-            " WHERE task_id="+SqlValue(id)+" AND kind='guild_event_group' ORDER BY task_revision DESC LIMIT 1").c_str());
+            " WHERE task_id="+SqlValue(id)+" AND kind="+SqlValue(kind)+" ORDER BY task_revision DESC LIMIT 1").c_str());
         if(!rows || rows->GetFieldCount()!=4)return stop("guild_event_group_receipt_unavailable");
         const auto* f=rows->Fetch();const auto outcome=f[2].GetCppString();
         if(outcome=="intent" || outcome=="reconciling") {
-            GuildGroupQuote quote;std::string before;
+            std::string before;
             try {boost::property_tree::ptree parsed;std::istringstream in(f[3].GetCppString());boost::property_tree::read_json(in,parsed);
                 std::ostringstream out;boost::property_tree::write_json(out,parsed.get_child("native"),false);before=out.str();}
             catch(const std::exception&) {return stop("guild_event_group_receipt_invalid");}
-            if(!DecodeGuildGroupQuote(before,quote) || quote.actor!=actor)return stop("guild_event_group_receipt_invalid");
-            const auto observed=InspectNativeGuildGroup(*bot,quote);
+            NativeObservation observed;
+            if(kind=="guild_quest_reward") {
+                QuestRewardQuote quote;if(!DecodeQuestRewardQuote(before,quote) || quote.actor!=actor)return stop("quest_reward_receipt_invalid");
+                observed=InspectNativeQuestReward(*bot,*saved,quote);
+            } else {
+                GuildGroupQuote quote;if(!DecodeGuildGroupQuote(before,quote) || quote.actor!=actor)return stop("guild_event_group_receipt_invalid");
+                observed=InspectNativeGuildGroup(*bot,quote);
+            }
             if(observed.state==OperationState::Reconciling)return stop(observed.evidence);
             if(state->pending.size()>=state->batch)return stop("guild_event_receipt_backpressure");
             Task after=*saved;++after.revision;after.phase=Phase::Verifying;after.context=current;after.updatedAtMs=now;
             after.checkpoint.blocker=observed.evidence;
             OperationResult proof;proof.id=f[0].GetCppString();proof.task=id;proof.taskRevision=f[1].GetUInt64();
-            proof.kind="guild_event_group";proof.state=observed.state;proof.evidence=observed.evidence;proof.nativeReference=observed.nativeReference;
+            proof.kind=kind;proof.state=observed.state;proof.evidence=observed.evidence;proof.nativeReference=observed.nativeReference;
             State::Pending write;write.task=after;write.admissionReceipt=NewId();
             write.plan=OperationOutcomeWrite(after,saved->revision,proof,write.admissionReceipt,observed.afterState);
             const auto pending=state->operations.find(proof.id);
@@ -4121,6 +4136,22 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     if(saved->checkpoint.step!=step)return checkpoint(Phase::Preparing,step,"");
     if(saved->phase==Phase::Preparing && (step=="guild_event_travel" || step=="guild_event_objective" || step=="guild_event_return"))
         return checkpoint(Phase::Traveling,step,"");
+    if(closure.state=="active" && event.kind=="quest" && bot->GetQuestStatus(event.target)==QUEST_STATUS_COMPLETE &&
+        !bot->GetQuestRewardStatus(event.target)) {
+        QuestRewardQuote quote;
+        if(PlanNativeQuestReward(*bot,*saved,quote,why)) {
+            NativeQuestReward adapter(quote);
+            const auto rewardGrant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"guild_quest_reward");
+            if(!rewardGrant.Permitted())return stop(rewardGrant.blocker);
+            OperationRequest request;request.transition.task=*saved;request.transition.expectedRevision=saved->revision;
+            ++request.transition.task.revision;request.transition.task.phase=Phase::Executing;
+            request.transition.task.checkpoint.step="guild_quest_reward";request.transition.task.updatedAtMs=now;
+            request.transition.receipt=NewId();request.authorization=rewardGrant.action;
+            request.kind=adapter.OperationKind();request.effects=adapter.OperationEffects();request.persistence=adapter.PersistencePolicy();
+            request.beforeState=EncodeQuestRewardQuote(quote);return stop(SubmitOperationIntent(request,adapter).blocker);
+        }
+        if(why!="quest_reward_giver_travel_required")return stop(why);
+    }
     const uint32_t effects=Mask(Effect::Movement)|Mask(Effect::TravelTarget)|Mask(Effect::Group);
     const auto grant=AcquireSavedTask(id,saved->revision,effects,60000,"guild_event_participant");
     if(!grant.Permitted())return stop(grant.blocker);
@@ -5408,7 +5439,8 @@ DispatchResult LivingActivityCoordinator::FinalizeNativeOperation(const std::str
     if (nativeTransactionOpen) {
         try {
             if (!CharacterDatabase.HasOpenTransaction()) throw std::runtime_error("native_transaction_escaped");
-            bot->SaveServiceStateToDB(request.persistence == NativePersistence::Profession);
+            if(request.persistence==NativePersistence::Character)bot->SaveToDB(true);
+            else bot->SaveServiceStateToDB(request.persistence == NativePersistence::Profession);
             const auto nativeProof=adapter ? adapter->PersistedNativeProof(*bot,request,write.task) :
                 pending.craft->PersistedProof(*bot,write.task);
             write.nativeSave=NativeSaveBatch::Capture(CharacterDatabase,write.plan,nativeProof+NativeGainProof(nativeGains));

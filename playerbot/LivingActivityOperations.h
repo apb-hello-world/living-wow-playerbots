@@ -9,7 +9,7 @@
 class Player;
 namespace LivingActivity {
     class NativeCraftCast;
-    enum class NativePersistence { JournalOnly, Inventory, Profession };
+    enum class NativePersistence { JournalOnly, Inventory, Profession, Character };
     struct OperationRequest {
         TaskRequest transition; // Preparing/traveling -> executing, receipt is operation ID.
         ActionContext authorization; // Exact saved predecessor's scoped authority.
@@ -53,6 +53,7 @@ namespace LivingActivity {
         virtual bool SupportsCommissionOffer() const { return false; }
         // Exact claimed GUID retained; only its unreserved surplus is split.
         virtual bool SupportsCommissionPartition() const { return false; }
+        virtual bool SupportsQuestReward() const { return false; }
         // Native mail may pay a seller/refund another bidder. Hold their later
         // native saves/mail mutations until this same receipt is acknowledged.
         virtual std::vector<uint32_t> RelatedActors() const {return {};}

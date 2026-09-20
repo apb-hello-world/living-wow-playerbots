@@ -9,6 +9,8 @@
 #include "LivingRepairQuote.h"
 #include "LivingPartyTraining.h"
 #include "LivingPartyAuction.h"
+#include "LivingQuestReward.h"
+#include "LivingGuildEventCommitment.h"
 #include <boost/property_tree/json_parser.hpp>
 #include <sstream>
 #include <tuple>
@@ -24,6 +26,18 @@ namespace LivingActivity {
             } catch (const std::exception&) { return false; }
         }
         std::string NativeBefore(const OperationRequest& request) {
+            if(request.persistence==NativePersistence::Character || request.kind=="guild_quest_reward") {
+                QuestRewardQuote quote;GuildEventCommitment event;std::string why;
+                if(request.kind!="guild_quest_reward" || !DecodeQuestRewardQuote(request.beforeState,quote) ||
+                    !IsGuildEventCommitment(request.transition.task) || !ValidateGuildEventCommitmentTask(request.transition.task,why) ||
+                    !DecodeGuildEventCommitment(request.transition.task.checkpoint.data,event) || event.kind!="quest" ||
+                    quote.quest!=event.target || quote.actor!=request.transition.task.actor ||
+                    request.transition.task.checkpoint.step!="guild_quest_reward" ||
+                    request.effects!=(Mask(Effect::Inventory)|Mask(Effect::Money)|Mask(Effect::Spell)) ||
+                    request.persistence!=NativePersistence::Character || !request.consumption.empty() ||
+                    !request.itemGain.Empty() || !request.mailGain.Empty() || !request.itemTransfer.id.empty())
+                    throw std::invalid_argument("Exact native nonrepeatable quest reward contract required");
+            }
             if(request.kind=="party_auction_post") {
                 AuctionPostQuote q;
                 if(!DecodeAuctionPostQuote(request.beforeState,q) || !PartyAuctionQuoteMatches(request.transition.task,q) ||
@@ -168,11 +182,14 @@ namespace LivingActivity {
             !adapter.DeferredNativeCast();
         const bool partition=request.kind=="commission_output_partition" && adapter.SupportsCommissionPartition() &&
             !adapter.DeferredNativeCast();
-        if(loot || gather || offer || partition) {
+        const bool questReward=request.kind=="guild_quest_reward" && adapter.SupportsQuestReward() && !adapter.DeferredNativeCast();
+        if(adapter.SupportsQuestReward()!=questReward || (request.persistence==NativePersistence::Character && !questReward))
+            return reject("native_quest_reward_adapter_mismatch");
+        if(loot || gather || offer || partition || questReward) {
             try {NativeBefore(request);}
             catch(const std::exception&) {return reject("invalid_native_acquisition_contract");}
         }
-        if(!transfer && !loot && !gather && !offer && !partition && (request.effects&(Mask(Effect::Money)|Mask(Effect::Inventory))) &&
+        if(!transfer && !loot && !gather && !offer && !partition && !questReward && (request.effects&(Mask(Effect::Money)|Mask(Effect::Inventory))) &&
             (!adapter.SupportsClaimedConsumption() || request.consumption.empty() || request.persistence==NativePersistence::JournalOnly))
             return reject("resource_effect_adapter_not_supported");
         if(!request.consumption.empty() && !adapter.SupportsClaimedConsumption())return reject("native_adapter_mismatch");
@@ -196,7 +213,7 @@ namespace LivingActivity {
         const WorldContext& current, const Task* root, uint64_t wallNow, std::string& blocker) {
         const auto& next = request.transition.task;
         if (!request.effects || (request.effects & ~AllEffects) ||
-            unsigned(request.persistence) > unsigned(NativePersistence::Profession) || !IsToken(request.kind, 48) ||
+            unsigned(request.persistence) > unsigned(NativePersistence::Character) || !IsToken(request.kind, 48) ||
             !JsonObject(request.beforeState, 4096) ||
             (!request.itemGain.Empty() && (!ValidItemGainSpec(request.itemGain) ||
                 !(request.effects & Mask(Effect::Inventory)) || request.persistence == NativePersistence::JournalOnly)) ||
