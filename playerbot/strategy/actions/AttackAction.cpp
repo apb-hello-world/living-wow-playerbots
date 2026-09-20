@@ -109,8 +109,7 @@ bool AttackAction::Attack(Player* requester, Unit* target)
     const auto permit = LivingActivity::NativeEngagedAttackPermit(*ai, target);
     std::unique_ptr<LivingActivity::ExecutionScope> nativeScope;
     if (permit.validated) nativeScope.reset(new LivingActivity::ExecutionScope(permit));
-    const LivingActivity::Effects effects{LivingActivity::AttackEffectMask(),
-        permit.validated ? permit.lane : LivingActivity::Lane::Managed, true};
+    const auto effects=LivingActivity::ExecutionScope::MutationEffects(bot->GetGUIDLow(),LivingActivity::AttackEffectMask());
     if (!sLivingActivityCoordinator.PermitEffects(*ai, effects, "native attack")) return false;
     if (target && !sPlayerbotPartyCombatCoordinator.CanInitiate(bot, target))
         return false;

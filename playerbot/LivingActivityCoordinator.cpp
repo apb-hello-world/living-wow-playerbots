@@ -4166,8 +4166,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         }
         if(why!="quest_reward_giver_travel_required")return stop(why);
     }
-    const uint32_t effects=Mask(Effect::Movement)|Mask(Effect::TravelTarget)|Mask(Effect::Group)|
-        ((closure.state=="active" && event.kind=="quest")?Mask(Effect::Spell):0);
+    const uint32_t effects=Mask(Effect::Movement)|Mask(Effect::TravelTarget)|Mask(Effect::Group);
     const auto grant=AcquireSavedTask(id,saved->revision,effects,60000,"guild_event_participant");
     if(!grant.Permitted())return stop(grant.blocker);
     ExecutionScope scope(grant.task,grant.action);
