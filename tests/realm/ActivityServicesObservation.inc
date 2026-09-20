@@ -1,6 +1,7 @@
 // Copied-realm observation only. Enable the existing producers and due queue
 // together, with normal AI running. No actor, recipe, inventory or task grants.
 // Ending an observation interval never constitutes proof of gameplay success.
+#include "GuildObservationCohort.h"
 template<class FixtureState>
 void RunIsolatedServicesObservation(FixtureState& state) {
     if(state.fixtureFinished || NowMs()<state.fixtureNext)return;
@@ -40,6 +41,14 @@ void RunIsolatedServicesObservation(FixtureState& state) {
             actor.put("last_action",bot->GetPlayerbotAI()->HandleRemoteCommand("action"));
             actor.put("strategies",bot->GetPlayerbotAI()->HandleRemoteCommand("strategy"));
             const auto quest=f.setup.template get<uint32_t>("guild_fixture_quest",0);
+            const auto dungeon=f.setup.template get<uint32_t>("guild_fixture_dungeon",0);
+            if(dungeon) {
+                actor.put("dungeon_ready",sGuildEventExecutor.DungeonParticipantReady(bot,dungeon));
+                actor.put("instance",bot->GetInstanceId());
+                actor.put("active_role",PlayerbotAI::IsTank(bot,false)?"tank":PlayerbotAI::IsHeal(bot,false)?"healer":"damage");
+                actor.put("group_id",bot->GetGroup()?bot->GetGroup()->GetId():0);
+                actor.put("group_leader",bot->GetGroup()?bot->GetGroup()->GetLeaderGuid().GetCounter():0);
+            }
             if(quest) {
                 actor.put("quest_status",uint32_t(bot->GetQuestStatus(quest)));
                 actor.put("quest_rewarded",bot->GetQuestRewardStatus(quest));
@@ -205,7 +214,7 @@ void RunIsolatedServicesObservation(FixtureState& state) {
     }
     if(!state.loaded || !state.incoming.empty() || !state.resources.Protection().ready)return;
     const auto* selection=std::getenv("LIVING_WOW_NATIVE_FIXTURE_TASK");
-    if(selection && std::string(selection)=="guild-event-observe-v1") {
+    if(selection && (std::string(selection)=="guild-event-observe-v1" || std::string(selection)=="guild-dungeon-observe-v1")) {
         // Existing characters and their existing quest state only. The private
         // case prepares an explicit calendar appointment; ordinary guild code
         // admits/executes it. No fixture task, group, relocation or quest reward.
@@ -217,12 +226,25 @@ void RunIsolatedServicesObservation(FixtureState& state) {
             return uint32_t(std::stoul(value));
         };
         try {
-            const auto quest=number("LIVING_WOW_NATIVE_FIXTURE_ITEM");
-            if(!sObjectMgr.GetQuestTemplate(quest))throw std::runtime_error("native_quest_required");
-            f.setup.put("guild_fixture_quest",quest);bool online=true;
-            for(const auto actor:{number("LIVING_WOW_NATIVE_FIXTURE_ACTOR"),number("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT")}) {
+            std::vector<uint32_t> cohort;
+            if(std::string(selection)=="guild-dungeon-observe-v1") {
+                const auto map=number("LIVING_WOW_NATIVE_FIXTURE_ITEM");
+                if(!sGuildEventExecutor.DungeonSupported(map))throw std::runtime_error("supported_native_dungeon_required");
+                const auto* raw=std::getenv("LIVING_WOW_NATIVE_FIXTURE_GUILD_MEMBERS");
+                cohort=LivingIsolated::GuildDungeonCohort(raw?raw:"");
+                f.setup.put("guild_fixture_dungeon",map);
+            } else {
+                const auto quest=number("LIVING_WOW_NATIVE_FIXTURE_ITEM");
+                if(!sObjectMgr.GetQuestTemplate(quest))throw std::runtime_error("native_quest_required");
+                f.setup.put("guild_fixture_quest",quest);
+                cohort={number("LIVING_WOW_NATIVE_FIXTURE_ACTOR"),number("LIVING_WOW_NATIVE_FIXTURE_RECIPIENT")};
+            }
+            // An invalid later member must not partially log in a cohort.
+            for(const auto actor:cohort)
                 if(!actor || !sPlayerbotAIConfig.IsInRandomAccountList(sObjectMgr.GetPlayerAccountIdByGUID(ObjectGuid(HIGHGUID_PLAYER,actor))))
                     throw std::runtime_error("existing_random_bot_required");
+            bool online=true;
+            for(const auto actor:cohort) {
                 auto* bot=sRandomPlayerbotMgr.GetPlayerBot(actor);
                 if(bot && bot->IsInWorld())continue;
                 online=false;const auto key="guild_fixture_login_"+std::to_string(actor);
