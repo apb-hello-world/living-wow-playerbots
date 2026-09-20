@@ -4143,17 +4143,23 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
     const std::string step=closure.state=="forming"?"guild_event_form":closure.state=="preparing"?"guild_event_prepare":
         closure.state=="traveling"?"guild_event_travel":closure.state=="active"?"guild_event_objective":
         closure.state=="returning"?"guild_event_return":"guild_event_verify";
+    const bool rewardReady=saved->checkpoint.step=="guild_quest_reward_ready";
     // A restored/queued job first acknowledges its current context. Movement
     // and membership never execute from a queued or previous-session record.
     if(saved->phase==Phase::Queued || saved->phase==Phase::Reconciling)
-        return checkpoint(Phase::Preparing,step,"");
-    if(saved->checkpoint.step!=step)return checkpoint(Phase::Preparing,step,"");
-    if(saved->phase==Phase::Preparing && (step=="guild_event_travel" || step=="guild_event_objective" || step=="guild_event_return"))
+        return checkpoint(Phase::Preparing,rewardReady?saved->checkpoint.step:step,"");
+    if(saved->checkpoint.step!=step && !rewardReady)return checkpoint(Phase::Preparing,step,"");
+    if(!rewardReady && saved->phase==Phase::Preparing && (step=="guild_event_travel" || step=="guild_event_objective" || step=="guild_event_return"))
         return checkpoint(Phase::Traveling,step,"");
     if(closure.state=="active" && event.kind=="quest" && bot->GetQuestStatus(event.target)==QUEST_STATUS_COMPLETE &&
         !bot->GetQuestRewardStatus(event.target)) {
         QuestRewardQuote quote;
         if(PlanNativeQuestReward(*bot,*saved,quote,why)) {
+            // Arrival owns movement/group effects. A reward changes inventory,
+            // money and quest state, so acknowledge a new step/revision before
+            // requesting that different effect set. Same-revision changes must
+            // remain stale, even if they concern the same accepted root task.
+            if(!rewardReady)return checkpoint(Phase::Preparing,"guild_quest_reward_ready","");
             NativeQuestReward adapter(quote);
             const auto rewardGrant=AcquireSavedTask(id,saved->revision,adapter.OperationEffects(),60000,"guild_quest_reward");
             if(!rewardGrant.Permitted())return stop(rewardGrant.blocker);
@@ -4166,6 +4172,7 @@ LivingActivityCoordinator::ProfessionProgress LivingActivityCoordinator::Advance
         }
         if(why!="quest_reward_giver_travel_required")return stop(why);
     }
+    if(rewardReady)return checkpoint(Phase::Preparing,step,"quest_reward_giver_revalidation");
     const uint32_t effects=Mask(Effect::Movement)|Mask(Effect::TravelTarget)|Mask(Effect::Group);
     const auto grant=AcquireSavedTask(id,saved->revision,effects,60000,"guild_event_participant");
     if(!grant.Permitted())return stop(grant.blocker);

@@ -17,6 +17,9 @@ int main(int argc,char** argv) {
     const auto preparing=TaskWrite(task,1,"ff2efbdf-f0ec-4539-b840-299847970c02","task_admitted");
     GuildEventClosure closure{"completed",dungeon?"dungeon_encounters_verified":"quest_reward_verified",1000,1300,1200,dungeon?700u:0u};
     GuildEventSettlement result;std::string why;
+    auto ready=task;ready.checkpoint.step="guild_quest_reward_ready";
+    assert(ValidateGuildEventCommitmentTask(ready,why));
+    assert(PreserveGuildEventCommitment(task,ready,why));
     assert(PrepareGuildEventSettlement(task,task.context,closure,1300000,
         "ff2efbdf-f0ec-4539-b840-299847970c03",result,why));
     const auto completed=result;

@@ -25,6 +25,23 @@ ActionContext Action(Task& task, const ActivityLease& lease) {
 }
 int main() {
     {
+        // A guild route cannot become a reward transaction at the same saved
+        // revision. An acknowledged ready step changes the permit, not policy.
+        ExecutionAuthority authority;auto travel=Root(A,Priority::Scheduled);
+        travel.checkpoint.step="guild_event_objective";
+        authority.Observe(travel.context,0);
+        const auto moving=authority.Acquire(travel,Movement|Mask(Effect::Group),1000,60000);
+        assert(moving.Granted());
+        const uint32_t reward=Mask(Effect::Inventory)|Mask(Effect::Money)|Mask(Effect::Quest);
+        assert(authority.Acquire(travel,reward,1001,60000).code==AuthorityCode::StaleRevision);
+        auto ready=travel;++ready.revision;ready.phase=Phase::Preparing;ready.checkpoint.step="guild_quest_reward_ready";
+        const auto grant=authority.Acquire(ready,reward,1002,60000);
+        assert(grant.Granted()&&grant.lease.generation>moving.lease.generation);
+        auto action=Action(ready,grant.lease);action.permittedEffects=reward;
+        assert(authority.Authorize({reward,Lane::Managed,true},ready.context,1003,&ready,&action)==AuthorityCode::ReconciliationRequired);
+        assert(authority.Acquire(travel,Movement,1004,60000).code==AuthorityCode::StaleRevision);
+    }
+    {
         // Party authorization changes arbitration, not the journalled identity.
         ExecutionAuthority authority;auto task=Root();task.phase=Phase::Preparing;
         authority.Observe(task.context,0);
